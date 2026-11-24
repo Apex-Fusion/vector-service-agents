@@ -2,22 +2,30 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+import { loadPriceList } from '../../../agents/bid-desk/src/checks/pricelist.ts';
+import { priceListFileOf } from '../../../agents/bid-desk/src/serve/settings.ts';
+import { createPrecheck } from '../../../agents/insurer-intake-agent/src/checks/precheck.ts';
+import { takeJob } from '../../../agents/insurer-intake-agent/src/job/take.ts';
+import { RecordingSink, ScriptedBook, makeWorld as makeIntakeWorld } from '../../../agents/insurer-intake-agent/test/checks/support.ts';
+import { judgeQuote } from '../../../agents/sourcing-agent/src/quotes/decide.ts';
+import { acceptDecision } from '../../../agents/sourcing-agent/test/quotes/support.ts';
 import { documentHash } from '../../../packages/buyer-core/src/index.ts';
-import { checkQuoteAnswersRfq, lineChecks, parsePriceList, parseQuote, parseRfqDocument } from '../../../packages/usecase-kit/src/bids/index.ts';
+import { checkQuoteAnswersRfq, lineChecks, parseQuote, parseRfqDocument } from '../../../packages/usecase-kit/src/bids/index.ts';
 import * as pricing from '../../../packages/usecase-kit/src/bids/pricelist.ts';
 import {
   EVIDENCE_STATEMENTS, JUROR_RECORD_LIMIT_BYTES, MAX_JUROR_DOCUMENT_BYTES, evidenceReferences, jurorRecordSize, readClaimDocument,
 } from '../../../packages/usecase-kit/src/dispute/index.ts';
 import type { EvidenceKind } from '../../../packages/usecase-kit/src/dispute/index.ts';
 import { parseIntakeRecord, parsePriorAuthRequest, parseRecordSet, recordSetSha256 } from '../../../packages/usecase-kit/src/priorauth/index.ts';
-import { canonicalJson, canonicalSha256, parseApprovalRef, proposalDigest } from '../../../packages/usecase-kit/src/protocol/index.ts';
-import type { ManifestClaim, ProtocolResult } from '../../../packages/usecase-kit/src/protocol/index.ts';
+import { RECEIPT_CHECKS, canonicalJson, canonicalSha256, parseApprovalRef, parseDocument, proposalDigest } from '../../../packages/usecase-kit/src/protocol/index.ts';
+import type { Did, ManifestClaim, ProtocolResult, ReceiptVerification } from '../../../packages/usecase-kit/src/protocol/index.ts';
 import { PreconditionError } from '../../checks/lib/session.ts';
 import type { UseCase } from '../lib/contract.ts';
 import { FactsFile } from '../lib/facts.ts';
 import { BID_DESK_CLAIM, INTAKE_CLAIM, PRIORAUTH_CLAIM, SOURCING_CLAIM } from '../lib/platform.ts';
 import { runTask } from '../lib/runner.ts';
 import { trialOf } from '../lib/trials/index.ts';
+import { SAMPLE_ADVERT_REF, SAMPLE_ESCROW_REF } from '../lib/trials/shared.ts';
 import claim from '../tasks/claim.ts';
 import bids from '../usecases/bid-evaluation.ts';
 import inventory from '../usecases/inventory-reorder.ts';
@@ -52,7 +60,7 @@ function valueOf<T>(result: ProtocolResult<T, string>): T {
 
 // The test loader supplies data without adding these names to the public operator CLI.
 async function trialWorld(use: UseCase): Promise<TaskWorld> {
-  return taskWorld({ keys: [], shared: [], use: { name: use.name, agents: use.agents, runs: use.runs }, env: { OPERATOR_USE_CASE: USE_CASE } });
+  return taskWorld({ keys: [], shared: [], use: { name: use.name, agents: use.agents, runs: use.runs, organisations: use.organisations }, env: { OPERATOR_USE_CASE: USE_CASE } });
 }
 
 async function runTrial(world: TaskWorld): Promise<number> {
@@ -86,7 +94,8 @@ function readTrial(world: TaskWorld) {
   for (const { file, bytes: size, sha256, document_hash: jurorHash } of files) {
     const body = bytes(file);
     const raw = body.toString('utf8');
-    expect(raw.endsWith('\n'), file).toBe(true);
+    const published = file.endsWith('.price-list.json');
+    if (!published) expect(raw.endsWith('\n'), file).toBe(true);
     expect(body.length, file).toBe(size);
     expect(digest(body), file).toBe(sha256);
     if (file.endsWith('.txt')) {
@@ -95,7 +104,7 @@ function readTrial(world: TaskWorld) {
       expect(jurorHash, file).toBe(documentHash(body));
     } else {
       expect(jurorHash, file).toBeUndefined();
-      expect(raw, file).toBe(`${valueOf(canonicalJson(JSON.parse(raw)))}\n`);
+      if (!published) expect(raw, file).toBe(`${valueOf(canonicalJson(JSON.parse(raw)))}\n`);
     }
   }
   expect(world.machine().result).toMatchObject({
@@ -136,7 +145,7 @@ describe('offline claim trials', () => {
     expect(Object.fromEntries(readdirSync(dir).map((file) => [file, digest(readFileSync(join(dir, file)))]))).toStrictEqual(INVENTORY_HASHES);
   });
 
-  it('pairs the approved and changed requests with the two prior authorization claims', async () => {
+  it('refuses the changed authorization request and sends the approved request in the intake record trial', async () => {
     const world = await trialWorld(priorAuth);
     const facts = FactsFile.open(join(world.stateDir, 'facts.json'), { useCase: priorAuth.name, network: 'vector-mainnet' });
     const did = '9a'.repeat(32);
@@ -182,48 +191,92 @@ describe('offline claim trials', () => {
     expect(approvalEvidence).not.toContain(input.salt);
     expect(approvalEvidence).not.toContain(sent.justification);
 
-    expect(trial.json('intake-record.sent-request.json')).toStrictEqual(sent);
+    expect(trial.bytes('intake-record.sent-request.json')).toStrictEqual(trial.bytes('approval-digest.approved-request.json'));
+    const intakeRequest = valueOf(parsePriorAuthRequest(trial.json('intake-record.sent-request.json')));
+    expect(valueOf(proposalDigest(input.salt, intakeRequest))).toBe(input.expected_digest);
     const intake = valueOf(parseIntakeRecord(trial.json('intake-record.record.json')));
-    const sentHash = valueOf(canonicalSha256(sent));
-    expect(intake.request_number).toBe(sent.request_number);
-    expect(intake.request_sha256).toBe(valueOf(canonicalSha256(approved)));
+    const sentHash = valueOf(canonicalSha256(intakeRequest));
+    expect(intake.request_number).toBe(intakeRequest.request_number);
+    expect(intake.request_sha256).toBe(valueOf(canonicalSha256(sent)));
     expect(intake.request_sha256).not.toBe(sentHash);
+    expect(intake.approval).toMatchObject(approval);
+
+    // Run the real hook and job intake with local ledger and gateway fixtures. The approval on the ledger is for the trial's document and salt.
+    const sender = priorAuth.agents.find(({ kind }) => kind === 'prior-authorization-agent')!;
+    const organisation = priorAuth.organisations.find(({ id }) => id === sender.organisation)!.domain;
+    expect(intake.sender).toStrictEqual({ did: trial.index.agents[sender.id]!.did, organisation, organisation_verified: true });
+    const document = valueOf(parseDocument(intakeRequest));
+    const control = makeIntakeWorld({ organisation: { domain: organisation }, request: document, attestation: { digest: input.expected_digest } });
+    const passed = new RecordingSink();
+    const schedule = vi.fn();
+    const hook = createPrecheck({
+      ports: control.ports, self: intakeRequest.insurer_did, book: new ScriptedBook(), passed,
+      dispute: { challengeApproval: async () => { throw new Error('the local hook fixture must not file a challenge'); } }, schedule, log: () => {},
+    });
+    const context = { ...control.context, advertRef: intakeRequest.advert_ref };
+    const handoff = { ...control.handoff, document, salt: input.salt };
+    expect(await hook(handoff, context)).toEqual({ go: true });
+    expect(schedule).not.toHaveBeenCalled();
+    expect(passed.puts).toHaveLength(1);
+    const taken = takeJob({ takeChecks: (ref) => passed.puts.find(({ escrowRef }) => escrowRef === ref)?.entry ?? null, log: () => {} }, handoff, context);
+    expect(taken).toMatchObject({ request_sha256: sentHash, checks: intake.checks });
+    expect(await hook({ ...handoff, document: valueOf(parseDocument(sent)) }, context)).toMatchObject({ go: false, error: 'approval_digest_mismatch' });
+    expect(passed.puts).toHaveLength(1);
     const intakeEvidence = trial.text('intake-record.evidence.txt');
     expect(intakeEvidence).toContain(`The SHA-256 of the request that the challenger sent is ${sentHash}.`);
     expect(intakeEvidence).toContain(`names the SHA-256 ${intake.request_sha256} for the request that it received.`);
     expect(intakeEvidence).toContain(`SHA-256 of the intake record: ${digest(trial.bytes('intake-record.record.json'))}`);
   });
 
-  it('builds three different bid price contradictions and a sourcing claim with no evidence', async () => {
-    const world = await trialWorld(bids);
+  it.each(['alfa', 'bravo', 'charlie'] as const)('builds the named price contradictions from the selected desk %s', async (instance) => {
+    const desk = bids.agents.find(({ id }) => id === `bid-desk-${instance}`)!;
+    const organisation = bids.organisations.find(({ id }) => id === desk.organisation)!.domain;
+    const listPath = priceListFileOf(instance);
+    const published = loadPriceList(listPath);
+    const publishedBytes = readFileSync(listPath);
+    const world = await trialWorld({ ...bids, agents: [desk, ...bids.agents.filter((agent) => agent !== desk)] });
     expect(await runTrial(world), world.screen.errors.join('\n')).toBe(0);
     const trial = readTrial(world);
     const names = ['price-above-list', 'price-below-list', 'price-of-another-break'];
     expect(trial.index.cases.map((entry) => entry.case)).toStrictEqual([...names, 'sourcing-claim']);
     expect(trial.index.sample).toStrictEqual({
       'sourcing-agent_did': true, 'sourcing-agent_manifest_sha256': true,
-      'bid-desk-alfa_did': true, 'bid-desk-alfa_manifest_sha256': true, references: true, documents: true,
+      [`${desk.id}_did`]: true, [`${desk.id}_manifest_sha256`]: true, references: true, documents: true,
     });
     for (const [number, name] of names.entries()) {
       const entry = trial.index.cases[number]!;
-      expect(entry).toMatchObject({ kind: 'quote_price', claimer: 'bid-desk-alfa', challenger: 'sourcing-agent' });
+      expect(entry).toMatchObject({ kind: 'quote_price', claimer: desk.id, challenger: 'sourcing-agent' });
       checkPair(trial, entry, BID_DESK_CLAIM, 'supplychain.rfq.quote.v1');
       const rfq = valueOf(parseRfqDocument(trial.json(`${name}.rfq.json`)));
-      const quote = valueOf(parseQuote(trial.json(`${name}.quote.json`)));
-      const list = valueOf(parsePriceList(trial.json(`${name}.price-list.json`)));
+      const result = valueOf(parseDocument(trial.json(`${name}.quote.json`)));
+      const quote = valueOf(parseQuote(result));
       const quoteSha = digest(trial.bytes(`${name}.quote.json`));
-      const listSha = pricing.priceListSha256(trial.text(`${name}.price-list.json`));
-      expect(quote.price_list_sha256).toBe(listSha);
+      expect(trial.bytes(`${name}.price-list.json`)).toStrictEqual(publishedBytes);
+      expect(quote.price_list_sha256).toBe(published.sha256);
+      const bidder = { did: trial.index.agents[desk.id]!.did as Did, organisation };
+      expect(quote).toMatchObject({ desk_did: bidder.did, organisation });
       expect(checkQuoteAnswersRfq(quote, rfq).ok).toBe(true);
       expect(rfq.items.map(({ sku }) => sku)).toStrictEqual(['GLV-NIT-M', 'SYR-10ML', 'MSK-N95']);
-      const [first, ...rest] = lineChecks(quote, list);
-      expect(first).toMatchObject({ sku: 'GLV-NIT-M', quantity: 100, listed_unit_price: 125, quoted_unit_price: [126, 124, 110][number] });
-      if (number === 2) expect(first!.quoted_unit_price).toBe(pricing.priceFor(list, first!.sku, 500)!.unit_price);
+      const [first, ...rest] = lineChecks(quote, published.list);
+      const listed = pricing.priceFor(published.list, 'GLV-NIT-M', 100)!.unit_price;
+      const other = pricing.priceFor(published.list, 'GLV-NIT-M', 500)!.unit_price;
+      expect(first).toMatchObject({ sku: 'GLV-NIT-M', quantity: 100, listed_unit_price: listed, quoted_unit_price: [listed + 1, listed - 1, other][number] });
+      expect(first?.quoted_unit_price).not.toBe(listed);
       expect(rest.every((row) => row.listed_unit_price === row.quoted_unit_price)).toBe(true);
+      // The production judge must reach the model after the identity, request and list hash checks.
+      const choice = { accept: false, mismatch: ['GLV-NIT-M'] };
+      const acceptQuote = vi.fn(async () => ({ ok: true as const, choice, decision: acceptDecision(choice.accept, choice.mismatch) }));
+      const judge = judgeQuote({ acceptQuote, note: () => {} }, rfq, bidder, published);
+      expect(await judge.decide({
+        escrow_ref: SAMPLE_ESCROW_REF, advert_ref: SAMPLE_ADVERT_REF, result, text: trial.text(`${name}.quote.json`),
+        receipt: { escrow_ref: SAMPLE_ESCROW_REF, supplier_pkh: '0b'.repeat(28), response_hash: quoteSha },
+        receipt_signature: '0c'.repeat(64), verification: Object.fromEntries(RECEIPT_CHECKS.map((check) => [check, true])) as ReceiptVerification,
+      })).toStrictEqual({ accept: false, reason: 'declined_by_model' });
+      expect(acceptQuote).toHaveBeenCalledOnce();
       const evidence = trial.text(`${name}.evidence.txt`);
       expect(evidence).toContain(`quoted the unit price ${first!.quoted_unit_price} for the SKU "GLV-NIT-M" at the quantity 100.`);
       expect(evidence).toContain(`gives the unit price ${first!.listed_unit_price} for the SKU "GLV-NIT-M" at the quantity 100.`);
-      expect(evidence).toContain(`SHA-256 of the published price list: ${listSha}`);
+      expect(evidence).toContain(`SHA-256 of the published price list: ${published.sha256}`);
       expect(evidence).toContain(`SHA-256 of the quote: ${quoteSha}`);
     }
     const sourcing = trial.index.cases[3]!;

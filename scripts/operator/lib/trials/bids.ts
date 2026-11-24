@@ -7,18 +7,26 @@ import {
 import { claimFile, evidenceFile, jsonFile, requireBuilt, sampleDecision, trialAgent, trialSubjects } from './shared.ts';
 import type { TrialBuilder, TrialCase } from './shared.ts';
 
-function readPriceList() {
+const UTF8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+
+function readPriceList(instance: string) {
+  if (!/^[a-z][a-z0-9-]*$/.test(instance)) throw new PreconditionError('the Bid Desk organisation ID is not a price list file name');
+  let text: string;
   let json: unknown;
-  try { json = JSON.parse(readFileSync(new URL('../../../../agents/bid-desk/price-lists/alfa.json', import.meta.url), 'utf8')); } catch {
-    throw new PreconditionError('the sample price list cannot be read here: run the trial from a checkout of the repository');
+  try {
+    text = UTF8.decode(readFileSync(new URL(`../../../../agents/bid-desk/price-lists/${instance}.json`, import.meta.url)));
+    json = JSON.parse(text);
+  } catch {
+    throw new PreconditionError(`cannot read the published price list for ${instance} as UTF-8 JSON: run the trial from a complete checkout of the repository`);
   }
-  return requireBuilt(parsePriceList(json), 'sample price list');
+  return { list: requireBuilt(parsePriceList(json), 'published price list'), text, sha256: priceListSha256(text) };
 }
 
 export const bidTrial: TrialBuilder = (use, facts) => {
   const sourcing = trialAgent(use, facts, 'sourcing-agent', '7a', '7b');
   const desk = trialAgent(use, facts, 'bid-desk', '7c', '7d');
-  const list = readPriceList();
+  // The deploy pack uses the organisation ID as BID_DESK_INSTANCE.
+  const { list, text: listText, sha256: listSha } = readPriceList(desk.organisation.id);
   const rfq = requireBuilt(parseRfqDocument({
     rfq_id: 'RFQ-TRIAL-1', needed_by: '2026-12-31',
     items: [{ sku: 'GLV-NIT-M', quantity: 100 }, { sku: 'SYR-10ML', quantity: 100 }, { sku: 'MSK-N95', quantity: 100 }],
@@ -39,18 +47,18 @@ export const bidTrial: TrialBuilder = (use, facts) => {
     ['price-of-another-break', other.unit_price],
   ] as const;
   const cases: TrialCase[] = prices.map(([name, unitPrice]) => {
-    const priceList = jsonFile(`${name}.price-list.json`, list);
-    const listSha = priceListSha256(priceList.text);
+    const priceList = { file: `${name}.price-list.json`, text: listText, juror: null };
     const lines = [{ ...first, unit_price: unitPrice }, ...listed.slice(1)];
     const totals = quoteTotals(lines);
     if (totals === null) throw new PreconditionError(`the case ${name} has invalid quote lines`);
     const notes = 'This quote is a sample for a test of the jury.';
+    const validUntil = '2026-12-30';
     const quote = requireBuilt(parseQuote({
-      schema: QUOTE_SCHEMA, outcome: 'done', rfq_id: rfq.rfq_id, rfq_sha256: rfqSha, desk_did: desk.claim.agent_did, organisation: 'bid-desk.example',
-      ...totals, valid_until: '2026-12-30', notes, price_list_sha256: listSha, credential: 'sample.sample.sample',
-      sender: { did: sourcing.claim.agent_did, organisation: null, organisation_verified: false },
+      schema: QUOTE_SCHEMA, outcome: 'done', rfq_id: rfq.rfq_id, rfq_sha256: rfqSha, desk_did: desk.claim.agent_did, organisation: desk.organisation.domain,
+      ...totals, valid_until: validUntil, notes, price_list_sha256: listSha, credential: 'sample.sample.sample',
+      sender: { did: sourcing.claim.agent_did, organisation: sourcing.organisation.domain, organisation_verified: true },
       checks: Object.fromEntries(QUOTE_CHECKS.map((check) => [check, true])),
-      decisions: [sampleDecision('quote', { lines, notes }, 'The quote covers all three items.')], fault_mode: '',
+      decisions: [sampleDecision('quote', { lines, valid_until: validUntil, notes }, 'The quote covers all three items.')], fault_mode: '',
     }), `sample quote of the case ${name}`);
     const quoteFile = jsonFile(`${name}.quote.json`, quote);
     const price = requireBuilt(quotePriceFacts({

@@ -27,24 +27,24 @@ export const priorAuthTrial: TrialBuilder = (use, facts) => {
     guideline_refs: ['C3', 'C4'], record_refs: records.records.map(({ record_id }) => record_id),
     record_set_sha256: recordSetSha256(records), insurer_did: intake.claim.agent_did, advert_ref: SAMPLE_ADVERT_REF,
   }), 'approved sample request');
-  const sent = requireBuilt(parsePriorAuthRequest({
+  const changed = requireBuilt(parsePriorAuthRequest({
     ...approved, justification: 'The chart records pain and foot numbness. The request is for imaging with contrast.',
   }), 'changed sample request');
   const salt = '1f'.repeat(32);
   const approval = requireBuilt(parseApprovalRef({ attestation: '2e'.repeat(32), issuer_did: `did:vector:${'6e'.repeat(32)}` }), 'sample approval reference');
   const expected = requireBuilt(proposalDigest(salt, approved), 'digest of the approved request');
-  const observed = requireBuilt(proposalDigest(salt, sent), 'digest of the sent request');
+  const observed = requireBuilt(proposalDigest(salt, changed), 'digest of the changed request');
   const approvalCase = 'approval-digest';
   const approvalEvidence = evidenceFile(approvalCase, priorAuth, intake, {
     kind: 'approval_digest', use_case: 'prior-authorization', approval,
     mismatch: { ok: false, code: 'approval_digest_mismatch', detail: 'The digest of the request does not match the approval.', expected_digest: expected, observed_digest: observed },
   });
 
-  // This record names the right request number but commits to the other version of the request.
+  // The approved request passes the digest check. Only the returned record names the hash of a different request.
   const record = requireBuilt(parseIntakeRecord({
-    schema: INTAKE_RECORD_SCHEMA, outcome: 'done', request_number: sent.request_number,
-    request_sha256: requireBuilt(canonicalSha256(approved), 'hash of the approved request'), status: 'complete', missing: [], intake_id: 'INTAKE-TRIAL-1',
-    sender: { did: priorAuth.claim.agent_did, organisation: null, organisation_verified: false },
+    schema: INTAKE_RECORD_SCHEMA, outcome: 'done', request_number: approved.request_number,
+    request_sha256: requireBuilt(canonicalSha256(changed), 'hash of the changed request'), status: 'complete', missing: [], intake_id: 'INTAKE-TRIAL-1',
+    sender: { did: priorAuth.claim.agent_did, organisation: priorAuth.organisation.domain, organisation_verified: true },
     approval: { ...approval, valid_until: '2026-12-31T12:00:00.000Z' }, attestations: { provenance: 'absent', software: 'absent', principal_binding: 'absent' },
     checks: Object.fromEntries(INTAKE_CHECKS.map((name) => [name, true])),
     decisions: [sampleDecision('completeness', { complete: true, missing: [] }, 'The request meets the requirements.')], fault_mode: '',
@@ -52,7 +52,7 @@ export const priorAuthTrial: TrialBuilder = (use, facts) => {
   const intakeCase = 'intake-record';
   const intakeRecord = jsonFile(`${intakeCase}.record.json`, record);
   const intakeEvidence = evidenceFile(intakeCase, intake, priorAuth, {
-    kind: 'intake_record', request: requireBuilt(parseDocument(sent), 'document of the sent request'), intake_record: requireBuilt(parseDocument(record), 'document of the intake record'),
+    kind: 'intake_record', request: requireBuilt(parseDocument(approved), 'document of the approved request'), intake_record: requireBuilt(parseDocument(record), 'document of the intake record'),
     intake_record_sha256: createHash('sha256').update(intakeRecord.text, 'utf8').digest('hex'),
   });
   return {
@@ -62,13 +62,13 @@ export const priorAuthTrial: TrialBuilder = (use, facts) => {
         name: approvalCase, fields: { kind: 'approval_digest', claimer: priorAuth.id, challenger: intake.id },
         files: [
           claimFile(approvalCase, priorAuth), approvalEvidence,
-          jsonFile(`${approvalCase}.record-set.json`, records), jsonFile(`${approvalCase}.approved-request.json`, approved), jsonFile(`${approvalCase}.sent-request.json`, sent),
+          jsonFile(`${approvalCase}.record-set.json`, records), jsonFile(`${approvalCase}.approved-request.json`, approved), jsonFile(`${approvalCase}.sent-request.json`, changed),
           jsonFile(`${approvalCase}.approval.json`, { approval, salt, expected_digest: expected, observed_digest: observed }),
         ],
       },
       {
         name: intakeCase, fields: { kind: 'intake_record', claimer: intake.id, challenger: priorAuth.id },
-        files: [claimFile(intakeCase, intake), intakeEvidence, jsonFile(`${intakeCase}.sent-request.json`, sent), intakeRecord],
+        files: [claimFile(intakeCase, intake), intakeEvidence, jsonFile(`${intakeCase}.sent-request.json`, approved), intakeRecord],
       },
     ],
   };

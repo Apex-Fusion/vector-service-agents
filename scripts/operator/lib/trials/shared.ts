@@ -4,7 +4,7 @@ import type { ClaimDocumentInput, EvidenceFacts, JurorDocument } from '../../../
 import { RECEIPT_CHECKS, canonicalJson } from '../../../../packages/usecase-kit/src/protocol/index.ts';
 import type { AgentKind, JsonValue, ProtocolResult } from '../../../../packages/usecase-kit/src/protocol/index.ts';
 import { CLAIM_OF_KIND } from '../claim-constants.ts';
-import type { Facts, UseCase } from '../contract.ts';
+import type { Facts, OrganisationSpec, UseCase } from '../contract.ts';
 
 export const SAMPLE_CLAIM_REF = `${'ca'.repeat(32)}#0`;
 export const SAMPLE_CLAIM_TOKEN = `636c6d5f${'0a'.repeat(28)}`;
@@ -62,6 +62,7 @@ export function sampleDecision(name: string, choice: JsonValue, reasoning: strin
 
 interface TrialAgent {
   readonly id: string;
+  readonly organisation: OrganisationSpec;
   readonly claim: ClaimDocumentInput;
   readonly didIsSample: boolean;
   readonly manifestIsSample: boolean;
@@ -71,10 +72,12 @@ interface TrialAgent {
 export function trialAgent(use: UseCase, facts: Readonly<Facts>, kind: AgentKind, sampleDidByte: string, sampleManifestByte: string): TrialAgent {
   const agent = use.agents.find((candidate) => candidate.kind === kind);
   if (agent === undefined) throw new PreconditionError(`the data names no agent of kind ${kind} for the trial`);
+  const organisation = use.organisations.find(({ id }) => id === agent.organisation);
+  if (organisation === undefined) throw new PreconditionError(`the data names no organisation ${agent.organisation} for the trial agent ${agent.id}`);
   const record = facts.records[agent.id];
   const manifest = facts.manifests[agent.id];
   return {
-    id: agent.id, didIsSample: record === undefined, manifestIsSample: manifest === undefined,
+    id: agent.id, organisation, didIsSample: record === undefined, manifestIsSample: manifest === undefined,
     claim: {
       agent_did: record?.did ?? `did:vector:${sampleDidByte.repeat(32)}`,
       capability_id: agent.capability,
