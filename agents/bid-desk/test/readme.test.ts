@@ -11,7 +11,7 @@ import type { WireError } from '@vsa/service-kit';
 import { BUSY_TEXT, CONTEXT_HEADERS, HEARTBEAT_MS, JobSlot, MAX_BODY, RESERVATION_MS, SHUTDOWN_WAIT_MS, STOPPING_TEXT, TOKEN_SEARCH_MIN, operatorsText, parseWire } from '@vsa/service-kit';
 import { BID_CAPABILITIES, BID_DESK_CLAIM, MAX_ITEM_QUANTITY, MAX_RFQ_ITEMS, QUOTE_CHECKS, parsePriceList, parseQuote } from '@vsa/usecase-kit/bids';
 import type { PriceList } from '@vsa/usecase-kit/bids';
-import { SHARED_CHECK_NAMES } from '@vsa/usecase-kit/checks';
+import { SHARED_CHECK_NAMES, checkSenderActive } from '@vsa/usecase-kit/checks';
 import type { ChecksPorts } from '@vsa/usecase-kit/checks';
 import { COUNTERPARTY_REFUSALS, ERROR_STATUS, MAX_REQUEST_BYTES, RFQ_SCHEMA, canonicalSha256 } from '@vsa/usecase-kit/protocol';
 import { HOOK_READS as READS_OF_THE_HOOK, MemoryRfqBook, PASSED_CHECKS_LIMIT, PASSED_CHECKS_TTL_MS, PassedChecks, RFQ_BOOK_LIMIT, createPrecheck } from '../src/checks/index.ts';
@@ -387,7 +387,7 @@ describe('agents/bid-desk/README.md: the hook', () => {
   const hook = section('The hook');
   const table = rows('The hook').map(cells);
 
-  test('the table holds the codes of COUNTERPARTY_REFUSALS for the Bid Desk and check_unavailable, each with its status and its check, in the order of the checks', () => {
+  test('the table holds the codes of COUNTERPARTY_REFUSALS for the Bid Desk and check_unavailable, each with its status and its check, in the order of the checks', async () => {
     const expected = [...COUNTERPARTY_REFUSALS['bid-desk'], 'check_unavailable'];
     const codes = table.map((cellsOfRow) => ticks(cellsOfRow[0])[0]);
     expect(new Set(codes)).toStrictEqual(new Set(expected));
@@ -399,6 +399,13 @@ describe('agents/bid-desk/README.md: the hook', () => {
     expect([...SHARED_CHECK_NAMES['bid-desk'], 'not_duplicate']).toStrictEqual([...QUOTE_CHECKS]);
     expect(hook).toContain('The first six checks are the shared checks of the kit: the sender, the delegation and the payment from a vault. The seventh is the check of the Bid Desk.');
     expect(hook).toContain(`it waits ${RUNTIME_PRECHECK_WAIT_MS} ms for the answer`);
+    expect(hook).toContain('A sender that the identity gateway suspends because no Accountable Party covers its record gets `sender_unaccountable` from the first check, and not `sender_not_active`.');
+    const world = makeHookWorld();
+    const answer = await world.ports.gateway.resolve(world.sender.did);
+    if (!answer.ok || answer.value.kind !== 'resolved') throw new Error('the stub gateway did not resolve the sender');
+    const resolved = answer.value;
+    expect(checkSenderActive({ ...resolved, effectiveStatus: 'suspended', effectiveReason: 'unaccountable' }, world.sender.did)).toMatchObject({ ok: false, code: 'sender_unaccountable' });
+    expect(checkSenderActive({ ...resolved, effectiveStatus: 'suspended', effectiveReason: 'parentSuspended' }, world.sender.did)).toMatchObject({ ok: false, code: 'sender_not_active' });
   });
 
   test('the hook makes the timed reads that the page names: the gateway once and the ledger three times, and a go keeps the record that the job takes', async () => {
@@ -471,6 +478,7 @@ describe('agents/bid-desk/README.md: the settings', () => {
     }
     for (const name of SETTINGS.filter((setting) => !required.includes(setting))) expect(cell(name, 2), name).not.toMatch(/^none\. Required/);
     expect(row('BID_DESK_SERVICE_PRIV_KEY_HEX')).toMatch(/ \| none\. Required: the service stops at start without it \|$/);
+    expect(cell('IDENTITY_POLICY_ID', 1)).toContain('It must be the identity policy that `VECTOR_IDENTITY_LEGACY_ROOT` and `VECTOR_IDENTITY_CONFIG_SEED` give, or the service stops at start');
     for (const name of ['LLM_MAX_SUPPLIER_BOND_LOVELACE', 'LLM_MAX_BUYER_BOND_LOVELACE']) expect(cell(name, 2), name).toBe('none. Required: no limit is not an answer');
   });
 
@@ -754,6 +762,10 @@ describe('agents/bid-desk/README.md: Run it and Deploy', () => {
       /^environment variable BID_DESK_SERVICE_PKH .* is not the key hash of the key in BID_DESK_SERVICE_PRIV_KEY_HEX/, { BID_DESK_SERVICE_PKH: SERVICE.pkh },
     ],
     ['the service key that is the supplier key', { BID_DESK_SERVICE_PRIV_KEY_HEX: SUPPLIER.privateKeyHex }, /^environment variable BID_DESK_SERVICE_PRIV_KEY_HEX holds the supplier key/, { BID_DESK_SERVICE_PRIV_KEY_HEX: SERVICE.privateKeyHex }],
+    [
+      'IDENTITY_POLICY_ID that is not the identity policy of the identity values', { IDENTITY_POLICY_ID: 'ab'.repeat(28) },
+      /^environment variable IDENTITY_POLICY_ID is not the identity policy that VECTOR_IDENTITY_LEGACY_ROOT and VECTOR_IDENTITY_CONFIG_SEED give/, { IDENTITY_POLICY_ID: FULL_ENV.IDENTITY_POLICY_ID },
+    ],
     ['FAULT_MODE with a value that the Bid Desk does not list', { FAULT_MODE: 'confirm_wrong_lot' }, /^environment variable FAULT_MODE must be empty or "quote_off_price_list"/, { FAULT_MODE: 'quote_off_price_list' }],
     ['BID_DESK_INSTANCE that is not alfa, bravo or charlie', { BID_DESK_INSTANCE: 'delta' }, /^environment variable BID_DESK_INSTANCE must be alfa, bravo or charlie/, { BID_DESK_INSTANCE: 'bravo' }],
     ['BID_DESK_ORGANISATION that is not a domain name in lower case', { BID_DESK_ORGANISATION: 'Alfa' }, /^environment variable BID_DESK_ORGANISATION must be a domain name in lower case/, { BID_DESK_ORGANISATION: 'alfa.example.test' }],
@@ -783,6 +795,7 @@ describe('agents/bid-desk/README.md: Run it and Deploy', () => {
     expect(run).toContain('when a required setting of the table is not set, when a setting is not well formed, when `SUPPLIER_PUB_KEY_HEX` is not the public key of `SUPPLIER_PKH`,');
     expect(run).toContain('when `BID_DESK_SERVICE_PKH` is not the key hash of the service key, when the service key is the supplier key,');
     expect(run).toContain('when `FAULT_MODE` names a value that the Bid Desk does not list,');
+    expect(run).toContain('when `IDENTITY_POLICY_ID` is not the identity policy that `VECTOR_IDENTITY_LEGACY_ROOT` and `VECTOR_IDENTITY_CONFIG_SEED` give,');
     expect(run).toContain('when `BID_DESK_INSTANCE` is not `alfa`, `bravo` or `charlie`, when `BID_DESK_ORGANISATION` is not a domain name in lower case, when `BID_DESK_PUBLIC_ORIGIN` is not an https origin,');
     expect(run).toContain(`when \`CHECKS_READ_BUDGET_MS\` is not from ${CHECKS_READ_BUDGET_MIN_MS} to ${CHECKS_READ_BUDGET_MAX_MS},`);
     expect(run).toContain('when `ADVERT_MAX_PROCESSING_MS` is below 8 min or above 24 h, or when it cannot write to its state directory.');
