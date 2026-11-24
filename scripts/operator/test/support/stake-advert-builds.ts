@@ -16,12 +16,13 @@ import { SYSTEM_START_MS } from '../../../checks/test/support/chain-view.ts';
 import { DEPLOYMENT } from '../../../checks/test/support/world.ts';
 import { recordUtxo, rootRecord } from '../../../../packages/buyer-core/test/fixtures/identity-world.ts';
 import { decodeIdentityAdvertDatum, encodeIdentityAdvertDatum } from '../../../../packages/vector-read/src/datum.ts';
+import type { IdentityAdvertDatum } from '../../../../packages/vector-read/src/datum.ts';
 import { utf8Hex } from '../../../../packages/vector-read/src/identity-codec.ts';
 import type { IdentityDatum } from '../../../../packages/vector-read/src/identity-codec.ts';
 import { REPUTATION_ADDRESS, REPUTATION_SCRIPT_HASH, SEED_STAKE_ID, decodeStakeDatum, encodeStakeDatum, stakeTokenName } from '../../../../packages/vector-read/src/reputation-datum.ts';
 import type { GoFile } from '../../lib/approval.ts';
 import { StateFile } from '../../../checks/lib/state.ts';
-import type { AgentSpec, TaskDefinition, UseCase } from '../../lib/contract.ts';
+import type { AdvertSpec, AgentSpec, TaskDefinition, UseCase } from '../../lib/contract.ts';
 import { FactsFile } from '../../lib/facts.ts';
 import { lucidForAddress } from '../../lib/platform.ts';
 import type { Utxo } from '../../lib/platform.ts';
@@ -419,6 +420,12 @@ export interface Fixture {
   seedOpening(agent: AgentSpec, over?: { onNode?: boolean; fact?: boolean; step?: boolean }): string;
   /** The advert outputs of an agent that the world holds. */
   advertsOf(agent: AgentSpec): Utxo[];
+  /** The facts file of the world: a test sets a fact that an earlier run would have written. */
+  readonly facts: FactsFile;
+  /** Puts a stake output of the agent (the stake of the data, with the stake token of the agent) on the node. It gives the reference. */
+  seedStake(agent: AgentSpec): string;
+  /** Puts an advert output at the advert address on the node, with the terms of the data and the members of `over` in the datum. It gives the reference. */
+  seedAdvert(agent: AgentSpec, advert: AdvertSpec, over?: Partial<IdentityAdvertDatum>): string;
 }
 
 const FUNDED = [1_000_000_000n, 5_000_000n];
@@ -463,8 +470,9 @@ export async function stakeAdvertWorld(over: {
   }
   if (over.go !== null) w.writeGo({ tasks: ['stake', 'advert'], irreversible: ['stake'], capUnits: 200, ...over.go });
   const signs: string[] = [];
+  let seeded = 0;
   const fixture: Fixture = {
-    w, world, hosted, net, signs,
+    w, world, hosted, net, signs, facts: factsFile,
     hash: (name) => keys.hashOf(name), idOf, didOf,
     run: async (def, ...argv) => {
       w.screen.lines.length = 0;
@@ -499,6 +507,27 @@ export async function stakeAdvertWorld(over: {
       return `${txHash}#0`;
     },
     advertsOf: (agent) => world.chain.held.filter((utxo) => utxo.address === DEPLOYMENT.advert.address && typeof utxo.datum === 'string' && decodeIdentityAdvertDatum(utxo.datum).capability_id === agent.capability),
+    seedStake: (agent) => {
+      const txHash = hashOf(`stake ${agent.id}`);
+      const unit = `${REPUTATION_SCRIPT_HASH}${stakeTokenName(idOf(agent))}`;
+      const datum = encodeStakeDatum({
+        agent_did: idOf(agent), owner_pkh: keys.hashOf(agent.serviceKey), stake_amount: agent.stakeLovelace, staked_capabilities: [hexOfText(agent.capability)], last_updated: NOW, history_points: 0n,
+        challenge_locks: [], stake_id: { txHash: hashOf(`opening ${agent.id}`), outputIndex: 0 },
+      });
+      world.chain.held.push({ txHash, outputIndex: 0, address: REPUTATION_ADDRESS, assets: { lovelace: agent.stakeLovelace, [unit]: 1n }, datum });
+      return `${txHash}#0`;
+    },
+    seedAdvert: (agent, advert, over = {}) => {
+      seeded += 1;
+      const txHash = hashOf(`seeded advert ${seeded}`);
+      const datum = encodeIdentityAdvertDatum({
+        supplier_pkh: keys.hashOf(advert.supplierKey), capability_id: agent.capability, model: advert.model, max_output_tokens: advert.maxOutputTokens, max_processing_ms: advert.windowMs, price_lovelace: advert.priceLovelace,
+        supplier_bond_lovelace: advert.supplierBondLovelace, buyer_bond_lovelace: advert.buyerBondLovelace, endpoint_url: advert.origin, detail_uri: `${advert.origin}/agent.json`, detail_hash: 'aa'.repeat(32),
+        advertised_at: NOW - MINUTE, status: 'Active', agent_id: idOf(agent), ...over,
+      });
+      world.chain.held.push({ txHash, outputIndex: 0, address: DEPLOYMENT.advert.address, assets: { lovelace: advert.depositLovelace }, datum });
+      return `${txHash}#0`;
+    },
   };
   fixture.setRunning([]);
   return fixture;

@@ -117,6 +117,17 @@ async function liveModels(session: Session, agent: AgentSpec): Promise<string[]>
   return live;
 }
 
+/** The reference of an Active advert at the advert address that names this agent and this model, or null. The facts file may not hold it: this reads the node, and it skips an output that is no identity advert. */
+async function activeAdvertOf(session: Session, agentId: string, model: string): Promise<string | null> {
+  for (const utxo of await session.chain.provider.getUtxos(session.chain.deployment.advert.address)) {
+    if (typeof utxo.datum !== 'string') continue;
+    let datum: IdentityAdvertDatum;
+    try { datum = decodeIdentityAdvertDatum(utxo.datum); } catch { continue; }
+    if (datum.agent_id === agentId && datum.model === model && datum.status === 'Active') return `${utxo.txHash}#${utxo.outputIndex}`;
+  }
+  return null;
+}
+
 // ---- the manifest ----
 
 async function bodyBytes(response: Response, max: number): Promise<Buffer | null> {
@@ -273,21 +284,37 @@ function postSpec(session: Session, agent: AgentSpec, advert: AdvertSpec, ready:
 }
 
 /**
- * The facts of an advert that landed: the advert, and the manifest of the agent when the facts file holds none or holds another hash (that hash was refused while an advert of the agent was live,
- * so the other hash is that of an advert that was retired). A second advert of an agent finds the manifest fact and leaves it. An advert fact of a retired advert is replaced.
+ * The facts of an advert that landed: the advert, and the manifest of the agent when the facts file holds none or holds another hash. A fact is replaced only when the advert that it names is no
+ * longer on the node. A step of an old state file can come after a newer advert: its facts then stop the run and change nothing, so the facts file never loses an advert that is on the node.
+ * A second advert of an agent finds the manifest fact and leaves it. Another manifest hash is taken only when no other advert of the agent that the facts file holds is on the node.
  */
-function writeFacts(session: Session, agent: AgentSpec, advert: AdvertSpec, record: StepRecord): void {
+async function writeFacts(session: Session, agent: AgentSpec, advert: AdvertSpec, record: StepRecord): Promise<void> {
   const { ref, detailUri, detailHash, endpoint, manifestUri, manifestBytes, manifestReadAt } = record.refs;
   if (record.tx_hash === null || ref === undefined || detailUri === undefined || detailHash === undefined || endpoint === undefined || manifestUri === undefined || manifestBytes === undefined || manifestReadAt === undefined) {
     throw new Error(`the state file holds the step ${stepName(agent, advert)} without the reference, the hash or the manifest of its advert: its facts cannot be written`);
   }
   const held = session.facts.read();
   const old = held.adverts[agent.id]?.[advert.model];
-  session.facts.put('adverts', [agent.id, advert.model], { ref, tx: record.tx_hash, detailUri, detailHash, endpoint, postedAt: record.confirmed_at }, { replace: old !== undefined && old.ref !== ref });
-  const known = held.manifests[agent.id];
-  if (known === undefined || known.sha256 !== detailHash) {
-    session.facts.put('manifests', [agent.id], { uri: manifestUri, sha256: detailHash, bytes: Number(manifestBytes), readAt: manifestReadAt }, { replace: known !== undefined });
+  let replaceAdvert = false;
+  if (old !== undefined && old.ref !== ref) {
+    if (await isLive(session, old.ref)) {
+      throw new PreconditionError(
+        `the state file holds the step ${stepName(agent, advert)} with the advert ${ref}, and the facts file holds the advert ${old.ref} for ${advert.model} of ${agent.id}, which is on the node: `
+        + 'the facts of this step are not written. Use another --run label for a new advert',
+      );
+    }
+    replaceAdvert = true;
   }
+  const known = held.manifests[agent.id];
+  const newManifest = known === undefined || known.sha256 !== detailHash;
+  if (known !== undefined && newManifest) {
+    const others = (await liveModels(session, agent)).filter((model) => model !== advert.model);
+    if (others.length > 0) {
+      throw new PreconditionError(`the advert ${ref} of ${agent.id} holds the manifest hash ${detailHash}, and the advert(s) ${others.join(', ')} on the node hold ${known.sha256}: the facts of this step are not written`);
+    }
+  }
+  session.facts.put('adverts', [agent.id, advert.model], { ref, tx: record.tx_hash, detailUri, detailHash, endpoint, postedAt: record.confirmed_at }, { replace: replaceAdvert });
+  if (newManifest) session.facts.put('manifests', [agent.id], { uri: manifestUri, sha256: detailHash, bytes: Number(manifestBytes), readAt: manifestReadAt }, { replace: known !== undefined });
 }
 
 // ---- the verification of an advert ----
@@ -364,6 +391,10 @@ function postStep(agent: AgentSpec, advert: AdvertSpec): StepHandler<Extra> {
       if (old !== undefined && (await isLive(session, old.ref))) {
         throw new PreconditionError(`the facts file holds the advert ${old.ref} for ${advert.model} of ${agent.id}, and it is on the node: retire it with the cleanup before a new advert is posted`);
       }
+      const active = await activeAdvertOf(session, ready.id, advert.model);
+      if (active !== null) {
+        throw new PreconditionError(`an Active advert of ${agent.id} for the model ${advert.model} is on the node (${active}): retire it, or put its reference into the facts file, before a new advert is posted`);
+      }
       const manifest = await readTwice(session, uri);
       const problems = manifestProblems(agent, advert, ready.did, session.registry.hashOf(advert.supplierKey), manifest.json);
       if (problems.length > 0) throw new PreconditionError(`the manifest at ${uri} does not agree with the advert ${advert.model}: ${problems.join('; ')}. Nothing was built`);
@@ -386,12 +417,12 @@ function postStep(agent: AgentSpec, advert: AdvertSpec): StepHandler<Extra> {
       }
       const record = recordOfStep(session, name);
       if (record === undefined) throw new Error(`the transaction ${landed.txHash} of the step ${name} landed, and the state file does not hold the step`);
-      writeFacts(session, agent, advert, record);
+      await writeFacts(session, agent, advert, record);
       session.extra.result = { agent: agent.id, model: advert.model, did: ready.did, ref: record.refs.ref, tx: landed.txHash, manifest: { uri, sha256: manifest.sha256, bytes: manifest.bytes } };
       return { kind: 'done', message: `the advert ${advert.model} of ${agent.id} is confirmed: ${String(record.refs.ref)}` };
     },
     async verify(session, record) {
-      writeFacts(session, agent, advert, record);
+      await writeFacts(session, agent, advert, record);
       const ready = session.facts.read().records[agent.id];
       if (ready === undefined || record.refs.ref === undefined) throw new Error(`the facts file lacks the record of ${agent.id}, or the state file lacks the reference of the advert of the step ${name}`);
       await verifyListed(session, name, agent, advert, ready.did, record.refs.ref);

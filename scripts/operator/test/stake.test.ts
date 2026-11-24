@@ -272,6 +272,26 @@ describe('stake: the record of the agent', () => {
 
 // ---- the wallet and the runtimes ----
 
+describe('stake: a stake that the node or the facts file holds', () => {
+  it('stops open and create when the reputation address holds a stake of the agent and the facts file holds none, and builds nothing. The twin with the stake of another agent lands', async () => {
+    const f = await stakeAdvertWorld();
+    const ref = f.seedStake(REORDER);
+    await stops(f, `the reputation address holds the stake of reorder-agent already (${ref})`);
+    f.seedOpening(REORDER);
+    await stops(f, `the reputation address holds the stake of reorder-agent already (${ref})`);
+    const other = await stakeAdvertWorld();
+    other.seedStake(ORDER_DESK);
+    await land(other);
+    expect(other.w.facts().stakes['reorder-agent']).toBeDefined();
+  });
+  it('stops a create when the facts file holds the stake already: exit 2 and no build', async () => {
+    const f = await stakeAdvertWorld();
+    f.seedOpening(REORDER);
+    f.facts.put('stakes', ['reorder-agent', 'stakeRef'], `${'ab'.repeat(32)}#0`);
+    await stops(f, 'the facts file holds the stake');
+  });
+});
+
 describe('stake: the wallet and the runtimes of the agent', () => {
   it('stops for a service wallet with no pure output of 5 units or more, and builds nothing', async () => {
     await stops(await stakeAdvertWorld({ wallets: { 'reorder-service': [3_000_000n, 2_000_000n] } }), 'has no pure output of 5 units or more');
@@ -381,6 +401,18 @@ describe('stake: the guards judge the bytes of the build', () => {
     expect(await f.run(stake, '--submit')).toBe(2);
     expect(errors(f)).toContain('the datum names another opening output than the one that the facts file holds');
     expect(f.signs).toHaveLength(signed);
+  });
+  it('refuses a create that also sends units to another wallet of the registry: the limit is the stake less the opening, plus the fee limit (outflow). The twin lands', async () => {
+    const f = await stakeAdvertWorld();
+    await land(f);
+    f.hosted.twist.create = { extra: { address: f.w.keys.registry.addressOf('controller'), lovelace: 5_000_000n } };
+    expect(await f.run(stake, '--submit')).toBe(2);
+    expect(refusedBy(errors(f))).toEqual(['outflow']);
+    expect(errors(f)).toContain('units leave it, over the limit of 10.000000 units');
+    expect(f.world.chain.applied).toHaveLength(1);
+    delete f.hosted.twist.create;
+    await land(f);
+    expect(f.world.chain.applied).toHaveLength(2);
   });
   it('refuses a payment of the stake transaction to another address: the guard destinations names the address', async () => {
     const f = await stakeAdvertWorld();

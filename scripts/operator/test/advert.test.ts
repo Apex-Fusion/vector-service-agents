@@ -266,6 +266,43 @@ describe('advert: the manifest', () => {
 
 // ---- the record, the wallet and the runtimes ----
 
+describe('advert: an advert that is on the node', () => {
+  it('refuses a post when the node shows an Active advert of the agent for the model that the facts file does not hold, and builds nothing. The twins post', async () => {
+    const f = await stakeAdvertWorld();
+    const ref = f.seedAdvert(REORDER, REORDER_ADVERT);
+    await stops(f, `an Active advert of reorder-agent for the model reorder-agent-v1 is on the node (${ref})`);
+    for (const twin of [{ model: 'another-model' }, { agent_id: 'ab'.repeat(32) }, { status: 'Retired' as const }]) {
+      const g = await stakeAdvertWorld();
+      g.seedAdvert(REORDER, REORDER_ADVERT, twin);
+      await land(g);
+      expect(g.world.chain.applied).toHaveLength(1);
+    }
+  });
+  it('never replaces the fact of an advert that is on the node with the fact of an older step: the old step stops with exit 2, the cleanup finds the live advert, and a new advert is then posted once', async () => {
+    const f = await stakeAdvertWorld();
+    const live = (): string[] => f.advertsOf(REORDER).map((utxo) => `${utxo.txHash}#${utxo.outputIndex}`);
+    const factRef = (): string => f.w.facts().adverts['reorder-agent']!['reorder-agent-v1']!.ref;
+    f.hosted.listLag = 1_000;
+    expect(await f.run(advert, '--submit')).toBe(1);
+    const first = factRef();
+    f.hosted.listLag = 0;
+    expect(await f.run(advert, 'cleanup', '--submit')).toBe(0);
+    expect(await f.run(advert, '--submit', '--run', 'b')).toBe(0);
+    const second = factRef();
+    expect(second).not.toBe(first);
+    expect(live()).toEqual([second]);
+    // The state file of the first run still holds the step of the first advert, and the step is not verified.
+    expect(await f.run(advert, '--submit')).toBe(2);
+    expect(errors(f)).toContain('the facts of this step are not written');
+    expect(factRef()).toBe(second);
+    expect(live()).toEqual([second]);
+    expect(await f.run(advert, 'cleanup', '--submit', '--all')).toBe(0);
+    expect(live()).toEqual([]);
+    expect(await f.run(advert, '--submit', '--run', 'c')).toBe(0);
+    expect(live()).toEqual([factRef()]);
+  });
+});
+
 describe('advert: the record, the wallet and the runtimes', () => {
   const supplierKey = (purposes: number) => (agent: AgentSpec, keys: { publicKeyOf(name: string): string }) => ({
     keys: [{ keyType: 'Ed25519' as const, key: keys.publicKeyOf(agent.adverts[0]!.supplierKey), purposes, pop: null }],

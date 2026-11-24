@@ -114,10 +114,21 @@ async function requireCollateralOutput(session: Session, agent: AgentSpec): Prom
   }
 }
 
-/** The checks that both steps share, in this order: no transaction in flight, the record, the wallet, and the runtimes of the agent. */
+/**
+ * The reputation address holds no stake token of the agent. The hosted builder makes one stake for each agent and refuses a second, and the facts file may lack the first (a lost file, or a stake
+ * that another run made), so the node decides. A second stake would lock the minimum twice, and the minimum never returns.
+ */
+async function requireNoStakeOnNode(session: Session, agent: AgentSpec, ready: Ready): Promise<void> {
+  const unit = stakeTokenUnit(ready.id);
+  const held = (await session.chain.provider.getUtxos(REPUTATION_ADDRESS)).find((utxo) => (utxo.assets[unit] ?? 0n) > 0n);
+  if (held !== undefined) throw new PreconditionError(`the reputation address holds the stake of ${agent.id} already (${held.txHash}#${held.outputIndex}): a second stake would lock the minimum twice`);
+}
+
+/** The checks that both steps share, in this order: no transaction in flight, the record, no stake of the agent on the node, the wallet, and the runtimes of the agent. */
 async function requireCommon(session: Session, agent: AgentSpec): Promise<Ready> {
   if (session.state.snapshot().in_flight !== null) throw new PreconditionError('a transaction is in flight: settle it before a stake step is built');
   const ready = await requireRecord(session, agent);
+  await requireNoStakeOnNode(session, agent, ready);
   await requireCollateralOutput(session, agent);
   const running = readRunning(join(session.settings.stateDir, 'running-images.json'), session.clock.now());
   await requireRuntimesFree({ fetchImpl: session.fetchImpl, runtimes: runtimesOf(agent), running, out: session.out });
@@ -230,7 +241,9 @@ function createSpec(session: Session, agent: AgentSpec, ready: Ready, opening: O
     plan: (_build: HostedBuild, facts: TxFacts) => {
       stakeOutput(step, want, facts);
       return planOf(session, {
-        outflow: { [agent.serviceKey]: agent.stakeLovelace + opening.lovelace + session.settings.maxFeeLovelace }, destinations: [REPUTATION_ADDRESS], explained: [opening.ref], mint: { [unit]: 1n }, labels: LABELS,
+        // The opening returns as change when the stake is created, so the wallet gives the stake less the opening, and the fee.
+        outflow: { [agent.serviceKey]: (agent.stakeLovelace > opening.lovelace ? agent.stakeLovelace - opening.lovelace : 0n) + session.settings.maxFeeLovelace }, destinations: [REPUTATION_ADDRESS], explained: [opening.ref],
+        mint: { [unit]: 1n }, labels: LABELS,
       });
     },
     refs: (_build: HostedBuild, facts: TxFacts) => ({ stakeRef: `${facts.txHash}#${stakeOutput(step, want, facts).index}`, tokenUnit: unit }),
