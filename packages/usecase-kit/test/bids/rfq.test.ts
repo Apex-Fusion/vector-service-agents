@@ -299,10 +299,10 @@ describe('rfqSha256', () => {
   });
 
   it('does not depend on the order of the members of the input, and the copy of the parser has the same hash as the input', () => {
-    const shuffled = { needed_by: '2026-12-20', items: golden('rfq').items, rfq_id: 'run1-rfq-1' } as unknown as RfqDocument;
+    const shuffled: RfqDocument = { needed_by: '2026-12-20', items: goldenRfq().items, rfq_id: 'run1-rfq-1' };
     expect(rfqSha256(shuffled)).toStrictEqual({ ok: true, value: GOLDEN_CANONICAL_SHA256 });
-    const items = listAt(golden('rfq'), ['items']).map((item) => ({ quantity: (item as Json).quantity, sku: (item as Json).sku }));
-    expect(rfqSha256({ rfq_id: 'run1-rfq-1', items, needed_by: '2026-12-20' } as unknown as RfqDocument)).toStrictEqual({ ok: true, value: GOLDEN_CANONICAL_SHA256 });
+    const items = goldenRfq().items.map(({ sku, quantity }) => ({ quantity, sku }));
+    expect(rfqSha256({ rfq_id: 'run1-rfq-1', items, needed_by: '2026-12-20' })).toStrictEqual({ ok: true, value: GOLDEN_CANONICAL_SHA256 });
   });
 
   it('gives a hash that is the hash of the text that the other agent would write: the message path and the direct path agree', () => {
