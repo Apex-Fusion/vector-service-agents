@@ -392,6 +392,7 @@ async function checkLedger(session: TaskSession<Extra>, loaded: Loaded, facts: R
     const closeTx = entry.close_tx;
     if (closeTx !== null) {
       await mustHold(problems, `vaults[${i}].close_tx`, 'does not spend the vault lineage of ref: no vault input of the transaction is ref, and none descends from it', () => vaultInputsReach(session, closeTx, (input) => input === entry.ref));
+      await mustHold(problems, `vaults[${i}].close_tx`, 'makes an output at the vault script: a close leaves no vault output, so the vault is still Live', async () => !(await txInfoOf(session.fetchImpl, session.settings.urls.koios, closeTx)).outputs.some((output) => output.credential === session.chain.deployment.vault.hash));
       reads.vaults.push({ ...entry, state: 'closed' });
       continue;
     }

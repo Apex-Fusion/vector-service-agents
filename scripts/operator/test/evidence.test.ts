@@ -718,6 +718,11 @@ describe('check 4: each ended or closed entry is tied to its id by a read of its
     wrong.record = { vaults: [{ ref: `${txOf('order-desk-c', 'post')}#1`, open_tx: h('vault open 1'), close_tx: null }, { ref: `${h('vault open 1')}#0`, open_tx: h('vault open 1'), close_tx: h('vault close 1') }] };
     await refuses(wrong, ['vaults[0].open_tx: is not the transaction that opened']);
   });
+  it('refuses a payment of the Order Desk given as the close of the vault: a close leaves no vault output, and the node holds the vault Live at the next output', async () => {
+    const s = scenario('clean');
+    s.record = { vaults: [{ ref: `${h('vault open 0')}#0`, open_tx: h('vault open 0'), close_tx: txOf('order-desk', 'post') }] };
+    await refuses(s, ['vaults[0].close_tx: makes an output at the vault script']);
+  });
   it('refuses an approval transaction that is not the transaction of the output that holds the approval', async () => {
     const s = scenario('clean');
     s.record = { approval: { attestation: h('approval attestation'), tx: txOf('propose', 'accept') } };

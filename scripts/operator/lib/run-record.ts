@@ -264,11 +264,12 @@ export function readJsonFile(path: string, what: string, limitBytes = 4 * 1024 *
 // ---- Koios: the block time, the inputs and the minted tokens of a transaction ----
 
 /**
- * What Koios says of a transaction: when its block was made (POSIX milliseconds), its inputs by reference with the payment credential of each (null for an address with none), and the tokens that it minted
- * (a positive quantity) or burned (a negative one), each with its policy and its name in hex.
+ * What Koios says of a transaction: when its block was made (POSIX milliseconds), its inputs by reference with the payment credential of each (null for an address with none), the payment credential of each of its
+ * outputs, and the tokens that it minted (a positive quantity) or burned (a negative one), each with its policy and its name in hex.
  */
 export interface TxInfo {
   readonly timeMs: number; readonly inputs: readonly { readonly ref: string; readonly credential: string | null }[];
+  readonly outputs: readonly { readonly credential: string | null }[];
   readonly minted: readonly { readonly policy: string; readonly name: string; readonly quantity: bigint }[];
 }
 
@@ -320,7 +321,13 @@ export async function txInfoOf(fetchImpl: typeof fetch, koiosUrl: string, txHash
     }
     return { policy: one.policy_id.toLowerCase(), name: one.asset_name.toLowerCase(), quantity: BigInt(one.quantity as number | string) };
   });
-  return { timeMs: stamp * 1000, inputs, minted };
+  if (!Array.isArray(row.outputs)) throw new Error('Koios gives no list of outputs for the transaction');
+  const outputs = row.outputs.map((output: unknown) => {
+    if (!isObject(output)) throw new Error('Koios gives an output that is no object');
+    const address = output.payment_addr;
+    return { credential: isObject(address) && typeof address.cred === 'string' ? address.cred.toLowerCase() : null };
+  });
+  return { timeMs: stamp * 1000, inputs, outputs, minted };
 }
 
 /** The block time of a transaction in POSIX milliseconds, read from Koios `tx_info` (the node gives the confirmations only). */

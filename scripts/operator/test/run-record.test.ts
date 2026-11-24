@@ -171,6 +171,7 @@ function koios(rows: Record<string, unknown>[], status = 200): { fetchImpl: type
 describe('txInfoOf and txTimeOf', () => {
   const hash = h('tx');
   const row = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
+    outputs: [{ tx_hash: h('out'), tx_index: 0, payment_addr: { cred: 'cd'.repeat(28) } }, { tx_hash: h('out'), tx_index: 1, payment_addr: null }],
     tx_hash: hash, tx_timestamp: 1_794_000_000, inputs: [{ tx_hash: h('in'), tx_index: 2, payment_addr: { cred: 'ab'.repeat(28) } }, { tx_hash: h('wallet'), tx_index: 0, payment_addr: null }], ...over,
   });
 
@@ -184,6 +185,7 @@ describe('txInfoOf and txTimeOf', () => {
     expect(world.calls[0]!.method).toBe('POST');
     expect(world.calls[0]!.body).toEqual({ _tx_hashes: [hash], _inputs: true, _assets: true });
     expect(info.minted).toEqual([]);
+    expect(info.outputs).toEqual([{ credential: 'cd'.repeat(28) }, { credential: null }]);
   });
 
   it('gives each minted token with its policy, its name and its quantity, and a negative quantity for a burn, in lower case', async () => {
@@ -206,6 +208,8 @@ describe('txInfoOf and txTimeOf', () => {
     ['a time of zero', [row({ tx_timestamp: 0 })], 200, 'no block time'],
     ['inputs that are no list', [row({ inputs: null })], 200, 'no list of inputs'],
     ['an input without an index', [row({ inputs: [{ tx_hash: h('in'), payment_addr: null }] })], 200, 'an input that is no output'],
+    ['outputs that are no list', [row({ outputs: null })], 200, 'no list of outputs'],
+    ['an output that is no object', [row({ outputs: [5] })], 200, 'an output that is no object'],
     ['minted tokens that are no list', [row({ assets_minted: 'a token' })], 200, 'minted tokens that is no list'],
     ['a minted token without a quantity', [row({ assets_minted: [{ policy_id: 'ab'.repeat(28), asset_name: 'aa' }] })], 200, 'a minted token of a wrong shape'],
     ['a minted token with a quantity that is no whole number', [row({ assets_minted: [{ policy_id: 'ab'.repeat(28), asset_name: 'aa', quantity: '1.5' }] })], 200, 'a minted token of a wrong shape'],
