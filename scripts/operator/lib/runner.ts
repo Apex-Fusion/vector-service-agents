@@ -10,6 +10,7 @@
 //   cleanup --release=<hash>
 //                      Lets the transaction in flight with this hash go, after the operator checked the chain. It is the way out for a transaction that a run keeps because its inputs are spent.
 //                      It refuses while the transaction may still land, in a dry run too: the clock must be past the end of its validity by a minute, and the tip of the node, when the node answers, must be past it too.
+//                      It refuses too when the indexer knows the transaction, because that transaction landed: it reads the status once, and a read that fails adds no check.
 //                      It changes something only with --submit, and the cleanup of the task does not run then.
 //
 // A transaction that was signed and not seen confirmed is settled before anything is built. The network guard runs before the settle: a node of another network cannot say that a transaction is lost.
@@ -676,10 +677,11 @@ function loadKeys(read: NonNullable<RunDeps['readRegistry']>, where: { dir: stri
 
 /**
  * Lets the transaction in flight go at the word of the operator: `cleanup --release=<hash>`. It is the way out for a transaction that a run keeps because its inputs are spent, when the operator has
- * checked the chain and the transaction is not there. It lets go the transaction that is in flight and no other: the hash must be its hash. It refuses while the transaction may still land, in a dry
- * run too (`checkEndOfValidity`): a release before the end of its validity lets the step be built again while the first transaction can still land, and then both pay. A dry run that passes says what it
- * would do and changes nothing. With --submit it writes an entry of the evidence first, so that an override of the check leaves its trace before it changes anything, then gives the reserve back (when
- * the approval is loaded), and lets the transaction go. The cleanup of the task does not run.
+ * checked the chain and the transaction is not there. It lets go the transaction that is in flight and no other: the hash must be its hash. It reads the status of that transaction once, and it refuses
+ * when the indexer knows it: that transaction landed, and a check of the operator that missed it must not let the step be built again. A read that fails adds no check, and the output says so. It refuses
+ * while the transaction may still land, in a dry run too (`checkEndOfValidity`): a release before the end of its validity lets the step be built again while the first transaction can still land, and
+ * then both pay. A dry run that passes says what it would do and changes nothing. With --submit it writes an entry of the evidence first, so that an override of the check leaves its trace before it
+ * changes anything, then gives the reserve back (when the approval is loaded), and lets the transaction go. The cleanup of the task does not run.
  */
 async function letGo(hash: string, flight: InFlight | null, parts: { node: NodeAccess; network: { guard(): Promise<GuardResult> }; clock: Clock; state: StateFile; evidence: EvidenceFile; exposure: Exposure; go: GoFile | null; mode: Mode; out: Output; progress: { step: string | null } }): Promise<Ended> {
   const { node, network, clock, state, evidence, exposure, go, mode, out, progress } = parts;
@@ -691,9 +693,17 @@ async function letGo(hash: string, flight: InFlight | null, parts: { node: NodeA
   try { end = factsOf(flight.signed_cbor).validityEndSlot; } catch (err) {
     throw new PreconditionError(`the bytes of ${where} cannot be read (${errorText(err)}), so nothing shows when it cannot land any more: nothing is let go`);
   }
+  // One read of the status, before the clock and the tip: a transaction that the indexer knows landed, and no time makes its release right. A read that fails adds no check.
+  let seen: number | null = null;
+  let unread: string | null = null;
+  try { seen = (await node.txStatus(flight.tx_hash)).confirmations; } catch (err) { unread = errorText(err); }
+  if (seen !== null) {
+    throw new PreconditionError(`${where} ${seen >= 1 ? 'is confirmed' : 'is in the newest block'}, as the indexer says: it landed, so nothing is let go. Run the task again without --release, so that the run records the step.`);
+  }
   const over = await checkEndOfValidity(flight, end, { node, network, clock });
   if (over.kind === 'may') throw new PreconditionError(`${where} may still land, so nothing is let go: ${over.why}. A release now can pay twice. Run again when its validity is over.`);
   out.out(`the validity of ${where} ended at ${iso(flight.valid_to)}: ${over.shown}.`);
+  out.out(unread === null ? `the indexer does not know ${where}.` : `the status of ${where} could not be read (${unread}), so the indexer adds no check: the word of the operator and the end of the validity decide.`);
   if (mode === 'dry') {
     out.out(`${where} would be let go, and its reserve of the cap would be given back. A dry run lets nothing go. Check the chain for the transaction and for its inputs first, and run again with --submit.`);
     return { exit: 0, outcome: 'dry' };
