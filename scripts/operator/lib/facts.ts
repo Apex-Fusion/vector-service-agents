@@ -149,11 +149,13 @@ const damaged = (rule: string): FactsError => new FactsError('damaged', `the fac
 function checkTree(section: string, node: unknown, depth: number, shape: Readonly<Record<string, Check>>): void {
   if (depth === 0) {
     if (!isFact(shape, node)) throw damaged(`a fact of ${section} is not a valid fact`);
+    if (holdsSecret(node)) throw damaged(`a fact of ${section} looks like it holds a secret`);
     return;
   }
   if (!isObject(node)) throw damaged(`${section} is not an object`);
   for (const [name, child] of Object.entries(node)) {
     if (!SEGMENT.test(name)) throw damaged(`${section} has a name that is no key`);
+    if (isSecretName(name)) throw damaged(`${section} has a name that looks like a secret`);
     checkTree(section, child, depth - 1, shape);
   }
 }
