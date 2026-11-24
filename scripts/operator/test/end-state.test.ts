@@ -3,6 +3,7 @@
 // check fails alone, with its exit and its line. The task signs nothing. No test uses the network or DNS.
 import { chmodSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { setImmediate as nextTurn } from 'node:timers/promises';
 import { describe, expect, it, vi } from 'vitest';
 import { testKey } from '../../../packages/buyer-core/test/fixtures/identity-world.ts';
 import { AUDITOR_ID, CLAIMER_ID, MODULE1, MODULE1_MANIFEST, agentRecord, claimUtxo, recordUtxo } from '../../../packages/buyer-core/test/fixtures/jury-world.ts';
@@ -73,7 +74,7 @@ interface Rig {
   readonly gateway: Map<string, Gateway>;
   /** The adverts that the indexer lists. */
   listing: Row[];
-  /** What each status address answers: the word of the status, or an HTTP status code. */
+  /** What each status address answers: the word of the status, an HTTP status code, or `hang` for a request that never gets an answer (a fetch that ignores the abort signal). */
   readonly statuses: Map<string, string | number>;
   readonly webCalls: string[];
   /** Puts a record on the ledger in place of the record of the same agent. */
@@ -106,6 +107,7 @@ async function makeRig(options: { env?: Record<string, string | undefined>; skip
     webCalls.push(url);
     if (url === MANIFEST_URL) return new Response(JSON.stringify(MODULE1_MANIFEST), { status: 200 });
     const status = statuses.get(url);
+    if (status === 'hang') return new Promise<Response>(() => undefined);
     if (typeof status === 'string') return new Response(status === 'not json' ? 'not json' : JSON.stringify({ status }), { status: 200 });
     if (typeof status === 'number') return new Response('{}', { status });
     throw new Error('the network was touched');
@@ -594,6 +596,28 @@ describe('the task end-state', () => {
         expectChecks(odd, { runtimes: 'fail' });
         expect(odd.checks().get('runtimes')!.text).toContain('cannot tell whether the runtime reorder-runtime works');
       }
+    }, SLOW);
+
+    it('a runtime that gives no answer within 10 seconds is a fail that says that it cannot tell, also when the fetch ignores the abort signal, and the other runtimes are still asked', async () => {
+      const rig = await makeRig();
+      rig.statuses.set(STATUS_URLS[1]!, 'hang');
+      // Only the timeout is faked: the files and the hosted calls of the run take their real time, and the loop moves the clock of the timer while the run goes on. The bound makes a reader with no limit fail the test
+      // and not hang it.
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      try {
+        let exit: number | undefined;
+        void rig.run().then((code) => { exit = code; });
+        for (let turn = 0; turn < 3_000 && exit === undefined; turn += 1) {
+          await vi.advanceTimersByTimeAsync(1_000);
+          await nextTurn();
+        }
+        expect(exit).toBe(1);
+      } finally {
+        vi.useRealTimers();
+      }
+      expectChecks(rig, { runtimes: 'fail' });
+      expect(rig.checks().get('runtimes')!.text).toContain('cannot tell whether the runtime orders-small-runtime works: no complete answer came within 10 s');
+      expect(rig.webCalls).toEqual(expect.arrayContaining([STATUS_URLS[0], STATUS_URLS[2], STATUS_URLS[3]]));
     }, SLOW);
 
     it('a file of the running containers that is stale, missing or empty is a fail, and the file of this minute is ok', async () => {

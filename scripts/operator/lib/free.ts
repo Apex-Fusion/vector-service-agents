@@ -1,4 +1,4 @@
-// scripts/operator/lib/free.ts - the check that no running runtime of an agent works, and the reader of `running-images.json`.
+// scripts/operator/lib/free.ts - the check that no running runtime of an agent works, the one reader of the status address of a runtime (`readRuntimeStatus`, which the task `end-state` uses too), and the reader of `running-images.json`.
 // A task that spends a wallet that a running service also uses (the claim, the stake, the advert, the attestation) must not run while a runtime works on a job. The script that starts the
 // container writes `running-images.json` before every run: it names each container of the use case that runs, with the image that it runs. That file decides alone which runtimes run. A
 // runtime that is not in the file is not running, so it is not asked: a host name of a runtime that does not exist answers 502 at the proxy, and that answer says nothing. A runtime that is in
@@ -130,8 +130,9 @@ export function readRunning(path: string, nowMs: number, io: Partial<ReadIo> = {
   return new Set(readRunningImages(path, nowMs, io).keys());
 }
 
-type Answer = { readonly kind: 'free' } | { readonly kind: 'working' } | { readonly kind: 'unknown'; readonly why: string };
-const unknown = (why: string): Answer => ({ kind: 'unknown', why });
+/** What a runtime says at its status address: it is free, it works, or nothing can be told (the reason is in words, and it shows no value of the answer). */
+export type RuntimeStatus = { readonly kind: 'free' } | { readonly kind: 'working' } | { readonly kind: 'unknown'; readonly why: string };
+const unknown = (why: string): RuntimeStatus => ({ kind: 'unknown', why });
 
 /** The body of an answer as text, or null when it is longer than `max` bytes. The read stops as soon as the body passes `max`. */
 async function limitedText(response: Response, max: number): Promise<string | null> {
@@ -153,7 +154,7 @@ async function limitedText(response: Response, max: number): Promise<string | nu
 }
 
 /** What a runtime says at its status address. It never throws: a failure of any kind is an answer that says "cannot tell". */
-async function answerOf(fetchImpl: typeof fetch, url: string, signal: AbortSignal): Promise<Answer> {
+async function answerOf(fetchImpl: typeof fetch, url: string, signal: AbortSignal): Promise<RuntimeStatus> {
   let response: Response;
   try {
     response = await fetchImpl(url, { method: 'GET', headers: { accept: 'application/json' }, redirect: 'manual', signal });
@@ -177,11 +178,14 @@ async function answerOf(fetchImpl: typeof fetch, url: string, signal: AbortSigna
   return unknown('the status word is neither free nor working');
 }
 
-/** Asks one runtime. The request and the read of its body together have 10 seconds, and the request is aborted when they pass. */
-async function ask(fetchImpl: typeof fetch, url: string): Promise<Answer> {
+/**
+ * Asks one runtime for its status. This is the one reader of a status address in the pack: `requireRuntimesFree` and the task `end-state` both use it. The request and the read of its body together
+ * have 10 seconds, and the request is aborted when they pass, also when the fetch does not honour the signal. It never throws.
+ */
+export async function readRuntimeStatus(fetchImpl: typeof fetch, url: string): Promise<RuntimeStatus> {
   const controller = new AbortController();
   let timer: NodeJS.Timeout | undefined;
-  const late = new Promise<Answer>((resolve) => {
+  const late = new Promise<RuntimeStatus>((resolve) => {
     timer = setTimeout(() => {
       controller.abort();
       resolve(unknown(`no complete answer came within ${STATUS_LIMIT_MS / 1000} s`));
@@ -202,7 +206,7 @@ async function ask(fetchImpl: typeof fetch, url: string): Promise<Answer> {
  */
 export async function requireRuntimesFree(options: { fetchImpl: typeof fetch; runtimes: readonly RuntimeRef[]; running: ReadonlySet<string>; out: Output }): Promise<void> {
   const { fetchImpl, runtimes, running, out } = options;
-  const answers = await Promise.all(runtimes.map((runtime) => (running.has(runtime.container) ? ask(fetchImpl, runtime.statusUrl) : null)));
+  const answers = await Promise.all(runtimes.map((runtime) => (running.has(runtime.container) ? readRuntimeStatus(fetchImpl, runtime.statusUrl) : null)));
   const problems: string[] = [];
   runtimes.forEach((runtime, index) => {
     const answer = answers[index];

@@ -6,8 +6,8 @@ import { join } from 'node:path';
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { PreconditionError } from '../../checks/lib/session.ts';
 import type { AdvertSpec } from '../lib/contract.ts';
-import { readRunning, readRunningImages, requireRuntimesFree, runtimesOf } from '../lib/free.ts';
-import type { RuntimeRef } from '../lib/free.ts';
+import { readRunning, readRunningImages, readRuntimeStatus, requireRuntimesFree, runtimesOf } from '../lib/free.ts';
+import type { RuntimeRef, RuntimeStatus } from '../lib/free.ts';
 import { MemoryOutput } from './support/fakes.ts';
 
 const NOW = Date.UTC(2026, 10, 24, 12, 0, 0);
@@ -395,5 +395,55 @@ describe('requireRuntimesFree', () => {
       await vi.advanceTimersByTimeAsync(9_500);
       await expect(run).resolves.toBeUndefined();
     });
+  });
+});
+
+// The one reader of a status address. `requireRuntimesFree` and the task `end-state` both ask a runtime through it, so each answer has one meaning in the pack.
+describe('readRuntimeStatus', () => {
+  const URL = RUNTIMES[0]!.statusUrl;
+  const read = (answer: () => Response | Promise<Response>): Promise<RuntimeStatus> => readRuntimeStatus(fetchOf({ [URL]: answer }).fetchImpl, URL);
+  it('gives free for the status word free, and ignores the other members of the body', async () => {
+    expect(await read(FREE)).toEqual({ kind: 'free' });
+    expect(await read(() => json({ status: 'free' }))).toEqual({ kind: 'free' });
+  });
+  it('gives working for the status word working', async () => {
+    expect(await read(() => json({ status: 'working', active_sessions: 1 }))).toEqual({ kind: 'working' });
+  });
+  const UNKNOWN: ReadonlyArray<readonly [string, () => Response, RegExp]> = [
+    ['the status 502', () => new Response('Bad Gateway', { status: 502 }), /status 502/],
+    ['the status 301, whatever the body says', () => new Response(JSON.stringify({ status: 'free' }), { status: 301 }), /status 301/],
+    ['a body that is not JSON', () => new Response('<html></html>', { status: 200 }), /not JSON/],
+    ['a JSON list', () => json(['free']), /not a JSON object/],
+    ['an object with no status text', () => json({ status: 1 }), /no status text/],
+    ['another status word', () => json({ status: 'sekret-status-word' }), /neither free nor working/],
+    ['a body of more than 64 KiB', () => json({ status: 'free', note: 'x'.repeat(70_000) }), /longer than 65536 bytes/],
+  ];
+  for (const [what, answer, reason] of UNKNOWN) {
+    it(`gives unknown, with the reason, for ${what}`, async () => {
+      const status = await read(answer);
+      expect(status).toMatchObject({ kind: 'unknown', why: expect.stringMatching(reason) });
+      expect(JSON.stringify(status)).not.toContain('sekret-status-word');
+    });
+  }
+  it('gives unknown and shows nothing of the failure when the request fails, and when the fetch throws at once', async () => {
+    const failed = await read(() => Promise.reject(new Error('connect ECONNREFUSED sekret-detail.internal:443')));
+    expect(failed).toEqual({ kind: 'unknown', why: 'the request failed' });
+    const thrown = await readRuntimeStatus((() => { throw new Error('the fetch is broken'); }) as typeof fetch, URL);
+    expect(thrown).toEqual({ kind: 'unknown', why: 'the request failed' });
+  });
+  it('asks with a GET that has a signal and does not follow a redirect', async () => {
+    const net = fetchOf({ [URL]: FREE });
+    await readRuntimeStatus(net.fetchImpl, URL);
+    expect(net.calls).toEqual([URL]);
+    expect(net.signals[0]).toBeInstanceOf(AbortSignal);
+  });
+  it('gives unknown after 10 seconds when no answer comes, aborts the request, and leaves no timer', async () => {
+    vi.useFakeTimers();
+    const net = fetchOf({ [URL]: () => new Promise<Response>(() => undefined) });
+    const outcome = readRuntimeStatus(net.fetchImpl, URL);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(await outcome).toEqual({ kind: 'unknown', why: 'no complete answer came within 10 s' });
+    expect(net.signals[0]?.aborted).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
   });
 });
