@@ -79,6 +79,10 @@ export interface TaskWorldOptions {
   shared?: readonly string[];
   /** The outputs of the wallet of each key, in lovelace. The default gives `run` and `fee` 1,000 units and one pure output of 5 units for collateral. */
   wallets?: Readonly<Record<string, readonly bigint[]>>;
+  /**
+   * Members that replace the members of the use case of the world. A test of a task that needs the real data gives the use case of the pack here, and gives `keys` (the names) and `shared` (the
+   * names with the scope shared) of that use case too, so that the key files and the registry match its list of keys.
+   */
   use?: Partial<UseCase>;
   env?: Readonly<Record<string, string | undefined>>;
   hosted?: HostedTools;

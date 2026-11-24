@@ -8,8 +8,8 @@
 //   status             Shows the state, the transaction in flight, the next step and the wallets, with no build. It takes no flag but --run and --use-case.
 //   cleanup            Takes back what can come back. The task says what.
 //
-// A transaction that was signed and not seen confirmed is settled before anything is built. One run lock file in the state folder keeps two runs from writing the state, the facts and the cap file at
-// the same time.
+// A transaction that was signed and not seen confirmed is settled before anything is built. The network guard runs before the settle: a node of another network cannot say that a transaction is lost.
+// One run lock file in the state folder keeps two runs from writing the state, the facts and the cap file at the same time.
 // Exit: 0 the step is done, shown or finished; 1 a step failed; 2 a flag, a setting, a key, a file, an approval, a guard or a precondition stopped the run before a signature; 3 the hosted tools cannot
 // be used; 4 a wait is open: the output says how long is left. The last line of stdout is the machine line.
 import { closeSync, existsSync, openSync, unlinkSync, writeSync } from 'node:fs';
