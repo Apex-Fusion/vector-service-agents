@@ -1,0 +1,50 @@
+{
+  "schema": "vector.usecase.ranking.v1",
+  "rfq_id": "run1-rfq-1",
+  "rfq_sha256": "42ca167e867b2e8df3a82b7dc4a5b1c2a3a96f523e1f56a3863936a5dceadf35",
+  "tenant": "run1",
+  "weights": { "price": 0.4, "lead_time": 0.2, "reliability": 0.2, "compliance": 0.2 },
+  "ranked": [
+    {
+      "rank": 1,
+      "desk_did": "did:vector:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "organisation": "alfa.example.org",
+      "score": 88.5,
+      "components": { "price": 87.5, "lead_time": 82.5, "reliability": 85, "compliance": 100 },
+      "quote": {
+        "escrow_ref": "e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5#0",
+        "receipt_sha256": "8154f0b1be7e1d7418956829699b67e66902bb6644f58125347d7f4b0bcf6c89",
+        "total": 12500,
+        "lead_time_days": 14
+      }
+    },
+    {
+      "rank": 2,
+      "desk_did": "did:vector:b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+      "organisation": "bravo.example.org",
+      "score": 80.2,
+      "components": { "price": 78, "lead_time": 70, "reliability": 75, "compliance": 100 },
+      "quote": {
+        "escrow_ref": "f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6#0",
+        "receipt_sha256": "2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b",
+        "total": 11800,
+        "lead_time_days": 21
+      }
+    },
+    {
+      "rank": 3,
+      "desk_did": "did:vector:c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+      "score": 52,
+      "components": { "price": 60, "lead_time": 90, "reliability": 50, "compliance": 0 },
+      "quote": {
+        "escrow_ref": "1717171717171717171717171717171717171717171717171717171717171717#1",
+        "receipt_sha256": "3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c",
+        "total": 9900,
+        "lead_time_days": 30
+      }
+    }
+  ],
+  "excluded": [
+    { "desk_did": "did:vector:d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4", "reason": "refused", "code": "duplicate_rfq" }
+  ]
+}
