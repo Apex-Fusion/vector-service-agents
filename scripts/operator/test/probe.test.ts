@@ -1,26 +1,30 @@
-// The task probe and the token request of lib/gateway-token.ts: one request to the gateway under a named delegation, with a named key, and a record of what the gateway answers. The gateway is the
-// stub gateway of id-kit (it issues tokens, and refuses a delegation that ended, with the text of the real gateway), the keys are the keys of the registry of use case 1 (made at run time), and the
-// delegation is made on the stub and as an output on the chain of the fixtures, so that the probe reads it as it would on the ledger. Each refusal has an accepted twin. No token, no proof and no
-// subject token that crosses the wire is found in anything that the probe prints or writes: the test collects them from the `fetch` and searches for them.
+// The fake node and the in-process gateway test delegated and subagent token requests.
+// The stub uses the same temporary public keys as the node. The tests check that the probe outputs no token or proof.
 import { createPublicKey } from 'node:crypto';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { iso } from '../../checks/lib/format.ts';
+import { factsOf } from '../../checks/lib/txfacts.ts';
+import { buildEndSubagents } from '../../../packages/buyer-core/src/vendored/mcp/identity-build.ts';
 import { delegation, delegationUtxo } from '../../../packages/buyer-core/test/fixtures/escrow-identity.fixture.ts';
+import { REF_UTXOS, recordUtxo, rootRecord } from '../../../packages/buyer-core/test/fixtures/identity-world.ts';
 import { resolveKey } from '../../../packages/id-kit/src/index.ts';
 import { createStubGateway, ed25519Key } from '../../../packages/id-kit/src/testing/index.ts';
 import type { StubAgent, StubDelegation, StubGateway, TestKey } from '../../../packages/id-kit/src/testing/index.ts';
 import { utf8Hex } from '../../../packages/vector-read/src/identity-codec.ts';
+import type { IdentityDatum } from '../../../packages/vector-read/src/identity-codec.ts';
 import { DAY, DEPLOYMENT } from '../../checks/test/support/world.ts';
-import type { TaskFlags } from '../lib/contract.ts';
+import type { SubagentSpec, TaskFlags } from '../lib/contract.ts';
 import { FactsFile } from '../lib/facts.ts';
-import { askForToken } from '../lib/gateway-token.ts';
+import { askForSubagentToken, askForToken } from '../lib/gateway-token.ts';
+import { ensureSlotConfig, PURPOSE } from '../lib/platform.ts';
 import { loadRegistry } from '../lib/registry.ts';
 import type { KeySpec, Registry } from '../lib/registry.ts';
 import { runTask } from '../lib/runner.ts';
 import { parseOperatorSettings } from '../lib/settings.ts';
 import probe from '../tasks/probe.ts';
 import USE from '../usecases/inventory-reorder.ts';
+import UC2 from '../usecases/prior-authorization.ts';
 import { NOW, USE_CASE, hashOf, taskWorld } from './support/task-world.ts';
 import type { TaskWorld } from './support/task-world.ts';
 
@@ -30,6 +34,11 @@ const ACTION = 'po.write';
 const RESOURCE = 'https://mock.test/t/trial/po';
 const KEY_1 = 'reorder-delegation-1';
 const KEY_2 = 'reorder-delegation-2';
+const SUBJECT = 'record-reader';
+const AUTH = 'record-reader-auth';
+const PROOF = 'record-reader-delegation';
+const SUBJECT_SPEC = UC2.subagents.find(({ id }) => id === SUBJECT)!;
+const SUBJECT_REFUSAL = "subject_token: the agent's effective status is revoked, not active";
 
 /** A key of the registry as a key of the stub gateway: the same key, so that the stub verifies what the probe signs. */
 function testKeyOf(registry: Registry, name: string): TestKey {
@@ -60,18 +69,7 @@ interface ProbeWorld {
   everything(): string;
 }
 
-async function world(over: { record?: boolean } = {}): Promise<ProbeWorld> {
-  const w = await taskWorld({ keys: NAMES, shared: SHARED, use: USE });
-  const registry = w.keys.registry;
-  const gateway = createStubGateway({ now: () => w.clock.now() });
-  const auth = testKeyOf(registry, 'reorder-service');
-  const first = testKeyOf(registry, KEY_1);
-  const second = testKeyOf(registry, KEY_2);
-  const agent = gateway.createAgent({ label: 'reorder-agent', authentication: auth, delegation: first, keys: [{ key: auth, purposes: 1 + 8 }, { key: first, purposes: 16 }, { key: second, purposes: 16 }] });
-  if (over.record !== false) {
-    const facts = FactsFile.open(join(w.stateDir, 'facts.json'), { useCase: USE_CASE, network: 'vector-mainnet' });
-    facts.put('records', ['reorder-agent'], { did: agent.did, id: agent.id, tx: hashOf('record'), recordRef: `${hashOf('record')}#0`, depositLovelace: '10000000', registeredAt: iso(NOW) });
-  }
+function watchProbe(w: TaskWorld, gateway: StubGateway) {
   const wire: string[] = [];
   const asked: string[] = [];
   const refuse = (what: string) => (): never => { asked.push(what); throw new Error(`${what} was asked`); };
@@ -98,7 +96,28 @@ async function world(over: { record?: boolean } = {}): Promise<ProbeWorld> {
   w.node.submit = async () => refuse('the node to submit')();
   const hosted = { call: async (name: string) => refuse(`the hosted tool ${name}`)() };
   return {
-    w, gateway, agent, wire, asked, fetchImpl,
+    wire, asked, fetchImpl,
+    run: (...argv: string[]) => runTask(probe, argv, w.deps({ fetchImpl, readRegistry, hosted })),
+    text: () => w.screen.lines.join('\n'),
+    entries: () => w.evidence('probe', 'r2'),
+    everything: () => w.allText(),
+  };
+}
+
+async function world(over: { record?: boolean } = {}): Promise<ProbeWorld> {
+  const w = await taskWorld({ keys: NAMES, shared: SHARED, use: USE });
+  const registry = w.keys.registry;
+  const gateway = createStubGateway({ now: () => w.clock.now() });
+  const auth = testKeyOf(registry, 'reorder-service');
+  const first = testKeyOf(registry, KEY_1);
+  const second = testKeyOf(registry, KEY_2);
+  const agent = gateway.createAgent({ label: 'reorder-agent', authentication: auth, delegation: first, keys: [{ key: auth, purposes: 1 + 8 }, { key: first, purposes: 16 }, { key: second, purposes: 16 }] });
+  if (over.record !== false) {
+    const facts = FactsFile.open(join(w.stateDir, 'facts.json'), { useCase: USE_CASE, network: 'vector-mainnet' });
+    facts.put('records', ['reorder-agent'], { did: agent.did, id: agent.id, tx: hashOf('record'), recordRef: `${hashOf('record')}#0`, depositLovelace: '10000000', registeredAt: iso(NOW) });
+  }
+  return {
+    w, gateway, agent, ...watchProbe(w, gateway),
     delegate: (key = KEY_1) => {
       const made = gateway.delegate({
         delegator: { principalKey: ed25519Key('member') }, delegate: agent, delegateKey: key === KEY_1 ? first : second, actions: [ACTION], resources: [RESOURCE],
@@ -119,17 +138,68 @@ async function world(over: { record?: boolean } = {}): Promise<ProbeWorld> {
       };
       return Object.entries(given).flatMap(([name, value]) => (value === null ? [] : [`--${name}`, value]));
     },
-    run: (...argv) => runTask(probe, argv, w.deps({ fetchImpl, readRegistry, hosted })),
-    text: () => w.screen.lines.join('\n'),
-    entries: () => w.evidence('probe', 'r2'),
-    everything: () => w.allText(),
+  };
+}
+
+async function subagentWorld(keys: SubagentSpec['keys'] = SUBJECT_SPEC.keys) {
+  const baseUrl = 'https://gateway.test';
+  const use = { ...UC2, subagents: UC2.subagents.map((spec) => spec.id === SUBJECT ? { ...spec, keys } : spec) };
+  const w = await taskWorld({
+    use, keys: use.keys.map(({ name }) => name), shared: use.keys.filter(({ scope }) => scope === 'shared').map(({ name }) => name),
+    env: { OPERATOR_USE_CASE: USE_CASE, OPERATOR_GATEWAY_URL: baseUrl },
+  });
+  const registry = w.keys.registry;
+  const gateway = createStubGateway({ baseUrl, now: () => w.clock.now() });
+  const parent = gateway.createAgent({ label: 'test parent' });
+  const auth = testKeyOf(registry, AUTH);
+  const proof = testKeyOf(registry, PROOF);
+  const subject = gateway.createAgent({ label: 'test child', parent, authentication: auth, delegation: proof });
+  const parentDatum = rootRecord({ controller: registry.publicKeyOf('controller') });
+  const subjectDatum = rootRecord({
+    lineage: { type: 'Subagent', parent: parent.id, parentEpoch: parentDatum.subagentEpoch, depth: 1 },
+    keys: [
+      { keyType: 'Ed25519', key: auth.publicKeyHex, purposes: PURPOSE.authentication, pop: null },
+      { keyType: 'Ed25519', key: proof.publicKeyHex, purposes: PURPOSE.delegation, pop: null },
+    ],
+  });
+  const facts = FactsFile.open(join(w.stateDir, 'facts.json'), { useCase: use.name, network: 'vector-mainnet' });
+  const chain = w.world.chain;
+  chain.held.push(...REF_UTXOS);
+  for (const [name, agent, datum] of [[SUBJECT_SPEC.parent, parent, parentDatum], [SUBJECT, subject, subjectDatum]] as const) {
+    const output = recordUtxo(agent.id, datum);
+    chain.held.push(output);
+    facts.put('records', [name], { did: agent.did, id: agent.id, tx: output.txHash, recordRef: `${output.txHash}#${output.outputIndex}`, depositLovelace: '10000000', registeredAt: iso(NOW) });
+  }
+  const remove = (agent: StubAgent): void => {
+    chain.held = chain.held.filter((utxo) => utxo.assets[`${DEPLOYMENT.identity.hash}${agent.id}`] === undefined);
+  };
+  return {
+    w, gateway, parent, subject, auth, proof, remove, ...watchProbe(w, gateway),
+    args: (changes: Record<string, string | null> = {}): string[] => {
+      const given = { run: 'r2', subagent: SUBJECT, resource: RESOURCE, action: ACTION, expect: 'granted', ...changes };
+      return Object.entries(given).flatMap(([name, value]) => value === null ? [] : [`--${name}`, value]);
+    },
+    replaceSubject: (over: Partial<IdentityDatum>): void => {
+      remove(subject);
+      chain.held.push(recordUtxo(subject.id, { ...subjectDatum, ...over }));
+    },
+    bumpParent: async (): Promise<void> => {
+      await ensureSlotConfig(chain);
+      const fee = registry.addressOf('fee');
+      const built = await buildEndSubagents(await w.chain.context(fee), { id: parent.id, changeAddress: fee, nowMs: w.clock.now() });
+      const { txHash, outputs } = factsOf(built.txCbor);
+      const output = outputs[built.recordOutputIndex]!;
+      if (output.inlineDatum === null) throw new Error('the test epoch update has no record datum');
+      remove(parent);
+      chain.held.push({ txHash, outputIndex: output.index, address: output.address, datum: output.inlineDatum, assets: { ...output.assets, lovelace: output.lovelace } });
+    },
   };
 }
 
 const flags = (values: Record<string, string>): TaskFlags => ({ has: (name) => name in values, value: (name) => values[name] });
-const errors = (p: ProbeWorld): string => p.w.screen.errors.join('\n');
+const errors = (p: { w: TaskWorld }): string => p.w.screen.errors.join('\n');
 /** The requests of the probe that reached the gateway. */
-const tokenRequests = (p: ProbeWorld): number => p.gateway.requests.filter((request) => request.path === '/token').length;
+const tokenRequests = (p: { gateway: StubGateway }): number => p.gateway.requests.filter((request) => request.path === '/token').length;
 /** The observation of an entry of the evidence: the entry must hold one. */
 function observationOf(entry: Record<string, unknown> | undefined): Record<string, unknown> {
   const shows = entry?.shows;
@@ -138,14 +208,15 @@ function observationOf(entry: Record<string, unknown> | undefined): Record<strin
 }
 
 describe('the definition', () => {
-  it('lists the six valued flags and no boolean flag, needs no approval, reads the chain, calls no hosted tool, and has the one step run', () => {
-    expect(probe).toMatchObject({ name: 'probe', flags: [], valued: ['agent', 'key', 'delegation', 'resource', 'action', 'expect'], needs: { chain: true, hosted: [], approval: 'never' } });
+  it('lists the seven valued flags and no boolean flag, needs no approval, reads the chain, calls no hosted tool, and has the one step run', () => {
+    expect(probe).toMatchObject({ name: 'probe', flags: [], valued: ['agent', 'key', 'delegation', 'subagent', 'resource', 'action', 'expect'], needs: { chain: true, hosted: [], approval: 'never' } });
     expect(probe.steps(USE, flags({}))).toEqual(['run']);
   });
   it('loads the service key of the agent and the delegation key that --key names, and no other key', () => {
     expect(probe.needs.keys(USE, flags({ key: KEY_2 }))).toEqual(['reorder-service', KEY_2]);
     expect(probe.needs.keys(USE, flags({ key: KEY_1, agent: 'reorder-agent' }))).toEqual(['reorder-service', KEY_1]);
     expect(probe.needs.keys(USE, flags({}))).toEqual(['reorder-service']);
+    expect(probe.needs.keys(UC2, flags({ subagent: SUBJECT }))).toEqual([AUTH, PROOF]);
   });
 });
 
@@ -225,6 +296,169 @@ describe('a granted token and the refusal that follows the end of the delegation
     expect(JSON.parse(form.get('authorization_details')!)).toEqual([expect.objectContaining({ identifier: two.id, actions: [ACTION], locations: [RESOURCE] })]);
     expect(form.getAll('resource')).toEqual([RESOURCE]);
     expect(requests[0]!.body).not.toContain(one.id);
+  });
+});
+
+describe('a token for the subagent itself', () => {
+  it('records a grant before the parent changes epoch and a refusal after it, without an action grant or credentials', async () => {
+    const p = await subagentWorld();
+    expect(await p.run(...p.args())).toBe(0);
+    expect(p.entries()).toEqual([]);
+    expect(await p.run(...p.args(), '--submit')).toBe(0);
+    const names = { subagent: SUBJECT, subjectKey: AUTH, dpopKey: PROOF, resource: RESOURCE, action: ACTION };
+    expect(p.text()).toContain(`the action ${ACTION} labels the observation and is not an action grant`);
+    expect(p.w.machine().result).toMatchObject({ ...names, did: p.subject.did, effectiveStatus: 'active', status: 200, observed: 'granted', ok: true });
+    expect(p.entries()[0]).toMatchObject({
+      step: 'run', status: 'info',
+      shows: {
+        probe: { ...names, expect: 'granted' }, record: { did: p.subject.did, effectiveStatus: 'active' },
+        observation: { kind: 'granted', status: 200, tokenType: 'DPoP', authorizationDetails: null }, verdict: { expected: 'granted', observed: 'granted', ok: true },
+      },
+    });
+
+    await p.bumpParent();
+    // The gateway stub models a revoked subject. The fake node still holds its unchanged Active datum, but the parent has a new epoch.
+    p.gateway.setStatus(p.subject, 'revoked');
+    expect(await p.run(...p.args({ expect: 'refused' }), '--submit')).toBe(0);
+    expect(p.text()).toContain('the effective status of the subagent on the chain: revoked');
+    expect(p.w.machine().result).toMatchObject({ ...names, did: p.subject.did, effectiveStatus: 'revoked', status: 400, error: 'invalid_request', text: SUBJECT_REFUSAL, observed: 'refused', ok: true });
+    expect(p.entries()[1]).toMatchObject({
+      shows: {
+        probe: { ...names, expect: 'refused' }, record: { did: p.subject.did, effectiveStatus: 'revoked' },
+        observation: { kind: 'refused', status: 400, error: 'invalid_request', text: SUBJECT_REFUSAL }, verdict: { expected: 'refused', observed: 'refused', ok: true },
+      },
+    });
+    expect(p.entries()).toHaveLength(2);
+    const requests = p.gateway.requests.filter(({ path }) => path === '/token');
+    expect(requests).toHaveLength(3);
+    for (const request of requests) {
+      const form = new URLSearchParams(request.body);
+      expect([...form.keys()].sort()).toEqual(['grant_type', 'resource', 'subject_token', 'subject_token_type']);
+      expect(form.getAll('resource')).toEqual([RESOURCE]);
+      const headerOf = (text: string): unknown => JSON.parse(Buffer.from(text.split('.')[0]!, 'base64url').toString('utf8'));
+      expect(headerOf(form.get('subject_token')!)).toMatchObject({ kid: `${p.subject.did}#${p.auth.keyHash}` });
+      expect(headerOf(request.headers.dpop!)).toMatchObject({ jwk: p.proof.jwk });
+    }
+    const text = p.everything();
+    expect(p.wire).toHaveLength(8);
+    for (const credential of p.wire) expect(text).not.toContain(credential);
+    expect(p.asked).toEqual([]);
+    expect(p.w.node.submitted).toEqual([]);
+    expect(p.w.state('probe', 'r2')).toMatchObject({ steps: {}, in_flight: null });
+  });
+
+  it('rejects mixed modes, missing arguments and unknown subagents before any request', async () => {
+    const p = await subagentWorld();
+    for (const [name, value] of [['agent', SUBJECT_SPEC.parent], ['key', AUTH], ['delegation', 'b1'.repeat(32)]] as const) {
+      expect(await p.run(...p.args({ [name]: value })), name).toBe(2);
+      expect(errors(p)).toContain('--subagent excludes --agent, --key and --delegation');
+    }
+    for (const name of ['run', 'resource', 'action', 'expect']) {
+      expect(await p.run(...p.args({ [name]: null })), name).toBe(2);
+      expect(errors(p)).toContain(`probe needs --${name}`);
+    }
+    expect(await p.run(...p.args({ subagent: SUBJECT_SPEC.parent }))).toBe(2);
+    expect(tokenRequests(p)).toBe(0);
+    expect(await p.run(...p.args())).toBe(0);
+  });
+
+  it('rejects missing, ambiguous and identical key purposes before any request', async () => {
+    const badKeys: SubagentSpec['keys'][] = [
+      [{ key: PROOF, purposes: ['delegation'], lines: [] }],
+      [{ key: AUTH, purposes: ['authentication'], lines: [] }],
+      [{ key: AUTH, purposes: ['authentication', 'delegation'], lines: [] }],
+      [...SUBJECT_SPEC.keys, { key: 'drafter-auth', purposes: ['authentication'], lines: [] }],
+      [...SUBJECT_SPEC.keys, { key: 'drafter-delegation', purposes: ['delegation'], lines: [] }],
+    ];
+    for (const keys of badKeys) {
+      const p = await subagentWorld(keys);
+      expect(await p.run(...p.args())).toBe(2);
+      expect(errors(p)).toContain('exactly one authentication key and one different delegation key');
+      expect(tokenRequests(p)).toBe(0);
+    }
+  });
+
+  it('reads the registered subject and its real parent and requires the listed key purposes', async () => {
+    const p = await subagentWorld();
+    p.replaceSubject({ lineage: { type: 'Root' } });
+    expect(await p.run(...p.args())).toBe(2);
+    expect(errors(p)).toContain('does not name the expected parent');
+    p.replaceSubject({ keys: [] });
+    expect(await p.run(...p.args())).toBe(2);
+    expect(errors(p)).toContain('does not list the named authentication and delegation keys with their purposes');
+    p.replaceSubject({});
+    expect(await p.run(...p.args())).toBe(0);
+    p.remove(p.parent);
+    expect(await p.run(...p.args())).toBe(2);
+    expect(errors(p)).toContain('and its ancestors could not be read');
+    expect(tokenRequests(p)).toBe(1);
+  });
+
+  it('does not accept a grant as a refusal or as the active control after the parent changes epoch', async () => {
+    const p = await subagentWorld();
+    expect(await p.run(...p.args({ expect: 'refused' }), '--submit')).toBe(1);
+    expect(p.w.machine().result).toMatchObject({ effectiveStatus: 'active', observed: 'granted', ok: false });
+    await p.bumpParent();
+    expect(await p.run(...p.args(), '--submit')).toBe(1);
+    expect(p.w.machine().result).toMatchObject({ effectiveStatus: 'revoked', observed: 'granted (not the expected answer)', ok: false });
+  });
+
+  it('needs a matching subject-status refusal on the node, not a bad proof or another gateway error', async () => {
+    const p = await subagentWorld();
+    const inactive = "subject_token: the agent's effective status is revoked (parentRevoked), not active";
+    const fault = (status: number, error?: string, text = inactive): void => {
+      p.gateway.fault('/token', { status, body: JSON.stringify({ error, error_description: text }) });
+    };
+    fault(401, 'invalid_request');
+    expect(await p.run(...p.args({ expect: 'refused' }))).toBe(1);
+    await p.bumpParent();
+    for (const [status, code, text] of [
+      [400, 'invalid_request', 'bad proof for a revoked key'],
+      [400, 'invalid_dpop_proof', inactive],
+      [400, 'invalid_request', inactive.replace('revoked (parentRevoked)', 'suspended (parentSuspended)')],
+      [400, undefined, inactive],
+      [403, 'invalid_request', inactive],
+    ] as const) {
+      fault(status, code, text);
+      expect(await p.run(...p.args({ expect: 'refused' })), `${status} ${code} ${text}`).toBe(1);
+    }
+    fault(401, 'invalid_request');
+    expect(await p.run(...p.args({ expect: 'refused' }), '--submit')).toBe(0);
+    expect(p.w.machine().result).toMatchObject({ effectiveStatus: 'revoked', status: 401, error: 'invalid_request', text: inactive, observed: 'refused', ok: true });
+  });
+
+  it('does not treat a token-shaped error or a grant with delegation details as a control', async () => {
+    const p = await subagentWorld();
+    const body = { access_token: 'header.payload.signature', token_type: 'DPoP', issued_token_type: 'urn:ietf:params:oauth:token-type:access_token', expires_in: 60 };
+    p.gateway.fault('/token', { status: 400, body: JSON.stringify({ ...body, error: 'invalid_request' }) });
+    expect(await p.run(...p.args(), '--submit')).toBe(1);
+    expect(p.w.machine().result).toMatchObject({ observed: 'refused', status: 400, ok: false });
+    p.gateway.fault('/token', { status: 200, body: JSON.stringify({ ...body, authorization_details: [{ identifier: 'f0'.repeat(32) }] }) });
+    expect(await p.run(...p.args(), '--submit')).toBe(1);
+    expect(p.w.machine().result).toMatchObject({ observed: 'unreadable', status: 200, ok: false });
+    expect(p.everything()).not.toContain(body.access_token);
+  });
+
+  it('keeps arbitrary error text out of evidence and exits 3 when the gateway does not answer', async () => {
+    const p = await subagentWorld();
+    expect(await p.run(...p.args())).toBe(0);
+    const proof = p.wire[0]!;
+    const echoedHeader = `DPoP ${proof}`;
+    p.gateway.fault('/token', { status: 400, body: JSON.stringify({ error: proof, error_description: echoedHeader }) });
+    expect(await p.run(...p.args({ expect: 'refused' }), '--submit')).toBe(1);
+    expect(p.w.machine().result).toMatchObject({ error: null, text: 'the gateway gave no recognized subject status diagnostic', ok: false });
+    p.gateway.fault('/token', 'network');
+    expect(await p.run(...p.args(), '--submit')).toBe(3);
+    expect(p.entries()[1]).toMatchObject({ shows: { observation: { kind: 'unreachable' }, verdict: { ok: false } } });
+    expect(p.everything()).not.toContain(proof);
+    expect(p.everything()).not.toContain(echoedHeader);
+  });
+
+  it('refuses to use one key for both signatures in the token wrapper', async () => {
+    const p = await subagentWorld();
+    const host = { registry: p.w.keys.registry, settings: parseOperatorSettings(p.w.env), fetchImpl: p.fetchImpl, clock: p.w.clock };
+    await expect(askForSubagentToken(host, { did: p.subject.did, subjectKey: AUTH, dpopKey: AUTH, action: ACTION, resource: RESOURCE })).rejects.toThrow(TypeError);
+    expect(tokenRequests(p)).toBe(0);
   });
 });
 

@@ -164,6 +164,78 @@ describe('the list', () => {
   });
 });
 
+describe('child delegations', () => {
+  const child = (d: DelegationsWorld, id: string, parent = D1, depth = 2): void => {
+    d.put(id, { delegator: { type: 'Agent', id: REORDER_ID }, parent, depth, delegate: READER_ID, delegateKey: d.key('stock-reader-delegation'), notAfter: NOW + DAY });
+  };
+
+  it('groups two children that share a parent and lists both under the subagent key', async () => {
+    const d = await world();
+    d.put(D1, { remaining: 1, notAfter: NOW + 2 * DAY });
+    child(d, D2);
+    child(d, D3);
+    const before = d.facts();
+    expect(await d.run('--submit')).toBe(0);
+    expect(d.text().split('\n').filter((line) => line === `  parent ${D1}`)).toHaveLength(1);
+    expect(d.text()).toContain(`children:\n  parent ${D1}\n    child ${D2}: parent live`);
+    expect(d.text()).toContain(`child ${D3}: parent live`);
+    expect(d.text()).toContain(`delegate: did:vector:${READER_ID} (the subagent stock-reader), key ${d.key('stock-reader-delegation')} (stock-reader-delegation)`);
+    const shared = { parent: D1, parentState: 'live', missingParent: null, delegate: `did:vector:${READER_ID}`, subagent: 'stock-reader',
+      delegateKey: d.key('stock-reader-delegation'), key: 'stock-reader-delegation', actions: [ACTION], resources: [RESOURCE], notAfter: iso(NOW + DAY) };
+    expect(d.w.machine().result).toMatchObject({
+      live: 3, shown: 3, children: [{ id: D2, ...shared }, { id: D3, ...shared }],
+      keys: expect.arrayContaining([{ key: 'stock-reader-delegation', agent: 'stock-reader', state: 'in use', delegations: [D2, D3] }]),
+    });
+    expect(d.watch.asked).toEqual([]);
+    expect(d.facts()).toBe(before);
+    expect(d.w.state('delegations')).toMatchObject({ steps: {}, in_flight: null });
+    expect(d.w.evidence('delegations')).toEqual([]);
+  });
+
+  it('shows a consumed parent as missing and keeps each stranded child in the key summary even when a filter hides it', async () => {
+    const d = await world();
+    d.put(D1, { remaining: 1, notAfter: NOW + 2 * DAY });
+    child(d, D2);
+    child(d, D3);
+    d.w.world.chain.held = d.w.world.chain.held.filter((utxo) => utxo.txHash !== hashOf(`delegation ${D1}`));
+    expect(await d.run('--agent', 'stock-reader', '--delegate-key', d.key('stock-reader-delegation'))).toBe(0);
+    expect(d.text()).toContain(`children:\n  parent ${D1}\n    child ${D2}: parent missing`);
+    expect(d.text()).toContain(`child ${D3}: parent missing`);
+    expect(d.text()).toContain('stranded child: it holds its key until the janitor of its agent ends it');
+    expect(d.text()).not.toContain('parent live');
+    const stranded = { parent: D1, missingParent: D1, parentState: 'missing' };
+    expect(d.w.machine().result).toMatchObject({ live: 2, shown: 2, children: [{ id: D2, ...stranded }, { id: D3, ...stranded }] });
+
+    d.w.screen.lines.length = 0;
+    expect(await d.run('--delegate-key', 'reorder-delegation-1')).toBe(0);
+    expect(d.text()).not.toContain(`child ${D2}`);
+    expect(d.text()).toContain(`stock-reader-delegation of stock-reader (key ${d.key('stock-reader-delegation')}): in use by ${D2}, ${D3}`);
+    expect(d.w.machine().result).toMatchObject({ live: 2, shown: 0 });
+    expect(d.w.machine().result).not.toHaveProperty('children');
+  });
+
+  it('shows an expired unspent parent as ended, not live, without freeing the child key', async () => {
+    const d = await world();
+    d.put(D1, { notAfter: NOW });
+    child(d, D2);
+    expect(await d.run()).toBe(0);
+    expect(d.text()).toContain(`child ${D2}: parent ended`);
+    expect(d.w.machine().result).toMatchObject({
+      children: [{ id: D2, parent: D1, parentState: 'ended', missingParent: null }],
+      keys: expect.arrayContaining([{ key: 'stock-reader-delegation', agent: 'stock-reader', state: 'in use', delegations: [D2] }]),
+    });
+  });
+
+  it('shows the missing ancestor of a child even when its direct parent is still unspent', async () => {
+    const d = await world();
+    d.put(D2, { delegator: { type: 'Agent', id: 'c4'.repeat(32) }, parent: D1, depth: 2 });
+    child(d, D3, D2, 3);
+    expect(await d.run()).toBe(0);
+    expect(d.text()).toContain(`child ${D3}: parent missing (ancestor ${D1} is missing)`);
+    expect(d.w.machine().result).toMatchObject({ children: [{ id: D3, parent: D2, parentState: 'missing', missingParent: D1 }] });
+  });
+});
+
 describe('the filters', () => {
   async function three(): Promise<DelegationsWorld> {
     const d = await world();
@@ -172,7 +244,7 @@ describe('the filters', () => {
     d.put(D3, { delegate: READER_ID, delegateKey: d.key('stock-reader-delegation'), delegator: { type: 'Agent', id: REORDER_ID }, parent: D1, depth: 2 });
     return d;
   }
-  const shown = (text: string): string[] => [D1, D2, D3].filter((id) => text.includes(`delegation ${id}\n`));
+  const shown = (text: string): string[] => [D1, D2, D3].filter((id) => text.includes(`delegation ${id}\n`) || text.includes(`child ${id}:`));
 
   it('keeps the delegations of one delegate key by its registry name, and by its hash, and shows the same list for both', async () => {
     const byName = await three();
@@ -250,6 +322,7 @@ describe('the commands', () => {
     const before = d.facts();
     expect(await d.run('cleanup')).toBe(0);
     expect(d.text()).toContain('the operator cannot end a delegation of a hirer: the hirer ends it with an Undelegate');
+    expect(d.text()).toContain('The janitor of the agent ends a stranded child.');
     expect(d.facts()).toBe(before);
     expect(d.w.machine()).toMatchObject({ command: 'cleanup', outcome: 'done', exit: 0 });
   });
