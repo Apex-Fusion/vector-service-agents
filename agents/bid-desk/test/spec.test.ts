@@ -242,6 +242,9 @@ describe('specs/bid-desk.md: the frame, the identity and the capability', () => 
     expect(new Set(INSTANCES.map((instance) => runtimeEnv(instance).PUBLIC_ORIGIN)).size).toBe(3);
     // The manifest of a Bid Desk names no controller, so a change of the controller of its record changes neither the manifest nor the hash that its advert holds.
     for (const manifest of [template, ...INSTANCES.map((instance) => manifests[instance])]) expect(memberNames(manifest).filter((name) => /controller/i.test(name))).toStrictEqual([]);
+    // No code of the service reads a controller: the word stands in the text of one gap and in comments only.
+    const codeLines = (text: string): string[] => text.split('\n').filter((line) => !/^\s*(\/\/|\/\*|\*)/.test(line));
+    expect(sources.filter(([file, text]) => file !== 'serve/gaps.ts' && codeLines(text).some((line) => /controller/i.test(line))).map(([file]) => file)).toStrictEqual([]);
     expect(identity).toContain('The Bid Desk reads no controller of its own record, and its manifest names none. So a change of the controller of a record changes neither the manifest nor the checks of the hook.');
   });
 
@@ -264,7 +267,8 @@ describe('specs/bid-desk.md: the frame, the identity and the capability', () => 
     for (const instance of INSTANCES) expect(readFileSync(`${root}deploy/server/docker-compose.bid-desk-${instance}.yml`, 'utf8')).toContain(`.env.bid-desk-${instance}`);
     expect(capability).toContain('Each Bid Desk is one runtime in front of one service, in a pack of its own. The runtime is the template runtime (`vector-agent-template`, `CAPABILITY_KIND=custom`).');
     expect(capability).toContain('It holds the supplier key of its Bid Desk and has its advert. It asks the service before it claims an escrow, claims the escrow, posts the job to the service, signs the receipt and submits the receipt hash.');
-    expect(capability).toContain('The service does the work. It holds the service key and no private supplier key. It runs one job at a time.');
+    expect(capability).toContain('The service does the work. It holds the service key and no private supplier key. It has no API key of a model provider: it hires its model on the Vector marketplace. It runs one job at a time.');
+    expect(SETTINGS.filter((name) => /API_KEY|APIKEY/i.test(name))).toStrictEqual([]);
     expect(readme).toContain('One job runs at a time.');
     // One image serves the three: the instance selects the name and the price list file, and the organisation and the origin are settings of the deployment.
     const images = INSTANCES.map((instance) => String(composes[instance].services.service.image ?? ''));
@@ -341,6 +345,14 @@ describe('specs/bid-desk.md: the Terms', () => {
     expect(row(terms, 'Call for the credential')).toBe(`| Call for the credential | ${CALL_TIMEOUT_MS} ms at most |`);
     expect(CALL_TIMEOUT_MS).toBe(20_000);
     expect(envExample.split('\n')).toContain('CHECKS_READ_BUDGET_MS=');
+    // The README gives the same times and the same limit, and the same terms for the three Bid Desks.
+    expect(readme).toContain(`| Deadline of a job | ${JOB_DEADLINE_MS} ms |`);
+    expect(readme).toContain(`| Timeout of the runtime for a job | ${timeout} ms |`);
+    expect(readme).toContain(`| Window of the advert | ${MIN_PROCESSING_WINDOW_MS} ms to 86400000 ms |`);
+    expect(readme).toContain(`| Read of the hook | ${CHECKS_READ_BUDGET_DEFAULT_MS} ms, from ${CHECKS_READ_BUDGET_MIN_MS} ms to ${CHECKS_READ_BUDGET_MAX_MS} ms |`);
+    expect(readme).toContain(`| Call for the credential | ${CALL_TIMEOUT_MS} ms |`);
+    expect(readme).toContain(`at or below ${MAX_REQUEST_BYTES} bytes (\`terms.input_limits.request_bytes\`)`);
+    expect(readme).toContain(`The three share the terms of their adverts: price ${PRICE_LOVELACE} lovelace, supplier bond ${BOND_LOVELACE} and buyer bond ${BOND_LOVELACE}. The buyer locks ${lock}.`);
   });
 
   test('the request limit is 900000 bytes of wire payload and 20 items, and the page says that it is safe only below the limit of the runtime on the escaped body', () => {
@@ -452,6 +464,7 @@ describe('specs/bid-desk.md: the request', () => {
     expect([accepts({ items: [item('a'.repeat(64), 1)] }), accepts({ items: [item('a'.repeat(65), 1)] })]).toStrictEqual([true, false]);
     expect([accepts({ items: [item('A', 1)] }), accepts({ items: [item('A', 1_000_000)] }), accepts({ items: [item('A', 0)] }), accepts({ items: [item('A', 1_000_001)] }), accepts({ items: [item('A', 1.5)] })]).toStrictEqual([true, true, false, false, false]);
     expect(accepts({ extra: 1 })).toBe(false);
+    expect(accepts({ items: [{ ...item('A', 1), extra: 1 }] })).toBe(false);
     // The rules of the message: the schema, the two hex forms, and no member that the table does not list. The Bid Desk takes no approval. The order of the members does not matter.
     const refused = (over: Record<string, unknown>): void => expect(() => parseRfqRequest(JSON.stringify({ ...messageOf(), ...over }))).toThrow(RequestRefusal);
     refused({ schema: 'vector.usecase.handoff.v1' });
@@ -639,10 +652,11 @@ describe('specs/bid-desk.md: what the job does', () => {
       expect(rig.booked).toHaveLength(0);
     }
     expect(QUOTE_REFUSAL_STATUS.model_output_invalid).toBe(502);
-    // The twin: a choice with 2 of the 3 items is a quote with 2 lines. The code never adds a line.
+    // The twin: a choice with 2 of the 3 items is a quote with 2 lines. The code never adds a line, and it reads no word of the notes: these notes do not name the item that the quote leaves out.
     const fewer = await chosen(choiceOf({ lines: lines.slice(0, 2) }));
     const quote = await fewer.run();
     expect(quote.lines.map((line) => line.sku)).toStrictEqual(['GLV-NIT-M', 'SYR-10ML']);
+    expect(quote.notes).not.toContain('MSK-N95');
     expect(steps[2]).toContain('The job does not check that every item has a line, and it never adds, removes or changes a line.');
     expect(steps[2]).toContain('A choice that breaks this rule ends the job with `model_output_invalid` (502). The decision is on record and no quote is made.');
   });
@@ -779,7 +793,14 @@ describe('specs/bid-desk.md: the response', () => {
     expect(parseQuote({ ...given, total: given.total + 1 }).ok).toBe(false);
     expect(response).toContain('A line total is the quantity times the unit price, the total is the sum of the line totals, and `lead_time_days` is the longest lead time of the lines.');
     expect(response).toContain('The service makes these three numbers from the lines of the model. They are arithmetic and not decisions, and the parser of the kit refuses a quote with a number that is not the arithmetic of its lines.');
-    expect(response).toContain('A quote can have fewer lines than the request has items, and its notes then say which items it leaves out.');
+    expect(response).toContain('A quote can have fewer lines than the request has items. The instruction to the model asks it to name each item that it leaves out in the notes, and the job does not check the notes.');
+    expect(QUOTE_DECISION.instruction).toContain('Leave an item that the price list does not carry out of "lines", and name it in "notes".');
+    // The notes and the organisation of the sender are free text with limits: 500 characters without a control or hidden character, and 1024 characters.
+    const withNotes = (notes: string): boolean => parseQuote({ ...given, notes }).ok;
+    expect([withNotes('a'.repeat(500)), withNotes('a'.repeat(501)), withNotes('a\u0007b'), withNotes('a\u200bb')]).toStrictEqual([true, false, false, false]);
+    const withOrganisation = (organisation: string): boolean => parseQuote({ ...given, sender: { ...given.sender, organisation } }).ok;
+    expect([withOrganisation('x'.repeat(1024)), withOrganisation('x'.repeat(1025)), withOrganisation('Any text, with spaces.')]).toStrictEqual([true, false, true]);
+    expect(response).toContain('The `notes` and the organisation of the sender are free text. The notes hold at most 500 characters and no control or hidden character. The organisation of the sender holds at most 1024 characters, and it can be any text that the covering Accountable Party names.');
     expect(response).toContain('The quote names the hash of the request and the hash of the price list that it was priced from, so a buyer\'s agent can check each unit price against the public list.');
   });
 });
