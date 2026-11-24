@@ -271,6 +271,7 @@ describe('agents/order-desk/README.md: the state, the stop and the manifest', ()
   test('State and the first paragraphs give the numbers of the stores and of the janitor, and the files that the code names', () => {
     const state = section('State');
     expect(state).toContain(`It holds at most ${ORDER_BOOK_LIMIT} orders and never drops one`);
+    expect(state).toContain(`A book that holds ${ORDER_BOOK_LIMIT} orders cannot take a new order. For a purchase order number that the book does not hold, the hook answers 503 \`check_unavailable\` and the escrow stays open.`);
     expect(state).toContain(`It lives ${PASSED_CHECKS_TTL_MS / 1000} s, the store holds ${PASSED_CHECKS_LIMIT} of them`);
     expect(state).toContain(`Every ${JANITOR_INTERVAL_MS / 1000} s it looks at the stranded file`);
     expect(readme).toContain(`the hook keeps the record of the checks for ${PASSED_CHECKS_TTL_MS / 1000} s and reserves the job slot for that escrow for ${RESERVATION_MS / 1000} s`);

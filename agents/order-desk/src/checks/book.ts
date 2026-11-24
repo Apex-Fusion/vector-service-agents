@@ -13,7 +13,8 @@
 // recorded. A file that is there and is damaged is an error too.
 //
 // A book holds at most ORDER_BOOK_LIMIT orders. It never drops an order to make room, because a dropped order reads as a new one. The record of a number that the book holds is a no-op for the same order id,
-// and an error for another order id: the portal never places two orders for one number.
+// and an error for another order id: the portal never places two orders for one number. A book that is full cannot take a new order, so `has` rejects with a RangeError for a number that the book lacks, and it
+// never answers false: a false gives a go, the service claims the escrow, and the record of that order fails. A number that the book holds still answers true.
 import { randomBytes } from 'node:crypto';
 import { accessSync, closeSync, constants, existsSync, fsyncSync, mkdirSync, openSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { open, readFile, rename, unlink, writeFile } from 'node:fs/promises';
@@ -23,7 +24,10 @@ import { isPlainObject } from '@vsa/usecase-kit/protocol';
 
 /** The orders that the Order Desk placed, by purchase order number. */
 export interface OrderBook {
-  /** Is there an order for the purchase order number of this tenant? The number counts without regard to case. A book that cannot answer rejects. */
+  /**
+   * Is there an order for the purchase order number of this tenant? The number counts without regard to case. A book that cannot answer rejects. A book that is full and has no order for the number rejects too
+   * (a RangeError): the job could not record a new order, so the book must not read the number as new. A number that the book holds is true also when the book is full.
+   */
   has(tenant: string, poNumber: string): Promise<boolean>;
   /** Records the order that the supplier portal placed for the number. It resolves when the record is stored. */
   record(tenant: string, poNumber: string, orderId: string): Promise<void>;
@@ -55,6 +59,19 @@ function textOf(value: unknown, name: string): string {
 
 const keyOf = (tenant: string, poNumber: string): string => JSON.stringify([tenant, poNumberKey(poNumber)]);
 
+/** The error of a book that is full. It names the book and the limit, and never a purchase order number. */
+const full = (): RangeError => new RangeError(`the order book holds ${ORDER_BOOK_LIMIT} orders and is full`);
+
+/**
+ * Does the book hold the key? A book that is full and lacks the key rejects, and never answers false: the job could not record an order for that number, so the book must not read it as new. A key that the book
+ * holds is true also when the book is full.
+ */
+function holds(orders: Orders, key: string): boolean {
+  if (orders.has(key)) return true;
+  if (orders.size >= ORDER_BOOK_LIMIT) throw full();
+  return false;
+}
+
 /**
  * Decides what the record of an entry does. It is true when the entry is new and the caller stores it. It is false when the book holds the same order already. It throws for another order id of a number that the
  * book holds, and for a book that is full.
@@ -65,7 +82,7 @@ function isNew(orders: Orders, entry: OrderEntry): boolean {
     if (held.order_id === entry.order_id) return false;
     throw new Error('the order book holds another order for this purchase order number');
   }
-  if (orders.size >= ORDER_BOOK_LIMIT) throw new RangeError(`the order book holds ${ORDER_BOOK_LIMIT} orders and is full`);
+  if (orders.size >= ORDER_BOOK_LIMIT) throw full();
   return true;
 }
 
@@ -74,7 +91,7 @@ export class MemoryOrderBook implements OrderBook {
   readonly #orders: Orders = new Map();
 
   async has(tenant: string, poNumber: string): Promise<boolean> {
-    return this.#orders.has(keyOf(textOf(tenant, 'tenant'), textOf(poNumber, 'poNumber')));
+    return holds(this.#orders, keyOf(textOf(tenant, 'tenant'), textOf(poNumber, 'poNumber')));
   }
 
   async record(tenant: string, poNumber: string, orderId: string): Promise<void> {
@@ -256,7 +273,7 @@ export class FileOrderBook implements OrderBook {
 
   async has(tenant: string, poNumber: string): Promise<boolean> {
     const key = keyOf(textOf(tenant, 'tenant'), textOf(poNumber, 'poNumber'));
-    return (await this.#read()).has(key);
+    return holds(await this.#read(), key);
   }
 
   async record(tenant: string, poNumber: string, orderId: string): Promise<void> {
