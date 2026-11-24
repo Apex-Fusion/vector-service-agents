@@ -1,7 +1,6 @@
-// scripts/operator/lib/gateway-token.ts - one token request to the identity gateway under a delegation, for the task probe.
-// The request is signed with two keys of the registry that the caller names: the authentication key of the agent (it signs the subject token) and the delegate key of the delegation (the proof
-// of the request is made with it). The key objects of the two keys are made here and stay here: this file is the one place of the pack that names `jwsKey`, and a task never holds a key object.
-// The answer that leaves this file holds no token and no proof. For a token that the gateway granted it holds the type, the end and the grant. For any other answer it holds what the gateway said.
+// The probe asks the identity gateway for a token under a delegation or for a subagent itself.
+// The subject token uses the authentication key. The DPoP proof uses a different key with the delegation purpose.
+// The key objects, the request credentials and the access token stay here. The subagent path returns only public fields and recognized gateway diagnostics.
 import type { TaskSession } from './contract.ts';
 import { createGatewayClient } from './platform.ts';
 
@@ -28,6 +27,15 @@ export type TokenAnswer =
   | { readonly kind: 'unreadable'; readonly status: number; readonly text: string };
 
 const DELEGATION_ID = /^[0-9a-f]{64}$/;
+type TokenHost = Pick<TaskSession, 'registry' | 'settings' | 'fetchImpl' | 'clock'>;
+type SubagentTokenAsk = Omit<TokenAsk, 'delegation'>;
+
+const PUBLIC_ERRORS: Record<string, true> = {
+  invalid_request: true, invalid_token: true, agent_not_active: true, invalid_dpop_proof: true, invalid_client: true, invalid_grant: true,
+  invalid_scope: true, invalid_authorization_details: true, unsupported_grant_type: true, temporarily_unavailable: true, server_error: true,
+};
+// Keep the gateway's subject-status diagnostic verbatim only when every part has a public, defined value.
+const SUBJECT_STATUS_TEXT = /^subject_token: the agent's effective status is (?:suspended|revoked|retired)(?: \((?:invalidated|parentRevoked|parentRetired|deactivationPending|parentSuspended|notAuthentic|unaccountable)\))?, not active$/;
 
 /**
  * Asks the gateway for a token under the delegation: one request, the grant narrowed to the one action and the one resource, with the DPoP proof made by the delegate key. A request that the
@@ -35,13 +43,36 @@ const DELEGATION_ID = /^[0-9a-f]{64}$/;
  */
 export async function askForToken(host: Pick<TaskSession, 'registry' | 'settings' | 'fetchImpl' | 'clock'>, ask: TokenAsk): Promise<TokenAnswer> {
   if (!DELEGATION_ID.test(ask.delegation)) throw new TypeError('the delegation is 64 lower-case hex characters');
+  return requestToken(host, ask, ask.delegation);
+}
+
+/** Asks for a token for the subagent itself. `action` labels the observation; a token without a delegation cannot grant an action. */
+export async function askForSubagentToken(host: TokenHost, ask: SubagentTokenAsk): Promise<TokenAnswer> {
+  if (host.registry.hashOf(ask.subjectKey) === host.registry.hashOf(ask.dpopKey)) throw new TypeError('the subject key and the key of the proof are two keys');
+  const answer = await requestToken(host, ask);
+  switch (answer.kind) {
+    case 'granted': return answer.authorizationDetails === null ? answer
+      : { kind: 'unreadable', status: 200, text: 'the answer unexpectedly names delegation details' };
+    case 'refused': return {
+      kind: answer.kind, status: answer.status, error: publicError(answer.error),
+      text: SUBJECT_STATUS_TEXT.test(answer.text) ? answer.text : 'the gateway gave no recognized subject status diagnostic',
+    };
+    case 'unavailable': return { kind: answer.kind, status: answer.status, error: publicError(answer.error), text: 'the gateway is unavailable' };
+    case 'unreadable': return { kind: answer.kind, status: answer.status, text: 'the gateway gave no readable token answer' };
+    case 'unreachable': return { kind: answer.kind, text: 'the gateway did not answer' };
+  }
+}
+
+const publicError = (error: string | null): string | null => error !== null && Object.hasOwn(PUBLIC_ERRORS, error) ? error : null;
+
+async function requestToken(host: TokenHost, ask: SubagentTokenAsk, delegation?: string): Promise<TokenAnswer> {
   if (ask.subjectKey === ask.dpopKey) throw new TypeError('the subject key and the key of the proof are two keys');
   const client = createGatewayClient({ baseUrl: host.settings.urls.gateway, fetch: host.fetchImpl, now: () => host.clock.now() });
   const result = await client.requestToken({
     subject: { did: ask.did, key: host.registry.key(ask.subjectKey).jwsKey() },
     dpopKey: host.registry.key(ask.dpopKey).jwsKey(),
     resource: ask.resource,
-    delegation: { identifier: ask.delegation, actions: [ask.action], locations: [ask.resource] },
+    ...(delegation === undefined ? {} : { delegation: { identifier: delegation, actions: [ask.action], locations: [ask.resource] } }),
   });
   if (result.ok) return { kind: 'granted', tokenType: result.value.tokenType, expiresAt: result.value.expiresAt, authorizationDetails: result.value.authorizationDetails };
   switch (result.rule) {

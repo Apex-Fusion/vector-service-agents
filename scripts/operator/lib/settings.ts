@@ -95,10 +95,10 @@ function networkOf(reader: EnvReader): NetworkSpec {
 }
 
 /**
- * Reads the settings of a run from `env`. Throws a SettingsError that lists each problem and shows no value. A state folder that is missing is made with mode 700, but only when every setting
- * is valid. A state folder that exists with another mode, and a key folder that does not exist, are problems.
+ * Reads the settings from `env`. Throws a SettingsError that lists each problem and shows no value. A run needs an existing key folder and creates a missing state folder.
+ * A read-only inspection neither needs the key folder nor creates the state folder.
  */
-export function parseOperatorSettings(env: Env, io: Partial<SettingsIo> = {}): OperatorSettings {
+export function parseOperatorSettings(env: Env, io: Partial<SettingsIo> = {}, options: { readonly readOnly?: boolean } = {}): OperatorSettings {
   const files: SettingsIo = { ...realIo, ...io };
   const reader = new EnvReader(env);
   const network = networkOf(reader);
@@ -106,7 +106,7 @@ export function parseOperatorSettings(env: Env, io: Partial<SettingsIo> = {}): O
   const useCase = reader.text('OPERATOR_USE_CASE', false) ?? DEFAULT_USE_CASE;
   if (!USE_CASE_NAMES.some((known) => known === useCase)) reader.problems.push(`OPERATOR_USE_CASE must be one of: ${USE_CASE_NAMES.join(', ')}`);
 
-  const keysDir = pathOf(reader, 'OPERATOR_KEYS_DIR', true);
+  const keysDir = options.readOnly ? undefined : pathOf(reader, 'OPERATOR_KEYS_DIR', true);
   if (keysDir !== undefined) {
     const found = look(reader, files, 'OPERATOR_KEYS_DIR', keysDir);
     if (found !== 'failed' && (found === null || !found.isFolder)) reader.problems.push('OPERATOR_KEYS_DIR must be a folder that exists');
@@ -142,7 +142,7 @@ export function parseOperatorSettings(env: Env, io: Partial<SettingsIo> = {}): O
   const maxCollateralLossLovelace = reader.whole('OPERATOR_MAX_COLLATERAL_LOSS_LOVELACE', 1n, MAX_LIMIT_LOVELACE, DEFAULT_MAX_COLLATERAL_LOSS_LOVELACE);
   reader.done();
 
-  if (makeState) {
+  if (makeState && !options.readOnly) {
     try { files.makeFolder(stateDir ?? ''); } catch (err) { throw new SettingsError([`OPERATOR_STATE_DIR could not be made (${codeOf(err)})`]); }
   }
   return Object.freeze({

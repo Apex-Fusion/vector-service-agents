@@ -10,13 +10,14 @@ import { collateralAdvice, isCollateralOutput } from '../../checks/lib/collatera
 import { duration, iso } from '../../checks/lib/format.ts';
 import { HostedError } from '../../checks/lib/hosted.ts';
 import { GuardRefusal } from '../../checks/lib/land.ts';
+import type { Clock } from '../../checks/lib/ports.ts';
 import { eventually } from '../../checks/lib/retry.ts';
 import { PreconditionError } from '../../checks/lib/session.ts';
 import type { TxFacts } from '../../checks/lib/txfacts.ts';
 // The entry of vector-read gives no codec of the identity datums: `decodeIdentityDatum` reads the inline datum of a record output, as `findRecord` does.
 import { decodeIdentityDatum } from '../../../packages/vector-read/src/identity-codec.ts';
 import { VERIFY_WINDOW, VerificationError } from '../../checks/lib/verify.ts';
-import type { AgentSpec, OrganisationSpec, TaskDefinition, TaskSession, UseCase } from '../lib/contract.ts';
+import type { AgentSpec, OrganisationSpec, StatusTaskInput, TaskDefinition, TaskSession, UseCase } from '../lib/contract.ts';
 import { landHosted } from '../lib/land-hosted.ts';
 import { effectiveStatus, findRecord } from '../lib/platform.ts';
 import type { RecordUtxo } from '../lib/platform.ts';
@@ -28,6 +29,8 @@ const DEFAULT_AGENT = 'order-desk';
 const DEFAULT_DAYS = 1;
 const MAX_DAYS = 30;
 const DAYS = /^[0-9]+$/;
+const HASH = /^[0-9a-f]{64}$/;
+const KEY_HASH = /^[0-9a-f]{56}$/;
 /** The length of a day: a hold lasts whole days from the start of the validity window. */
 const DAY_MS = 86_400_000;
 
@@ -79,21 +82,25 @@ const refOf = (utxo: { txHash: string; outputIndex: number }): string => `${utxo
 const objectOf = (value: unknown): Record<string, unknown> | null => (typeof value === 'object' && value !== null && !Array.isArray(value) ? { ...value } : null);
 const textOf = (value: unknown): string | null => (typeof value === 'string' ? value : null);
 
-/** The author of a hold in words: the key by its registry name when the registry knows it, the controller, or Module-1. */
-function authorText(session: TaskSession<HoldExtra>, signer: HoldOf['by']): string {
+/** An author name may come from the action registry or from the exact saved suspend step. */
+type NameOfHash = (hash: string) => string | undefined;
+function authorText(signer: HoldOf['by'], nameOfHash: NameOfHash): string {
   if (signer.type === 'ControllerSet') return 'the controller';
   if (signer.type === 'Script') return `Module-1 (${signer.hash})`;
-  return `the key ${session.registry.nameOfHash(signer.hash) ?? signer.hash}`;
+  return `the key ${nameOfHash(signer.hash) ?? signer.hash}`;
 }
+
+const registryNames = (session: TaskSession<HoldExtra>): NameOfHash => (hash) => session.registry.nameOfHash(hash);
 
 /** The holds of the record in words, each with its author, its reason and its end. */
-function holdsText(session: TaskSession<HoldExtra>, holds: readonly HoldOf[]): string {
-  const now = session.clock.now();
-  if (holds.length === 0) return 'no hold';
-  return holds.map((candidate) => `a hold by ${authorText(session, candidate.by)} (reason ${candidate.reason}) until ${iso(candidate.until)}${candidate.until <= now ? ', ended' : ''}`).join('; ');
+function readingText(reading: Reading, now: number, nameOfHash: NameOfHash): string {
+  const { holds } = reading;
+  const held = holds.length === 0 ? 'no hold' : holds.map((candidate) =>
+    `a hold by ${authorText(candidate.by, nameOfHash)} (reason ${candidate.reason}) until ${iso(candidate.until)}${candidate.until <= now ? ', ended' : ''}`).join('; ');
+  return `effective status ${reading.effective}; ${held}`;
 }
 
-const describeReading = (session: TaskSession<HoldExtra>, reading: Reading): string => `effective status ${reading.effective}; ${holdsText(session, reading.holds)}`;
+const describeReading = (session: TaskSession<HoldExtra>, reading: Reading): string => readingText(reading, session.clock.now(), registryNames(session));
 
 /** The hold of one author that is in the record, ended or not: a Suspend replaces it and an Unsuspend removes it. */
 const holdOf = (reading: Reading, byHash: string): HoldOf | undefined => reading.holds.find((candidate) => candidate.by.type === 'KeyHash' && candidate.by.hash === byHash);
@@ -107,9 +114,10 @@ const othersOf = (session: TaskSession<HoldExtra>, reading: Reading, byHash: str
 /** What the evidence keeps of a reading of the node: the holds in words and in times, and whether each is in force. */
 function shownOf(session: TaskSession<HoldExtra>, reading: Reading): Record<string, unknown> {
   const now = session.clock.now();
+  const names = registryNames(session);
   return {
     effective: reading.effective,
-    holds: reading.holds.map((candidate) => ({ by: authorText(session, candidate.by), reason: candidate.reason, since: iso(candidate.since), until: iso(candidate.until), inForce: candidate.until > now })),
+    holds: reading.holds.map((candidate) => ({ by: authorText(candidate.by, names), reason: candidate.reason, since: iso(candidate.since), until: iso(candidate.until), inForce: candidate.until > now })),
   };
 }
 
@@ -120,14 +128,16 @@ function requireNetwork(session: TaskSession<HoldExtra>): void {
 }
 
 /** Reads the record of the agent from the node. The record must be there and be a root record. */
-async function readRecord(session: TaskSession<HoldExtra>, id: string): Promise<Reading> {
-  const agent = session.extra.agent.id;
-  const found = await findRecord(session.chain.provider, session.chain.deployment, id);
+async function readRecordOf(chain: Awaited<ReturnType<StatusTaskInput['readChain']>>, clock: Clock, agent: string, id: string): Promise<Reading> {
+  const found = await findRecord(chain.provider, chain.deployment, id);
   if (found === null) throw new PreconditionError(`the record of the agent ${agent} is not in the identity registry: wait until its registration is confirmed`);
   if (found.record.lineage.type !== 'Root') throw new PreconditionError(`the record of the agent ${agent} is a subagent: a hold of this pack is for a root record`);
-  const now = session.clock.now();
+  const now = clock.now();
   return { found, effective: effectiveStatus(found.record, new Map(), now, now), holds: holdsOf(found.record) };
 }
+
+const readRecord = (session: TaskSession<HoldExtra>, id: string): Promise<Reading> =>
+  readRecordOf(session.chain, session.clock, session.extra.agent.id, id);
 
 /** The hosted resolver, read for the evidence: what it says of the status, or why it could not say. It never decides. */
 async function resolverReading(session: TaskSession<HoldExtra>, did: string): Promise<Record<string, unknown>> {
@@ -324,10 +334,43 @@ const LIFT: StepHandler<HoldExtra> = {
     session.out.out(`the node shows no hold by the key ${target.by}; effective status ${outcome.value.effective}`);
     const others = othersOf(session, outcome.value, target.byHash);
     if (outcome.value.effective === 'Suspended' && others.length > 0) {
-      session.out.out(`the record stays Suspended: a hold of another author stays (${others.map((candidate) => `${authorText(session, candidate.by)} until ${iso(candidate.until)}`).join('; ')})`);
+      const names = registryNames(session);
+      session.out.out(`the record stays Suspended: a hold of another author stays (${others.map((candidate) => `${authorText(candidate.by, names)} until ${iso(candidate.until)}`).join('; ')})`);
     }
   },
 };
+
+async function inspectHold(input: StatusTaskInput): Promise<readonly string[]> {
+  const { run } = input;
+  const state = input.readState();
+  const facts = input.readFacts();
+  const held = facts !== null && Object.hasOwn(facts.holds, run) ? facts.holds[run] : undefined;
+  if (held === undefined || (held.suspendTx === null && held.liftTx === null)) {
+    return [...state.lines, `no hold of this pack is recorded in the facts for the run ${run}; the ledger was not checked for other holds`];
+  }
+  if (held.suspendTx === null || !HASH.test(held.suspendTx) || (held.liftTx !== null && !HASH.test(held.liftTx))) {
+    return [...state.lines, `the saved hold facts of the run ${run} do not name valid transactions; the current record is not shown`];
+  }
+  const lines = [...state.lines, `hold of the run ${run}: suspend ${held.suspendTx}, lift ${held.liftTx ?? 'not done'}`];
+  const made = state.steps[SUSPEND.name];
+  const agent = input.use.agents.find((candidate) => candidate.id === made?.facts.agent);
+  const record = agent !== undefined && facts !== null ? facts.records[agent.id] : undefined;
+  if (made?.tx_hash !== held.suspendTx || agent === undefined || record === undefined || made.facts.did !== record.did
+    || !HASH.test(record.id) || record.did !== `did:vector:${record.id}`) {
+    return [...lines, 'the saved suspend and run facts do not identify the same record; the current record is not shown'];
+  }
+  const accountable = input.use.organisations.find(({ id }) => id === agent.organisation)?.accountableKey;
+  const author = made.facts.author;
+  const nameOfHash: NameOfHash = typeof author === 'string' && KEY_HASH.test(author) && made.facts.by === accountable
+    ? (hash) => hash === author ? accountable : undefined : () => undefined;
+  try {
+    const reading = await readRecordOf(await input.readChain(), input.clock, agent.id, record.id);
+    lines.push(`the record of the agent ${agent.id} (${record.did}): ${readingText(reading, input.clock.now(), nameOfHash)}`);
+  } catch (err) {
+    lines.push(`the record of the agent ${agent.id} is not shown: ${err instanceof PreconditionError ? err.message : 'the node read failed'}`);
+  }
+  return lines;
+}
 
 const task: TaskDefinition<HoldExtra> = {
   name: 'hold',
@@ -371,22 +414,7 @@ const task: TaskDefinition<HoldExtra> = {
     await verifyStep(session, LIFT, landed);
     return { kind: 'done', message: `the hold of the run ${run} is lifted and the lift is verified` };
   },
-  async status(session) {
-    const { run, agent } = session.extra;
-    const facts = session.facts.read();
-    const held = facts.holds[run];
-    const lines = [held === undefined ? `no hold of this pack is on for the run ${run}` : `hold of the run ${run}: suspend ${held.suspendTx ?? 'not done'}, lift ${held.liftTx ?? 'not done'}`];
-    const record = facts.records[agent.id];
-    if (record === undefined) return [...lines, `the facts hold no record of the agent ${agent.id}`];
-    try {
-      requireNetwork(session);
-      lines.push(`the record of the agent ${agent.id} (${record.did}): ${describeReading(session, await readRecord(session, record.id))}`);
-    } catch (err) {
-      if (!(err instanceof PreconditionError)) throw err;
-      lines.push(`the record of the agent ${agent.id} is not shown: ${err.message}`);
-    }
-    return lines;
-  },
+  inspectStatus: inspectHold,
   result(session) {
     const held = session.facts.read().holds[session.extra.run];
     const record = session.facts.read().records[session.extra.agent.id];
