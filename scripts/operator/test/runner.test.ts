@@ -996,6 +996,13 @@ describe('the run lock', () => {
     expect(await w.run(toyTask(twoSteps([])), '--sumbit')).toBe(2);
     expect(existsSync(w.stateDir)).toBe(false);
   });
+  it('removes the lock when the report of an error fails, and gives the failure of the screen', async () => {
+    const w = await taskWorld();
+    const broken = { out: (line: string) => { w.screen.out(line); }, err: () => { throw new Error('the screen failed'); } };
+    const failing: StepHandler = { name: 'one', run: async () => { throw new Error('a step failed'); } };
+    await expect(runTask(toyTask([failing]), [], w.deps({ out: broken }))).rejects.toThrow('the screen failed');
+    expect(existsSync(w.lockPath)).toBe(false);
+  });
 });
 
 describe('the network result of a run', () => {

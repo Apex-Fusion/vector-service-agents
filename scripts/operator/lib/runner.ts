@@ -593,14 +593,17 @@ export async function runTask<Extra>(def: TaskDefinition<Extra>, argv: readonly 
   };
   let ended: Ended;
   try {
-    ended = await execute(def, argv, deps, ctx);
-  } catch (err) {
-    const landed = ctx.state !== null && ctx.before !== null ? landingsSince(ctx.state, ctx.before) : [];
-    if (err instanceof FactsError && landed.length > 0) noteLandings(ctx, landed, err, deps.out);
-    const classified = present(err, deps.out, landed, ctx.usage);
-    ended = { exit: classified.exit, outcome: classified.outcome };
+    try {
+      ended = await execute(def, argv, deps, ctx);
+    } catch (err) {
+      const landed = ctx.state !== null && ctx.before !== null ? landingsSince(ctx.state, ctx.before) : [];
+      if (err instanceof FactsError && landed.length > 0) noteLandings(ctx, landed, err, deps.out);
+      const classified = present(err, deps.out, landed, ctx.usage);
+      ended = { exit: classified.exit, outcome: classified.outcome };
+    }
+  } finally {
+    await release(ctx, deps.out);
   }
-  await release(ctx, deps.out);
   emit(deps.out, { task: def.name, command: ctx.command, mode: ctx.mode, outcome: ended.outcome, exit: ended.exit, step: stepOf(def, ctx, ended.outcome), result: resultOf(def, ctx, deps.out) });
   return ended.exit;
 }
