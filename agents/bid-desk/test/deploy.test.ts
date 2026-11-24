@@ -1506,7 +1506,7 @@ describe('deploy/server/RUNBOOK-bid-desk.md', () => {
   test('the three adverts have three hashes and the terms of the code: the capability, the model, the price, the bonds, the lock and the window; each reference goes into the env file of its own Bid Desk', () => {
     const adverts = sectionOf(runbookText, 'The adverts');
     for (const part of [BID_CAPABILITIES.quote, BID_DESK_MODEL, 'three hashes', 'detail_hash', 'detail_uri', 'endpoint_url', 'ADVERT_REF', 'advert_not_active', 'up -d --no-deps --force-recreate runtime', 'so the lock is 3 units', '480,000 ms',
-      'never with the hash of another', 'its own manifest', 'AGENT_ID', 'retired advert and a new one']) expect(adverts, part).toContain(part);
+      'never with the hash of another', 'its own manifest', 'AGENT_ID', 'needs retirement and a new advert for that desk', 'confirm retirement of the old advert before you post again']) expect(adverts, part).toContain(part);
     expect(adverts).toContain(`the price ${PRICE_LOVELACE / 1_000_000} unit, with a supplier bond of ${BOND_LOVELACE / 1_000_000} unit and a buyer bond of ${BOND_LOVELACE / 1_000_000} unit`);
   });
 

@@ -263,7 +263,7 @@ done
 
 ## The adverts
 
-Each Bid Desk has an advert of its own, and the three adverts have three hashes. The manifest names the desk, its record, its keys and its price list. Post each advert with its own manifest hash, never with the hash of another. Use that desk's supplier key and `AGENT_ID`. The operator pack's task `advert` posts them. The manual way is the hosted tools of the Vector marketplace. The terms of each advert are:
+Each Bid Desk needs an advert of its own. The three adverts need three hashes, one for each manifest. The manifest names the desk, its record, its keys and its price list. Post each advert with its own manifest hash, never with the hash of another. Use that desk's supplier key and `AGENT_ID`. The operator pack's task `advert` posts them. The manual way is the hosted tools of the Vector marketplace. The terms of each advert are:
 
 - the capability `supplychain.rfq.quote.v1`;
 - the model `bid-desk-v1`;
@@ -273,7 +273,11 @@ Each Bid Desk has an advert of its own, and the three adverts have three hashes.
 - `detail_uri`: that origin and `/agent.json`;
 - `detail_hash`: the hash of its own manifest (section "The checks", check 5).
 
-Run `env` again to set each confirmed `ADVERT_REF`. In the manual flow, write the reference of each confirmed advert, `<transaction hash>#<output index>`, into `ADVERT_REF` of the env file of its own Bid Desk. A change to the manifest after its advert is posted means a retired advert and a new one for that Bid Desk. A change to a price list is a new image, and it changes the manifest of that Bid Desk only when the list of that Bid Desk changed. Set the confirmed replacement with `env --replace-advert` or update the same entry in the manual flow. Create the runtime again with `up -d --no-deps --force-recreate runtime`, as section "The restart rule" says. A runtime that holds the reference of a retired advert refuses every job with 503 `advert_not_active`.
+After a confirmed pack post, run `env` again to set `ADVERT_REF`. In the manual flow, set the existing `ADVERT_REF` of the same Bid Desk to the confirmed `<transaction hash>#<output index>`.
+
+A change to a price list needs a new image. It changes only the manifest of the Bid Desk whose list changed. A change to a manifest after posting needs retirement and a new advert for that desk. The pack does not replace one selected listing. `env --replace-advert` copies only the reference that `advert` already recorded in the facts after a confirmed post. See [Advert replacement](../../scripts/operator/README.md#advert-replacement) for the limits of the default stream and a new run label.
+
+To replace this listing manually, confirm retirement of the old advert before you post again. Post with the new manifest hash. Verify the new output on the ledger. Set the confirmed reference in the existing `ADVERT_REF` line. Create the runtime again with `up -d --no-deps --force-recreate runtime` under the restart rule. A runtime with a retired reference refuses with 503 `advert_not_active`.
 
 ## The start order
 
@@ -296,7 +300,7 @@ Start the Bid Desks one after the other, `alfa` first, then `bravo`, then `charl
 
 3. Join the Caddy container to the network of this Bid Desk, and add its block (section "The Caddy block"). Its DNS record must resolve to the host first.
 4. Check the public names of this Bid Desk, and take the hash of its manifest (section "The checks"). It is the `detail_hash` of its advert.
-5. Post the advert of this Bid Desk with the task `advert` (section "The adverts"). That task posts the next advert from the selected use case in data order. Check the next agent before you submit. Do not use `--all` unless all the pending adverts have served manifests. Keep the Post transaction hash and verify its output. If confirmation is unknown, stop and check the same hash. Do not post again. Run `env` again for the confirmed `ADVERT_REF`. In the manual flow, set the existing entry for this desk only. Do not append a second entry or print the file.
+5. Post the advert of this Bid Desk with the task `advert` (section "The adverts"). The task posts in the order of the use-case data: Sourcing Agent, then Bid Desks Alfa, Bravo and Charlie. Confirm each preceding post in the same state stream before you submit. The task has no selector for posting. Use `--agent` for cleanup only. Omit `--all` to post only the next advert. Keep the Post transaction hash and verify its output. If confirmation is unknown, stop and check the same hash. Do not post again. Run `env` again for the confirmed `ADVERT_REF`. In the manual flow, set the existing entry for this desk only. Do not append a second entry or print the file.
 6. Start the runtime. Pass the memory gate first. After the start, wait 30 seconds, and check that the runtime is up and says `free`. Write the port of its runtime in place of `<runtime port>`:
 
    ```sh

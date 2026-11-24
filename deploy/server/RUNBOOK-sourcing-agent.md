@@ -271,7 +271,7 @@ Run each `docker compose` command as the service user, in `/srv/agents/sourcing-
 
 3. Join the Caddy container to the network, and add the block of the host name (section "The Caddy block"). The DNS record must resolve to the host first.
 4. Check the public name, and take the hash of the manifest (section "The checks"). It is the `manifest` value of the line of step 2, and it is the `detail_hash` of the advert.
-5. Post the advert with the task `advert` of the operator pack. It uses the served manifest and the supplier key of the runtime, with the `AGENT_ID` of the agent record. It posts in data order. Do not use `--all` unless all pending adverts have served manifests. The manual way is the hosted tools of the Vector marketplace. The terms of the advert are:
+5. Post the advert with the task `advert` of the operator pack. It uses the served manifest and the supplier key of the runtime, with the `AGENT_ID` of the agent record. This advert comes before the three Bid Desk adverts in the same state stream. Omit `--all` to post only the next advert. The manual way is the hosted tools of the Vector marketplace. The terms of the advert are:
    - the capability `supplychain.rfq.evaluate.v1`;
    - the model `sourcing-agent-v1`;
    - the price 3 units, with a supplier bond of 1 unit and a buyer bond of 1 unit;
@@ -281,7 +281,11 @@ Run each `docker compose` command as the service user, in `/srv/agents/sourcing-
    - `detail_hash`: the hash of step 4.
 
    Keep the Post transaction hash in the deployment record before waiting for confirmation. Verify its output on the ledger. If confirmation is unknown, stop here and check the same hash. Do not post another advert.
-   Run `env` again to write the confirmed `ADVERT_REF`. In the manual flow, set `ADVERT_REF` in `.env.sourcing-agent` to the confirmed `<transaction hash>#<output index>`. A change to the manifest needs retirement and a new advert. Use `--replace-advert` with `env` only to set the confirmed replacement. Create the runtime again with `up -d --no-deps --force-recreate runtime` under the restart rule. A runtime with a retired reference refuses with 503 `advert_not_active`. In the manual flow, do not append a second `ADVERT_REF` or print the rest of the file.
+   After a confirmed pack post, run `env` again to set `ADVERT_REF`. In the manual flow, set the existing `ADVERT_REF` in `.env.sourcing-agent` to the confirmed `<transaction hash>#<output index>`. Do not append a second `ADVERT_REF` or print the rest of the file.
+
+   A change to the manifest needs retirement and a new advert. The pack does not replace one selected listing. `env --replace-advert` copies only the reference that `advert` already recorded in the facts after a confirmed post. See [Advert replacement](../../scripts/operator/README.md#advert-replacement) for the limits of the default stream and a new run label.
+
+   To replace this listing manually, confirm retirement of the old advert before you post again. Post with the new manifest hash. Verify the new output on the ledger. Set the confirmed reference in the existing `ADVERT_REF` line. Create the runtime again with `up -d --no-deps --force-recreate runtime` under the restart rule. A runtime with a retired reference refuses with 503 `advert_not_active`.
 6. Start the runtime. Pass the memory gate first. After the start, wait 30 seconds, and check that the runtime is up and says `free`:
 
    ```sh
