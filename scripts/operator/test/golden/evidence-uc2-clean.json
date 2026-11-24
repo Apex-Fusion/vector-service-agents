@@ -382,6 +382,49 @@
       "proposal_digest": "7469a51ce24f24e6927554400b31cec457993043907b67f1869131ce482b0956"
     }
   ],
+  "route_evidence": [
+    {
+      "step": "r1-02",
+      "route": "GET /records/orders/{order_id}",
+      "credential": "token",
+      "decision": "allowed",
+      "act_links": 2,
+      "count": 1
+    },
+    {
+      "step": "r1-02",
+      "route": "GET /guidelines/{code}",
+      "credential": "token",
+      "decision": "allowed",
+      "act_links": 2,
+      "count": 1
+    },
+    {
+      "step": "r1-05",
+      "route": "POST /insurer/requests",
+      "credential": "jwt-svid",
+      "decision": "allowed",
+      "act_links": 0,
+      "count": 1
+    },
+    {
+      "step": "r1-06",
+      "route": "POST /records/orders/{order_id}/submission",
+      "credential": "token",
+      "decision": "allowed",
+      "act_links": 1,
+      "count": 1
+    }
+  ],
+  "handoff_evidence": {
+    "execute_step": "execute",
+    "execute_escrow": "8341867172aeec8ec8f0612c3c884d2461ed290b1aaba8380026e38d4cf301d1#0",
+    "execute_result_sha256": "7b77e43a41fd15ba1e9c10980623cc3729fad2afe1ed384d034476737f25ca5f",
+    "intake_step": "intake",
+    "intake_escrow": "c392389215b6e7baf14604b95e49b8ed2da12e69a4667e1b938291a056e9c213#0",
+    "signed_acceptance": "confirmed",
+    "confirmed_accept_tx": "3e1fc4c8e04d8ed6160002c547a72fbb6d68be01a66b9b8a9a448d5489e995d8"
+  },
   "intake": {
     "status": "complete",
     "missing_count": 0,

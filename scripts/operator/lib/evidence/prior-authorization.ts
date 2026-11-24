@@ -1,32 +1,36 @@
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { PreconditionError } from '../../../checks/lib/session.ts';
-import { EXECUTE_OUTCOMES, EXIT_STATES, PROPOSAL_SCHEMA, RESULT_SCHEMA, canonicalSha256, isErrorCode, parseProposal } from '../../../../packages/usecase-kit/src/protocol/index.ts';
+import { EXECUTE_OUTCOMES, EXIT_STATES, HANDOFF_SCHEMA, PROPOSAL_SCHEMA, RESULT_SCHEMA, canonicalSha256, isErrorCode, makeProposal, parseApprovalRef, parseHandoff, parseProposal } from '../../../../packages/usecase-kit/src/protocol/index.ts';
 import { INTAKE_CHECKS, INTAKE_RECORD_SCHEMA, parseIntakeRecord, parsePriorAuthRequest } from '../../../../packages/usecase-kit/src/priorauth/index.ts';
 import type { IntakeRecord, PriorAuthRequest } from '../../../../packages/usecase-kit/src/priorauth/index.ts';
-import { evidenceReferences } from '../../../../packages/usecase-kit/src/dispute/index.ts';
-import { canonicalize } from '../../../../packages/vector-read/src/index.ts';
+import { requestText } from '../../../../packages/usecase-kit/src/buyer/message.ts';
+import { evidenceDocument, evidenceReferences } from '../../../../packages/usecase-kit/src/dispute/index.ts';
+import type { EvidenceReferences } from '../../../../packages/usecase-kit/src/dispute/index.ts';
+import { canonicalize, decodeIdentityEscrowDatum, promptHashForPayload } from '../../../../packages/vector-read/src/index.ts';
 import { decodeDelegationDatum, decodeIdentityDatum, encodeIdentityDatum } from '../../../../packages/vector-read/src/identity-codec.ts';
 import { decodeChallengeDatum, decodeClaimDatum, documentUri, readDocument, txHashOfUri } from '../../../../packages/buyer-core/src/index.ts';
 import { decodeJuryDatum } from '../../../../packages/buyer-core/src/vendored/mcp/jury-codec.ts';
 import { findConfigRecord } from '../../../../packages/buyer-core/src/vendored/mcp/identity-deployment.ts';
 import type { KoiosUtxo } from '../../../../packages/buyer-core/src/vendored/mcp/marketplace-indexer.ts';
 import { send as fetchBounded } from '../../../../packages/id-kit/src/common/http.ts';
+import { alterJustification } from '../../../../agents/prior-authorization-agent/src/execute/fault.ts';
 import data from '../../usecases/prior-authorization.ts';
 import { RUN_APPROVAL_VALIDITY_MS } from '../claim-constants.ts';
+import { MOCK_PUBLIC_BASE } from '../mock-hosts.ts';
 import type { RecordFact, UseCase } from '../contract.ts';
 import { PURPOSE, effectiveStatus, findRecord, keyHashOf, koiosUtxoInfo, module1FromManifest, readManifest } from '../platform.ts';
 import { readJsonFile, scriptTxInfoOf } from '../run-record.ts';
 import type { ScriptTxInfo } from '../run-record.ts';
 import { isObject, lastHire, ref, txOf } from './types.ts';
-import type { ApprovalRead, Assembly, Challenge, CommittedExecute, EvidenceModule, EvidenceReadSession, HireView, Obj, Ref, ReportedHire, TerminalSpend, VaultPayment } from './types.ts';
+import type { ApprovalRead, Assembly, Challenge, CommittedExecute, EvidenceModule, EvidenceReadSession, HireView, HistoricalHoldCandidate, IndexedCase, Obj, PublicHandoffEvidence, PublicRouteEvidence, Ref, ReportedHire, TerminalSpend, VaultPayment } from './types.ts';
 
 const HASH = /^[0-9a-f]{64}$/;
 const SCRIPT = /^[0-9a-f]{56}$/;
 const REF = /^[0-9a-f]{64}#(?:0|[1-9][0-9]{0,5})$/;
 const CHALLENGE_TOKEN = /^63686c5f[0-9a-f]{56}$/;
 const DID = /^did:vector:[0-9a-f]{64}$/;
-const DAY = 86_400_000;
+const DISPUTE_HOLD = 64;
 const READ_BYTES = 2 * 1024 * 1024;
 const FAULT = 'alter_after_approval';
 const ORDER_READ = 'GET /records/orders/{order_id}';
@@ -56,6 +60,10 @@ const digestOf = (value: string): string => createHash('sha256').update(value, '
 const outRef = (row: KoiosUtxo): string => `${row.tx_hash}#${row.tx_index}`;
 const recordRef = (row: { txHash: string; outputIndex: number }): string => `${row.txHash}#${row.outputIndex}`;
 const timeOf = (value: unknown): number => typeof value === 'string' ? Date.parse(value) : NaN;
+const canonicalTime = (value: unknown): number => {
+  const at = timeOf(value);
+  return Number.isFinite(at) && new Date(at).toISOString() === value ? at : NaN;
+};
 const named = (a: Assembly, step: string): HireView | undefined => a.loaded.hires.find((hire) => hire.entry.step === step);
 const reported = (hire: HireView | undefined): ReportedHire | null => hire?.report == null ? null : hire;
 
@@ -86,7 +94,7 @@ function approvalOf(a: Assembly, step: string): ApprovalRead | null {
   return a.approvalStates.find((entry) => entry?.hire === step && entry.entry.role === 'approval' && entry.link === 'request') ?? null;
 }
 
-function proposalOf(a: Assembly, step: string): { hire: ReportedHire; document: PriorAuthRequest; digest: string; documentHash: string } | null {
+function proposalOf(a: Assembly, step: string): { hire: ReportedHire; document: PriorAuthRequest; digest: string; salt: string; documentHash: string } | null {
   const hire = reported(named(a, step));
   if (hire?.role !== 'propose' || hire.result.outcome !== 'proposed' || hire.result.use_case !== data.name) return null;
   const proposal = parseProposal({ document: hire.result.document, salt: hire.result.salt, proposal_digest: hire.result.proposal_digest });
@@ -94,10 +102,10 @@ function proposalOf(a: Assembly, step: string): { hire: ReportedHire; document: 
   const document = parsePriorAuthRequest(proposal.value.document);
   const hash = canonicalSha256(proposal.value.document);
   if (!document.ok || !hash.ok || document.value.tenant !== a.loaded.record.tenant) return null;
-  return { hire, document: document.value, digest: proposal.value.proposal_digest, documentHash: hash.value };
+  return { hire, document: document.value, digest: proposal.value.proposal_digest, salt: proposal.value.salt, documentHash: hash.value };
 }
 
-interface Handoff { readonly execute: ReportedHire; readonly intake: HireView }
+interface Handoff { readonly execute: ReportedHire; readonly intake: HireView; readonly acceptance: 'confirmed' | 'pending' | null }
 function signedHandoff(a: Assembly, executeStep: string, intakeStep: string): Handoff | null {
   const execute = reported(named(a, executeStep));
   const intake = named(a, intakeStep);
@@ -108,10 +116,14 @@ function signedHandoff(a: Assembly, executeStep: string, intakeStep: string): Ha
     || wire.paid_from_vault !== true) return null;
   if (intake.report === null) {
     if (wire.receipt !== null || wire.receipt_signature !== null || wire.result !== null || wire.verification !== null || wire.accepted !== null) return null;
-  } else if (wire.receipt_signature !== intake.report.receipt_signature || !isObject(wire.receipt) || !isObject(wire.result)
+    return { execute, intake, acceptance: null };
+  }
+  const terminal = a.terminals.get(intake.entry.escrow_ref);
+  if (wire.receipt_signature !== intake.report.receipt_signature || !isObject(wire.receipt) || !isObject(wire.result)
       || canonicalize(wire.receipt) !== canonicalize(intake.report.receipt) || canonicalize(wire.result) !== canonicalize(intake.result)
-      || wire.accepted !== 'confirmed' || intake.entry.accept_tx === null || a.terminals.get(intake.entry.escrow_ref)?.action !== 'Accept') return null;
-  return { execute, intake };
+      || (wire.accepted !== 'confirmed' && wire.accepted !== 'pending') || intake.entry.accept_tx === null
+      || terminal?.action !== 'Accept' || terminal.tx !== intake.entry.accept_tx) return null;
+  return { execute, intake, acceptance: wire.accepted };
 }
 
 function matchesRefusal(result: Obj, kind: keyof typeof REFUSALS): boolean {
@@ -130,6 +142,15 @@ function refusalOf(a: Assembly, id: string, kind: keyof typeof REFUSALS): Refuse
   if (reclaim?.action !== 'Reclaim' || reclaim.tx !== handoff.intake.entry.reclaim_tx || reclaim.spent_output !== handoff.intake.entry.escrow_ref
     || reclaim.refund_outputs.length < 1 || reclaim.refund_outputs.length > 12) return null;
   return { handoff, reclaim, approval };
+}
+
+/** Project the proved pair. Do not rewrite a signed pending state to confirmed. */
+function projectHandoff(handoff: Handoff): PublicHandoffEvidence | null {
+  const { execute, intake, acceptance } = handoff;
+  return acceptance === null || intake.entry.accept_tx === null ? null : {
+    execute_step: execute.entry.step, execute_escrow: execute.entry.escrow_ref, execute_result_sha256: execute.sha256,
+    intake_step: intake.entry.step, intake_escrow: intake.entry.escrow_ref, signed_acceptance: acceptance, confirmed_accept_tx: intake.entry.accept_tx,
+  };
 }
 
 function intakeRefs(handoff: Handoff): Ref[] {
@@ -249,31 +270,57 @@ async function confirmed(session: EvidenceReadSession, hash: string): Promise<bo
   return ((await session.node.txStatus(hash)).confirmations ?? 0) > 0;
 }
 
-interface DelegationProof { readonly root: string | null; readonly children: ReadonlyMap<string, string> }
-async function readDelegations(session: EvidenceReadSession, a: Assembly, drafter: RecordFact, proposal: string): Promise<DelegationProof> {
+interface DelegationWindow { readonly id: string; readonly start: number; readonly end: number }
+interface DelegationProof { readonly root: string | null; readonly children: ReadonlyMap<string, DelegationWindow> }
+async function readDelegations(session: EvidenceReadSession, a: Assembly, drafter: RecordFact): Promise<DelegationProof> {
   const { delegation } = session.chain.deployment;
   const roots = new Set<string>();
   const datumOf = async (hash: string, id: string) => {
     const info = await tx(session, hash);
     const row = await tokenOutput(session, info.outputs.filter((entry) => entry.credential === delegation.hash).map((entry) => entry.ref), delegation.hash, id, delegation.address);
-    return row === null ? null : decodeDelegationDatum(row.inline_datum!.bytes);
+    return row === null ? null : { timeMs: info.timeMs, datum: decodeDelegationDatum(row.inline_datum!.bytes) };
   };
   for (const entry of a.reads.delegations) {
-    const datum = await datumOf(entry.tx, entry.id);
-    if (datum?.parent === null && datum.delegate === drafter.id) roots.add(entry.id);
+    const root = await datumOf(entry.tx, entry.id);
+    if (root?.datum.parent === null && root.datum.delegate === drafter.id) roots.add(entry.id);
   }
   const root = roots.size === 1 ? [...roots][0]! : null;
-  const children = new Map<string, string>();
-  if (root === null) return { root, children };
+  const children = new Map<string, DelegationWindow>();
+  const proposal = named(a, 'propose');
+  if (root === null || proposal === undefined) return { root, children };
+  const receipt = a.receiptAttributions.get(proposal.entry.escrow_ref);
+  if (receipt === undefined) return { root, children };
+  // The proposal cannot read before its Claim or after its confirmed Submit.
+  const submit = await tx(session, txOf(receipt.submitted_ref));
+  const escrow = session.chain.deployment.escrow.hash;
+  const claimed = submit.inputs.filter((entry) => entry.credential === escrow);
+  if (claimed.length !== 1) return { root, children };
+  const claim = await tx(session, txOf(claimed[0]!.ref));
+  if (!spend(claim, escrow, proposal.entry.escrow_ref, 0)) return { root, children };
   for (const spec of actors(a.use).children) {
-    const matches = a.reads.subDelegations.filter((entry) => entry.subagent === spec.id && entry.hire === proposal);
+    const matches = a.reads.subDelegations.filter((entry) => entry.subagent === spec.id && entry.hire === proposal.entry.step);
     const child = recordOf(a, spec.id);
     if (matches.length !== 1 || child === null) continue;
     const entry = matches[0]!;
-    const datum = await datumOf(entry.delegate_tx, entry.id);
-    if (datum?.parent === root && datum.delegate === child.id) children.set(spec.id, entry.id);
+    const issued = await datumOf(entry.delegate_tx, entry.id);
+    if (issued?.datum.parent !== root || issued.datum.delegate !== child.id) continue;
+    const ended = await tx(session, entry.undelegate_tx);
+    const start = Math.max(claim.timeMs, issued.timeMs, issued.datum.notBefore);
+    const end = Math.min(submit.timeMs, ended.timeMs, issued.datum.notAfter);
+    if (start < end) children.set(spec.id, { id: entry.id, start, end });
   }
   return { root, children };
+}
+
+/** The clean run has one payment. Its recorded vault can be the input or that payment's unique continuation. */
+async function readRunVaultPayment(session: EvidenceReadSession, a: Assembly, handoff: Handoff, payment: VaultPayment): Promise<boolean> {
+  const vault = a.reads.vaults.length === 1 ? a.reads.vaults[0] : undefined;
+  if (!payment.paid || vault?.close_tx == null) return false;
+  if (payment.vault_ref === vault.ref) return true;
+  if (txOf(vault.ref) !== handoff.intake.entry.post_tx) return false;
+  const post = await tx(session, handoff.intake.entry.post_tx);
+  const change = post.outputs.filter(({ credential }) => credential === session.chain.deployment.vault.hash);
+  return change.length === 1 && change[0]!.ref === vault.ref;
 }
 
 async function boundedList(session: EvidenceReadSession, path: string): Promise<readonly Obj[]> {
@@ -286,7 +333,80 @@ async function boundedList(session: EvidenceReadSession, path: string): Promise<
 }
 
 interface CaseIdentity { readonly jury: string; readonly caseToken: string; readonly opened: string }
-interface DisputeProof { readonly challenge: Challenge; readonly canonical: CaseIdentity | null; readonly policy: string }
+interface DisputeProof {
+  readonly challenge: Challenge;
+  readonly canonical: CaseIdentity | null;
+  readonly policy: string;
+  readonly application: HistoricalHoldCandidate | null;
+}
+
+/** Use the indexer only to find the verdict and the transaction that spent it. The core verifies both. */
+async function readAppliedHold(session: EvidenceReadSession, subject: string, policy: string, located: unknown, challengeAt: number): Promise<HistoricalHoldCandidate | null> {
+  if (located == null || (isObject(located) && located.applied_tx === null)) return null;
+  const verdict = isObject(located) ? textOf(located.ref) : null;
+  const applyTx = isObject(located) ? hashOf(located.applied_tx) : null;
+  if (!isObject(located) || located.action !== 'suspend' || verdict === null || !REF.test(verdict) || applyTx === null) {
+    throw new PreconditionError('hold: the dispute does not name an exact suspend verdict and application');
+  }
+  const applied = await tx(session, applyTx);
+  const { identity } = session.chain.deployment;
+  const record = await tokenOutput(session, applied.outputs.filter(({ credential }) => credential === identity.hash).map(({ ref }) => ref),
+    identity.hash, subject, identity.address);
+  if (record === null || !applied.inputs.some(({ ref, credential }) => ref === verdict && credential === policy)) {
+    throw new PreconditionError('hold: the application does not spend this verdict and create the subject record');
+  }
+  const status = decodeIdentityDatum(record.inline_datum!.bytes).status;
+  const hold = status.type === 'Suspended' ? status.holds.find((entry) => entry.by.type === 'Script' && entry.by.hash === policy && entry.reason === DISPUTE_HOLD
+    && challengeAt <= entry.since && entry.since <= applied.timeMs && entry.since < entry.until) : undefined;
+  if (hold === undefined) throw new PreconditionError('hold: the application output does not show the Module-1 hold of this dispute');
+  return { verdict_output: verdict, record_output: outRef(record), reason: hold.reason, since: hold.since, until: hold.until, gateway_status: null };
+}
+
+type IdentityVersion = Awaited<ReturnType<typeof findRecord>>;
+function observeHold(record: IdentityVersion, policy: string, now: number): { ref: string; since: number; until: number } | null {
+  const status = record?.record.status;
+  const hold = status?.type === 'Suspended' ? status.holds.find((entry) => entry.by.type === 'Script' && entry.by.hash === policy && entry.reason === DISPUTE_HOLD
+    && entry.since <= now && now < entry.until) : undefined;
+  return record === null || hold === undefined ? null : { ref: recordRef(record.utxo), since: hold.since, until: hold.until };
+}
+
+/** Reproduce the pinned fault on the signed proposal, and check the exact wire commitment at the intake Post. */
+async function faultEvidenceMatches(session: EvidenceReadSession, a: Assembly, refs: EvidenceReferences, bytes: Uint8Array): Promise<boolean> {
+  const proposal = proposalOf(a, 'propose-a');
+  const handoff = signedHandoff(a, 'execute-a', 'intake-a');
+  if (proposal === null || handoff === null || handoff.intake.report !== null || handoff.execute.result.proposal_digest !== proposal.digest
+    || handoff.execute.result.fault_mode !== FAULT || !matchesRefusal(handoff.execute.result, 'altered')) return false;
+  const request = requestOf(a, handoff.execute);
+  const identity = request?.approval;
+  if (identity == null || request?.digest !== proposal.digest
+    || !a.loaded.record.approvals.some((entry) => entry.role === 'approval' && entry.attestation === identity.attestation)) return false;
+  const approval = parseApprovalRef(identity);
+  const payment = await a.paidFromVault(handoff.intake.entry);
+  if (!approval.ok || !payment.paid) return false;
+
+  const altered = makeProposal(alterJustification(proposal.document), proposal.salt);
+  if (!altered.ok || altered.value.proposal_digest === proposal.digest) return false;
+  const sent = parseHandoff({ schema: HANDOFF_SCHEMA, use_case: data.name, sender_did: refs.against_did, delegation: payment.delegation,
+    document: altered.value.document, salt: altered.value.salt, approval: approval.value });
+  if (!sent.ok) return false;
+  const escrow = session.chain.deployment.escrow;
+  const rows = await outputsFor(session, [refs.escrow_ref]);
+  const posted = rows.length === 1 ? rows[0] : undefined;
+  if (posted === undefined || outRef(posted) !== refs.escrow_ref || posted.address !== escrow.address || posted.payment_cred !== escrow.hash) return false;
+  const datum = decodeIdentityEscrowDatum(posted.inline_datum?.bytes ?? '');
+  if (datum.state !== 'Open' || datum.prompt_hash !== promptHashForPayload(requestText(sent.value))) return false;
+  const expected = evidenceDocument({ ...refs, kind: 'approval_digest', use_case: 'prior-authorization', statement_text: 'The claim statement.',
+    approval: approval.value, mismatch: { ok: false, code: 'approval_digest_mismatch', detail: 'The digests differ.',
+      expected_digest: proposal.digest, observed_digest: altered.value.proposal_digest } });
+  if (!expected.ok) return false;
+  const expectedRows = expected.value.text.split('\n');
+  const rowsOfEvidence = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes).split('\n');
+  // The statement text comes from the filed claim, not from the proposal. Its row and all other rows must have the producer's shape.
+  const statementPrefix = 'Statement S1 of the claim reads: ';
+  return rowsOfEvidence.length === expectedRows.length && rowsOfEvidence.every((row, i) => i === 1
+    ? row.startsWith(statementPrefix) && row.length > statementPrefix.length : row === expectedRows[i]);
+}
+
 async function readDispute(session: EvidenceReadSession, a: Assembly, drafter: RecordFact, intake: RecordFact): Promise<DisputeProof> {
   const claim = a.facts.claims[a.loaded.record.label]?.[actors(a.use).drafter.id];
   const commit = session.settings.module1Commit;
@@ -326,7 +446,9 @@ async function readDispute(session: EvidenceReadSession, a: Assembly, drafter: R
   const failed = named(a, 'intake-a');
   if (doc.type !== 'evidence' || doc.hash !== challenge.evidenceHash || !refs.ok || refs.value.claim !== claim.claimRef || refs.value.claim_token !== claim.claimToken
     || refs.value.against_did !== drafter.did || refs.value.by_did !== intake.did || failed?.role !== 'intake' || refs.value.escrow_ref !== failed.entry.escrow_ref
-    || (a.purpose === 'run' && signedHandoff(a, 'execute-a', 'intake-a') === null)) throw new PreconditionError('challenge.evidence: the evidence document does not bind the fault hire and both parties');
+    || (a.purpose === 'run' && !await faultEvidenceMatches(session, a, refs.value, doc.bytes))) {
+    throw new PreconditionError('challenge.evidence: the evidence document does not bind the fault hire, exact approval, digests and both parties');
+  }
 
   const canonical = selected?.jury;
   let caseIdentity: CaseIdentity | null = null;
@@ -345,7 +467,10 @@ async function readDispute(session: EvidenceReadSession, a: Assembly, drafter: R
     if (!opened) throw new PreconditionError('case: the ledger does not show the canonical case of these parties');
     caseIdentity = { jury, caseToken, opened: openedTx };
   }
-  return { challenge: { agent: actors(a.use).drafter.id, claim: claim.claimRef, evidence: evidenceTx, challenge: outRef(row) }, canonical: caseIdentity, policy: config.m1 };
+  const application = isObject(canonical) && isObject(canonical.finalized) && canonical.finalized.result === 'AuditorWins'
+    ? await readSource('hold', () => readAppliedHold(session, drafter.id, config.m1, selected?.verdict, info.timeMs)) : null;
+  return { challenge: { agent: actors(a.use).drafter.id, claim: claim.claimRef, evidence: evidenceTx, challenge: outRef(row) },
+    canonical: caseIdentity, policy: config.m1, application };
 }
 
 async function readListing(session: EvidenceReadSession, a: Assembly, draft: RecordFact): Promise<boolean> {
@@ -361,9 +486,12 @@ async function readListing(session: EvidenceReadSession, a: Assembly, draft: Rec
   return refs.length > 0 && !rows.some((row) => row.did === draft.did || refs.includes(row.advert_ref));
 }
 
-interface ProbePoint { readonly at: string; readonly did: string; readonly status: number; readonly code: string | null }
-interface ProbeProof { readonly control: ProbePoint; readonly refusal: ProbePoint }
-interface EndProof { readonly tx: string; readonly at: number; readonly epochBefore: number; readonly epochAfter: number; readonly children: readonly { did: string; effective: 'Revoked' }[]; readonly probe: ProbeProof | null }
+interface ProbeProof {
+  readonly control: { readonly at: string; readonly did: string; readonly status: null; readonly code: null; readonly token_type: 'DPoP'; readonly expires_at: string };
+  readonly refusal: { readonly at: string; readonly did: string; readonly status: 400 | 401; readonly code: string };
+}
+interface EpochChange { readonly tx: string; readonly at: number; readonly input: string; readonly output: string; readonly epochBefore: number; readonly epochAfter: number }
+interface EndProof extends EpochChange { readonly children: readonly { did: string; effective: 'Revoked' }[]; readonly probe: ProbeProof | null }
 
 function probeProof(session: EvidenceReadSession, a: Assembly, at: number, ended: readonly { did: string }[]): ProbeProof | null {
   const file = join(session.settings.stateDir, `probe.${a.loaded.record.label}.evidence.json`);
@@ -372,39 +500,39 @@ function probeProof(session: EvidenceReadSession, a: Assembly, at: number, ended
   catch (err) { if (err instanceof Error && err.message.endsWith('(ENOENT)')) return null; throw err; }
   if (!isObject(json) || json.format !== 1 || json.check !== 'probe' || json.network !== session.settings.network.name
     || json.record !== `${a.use.name}:${a.loaded.record.label}` || !Array.isArray(json.entries)) throw new Error('the probe journal has another identity');
-  const candidates: Array<{ point: ProbePoint; t: number; subagent: string; resource: string; action: string }> = [];
+  const child = actors(a.use).children.find(({ id }) => id === 'record-reader');
+  const childFact = child === undefined ? null : recordOf(a, child.id);
+  if (child === undefined || childFact === null || !ended.some(({ did }) => did === childFact.did)) return null;
+  const resource = `${MOCK_PUBLIC_BASE}/t/${a.loaded.record.tenant}/records`;
+  const now = session.clock.now();
+  let control: ProbeProof['control'] | undefined;
+  let refusal: ProbeProof['refusal'] | undefined;
   for (const entry of json.entries) {
     if (!isObject(entry) || entry.step !== 'run' || entry.status !== 'info' || !isObject(entry.shows) || typeof entry.at !== 'string') continue;
     const { probe, record, observation, verdict } = entry.shows;
-    if (!isObject(probe) || !isObject(record) || !isObject(observation) || !isObject(verdict) || verdict.ok !== true || Object.hasOwn(probe, 'delegation')) continue;
-    const child = actors(a.use).children.find((one) => one.id === probe.subagent);
-    const childFact = child === undefined ? null : recordOf(a, child.id);
-    if (child === undefined || childFact === null || !ended.some((one) => one.did === childFact.did) || record.did !== childFact.did
+    if (!isObject(probe) || !isObject(record) || !isObject(observation) || !isObject(verdict) || verdict.ok !== true || Object.hasOwn(probe, 'delegation')
+      || probe.subagent !== child.id || record.did !== childFact.did || probe.resource !== resource || probe.action !== 'record.read'
       || !child.keys.some((key) => key.key === probe.subjectKey && key.purposes.includes('authentication'))
-      || !child.keys.some((key) => key.key === probe.dpopKey && key.purposes.includes('delegation')) || probe.subjectKey === probe.dpopKey
-      || typeof probe.resource !== 'string' || probe.resource === '' || typeof probe.action !== 'string' || probe.action === '') continue;
-    const t = timeOf(entry.at);
-    if (!Number.isFinite(t) || verdict.expected !== probe.expect || verdict.observed !== probe.expect || observation.kind !== probe.expect) continue;
-    const code = textOf(observation.error);
-    const status = observation.status;
-    const good = probe.expect === 'granted' && status === 200 && record.effectiveStatus === 'active' && t < at;
-    const refused = probe.expect === 'refused' && (status === 400 || status === 401) && record.effectiveStatus === 'revoked' && t > at
-      && (code === 'invalid_request' || code === 'agent_not_active' || code === 'invalid_token');
-    if ((good || refused) && typeof status === 'number') candidates.push({ point: { at: entry.at, did: childFact.did, status, code: good ? null : code }, t, subagent: child.id, resource: probe.resource, action: probe.action });
+      || !child.keys.some((key) => key.key === probe.dpopKey && key.purposes.includes('delegation')) || probe.subjectKey === probe.dpopKey) continue;
+    const t = canonicalTime(entry.at);
+    if (!Number.isFinite(t) || t > now || verdict.expected !== probe.expect || verdict.observed !== probe.expect || observation.kind !== probe.expect) continue;
+    if (probe.expect === 'granted' && record.effectiveStatus === 'active' && t < at && observation.tokenType === 'DPoP'
+      && typeof observation.expiresAt === 'string' && canonicalTime(observation.expiresAt) > t) {
+      control ??= { at: entry.at, did: childFact.did, status: null, code: null, token_type: 'DPoP', expires_at: observation.expiresAt };
+    }
+    const { status, error, text } = observation;
+    if (probe.expect === 'refused' && record.effectiveStatus === 'revoked' && t > at && (status === 400 || status === 401)
+      && (error === 'invalid_request' || error === 'agent_not_active' || error === 'invalid_token')
+      && typeof text === 'string' && /^subject_token: the agent's effective status is revoked(?:$|[ .,:;])/.test(text)) {
+      refusal ??= { at: entry.at, did: childFact.did, status, code: error };
+    }
   }
-  const controls = candidates.filter(({ t }) => t < at);
-  const refusals = candidates.filter(({ t }) => t > at);
-  for (const refused of refusals) {
-    const control = controls.find((row) => row.subagent === refused.subagent && row.resource === refused.resource && row.action === refused.action);
-    if (control !== undefined) return { control: control.point, refusal: refused.point };
-  }
-  return null;
+  return control !== undefined && refusal !== undefined ? { control, refusal } : null;
 }
 
-async function readEnd(session: EvidenceReadSession, a: Assembly, parent: RecordFact): Promise<EndProof | null> {
-  const roster = actors(a.use);
-  const fact = a.facts.subagentEnds[roster.drafter.id];
-  if (fact === undefined || !HASH.test(fact.tx) || fact.epochAfter !== fact.epochBefore + 1 || !await confirmed(session, fact.tx) || roster.children.length !== 2) return null;
+async function readEpochChange(session: EvidenceReadSession, a: Assembly, parent: RecordFact): Promise<EpochChange | null> {
+  const fact = a.facts.subagentEnds[actors(a.use).drafter.id];
+  if (fact === undefined || !HASH.test(fact.tx) || fact.epochAfter !== fact.epochBefore + 1 || !await confirmed(session, fact.tx)) return null;
   const { identity } = session.chain.deployment;
   const info = await tx(session, fact.tx);
   const inputs = info.inputs.filter((entry) => entry.credential === identity.hash).map((entry) => entry.ref);
@@ -416,15 +544,19 @@ async function readEnd(session: EvidenceReadSession, a: Assembly, parent: Record
   if (before === null || after === null || before.is_spent !== true || before.value !== after.value) return null;
   const prior = decodeIdentityDatum(before.inline_datum!.bytes);
   if (prior.subagentEpoch !== fact.epochBefore || encodeIdentityDatum({ ...prior, subagentEpoch: fact.epochAfter }) !== encodeIdentityDatum(decodeIdentityDatum(after.inline_datum!.bytes))) return null;
-  const current = await findRecord(session.chain.provider, session.chain.deployment, parent.id);
-  if (current === null || current.record.subagentEpoch !== fact.epochAfter) return null;
+  return { tx: fact.tx, at: info.timeMs, input: outRef(before), output: outRef(after), epochBefore: fact.epochBefore, epochAfter: fact.epochAfter };
+}
+
+async function readEnd(session: EvidenceReadSession, a: Assembly, parent: RecordFact, current: IdentityVersion, change: EpochChange): Promise<EndProof | null> {
+  const { children: roster } = actors(a.use);
+  if (current === null || current.record.subagentEpoch !== change.epochAfter || roster.length !== 2) return null;
   const children: Array<{ did: string; effective: 'Revoked' }> = [];
-  for (const child of roster.children) {
+  for (const child of roster) {
     const known = recordOf(a, child.id);
     if (known === null) return null;
     const record = await findRecord(session.chain.provider, session.chain.deployment, known.id);
     const lineage = record?.record.lineage;
-    if (record === null || lineage?.type !== 'Subagent' || lineage.parent !== parent.id || lineage.parentEpoch !== fact.epochBefore || lineage.depth !== 1
+    if (record === null || lineage?.type !== 'Subagent' || lineage.parent !== parent.id || lineage.parentEpoch !== change.epochBefore || lineage.depth !== 1
       || record.record.status.type !== 'Active' || effectiveStatus(record.record, new Map([[parent.id, current.record]]), session.clock.now(), session.clock.now()) !== 'Revoked') return null;
     const answer = await session.hosted.call('vector_resolve_did', { did: known.did });
     if (answer.failed) throw new Error('the subagent resolver could not be read');
@@ -433,12 +565,12 @@ async function readEnd(session: EvidenceReadSession, a: Assembly, parent: Record
     if (!isObject(state) || typeof state.effective !== 'string' || state.effective.toLowerCase() !== 'revoked') return null;
     children.push({ did: known.did, effective: 'Revoked' });
   }
-  return { tx: fact.tx, at: info.timeMs, epochBefore: fact.epochBefore, epochAfter: fact.epochAfter, children, probe: probeProof(session, a, info.timeMs, children) };
+  return { ...change, children, probe: probeProof(session, a, change.at, children) };
 }
 
 class Sources {
   constructor(readonly delegation: DelegationProof | null, readonly payment: VaultPayment | null, readonly dispute: DisputeProof | null,
-    readonly unlisted: boolean, readonly end: EndProof | null, readonly hold: { ref: string; since: number; until: number } | null) {}
+    readonly unlisted: boolean, readonly end: EndProof | null, readonly activeHoldObserved: boolean, readonly currentHold: string | null, readonly runVaultPaid: boolean) {}
 }
 function prepared(a: Assembly): Sources {
   const value = a.extra.prior;
@@ -456,6 +588,26 @@ const faultOf = (a: Assembly) => {
     .sort((l, r) => r.atMs - l.atMs)[0];
 };
 
+function proposalReadRefs(a: Assembly): Ref[] | string {
+  const p = proposalOf(a, 'propose');
+  const roster = actors(a.use);
+  const draft = recordOf(a, roster.drafter.id);
+  const reads = prepared(a).delegation;
+  if (p === null || draft === null || reads === null || roster.children.length !== 2 || reads.children.size !== 2) return 'the proposal or the two child delegations are unproven';
+  const on = (route: string, id: string): boolean => {
+    const child = recordOf(a, id);
+    const window = reads.children.get(id);
+    return child !== null && window !== undefined && allowed(a, route, 200, (line) => {
+      const at = canonicalTime(line.at);
+      return window.start <= at && at < window.end && line.credential === 'token' && exactAct(line.act, [child.did, draft.did]) && line.delegation === window.id;
+    });
+  };
+  const escrow = decisionOf(p.hire, 'justification');
+  if (escrow === null || !on(ORDER_READ, 'record-reader') || !on(GUIDELINE_READ, 'drafter')) return 'both attributed reads and the justification decision are not shown';
+  const sub = a.reads.subDelegations.filter((one) => one.subagent !== null && reads.children.get(one.subagent)?.id === one.id);
+  return [...hireRefs(p.hire), ...sub.flatMap((one) => [ref('delegation', one.id), ref('transaction', one.delegate_tx), ref('transaction', one.undelegate_tx)]), ref('escrow', escrow)];
+}
+
 const RULES: EvidenceModule['rules'] = {
   'r1-01': (a) => {
     const root = prepared(a).delegation?.root;
@@ -466,21 +618,7 @@ const RULES: EvidenceModule['rules'] = {
       ? [ref('delegation', delegation.id), ref('transaction', delegation.tx), ...approvalRefs(binding), ref('vault', vault.ref), ref('transaction', vault.open_tx)]
       : 'the correct delegation, principal binding and vault are not all proved';
   },
-  'r1-02': (a) => {
-    const p = proposalOf(a, 'propose');
-    const roster = actors(a.use);
-    const draft = recordOf(a, roster.drafter.id);
-    const reads = prepared(a).delegation;
-    if (p === null || draft === null || reads === null || roster.children.length !== 2 || reads.children.size !== 2) return 'the proposal or the two child delegations are unproven';
-    const children = roster.children.map((child) => ({ identity: recordOf(a, child.id), delegation: reads.children.get(child.id) }));
-    const on = (route: string, child: (typeof children)[number]) => child.identity !== null && allowed(a, route, 200,
-      (line) => line.credential === 'token' && exactAct(line.act, [child.identity!.did, draft.did]) && line.delegation === child.delegation);
-    const paired = children.some((first, i) => on(ORDER_READ, first) && on(GUIDELINE_READ, children[1 - i]!));
-    const escrow = decisionOf(p.hire, 'justification');
-    if (escrow === null || !paired) return 'both attributed reads and the justification decision are not shown';
-    const sub = a.reads.subDelegations.filter((one) => one.subagent !== null && reads.children.get(one.subagent) === one.id);
-    return [...hireRefs(p.hire), ...sub.flatMap((one) => [ref('delegation', one.id), ref('transaction', one.delegate_tx), ref('transaction', one.undelegate_tx)]), ref('escrow', escrow)];
-  },
+  'r1-02': proposalReadRefs,
   'r1-03': (a) => {
     const p = proposalOf(a, 'propose');
     const approval = approvalOf(a, 'execute');
@@ -489,7 +627,7 @@ const RULES: EvidenceModule['rules'] = {
   'r1-04': (a) => {
     const handoff = signedHandoff(a, 'execute', 'intake');
     const payment = prepared(a).payment;
-    return handoff !== null && payment?.paid === true && payment.delegation === prepared(a).delegation?.root
+    return handoff !== null && payment?.paid === true && payment.delegation === prepared(a).delegation?.root && prepared(a).runVaultPaid
       ? [...hireRefs(handoff.execute), ...intakeRefs(handoff), ref('vault', payment.vault_ref)] : 'the signed handoff or the payment from the run vault is unproven';
   },
   'r1-05': (a) => {
@@ -540,19 +678,21 @@ const RULES: EvidenceModule['rules'] = {
   },
   'r2-b-hold': (a) => {
     const c = a.caseRead;
-    const canonical = prepared(a).dispute?.canonical;
-    return canonical != null && caseMatches(a, canonical) && c?.verdict === 'AuditorWins' && c.hold !== null && c.indexed?.finalized_tx != null
-      ? [ref('case', c.indexed.case_token), ref('transaction', c.indexed.finalized_tx), ref('hold', c.hold.record_output)]
-      : 'the case did not show the AuditorWins verdict and its hold; a different verdict needs a new claim and challenge';
+    const proof = prepared(a).dispute;
+    return proof?.canonical != null && caseMatches(a, proof.canonical) && c?.verdict === 'AuditorWins' && c.indexed?.finalized_tx != null
+      && proof.application != null && c.hold?.record_output === proof.application.record_output
+      ? [ref('case', c.indexed.case_token), ref('transaction', c.indexed.finalized_tx), ref('verdict', proof.application.verdict_output), ref('hold', c.hold.record_output)]
+      : 'the case did not prove application of its AuditorWins verdict; a different verdict needs a new claim and challenge';
   },
   'r2-c': (a) => {
     const c = a.caseRead;
-    const canonical = prepared(a).dispute?.canonical;
+    const { dispute, currentHold, unlisted } = prepared(a);
     const refs = Object.values(a.facts.adverts[actors(a.use).drafter.id] ?? {}).map((entry) => entry.ref);
     const refused = a.loaded.record.refusals.some((entry) => entry.kind === 'tool' && entry.step === 'r2-c'
       && refs.some((ref) => entry.message.includes(`Advert ${ref} is not listed by the marketplace indexer`)));
-    return canonical != null && caseMatches(a, canonical) && c?.verdict === 'AuditorWins' && c.hold !== null && c.hold.record_output === prepared(a).hold?.ref && prepared(a).unlisted && refused
-      ? [ref('hold', c.hold.record_output), ref('transaction', txOf(c.hold.record_output))] : 'the current hold, absent listing and refusal of the exact advert are not all shown';
+    return dispute?.canonical != null && caseMatches(a, dispute.canonical) && c?.verdict === 'AuditorWins' && dispute.application !== null
+      && c.hold?.record_output === dispute.application.record_output && currentHold !== null && unlisted && refused
+      ? [ref('hold', currentHold), ref('transaction', txOf(currentHold))] : 'the current hold, absent listing and refusal of the exact advert are not all shown';
   },
   'r2-f': (a) => {
     const end = prepared(a).end;
@@ -563,9 +703,12 @@ const RULES: EvidenceModule['rules'] = {
 
 function caseMatches(a: Assembly, expected: CaseIdentity): boolean {
   const current = a.caseRead;
-  if (current?.indexed != null) return current.indexed.jury === expected.jury && current.indexed.case_token === expected.caseToken && current.indexed.opened_tx === expected.opened;
+  if (current?.indexed != null) return indexedCaseMatches(current.indexed, expected);
   return current?.listed != null && current.listed.jury === expected.jury && current.listed.case_token === expected.caseToken;
 }
+
+const indexedCaseMatches = (actual: IndexedCase, expected: CaseIdentity): boolean =>
+  actual.jury === expected.jury && actual.case_token === expected.caseToken && actual.opened_tx === expected.opened;
 
 function approvalDocument(approval: ApprovalRead): Obj {
   return { attestation: approval.entry.attestation, tx: approval.entry.tx, hire: approval.hire, digest: approval.digest,
@@ -595,10 +738,20 @@ export const priorAuthorization: EvidenceModule = {
     return entry.role === 'binding' ? { issuer } : { issuer, maxValidityMs: RUN_APPROVAL_VALIDITY_MS, clockSlackMs: 60_000 };
   },
   challengeOf: (a) => prepared(a).dispute?.challenge ?? null,
-  async holdOf(a, source) {
-    const hold = await source.readRecordHold();
-    const read = prepared(a);
-    return hold !== null && hold.record_output === read.hold?.ref && hold.since === read.hold.since && hold.until === read.hold.until ? hold : null;
+  holdOf(a, source) {
+    const { dispute, activeHoldObserved } = prepared(a);
+    const indexed = source.indexed;
+    if (indexed?.finalized_result !== 'AuditorWins') {
+      if (activeHoldObserved && source.listed?.state === 'Settling' && source.listed.outcome === 'AuditorWins') {
+        throw new PreconditionError('the current hold does not prove a verdict application without the exact Finalize transaction');
+      }
+      return null;
+    }
+    if (dispute?.canonical == null || !indexedCaseMatches(indexed, dispute.canonical)) throw new PreconditionError('the dispute and Finalize readers name different jury cases');
+    if (dispute.application === null && activeHoldObserved) {
+      throw new PreconditionError('the exact verdict application is unproven; the current hold alone does not prove it');
+    }
+    return dispute.application;
   },
   hosted: ['vector_marketplace_list_suppliers'],
   async prepare(session, a) {
@@ -609,20 +762,21 @@ export const priorAuthorization: EvidenceModule = {
     const clean = a.loaded.record.kind === 'clean';
     const run = a.purpose === 'run';
     const handoff = run ? signedHandoff(a, clean ? 'execute' : 'execute-d2', clean ? 'intake' : 'intake-d2') : null;
-    const delegation = run && clean ? await readSource('delegations', () => readDelegations(session, a, draft, 'propose')) : null;
+    const delegation = run && clean ? await readSource('delegations', () => readDelegations(session, a, draft)) : null;
     const payment = handoff === null ? null : await a.paidFromVault(handoff.intake.entry);
+    const runVaultPaid = clean && handoff !== null && payment !== null
+      ? await readSource('vault_payment', () => readRunVaultPayment(session, a, handoff, payment)) : false;
     const dispute = a.loaded.record.challenged === null ? null : await readSource('challenge', () => readDispute(session, a, draft, counterparty));
-    let checkedHold: Sources['hold'] = null;
-    if (dispute !== null) {
-      const record = await readSource('hold', () => findRecord(session.chain.provider, session.chain.deployment, draft.id));
-      const status = record?.record.status;
-      const hold = status?.type === 'Suspended' ? status.holds.find((entry) => entry.reason === 64 && entry.by.type === 'Script' && entry.by.hash === dispute.policy
-        && entry.until - entry.since === 7 * DAY && entry.since <= session.clock.now() && session.clock.now() < entry.until) : undefined;
-      if (record !== null && hold !== undefined) checkedHold = { ref: recordRef(record.utxo), since: hold.since, until: hold.until };
-    }
-    const unlisted = run && !clean && checkedHold !== null ? await readSource('listing', () => readListing(session, a, draft)) : false;
-    const end = run && !clean ? await readSource('subagent_ends', () => readEnd(session, a, draft)) : null;
-    return { prior: new Sources(delegation, payment, dispute, unlisted, end, checkedHold) };
+    const current = dispute === null ? null : await readSource('hold', () => findRecord(session.chain.provider, session.chain.deployment, draft.id));
+    const observed = dispute === null ? null : observeHold(current, dispute.policy, session.clock.now());
+    const epoch = run && !clean ? await readSource('subagent_ends', () => readEpochChange(session, a, draft)) : null;
+    const application = dispute?.application;
+    // BumpEpoch changes only the epoch. A different current hold or record is not evidence of the listing refusal.
+    const currentHold = application != null && observed !== null && observed.since === application.since && observed.until === application.until
+      && (observed.ref === application.record_output || (epoch?.input === application.record_output && epoch.output === observed.ref)) ? observed.ref : null;
+    const unlisted = run && !clean && currentHold !== null ? await readSource('listing', () => readListing(session, a, draft)) : false;
+    const end = epoch === null ? null : await readSource('subagent_ends', () => readEnd(session, a, draft, current, epoch));
+    return { prior: new Sources(delegation, payment, dispute, unlisted, end, observed !== null, currentHold, runVaultPaid) };
   },
   mockRoutes: [ORDER_READ, GUIDELINE_READ, SUBMISSION, FILING],
   counts(state) {
@@ -639,6 +793,13 @@ export const priorAuthorization: EvidenceModule = {
     const done = completedOf(a);
     const end = prepared(a).end;
     const binding = a.approvalStates.find((entry) => entry?.entry.role === 'binding' && entry.type === 4 && entry.state === 'active');
+    const routeEvidence: PublicRouteEvidence[] = [];
+    if (kind === 'clean') {
+      if (typeof proposalReadRefs(a) !== 'string') routeEvidence.push(...[ORDER_READ, GUIDELINE_READ].map((route): PublicRouteEvidence =>
+        ({ step: 'r1-02', route, credential: 'token', decision: 'allowed', act_links: 2, count: 1 })));
+      if (done?.filed != null && done.completeDecision !== null) routeEvidence.push({ step: 'r1-05', route: FILING, credential: 'jwt-svid', decision: 'allowed', act_links: 0, count: 1 });
+      if (done?.submission != null && done.acceptDecision !== null) routeEvidence.push({ step: 'r1-06', route: SUBMISSION, credential: 'token', decision: 'allowed', act_links: 1, count: 1 });
+    }
     return {
       run: `use-case-2-${kind}`,
       claims: { [drafter.id]: a.facts.claims[label]?.[drafter.id]?.claimRef ?? null, [intake.id]: a.facts.claims[label]?.[intake.id]?.claimRef ?? null },
@@ -646,6 +807,7 @@ export const priorAuthorization: EvidenceModule = {
       approvals: a.approvalStates.flatMap((entry) => entry?.entry.role === 'approval' && entry.link === 'request' ? [approvalDocument(entry)] : []),
       binding: binding == null ? null : approvalDocument(binding),
       outcomes: a.loaded.hires.flatMap((hire) => hire.role === 'execute' && hire.report !== null ? [{ step: hire.entry.step, ...operationFields(hire) }] : []),
+      route_evidence: routeEvidence, handoff_evidence: done === null ? null : projectHandoff(done.handoff),
       intake: done?.filed == null ? null : { status: done.intake.status, missing_count: done.intake.missing.length,
         attestations: done.intake.attestations, checks: INTAKE_CHECKS.length },
       submission: done?.submission == null ? null : { intake_id_sha256: digestOf(done.intake.intake_id), request_number_sha256: digestOf(done.intake.request_number) },

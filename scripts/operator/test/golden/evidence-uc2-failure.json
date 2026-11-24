@@ -259,14 +259,14 @@
       "opened_tx": "b0c647c8be1b61d1327ce1b31dc19482c8d8582afa8112de5e9db1bae6a8c1c2",
       "finalized_tx": "a2b47fef7f1463c9af23ce34b9e9c28d4587976a50b63f186c96d35a2321891c",
       "finalized_result": "AuditorWins",
-      "closed_tx": "a2b47fef7f1463c9af23ce34b9e9c28d4587976a50b63f186c96d35a2321891c"
+      "closed_tx": "3aba68e9708a860c05eaff90d128b66683b093e1a8507827e72a16061ae92c32"
     },
     "hold": {
       "reason": 64,
       "since": 1795024454000,
       "until": 1795629254000,
-      "record_output": "12a14e4dafa8a0fdef4d738b7a7cfac7696985e82e4b77c2b0b77525207d9884#0",
-      "gateway_status": "Suspended"
+      "record_output": "143f501cf24f44d510bda8d531beb57c3d9b33d470d45283be4b4ea54d705d86#2",
+      "gateway_status": null
     }
   },
   "fault_mode": {
@@ -484,8 +484,12 @@
           "value": "a2b47fef7f1463c9af23ce34b9e9c28d4587976a50b63f186c96d35a2321891c"
         },
         {
+          "kind": "verdict",
+          "value": "22279020bdb0bc4f11f0b2e1242b426e33f9ac167b2fde2aa46a1ca07aba133f#1"
+        },
+        {
           "kind": "hold",
-          "value": "12a14e4dafa8a0fdef4d738b7a7cfac7696985e82e4b77c2b0b77525207d9884#0"
+          "value": "143f501cf24f44d510bda8d531beb57c3d9b33d470d45283be4b4ea54d705d86#2"
         }
       ],
       "note": ""
@@ -633,6 +637,16 @@
       "proposal_digest": "f7158e15b483ed1d24589e20184e8f7c9733c20259d9170aaac02e9cacc86742"
     }
   ],
+  "route_evidence": [],
+  "handoff_evidence": {
+    "execute_step": "execute-d2",
+    "execute_escrow": "cb7b0d3f167b2564bff02a3c09e5625c9c2d4e52a6cf6fff1841255744cc6c8f#0",
+    "execute_result_sha256": "b1f71b0c386756fbeb1cd84ec0dc1dc14bedb2c0c55d21dcd4a9508786e74941",
+    "intake_step": "intake-d2",
+    "intake_escrow": "affda58b4a77bbbd958825f0ef4fb3cde07d9121e0c8aeab1b93136859c3bda4#0",
+    "signed_acceptance": "confirmed",
+    "confirmed_accept_tx": "02d9eb494913259a8fdfcd7b634905b7206318a1b8e8b1ff03368782fbca3794"
+  },
   "intake": {
     "status": "complete",
     "missing_count": 0,
@@ -667,8 +681,10 @@
     "control": {
       "at": "2026-11-18T14:31:14.000Z",
       "did": "did:vector:21ea83ddf4479b6dc2deea0074e901a3df6b25754679a87a9f1795c3ecfd9cd8",
-      "status": 200,
-      "code": null
+      "status": null,
+      "code": null,
+      "token_type": "DPoP",
+      "expires_at": "2026-11-18T14:36:14.000Z"
     },
     "refusal": {
       "at": "2026-11-18T19:01:14.000Z",

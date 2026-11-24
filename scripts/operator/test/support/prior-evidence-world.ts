@@ -7,17 +7,24 @@ import type { Utxo } from '../../../checks/lib/platform.ts';
 import { attestation, attestationUtxo, CAPTURE_MS, DAY, delegation, delegationUtxo, koiosRow, ledgerWorld, liveRecord, MAINNET, recordUtxo, vaultUtxo } from '../../../../packages/buyer-core/test/fixtures/ledger-read-world.ts';
 import type { Contract, Row, TxIo, TxRow } from '../../../../packages/buyer-core/test/fixtures/ledger-read-world.ts';
 import { escrowUtxo, identityEscrow } from '../../../../packages/buyer-core/test/fixtures/escrow-identity.fixture.ts';
+import { blake2b256Hex } from '../../../../packages/buyer-core/src/index.ts';
 import { encodeClaimDatum, encodeChallengeDatum, encodeJuryDatum } from '../../../../packages/buyer-core/src/vendored/mcp/jury-codec.ts';
+import type { CaseDatum } from '../../../../packages/buyer-core/src/vendored/mcp/jury-codec.ts';
 import { documentHash, documentMetadata, documentUri } from '../../../../packages/buyer-core/src/vendored/mcp/jury-document.ts';
 import { CONFIG_TOKEN_NAME } from '../../../../packages/buyer-core/src/vendored/mcp/identity-deployment.ts';
+import { ROLE_MAX_RIGHTS } from '../../../../packages/buyer-core/src/vendored/mcp/identity-rules.ts';
 import { canonicalize, plutusAddressFromBech32, plutusAddressToBech32, promptHashForPayload } from '../../../../packages/vector-read/src/index.ts';
 import { encodeDelegationDatum, encodeVaultDatum } from '../../../../packages/vector-read/src/identity-codec.ts';
 import { encodePlutusDataHex } from '../../../../packages/vector-read/src/vendored/shared/cbor/plutus-data.ts';
+import type { PlutusData } from '../../../../packages/vector-read/src/vendored/shared/cbor/plutus-data.ts';
+import { plutusAddressToData } from '../../../../packages/vector-read/src/vendored/shared/cbor/address.ts';
+import { requestText } from '../../../../packages/usecase-kit/src/buyer/message.ts';
 import { evidenceDocument } from '../../../../packages/usecase-kit/src/dispute/index.ts';
-import { canonicalSha256, makeProposal, parseApprovalRef, parseDid, parseOutputRef, PROPOSAL_SCHEMA, RECEIPT_CHECKS, RESULT_SCHEMA } from '../../../../packages/usecase-kit/src/protocol/index.ts';
+import { canonicalSha256, HANDOFF_SCHEMA, makeProposal, parseApprovalRef, parseDid, parseHandoff, parseOutputRef, PROPOSAL_SCHEMA, RECEIPT_CHECKS, RESULT_SCHEMA } from '../../../../packages/usecase-kit/src/protocol/index.ts';
 import { INTAKE_CHECKS, INTAKE_RECORD_SCHEMA, parsePriorAuthRequest, PRIORAUTH_REQUEST_SCHEMA } from '../../../../packages/usecase-kit/src/priorauth/index.ts';
 import type { PriorAuthRequest } from '../../../../packages/usecase-kit/src/priorauth/index.ts';
 import type { Proposal, ProtocolResult } from '../../../../packages/usecase-kit/src/protocol/index.ts';
+import { alterJustification } from '../../../../agents/prior-authorization-agent/src/execute/fault.ts';
 import { FactsFile } from '../../lib/facts.ts';
 import { priorAuthorization } from '../../lib/evidence/prior-authorization.ts';
 import type { Obj } from '../../lib/evidence/types.ts';
@@ -33,6 +40,9 @@ export const h = (name: string): string => createHash('sha256').update(`prior-ev
 export const rf = (name: string, i = 0): string => `${h(name)}#${i}`;
 const did = (id: string): string => `did:vector:${id}`;
 const at = (minute: number): number => CAPTURE_MS + minute * 60_000;
+const bytesOf = (hex: string): PlutusData => ({ kind: 'bytes', hex });
+const integerOf = (value: number): PlutusData => ({ kind: 'int', value: BigInt(value) });
+const constr = (index: number, fields: PlutusData[]): PlutusData => ({ kind: 'constr', index: BigInt(index), fields });
 const iso = (minute: number): string => new Date(at(minute)).toISOString();
 const publisher = (name: string) => parseKeyText(h(`synthetic signer ${name}`), 'run');
 const address = (hash: string, type: 'Script' | 'VerificationKey' = 'Script'): string => plutusAddressToBech32({ paymentCredential: { type, hash }, stakeCredential: null }, 1);
@@ -89,16 +99,18 @@ function decision(name: string, choice: Obj = {}): Obj {
 export interface PriorFixture {
   readonly kind: 'clean' | 'failure';
   readonly fault?: 'missing' | 'late';
-  readonly handoff?: 'wrong_ref' | 'wrong_receipt';
+  readonly handoff?: 'wrong_ref' | 'wrong_receipt' | 'pending' | 'pending_without_confirmation';
   readonly binding?: 'missing' | 'wrong_type' | 'wrong_issuer';
-  readonly rejectApproval?: 'missing_preimage' | 'wrong_proposal' | 'same_digest_wrong_id' | 'wrong_supersedes' | 'not_revoked' | 'expired_exit';
+  readonly rejectApproval?: 'missing_preimage' | 'wrong_proposal' | 'same_digest_wrong_id' | 'wrong_supersedes' | 'not_revoked' | 'expired_exit' | 'same_block_revoke';
   readonly draftDecision?: 'missing';
   readonly delegation?: 'wrong_child' | 'not_closed';
-  readonly mock?: 'no_read' | 'x509' | 'no_filing_log' | 'wrong_submission' | 'fault_filed';
+  readonly mock?: 'no_read' | 'read_after_end' | 'read_after_propose' | 'x509' | 'no_filing_log' | 'wrong_submission' | 'fault_filed';
   readonly intakeChecks?: 'missing';
-  readonly vault?: 'wallet' | 'wrong_refund_owner';
-  readonly case?: 'no_jury' | 'pending' | 'ClaimerWins' | 'wrong_auditor' | 'wrong_key' | 'controller_only' | 'wrong_claimer' | 'wrong_document' | 'early_hold';
-  readonly end?: 'wrong_redeemer' | 'wrong_epoch' | 'resolver_active' | 'probe_before' | 'wrong_probe_subject';
+  readonly vault?: 'wallet' | 'different_vault' | 'wrong_refund_owner';
+  readonly case?: 'no_jury' | 'pending' | 'ClaimerWins' | 'wrong_auditor' | 'wrong_key' | 'controller_only' | 'wrong_claimer' | 'wrong_document'
+    | 'wrong_approval' | 'wrong_digest' | 'wrong_kind' | 'wrong_wire' | 'early_hold' | 'missing_application' | 'unapplied' | 'wrong_application' | 'wrong_resolution' | 'expired_hold';
+  readonly end?: 'wrong_redeemer' | 'wrong_epoch' | 'resolver_active' | 'probe_before' | 'wrong_probe_subject' | 'wrong_resource' | 'wrong_action'
+    | 'generic_refusal' | 'generic_grant' | 'noncanonical_time';
   readonly listing?: 'listed' | 'no_refusal';
 }
 
@@ -119,7 +131,7 @@ export async function writePriorEvidence(s: PriorFixture, privateFile = false): 
   // The runner loads the supplied data through its test dependency, without activating it in production.
   const world = await taskWorld({ keys: ['run', 'fee'], use, env: { OPERATOR_USE_CASE: 'inventory-reorder',
     OPERATOR_MODULE1_COMMIT: COMMIT, VECTOR_KOIOS_URL: KOIOS, VECTOR_MARKETPLACE_INDEXER_URL: INDEXER } });
-  world.clock.t = at(500);
+  world.clock.t = at(s.case === 'expired_hold' ? 11_000 : 500);
   const root = join(world.stateDir, 'runs');
   const folder = join(root, label);
   mkdirSync(world.stateDir, { recursive: true, mode: 0o700 });
@@ -168,10 +180,14 @@ export async function writePriorEvidence(s: PriorFixture, privateFile = false): 
       detailHash: h('advert detail'), endpoint: 'https://fixture.example', postedAt: iso(-180) });
   }
 
-  const hold = !clean && s.case !== 'pending' && s.case !== 'ClaimerWins';
+  const hold = !clean && s.case !== 'pending' && s.case !== 'no_jury' && s.case !== 'ClaimerWins' && s.case !== 'unapplied';
   const holdSince = at(s.case === 'early_hold' ? 144 : 363);
-  const earlier = liveRecord(hold ? { status: { type: 'Suspended', holds: [{ by: { type: 'Script', hash: PARTY }, reason: 64, since: holdSince, until: holdSince + 7 * DAY }] } } : {}, [DRAFT_KEY.publicKeyHex]);
-  const lastRecord = liveRecord({ ...earlier, subagentEpoch: clean ? 0 : (s.end === 'wrong_epoch' ? 2 : 1) }, [DRAFT_KEY.publicKeyHex]);
+  const active = liveRecord({}, [DRAFT_KEY.publicKeyHex]);
+  const parent = { ...active, parties: [...active.parties, { ...active.parties[0]!, role: 'Responsible' as const,
+    signer: { type: 'Script' as const, hash: PARTY }, rights: ROLE_MAX_RIGHTS.Responsible }] };
+  const earlier = hold ? { ...parent, status: { type: 'Suspended' as const, holds: [{ by: { type: 'Script' as const, hash: PARTY },
+    reason: 64, since: holdSince, until: holdSince + 7 * DAY }] } } : parent;
+  const lastRecord = { ...earlier, subagentEpoch: clean ? 0 : (s.end === 'wrong_epoch' ? 2 : 1) };
   const epochTx = h('epoch bump');
   const head = { ...recordUtxo(DRAFT, lastRecord), txHash: clean ? h('clean drafting record') : epochTx };
   const intakeRecord = s.case === 'controller_only' ? liveRecord({ controller: SERVICE_KEY.publicKeyHex }, [INTAKE_KEY.publicKeyHex])
@@ -191,6 +207,11 @@ export async function writePriorEvidence(s: PriorFixture, privateFile = false): 
   const vaultJson = constructor(0, constructor(0, { bytes: owner.hash }, constructor(1)), { bytes: ROOT }, { int: 0 }, { int: at(-50) });
   let vaultRef = rf('open vault');
   tx(h('open vault'), -50);
+  const runVault = vaultRef;
+  if (s.vault === 'different_vault') {
+    vaultRef = rf('open unrelated vault');
+    tx(h('open unrelated vault'), -49);
+  }
   const rootDatum = delegation({ parent: null, delegate: DRAFT, delegator: owner });
   const rootOutput = { ...delegationUtxo(ROOT, rootDatum), txHash: h('delegate root') };
   remember(rootOutput, true);
@@ -210,7 +231,7 @@ export async function writePriorEvidence(s: PriorFixture, privateFile = false): 
       datum: encodeDelegationDatum(delegation({ parent: ROOT, delegate: participant })) };
     remember(out, true);
     tx(delegate_tx, 12 + i * 2, [], { outputs: [toIo(out)], assets_minted: [minted(MAINNET.delegation.hash, id, '1')] });
-    tx(undelegate_tx, 14 + i * 2, [], { assets_minted: [minted(MAINNET.delegation.hash, id, '-1')] });
+    tx(undelegate_tx, s.mock === 'read_after_propose' && i === 1 ? 21 : 14 + i * 2, [toIo(out)], { assets_minted: [minted(MAINNET.delegation.hash, id, '-1')] });
     subdelegations.push({ id, delegate_tx, undelegate_tx, subagent: spec.id, hire: 'propose' });
   }
 
@@ -266,12 +287,14 @@ export async function writePriorEvidence(s: PriorFixture, privateFile = false): 
       receipt, receipt_signature: signature, result: resultText }), { mode: 0o600 });
     const claim = h(`claim hire ${step}`);
     const submit = h(`submit hire ${step}`);
-    const submitted = escrow(submit, { ...open, state: 'Submitted', submitted_at: at(minute + 2), result_receipt_hash: receiptHash });
+    const settleAt = minute + (step === 'propose' ? 8 : 2);
+    const submitted = escrow(submit, { ...open, state: 'Submitted', submitted_at: at(settleAt), result_receipt_hash: receiptHash });
     const prior = `${claim}#0`;
     tx(claim, minute + 1, [origin], { outputs: [io(prior, MAINNET.escrow.hash)], plutus_contracts: [spend(original, MAINNET.escrow.hash, 0)] });
-    tx(submit, minute + 2, [io(prior, MAINNET.escrow.hash)], { outputs: [toIo(submitted)], plutus_contracts: [spend(prior, MAINNET.escrow.hash, 1, [{ bytes: receiptHash }])] });
-    submissions.push({ agent, output: submitted, closesAt: at(minute + 2) });
-    tx(accept, minute + 3, [toIo(submitted)], { plutus_contracts: [spend(`${submit}#0`, MAINNET.escrow.hash, 2)] });
+    tx(submit, settleAt, [io(prior, MAINNET.escrow.hash)], { outputs: [toIo(submitted)], plutus_contracts: [spend(prior, MAINNET.escrow.hash, 1, [{ bytes: receiptHash }])] });
+    submissions.push({ agent, output: submitted, closesAt: at(settleAt) });
+    tx(accept, settleAt + 1, [toIo(submitted)], { plutus_contracts: [spend(`${submit}#0`, MAINNET.escrow.hash, 2)] });
+    if (step === 'intake' && s.handoff === 'pending_without_confirmation') known.delete(accept);
     for (const name of ['justification', 'completeness', 'accept_delivery']) known.add(h(`model ${name}`));
   }
 
@@ -324,11 +347,14 @@ export async function writePriorEvidence(s: PriorFixture, privateFile = false): 
       checks: Object.fromEntries(INTAKE_CHECKS.filter((name) => s.intakeChecks !== 'missing' || name !== 'approval_type').map((name) => [name, true])),
       decisions: [decision('completeness', { complete: true, missing: [] })], fault_mode: '',
     };
-    runIntakes(intakeStep, minute + 1, intakeResult);
+    const sent = altered ? value(parseHandoff({ schema: HANDOFF_SCHEMA, use_case: data.name, sender_did: did(DRAFT), delegation: ROOT,
+      document: s.case === 'wrong_wire' ? given.typedDocument : alterJustification(given.typedDocument), salt: given.salt, approval: signed.ref })) : null;
+    runIntakes(intakeStep, minute + 1, intakeResult, sent === null ? undefined : requestText(sent));
     const delivery = receipts.get(intakeStep);
     const handoff = { counterparty_did: did(INTAKE), advert_ref: intakeAdvert, escrow_ref: s.handoff === 'wrong_ref' && step === completeStep ? rf('unrelated intake') : rf(`post ${intakeStep}`),
       paid_from_vault: true, receipt: delivery?.receipt ?? null, receipt_signature: s.handoff === 'wrong_receipt' && step === completeStep ? 'ab'.repeat(64) : delivery?.receipt_signature ?? null,
-      result: delivery?.result ?? null, verification: delivery === undefined ? null : { verdict: 'verified', checks: {} }, accepted: delivery === undefined ? null : 'confirmed' };
+      result: delivery?.result ?? null, verification: delivery === undefined ? null : { verdict: 'verified', checks: {} },
+      accepted: delivery === undefined ? null : s.handoff === 'pending' || s.handoff === 'pending_without_confirmation' ? 'pending' : 'confirmed' };
     makeHire(step, minute, false, { schema: RESULT_SCHEMA, use_case: data.name, proposal_digest: given.proposal_digest, handoff, challenge: null,
       outcome: refusal === undefined ? 'completed' : 'refused_by_counterparty', reason: refusal?.reason ?? null, exit_state: refusal?.exit ?? 'Completed', fault_mode: altered ? 'alter_after_approval' : '',
       decisions: refusal === undefined ? [decision('accept_delivery')] : [], writes: refusal === undefined ? [{ system: 'records', route: SUBMISSION_ROUTE, status: 201, ref: subId }] : [],
@@ -344,7 +370,7 @@ export async function writePriorEvidence(s: PriorFixture, privateFile = false): 
     execute({ step: 'execute', intakeStep: 'intake', minute: 30, proposal: executed, approval: approval('clean', executed.proposal_digest, 21, 240) });
   } else {
     const d = proposal('propose-d', 1, 10);
-    const first = approval('d1', d.proposal_digest, 20, 240, { revoked: 24 });
+    const first = approval('d1', d.proposal_digest, 20, 240, { revoked: s.rejectApproval === 'same_block_revoke' ? 30 : 24 });
     execute({ step: 'execute-d1', intakeStep: 'intake-d1', minute: 30, proposal: d, approval: first, refusal: { reason: 'approval_revoked', exit: 'Rejected' } });
     execute({ step: 'execute-d2', intakeStep: 'intake-d2', minute: 50, proposal: d, approval: approval('d2', d.proposal_digest, 41, 240, { supersedes: first.ref.attestation }) });
     const e = proposal('propose-e', 2, 60);
@@ -354,6 +380,7 @@ export async function writePriorEvidence(s: PriorFixture, privateFile = false): 
     execute({ step: 'execute-a', intakeStep: 'intake-a', minute: 130, proposal: a, approval: approval('a', a.proposal_digest, 116, 240),
       refusal: { reason: 'approval_digest_mismatch', exit: 'Escalated' }, altered: true });
   }
+  if (s.vault === 'different_vault') vaultRef = runVault;
   const close = s.delegation === 'not_closed' ? null : h('close vault');
   if (close === null) live.push({ ...vaultUtxo(vault, 7_000_000n), txHash: vaultRef.slice(0, 64), outputIndex: Number(vaultRef.slice(65)) });
   else tx(close, 445, [io(vaultRef, MAINNET.vault.hash)]);
@@ -374,11 +401,13 @@ export async function writePriorEvidence(s: PriorFixture, privateFile = false): 
   const caseReport: Obj = {
     script_hash: JURY, canonical: true, claim: CLAIM_TOKEN, challenge: CHALLENGE_TOKEN, challenge_out: challengeRef, case: CASE_TOKEN,
     state: s.case === 'pending' ? 'open' : 'closed', window: s.case === 'pending' ? 'reveal' : 'ended',
-    tally: s.case === 'ClaimerWins' ? { AuditorWins: 0, ClaimerWins: 3, Inconclusive: 0 } : { AuditorWins: 3, ClaimerWins: 0, Inconclusive: 0 },
-    revealed: 3, result: s.case === 'pending' ? null : s.case === 'ClaimerWins' ? 'ClaimerWins' : 'AuditorWins', opened: { tx: h('open case') },
+    tally: s.case === 'pending' ? { AuditorWins: 0, ClaimerWins: 0, Inconclusive: 0 }
+      : s.case === 'ClaimerWins' ? { AuditorWins: 0, ClaimerWins: 3, Inconclusive: 0 } : { AuditorWins: 3, ClaimerWins: 0, Inconclusive: 0 },
+    revealed: s.case === 'pending' ? 0 : 3, result: s.case === 'pending' ? null : s.case === 'ClaimerWins' ? 'ClaimerWins' : 'AuditorWins', opened: { tx: h('open case') },
     finalized: s.case === 'pending' ? null : { tx: h('finalize case'), result: s.case === 'ClaimerWins' ? 'ClaimerWins' : 'AuditorWins' },
-    closed: s.case === 'pending' ? null : { tx: h('finalize case') },
+    closed: s.case === 'pending' ? null : { tx: h('close case') },
   };
+  let verdictLocation: Obj | null = null;
   for (const spec of [draft, intake]) {
     const isDraft = spec.id === draft.id;
     const token = isDraft ? CLAIM_TOKEN : `636c6d5f${h('intake claim unit').slice(0, 56)}`;
@@ -390,13 +419,16 @@ export async function writePriorEvidence(s: PriorFixture, privateFile = false): 
   }
   if (!clean && ending.fault !== undefined) {
     const { document: faultDocument, approval: faultApproval } = ending.fault;
-    const approval = value(parseApprovalRef(faultApproval.ref));
-    const evidence = value(evidenceDocument({ kind: 'approval_digest', use_case: 'prior-authorization',
-      claim: value(parseOutputRef(claimRef)), claim_token: CLAIM_TOKEN, against_did: value(parseDid(did(DRAFT))), by_did: value(parseDid(did(INTAKE))),
-      escrow_ref: value(parseOutputRef(rf(s.case === 'wrong_document' ? 'post intake-e' : 'post intake-a'))), statement_text: 'A request is the one the hirer approved.', approval,
-      mismatch: { ok: false, code: 'approval_digest_mismatch', expected_digest: value(makeProposal(faultDocument, h('proposal salt propose-a'))).proposal_digest,
-        observed_digest: value(makeProposal({ ...faultDocument, justification: 'another sentence' }, h('proposal salt propose-a'))).proposal_digest, detail: 'The digests differ.' },
-    }));
+    const approval = value(parseApprovalRef(s.case === 'wrong_approval' ? { ...faultApproval.ref, attestation: h('approval d2') } : faultApproval.ref));
+    const refs = { claim: value(parseOutputRef(claimRef)), claim_token: CLAIM_TOKEN, against_did: value(parseDid(did(DRAFT))), by_did: value(parseDid(did(INTAKE))),
+      escrow_ref: value(parseOutputRef(rf(s.case === 'wrong_document' ? 'post intake-e' : 'post intake-a'))), statement_text: 'A request is the one the hirer approved.' };
+    const salt = h('proposal salt propose-a');
+    const evidence = value(evidenceDocument(s.case === 'wrong_kind' ? { ...refs, kind: 'quote_price',
+      sku: 'fixture', quantity: 1, quoted_unit_price: 200, listed_unit_price: 100, price_list_sha256: h('price list'), quote_sha256: h('quote') }
+      : { ...refs, kind: 'approval_digest', use_case: 'prior-authorization', approval,
+        mismatch: { ok: false, code: 'approval_digest_mismatch', detail: 'The digests differ.',
+          expected_digest: value(makeProposal(faultDocument, salt)).proposal_digest,
+          observed_digest: s.case === 'wrong_digest' ? h('other observed digest') : value(makeProposal(alterJustification(faultDocument), salt)).proposal_digest } }));
     const bytes = Buffer.from(evidence.text, 'utf8');
     metadata.set(evidenceTx, documentMetadata(bytes, 'evidence', 'text/plain'));
     const original = asset('draft claim', CLAIM, CLAIM_TOKEN, encodeClaimDatum({ claimerDid: s.case === 'wrong_claimer' ? INTAKE : DRAFT,
@@ -406,32 +438,87 @@ export async function writePriorEvidence(s: PriorFixture, privateFile = false): 
       auditorDid: s.case === 'wrong_auditor' ? DRAFT : INTAKE, auditorCredential: { type: 'VerificationKey', hash: s.case === 'wrong_key' ? WALLET.keyHash : SERVICE_KEY.keyHash },
       stakeAmount: 50_000_000n, evidenceHash: documentHash(bytes), evidenceUri: Buffer.from(documentUri(evidenceTx), 'utf8').toString('hex'),
       challengedAt: at(145), resolutionDeadline: at(1500), eligibleJurors: [], state: { type: 'PendingOracle' }, claimToken: CLAIM_TOKEN }));
-    const juryOutput = asset('open case', JURY, CASE_TOKEN, encodeJuryDatum({ type: 'Case', case: {
+    const refundTo = plutusAddressFromBech32(WALLET.address);
+    const caseDatum: CaseDatum = {
       claim: CLAIM_TOKEN, challenge: CHALLENGE_TOKEN, challengeOut: { txHash: challenge.txHash, outputIndex: 0 }, claimOut: { txHash: challenge.txHash, outputIndex: 1 },
       claimer: DRAFT, auditor: INTAKE, claimHash: h('claim digest'), evidenceHash: documentHash(bytes), deadline: at(1500), openedAt: at(163), commitEnd: at(260),
-      revealEnd: at(330), refundTo: plutusAddressFromBech32(WALLET.address), fee: 0n, ballots: [], tally: { claimer: 0, auditor: 0, inconclusive: 0 }, state: { type: 'Open' },
-    } }));
+      revealEnd: at(330), refundTo, fee: 0n, ballots: [], tally: { claimer: 0, auditor: 0, inconclusive: 0 }, state: { type: 'Open' },
+    };
+    const caseOutput = (name: string, datum: CaseDatum): Utxo => asset(name, JURY, CASE_TOKEN, encodeJuryDatum({ type: 'Case', case: datum }));
+    const juryOutput = caseOutput('open case', caseDatum);
     for (const row of [original, challenge, juryOutput]) remember(row, true);
     tx(challenge.txHash, 145, [toIo(original)], { outputs: [toIo(challenge)], assets_minted: [minted(CHALLENGE, CHALLENGE_TOKEN, '1')], plutus_contracts: [spend(claimRef, CLAIM, 2)] });
     tx(juryOutput.txHash, 163, [], { outputs: [toIo(juryOutput)], assets_minted: [minted(JURY, CASE_TOKEN, '1')] });
-    tx(h('finalize case'), 341);
+    if (s.case !== 'pending' && s.case !== 'no_jury') {
+      const againstClaimer = s.case !== 'ClaimerWins';
+      const vote = againstClaimer ? 'AuditorWins' : 'ClaimerWins';
+      const counted: CaseDatum = { ...caseDatum, ballots: [1, 2, 3].map((i) => ({ agent: h(`juror ${i}`), juror: h(`juror token ${i}`), commit: '',
+        status: { type: 'Revealed', vote } })), tally: { claimer: againstClaimer ? 0 : 3, auditor: againstClaimer ? 3 : 0, inconclusive: 0 } };
+      const revealed = caseOutput('last jury reveal', counted);
+      const finalized = caseOutput('finalize case', { ...counted, state: { type: 'Settling', share: 0n } });
+      remember(revealed, true);
+      remember(finalized, true);
+      tx(revealed.txHash, 320, [toIo(juryOutput)], { outputs: [toIo(revealed)] });
+      const winner = constructor(againstClaimer ? 1 : 0);
+      tx(finalized.txHash, 341, [toIo(revealed)], { outputs: [toIo(finalized)], plutus_contracts: [spend(rf('last jury reveal'), JURY, 1, [constructor(2, winner)])] });
+      tx(h('close case'), 343, [toIo(finalized)], { assets_minted: [minted(JURY, CASE_TOKEN, '-1')] });
+    }
     known.add(evidenceTx);
-    const pre = { ...recordUtxo(DRAFT, earlier), txHash: h('parent before epoch') };
+    const registered = { ...recordUtxo(DRAFT, parent), txHash: h('draft identity register') };
+    const applyTx = h('apply verdict');
+    const pre = { ...recordUtxo(DRAFT, earlier), txHash: hold ? applyTx : h('parent before epoch'), outputIndex: hold ? 2 : 0 };
     const prev = `${pre.txHash}#${pre.outputIndex}`;
     tx(epochTx, 420, [toIo(pre)], { outputs: [toIo(head)], plutus_contracts: [spend(prev, MAINNET.identity.hash, s.end === 'wrong_redeemer' ? 0 : 8)] });
-    const registered = { ...recordUtxo(DRAFT, liveRecord({}, [DRAFT_KEY.publicKeyHex])), txHash: h('draft identity register') };
+    // The linked proof has a distinct exact Resolve output and a separate identity apply transaction.
+    // The indexer locates them; the task rechecks each datum, redeemer, token and document.
+    const hasVerdict = s.case !== 'pending' && s.case !== 'no_jury' && s.case !== 'ClaimerWins';
+    let application: Utxo | null = null;
+    let verdictToken: string | null = null;
+    if (hasVerdict) {
+      const until = at(363) + DAY;
+      const datum = encodePlutusDataHex(constr(0, [bytesOf(DRAFT), constr(0, []), integerOf(7 * DAY),
+        constr(0, [bytesOf(challenge.txHash), integerOf(0)]), plutusAddressToData(refundTo), integerOf(until)]));
+      verdictToken = blake2b256Hex(Buffer.from(datum, 'hex'));
+      const verdict = asset('resolve challenge', PARTY, verdictToken, datum, 1);
+      remember(verdict, hold);
+      const resolved = Buffer.from(JSON.stringify({ type: 'vector-jury-resolution/1', basis: 'jury', challenge_out: challengeRef, challenge: CHALLENGE_TOKEN,
+        claim: CLAIM_TOKEN, verdict: 'AuditorWins', jury: { deployment: JURY, case: s.case === 'wrong_resolution' ? h('another case') : CASE_TOKEN,
+          opened_in: juryOutput.txHash, finalized_in: h('finalize case') } }), 'utf8');
+      metadata.set(verdict.txHash, documentMetadata(resolved, 'resolution'));
+      tx(verdict.txHash, 360, [toIo(challenge)], { outputs: [toIo(verdict)], assets_minted: [minted(PARTY, verdictToken, '1')],
+        plutus_contracts: [spend(challengeRef, CHALLENGE, 2, [constructor(1), { bytes: documentHash(resolved) }])] });
+      if (hold) {
+        tx(applyTx, 364, [toIo(registered), toIo(verdict)], { outputs: [toIo(pre)], assets_minted: [minted(PARTY, verdictToken, '-1')],
+          plutus_contracts: [spend(rf('draft identity register'), MAINNET.identity.hash, 2, [constructor(1, { int: 1 })])] });
+        application = verdict;
+      }
+      if (s.case !== 'missing_application') verdictLocation = { ref: `${verdict.txHash}#${verdict.outputIndex}`, action: 'suspend', duration_ms: 7 * DAY,
+        expires_at: new Date(until).toISOString(), applied_tx: !hold ? null : s.case === 'wrong_application' ? epochTx : applyTx,
+        applied_time: hold ? iso(364) : null };
+    }
     receiptHistory.record(DRAFT, [{ output: registered, seconds: at(-180) / 1000 },
-      { output: pre, seconds: (hold ? holdSince : at(363)) / 1000, redeemer: hold ? 1 : 0 }, { output: head, seconds: at(420) / 1000 }]);
+      { output: pre, seconds: at(364) / 1000 }, { output: head, seconds: at(420) / 1000 }]);
+    if (application !== null && verdictToken !== null) {
+      // The history fixture re-encodes the identity token transition. Keep the other input and its burn.
+      const row = allTxs.find(({ tx_hash }) => tx_hash === applyTx)!;
+      row.inputs.push(toIo(application));
+      row.assets_minted = [minted(PARTY, verdictToken, '-1')];
+    }
     facts.put('subagentEnds', [draft.id], { tx: epochTx, at: iso(420.01), epochBefore: 0, epochAfter: 1 });
     const probes = EvidenceFile.open(join(world.stateDir, `probe.${label}.evidence.json`), { ...HEADER, check: 'probe', record: `${data.name}:${label}` }, { clock: () => iso(0) });
     for (const expected of ['granted', 'refused'] as const) {
       const refused = expected === 'refused';
-      const child = childSpecs[s.end === 'wrong_probe_subject' && refused ? 1 : 0]!;
-      probes.add({ step: 'run', status: 'info', at: iso(refused && s.end !== 'probe_before' ? 430 : 160), shows: {
+      const child = childSpecs.find(({ id }) => id === (s.end === 'wrong_probe_subject' && refused ? 'drafter' : 'record-reader'))!;
+      const measuredAt = iso(refused && s.end !== 'probe_before' ? 430 : 160);
+      probes.add({ step: 'run', status: 'info', at: s.end === 'noncanonical_time' && refused ? measuredAt.replace('.000Z', 'Z') : measuredAt, shows: {
         probe: { subagent: child.id, subjectKey: child.keys.find((key) => key.purposes.includes('authentication'))!.key,
-          dpopKey: child.keys.find((key) => key.purposes.includes('delegation'))!.key, resource: 'https://service.fixture.example/record', action: 'record.read', expect: expected },
+          dpopKey: child.keys.find((key) => key.purposes.includes('delegation'))!.key,
+          resource: `${MOCK_PUBLIC_BASE}/t/${tenant}/${s.end === 'wrong_resource' ? 'guidelines' : 'records'}`,
+          action: s.end === 'wrong_action' ? 'record.write' : 'record.read', expect: expected },
         record: { did: did(h(child.id)), effectiveStatus: refused ? 'revoked' : 'active' },
-        observation: { kind: expected, status: refused ? 400 : 200, error: refused ? 'invalid_request' : null, text: 'private gateway observation' },
+        observation: refused ? { kind: 'refused', status: 400, error: 'invalid_request',
+          text: s.end === 'generic_refusal' ? 'private gateway observation' : "subject_token: the agent's effective status is revoked (parentRevoked), not active" }
+          : s.end === 'generic_grant' ? { kind: 'granted', status: 200 } : { kind: 'granted', tokenType: 'DPoP', expiresAt: iso(165), authorizationDetails: null },
         verdict: { expected, observed: expected, ok: true },
       } });
     }
@@ -457,7 +544,9 @@ export async function writePriorEvidence(s: PriorFixture, privateFile = false): 
   const log: Obj[] = [{ tenant, at: iso(filedAt + 0.01), route: 'POST /insurer/requests', path: '/fixture/private/patient', status: 201, decision: 'allowed',
     credential: s.mock === 'x509' ? 'x509-svid' : 'jwt-svid', sub: jwtId, act: [], delegation: null },
   { tenant, at: iso(filedAt + 2.01), route: SUBMISSION_ROUTE, status: 201, decision: 'allowed', credential: 'token', ...writerActor }];
-  if (clean) for (const [i, spec] of childSpecs.entries()) log.push({ tenant, at: iso(13 + 2 * i), route: i === 0 ? 'GET /records/orders/{order_id}' : 'GET /guidelines/{code}',
+  if (clean) for (const [i, spec] of childSpecs.entries()) log.push({ tenant,
+    at: iso(s.mock === 'read_after_end' && i === 0 ? 15 : s.mock === 'read_after_propose' && i === 1 ? 19 : 13 + 2 * i),
+    route: i === 0 ? 'GET /records/orders/{order_id}' : 'GET /guidelines/{code}',
     status: 200, decision: 'allowed', credential: 'token', sub: did(ISSUER), act: [did(h(spec.id)), did(DRAFT)], delegation: h(`delegation ${spec.id}`) });
   if (s.mock === 'no_filing_log') log.shift();
   if (s.mock === 'no_read') log.pop();
@@ -468,7 +557,7 @@ export async function writePriorEvidence(s: PriorFixture, privateFile = false): 
     const parsed = new URL(url);
     if (url.startsWith(`${MOCK_PUBLIC_BASE}/t/${tenant}/`)) return Response.json(parsed.pathname.endsWith('/log') ? { tenant, lines: log, dropped: 0 } : systemState);
     if (parsed.origin === INDEXER && parsed.pathname === '/disputes') return Response.json({ cases: [{ claim_ref: claimRef, claimer_agent_id: DRAFT,
-      challenge: { tx: challengeRef.slice(0, 64), auditor_agent_id: INTAKE, genuine: true }, jury: s.case === 'no_jury' ? null : caseReport }] });
+      challenge: { tx: challengeRef.slice(0, 64), auditor_agent_id: INTAKE, genuine: true }, jury: s.case === 'no_jury' ? null : caseReport, verdict: verdictLocation }] });
     if (parsed.origin === INDEXER && parsed.pathname === '/jury/cases') return Response.json({ cases: s.case === 'no_jury' ? [] : [caseReport] });
     if (parsed.origin === 'https://raw.githubusercontent.com' && parsed.pathname.endsWith(`/${COMMIT}/${data.moduleManifestPath}`)) return Response.json(manifest);
     if (parsed.origin === KOIOS && parsed.pathname.endsWith('/tx_metadata') && typeof init?.body === 'string') {
