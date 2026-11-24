@@ -1,15 +1,32 @@
 // scripts/operator/test/results.test.ts - the task `results` through the real runner, over made-up evidence files in a temporary state folder: two runs, one step that did not run. The page equals
 // its golden file byte for byte. A step is shown only with a reference. The header file comes first and verbatim, and it is refused above 8 KiB. A dry run writes nothing. No test uses the network.
 import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import type * as NodeFs from 'node:fs';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import results, { EXPLORER_TX, HEADER_LIMIT_BYTES, PAGE_TEXT, SHOWS, parseEvidence, renderPage } from '../tasks/results.ts';
 import data from '../usecases/inventory-reorder.ts';
 import type { UseCase } from '../lib/contract.ts';
 import { hashOf, taskWorld } from './support/task-world.ts';
 import type { TaskWorld } from './support/task-world.ts';
 import { KEY_TEXT } from './support/secrets.ts';
+
+// The real path of one path can be made to fail, for the test of a key folder that cannot be checked: the file system gives such a fault only by chance, and the settings stop a key folder that is not there
+// before the task starts. Every other path is read as it is.
+const realpathFault = vi.hoisted(() => ({ path: null as string | null, code: 'EACCES' }));
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof NodeFs>();
+  const real = actual.realpathSync;
+  const realpathSync = Object.assign(
+    (path: string, options?: { encoding?: BufferEncoding | null }): string => {
+      if (realpathFault.path !== null && String(path) === realpathFault.path) throw Object.assign(new Error('a fault of the test'), { code: realpathFault.code });
+      return real(path, options);
+    },
+    { native: real.native },
+  );
+  return { ...actual, realpathSync };
+});
 
 const GOLDEN = fileURLToPath(new URL('./golden/results-page.md', import.meta.url));
 const HEADER = 'Results for a made-up group of the tests\nDate of the page: 2026-12-05\n';
@@ -391,6 +408,49 @@ describe('the task results', () => {
         writeFileSync(rig.header, text);
         expect(await rig.run(...NO_ARGUMENTS(rig), '--submit'), text).toBe(0);
       }
+    });
+
+    it('is refused when a line of its text has the form NAME=value, as a line of an env file has, even when the value is no hex; a text with an equals sign in another place passes', async () => {
+      const rig = await makeRig();
+      rig.seed();
+      const token = 'Zk3'.repeat(16);
+      const refused = [`MOCK_OPERATOR_TOKEN=${token}\n`, 'Group\nPORT=9120\n', 'Group\r\nname=value\r\n', 'A_B1=\n', `Group\n_x=${token}`];
+      for (const text of refused) {
+        writeFileSync(rig.header, text);
+        rig.world.screen.lines.length = 0;
+        rig.world.screen.errors.length = 0;
+        expect(await rig.run(...NO_ARGUMENTS(rig), '--submit'), text).toBe(2);
+        expect(rig.world.screen.errorText, text).toContain('the header file holds a line of the form NAME=value');
+        expect(rig.world.screen.text, text).not.toContain(token);
+        expect(rig.world.screen.errorText, text).not.toContain(token);
+        expect(existsSync(rig.pagePath), text).toBe(false);
+      }
+      for (const text of ['Group: a=b\n', 'rate = 5\nGroup A=B is made up\n', '=value\n', '1ABC=2\n', 'Results for the made-up group\n']) {
+        writeFileSync(rig.header, text);
+        expect(await rig.run(...NO_ARGUMENTS(rig), '--submit'), text).toBe(0);
+      }
+    });
+
+    it('is refused when the key folder cannot be checked: a real path of it that fails with a code other than ENOENT stops the run with exit 2, and a key folder that is not there is no reason to refuse', async () => {
+      const rig = await makeRig();
+      rig.seed();
+      realpathFault.path = resolve(rig.world.keys.root);
+      try {
+        for (const code of ['EACCES', 'ELOOP', 'EIO']) {
+          realpathFault.code = code;
+          rig.world.screen.errors.length = 0;
+          expect(await rig.run(...NO_ARGUMENTS(rig), '--submit'), code).toBe(2);
+          expect(rig.world.screen.errorText, code).toContain(`the key folder cannot be checked (${code})`);
+          expect(existsSync(rig.pagePath), code).toBe(false);
+        }
+        // A key folder that is not there holds no header file, so the check has nothing to find and the run goes on.
+        realpathFault.code = 'ENOENT';
+        expect(await rig.run(...NO_ARGUMENTS(rig), '--submit'), 'ENOENT').toBe(0);
+      } finally {
+        realpathFault.path = null;
+      }
+      // The twin: no fault, and the same run writes the page.
+      expect(await rig.run(...NO_ARGUMENTS(rig), '--submit')).toBe(0);
     });
   });
 
