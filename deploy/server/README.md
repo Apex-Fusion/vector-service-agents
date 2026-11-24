@@ -4,8 +4,8 @@ This folder has the files of the agents and the mock systems that `deploy/host` 
 In both ways, the agents of this folder share no container, no folder and no port with the agents of `deploy/host`.
 The snippet of the mock service is for Caddy on the host: its upstream is `127.0.0.1:9120`. On a host whose proxy runs in a container, the block of the mock service uses `mock-systems:9120` (section "A host whose proxy runs in a container").
 
-The plan for the host is 19 containers: 8 services, 10 runtimes and 1 mock service. One agent has three runtimes in front of one service, so there are 10 runtimes. The memory of the host holds the mock service and the six containers of use case 1 at the planning sizes. The four containers of use case 2 do not all pass the gate at the planning sizes. The other 8 containers wait for a new count (section "The host").
-The agents of this folder build no image on the host. CI builds each image. A compose file names the image by its digest.
+The plan for the host is 19 containers: 8 services, 10 runtimes and 1 mock service. One agent has three runtimes in front of one service, so there are 10 runtimes. The memory of the host holds the mock service and the six containers of use case 1 at the planning sizes. The four containers of use case 2 do not all pass the gate at the planning sizes. The eight containers of use case 3 do not all pass it either (section "The host").
+The agents of this folder build no image on the host. CI publishes the images. A compose file names the image by its digest.
 
 The operator's steps are in [RUNBOOK.md](RUNBOOK.md). This note gives the facts.
 
@@ -37,6 +37,16 @@ The operator's steps are in [RUNBOOK.md](RUNBOOK.md). This note gives the facts.
 | `.env.insurer-intake-agent.example` | The settings of the Insurer Intake Agent: its service and its runtime read the same file. Names, placeholders and published values only. |
 | `Caddyfile.insurer-intake-agent.snippet` | The host block of the Insurer Intake Agent: `/agent.json` goes to the service, the rest to the runtime. |
 | `RUNBOOK-insurer-intake-agent.md` | The operator's steps for the Insurer Intake Agent, its checks and its failure table. |
+| `docker-compose.sourcing-agent.yml` | The compose file of the Sourcing Agent: one runtime in front of one service, each image by digest, each port on `127.0.0.1`. The runtime gets none of the nine keys of the service. |
+| `.env.sourcing-agent.example` | The settings of the Sourcing Agent: its service and its runtime read the same file. Names, placeholders and published values only. |
+| `Caddyfile.sourcing-agent.snippet` | The host block of the Sourcing Agent: `/agent.json` and the co-sign route go to the service, the rest to the runtime. |
+| `RUNBOOK-sourcing-agent.md` | The operator's steps for the Sourcing Agent, its checks and its failure table. |
+| `docker-compose.bid-desk-alfa.yml` | The compose file of Bid Desk alfa: one runtime in front of one service, each image by digest, each port on `127.0.0.1`. The runtime does not get the key of the service. |
+| `docker-compose.bid-desk-bravo.yml` | The compose file of Bid Desk bravo. It is the file of alfa with the name of the instance, the two host ports, the host name and the organisation changed. |
+| `docker-compose.bid-desk-charlie.yml` | The compose file of Bid Desk charlie. It is the file of alfa with the name of the instance, the two host ports, the host name and the organisation changed. |
+| `.env.bid-desk.example` | The settings of one Bid Desk: its service and its runtime read the same file. The operator makes one copy for each of the three Bid Desks. Names, placeholders and published values only. |
+| `Caddyfile.bid-desk.snippet` | The three host blocks of the Bid Desks, each between its own pair of markers: `/agent.json` and `/price-list.json` go to the service, the rest to the runtime. |
+| `RUNBOOK-bid-desk.md` | The operator's steps for the three Bid Desks, their checks and their failure table. |
 
 Each agent adds one snippet file, one compose file and one env example later. They go in this folder, with the deploy pack of the agent.
 
@@ -96,34 +106,69 @@ A start needs 1,024 MiB of `MemAvailable` before it. With the six containers of 
 
 At the planning sizes, the fourth start fails the gate in the typical case (814 MiB before it), and the second start fails it in the lowest case (817 MiB before it). Let S be the size of one service in MiB, with the runtimes at 190 MiB. In the typical case, the fourth start passes only when `2S + 190 <= 904` (1,928 less 1,024), so S is at most 357 MiB. In the lowest case, it needs `2S + 190 <= 255` (1,279 less 1,024), so S is at most 32 MiB: no real service size passes. A start that would fail the gate stops, and the owner of the host decides.
 
-The containers of later agents come after these ten. Add them to the table, and check the gate again. So the other 8 containers need more memory, or a real size below the planning size, before they start. Measure the real size of each container at its first start.
+The eight containers of use case 3 (supplier bid evaluation) have these planning sizes. They are estimates until the first start of a service is measured.
+
+| Container | MiB |
+|---|---|
+| Sourcing Agent runtime | 190 |
+| Sourcing Agent service | 462 |
+| Bid Desk runtimes (3) | 570 |
+| Bid Desk services (3) | 1,386 |
+| The eight containers | 2,608 |
+
+The eight containers need 2,608 MiB, and a start needs 1,024 MiB of `MemAvailable` before it. With the six containers of use case 1 running, and none of use case 2, `MemAvailable` is about 1,928 MiB in the typical case and 1,279 MiB in the lowest case. So the eight containers need 680 MiB more than the typical case holds, and 1,329 MiB more than the lowest case holds. The service starts first, then the runtime, for the Sourcing Agent and then for each Bid Desk. At the planning sizes, the fourth start fails the gate in the typical case (814 MiB before it), and the second start fails it in the lowest case (817 MiB before it). So three of the eight containers start in the typical case, and one in the lowest case. A start that the gate refuses is not made.
+
+The plan holds no container after these eighteen, and the mock service with them makes the 19. So the containers of use case 2 and of use case 3 need more memory, or a real size below the planning size, before all of them start. Measure the real size of each container at its first start.
 
 ## The runtime image
 
-CI builds one runtime image. Every runtime of the host runs it. The image comes from the agent template at one pinned commit.
+Every runtime of the host runs one `linux/amd64` image. CI reads the image by digest and checks its platform and labels. CI does not build it again.
 
 | Item | Value |
 |---|---|
 | Image | `ghcr.io/apex-fusion/vector-service-agents/agent-runtime` |
-| Source | The repository `Apex-Fusion/vector-agent-template`, at the commit in the `ref` of `.github/workflows/ci.yml`. A step fails the job when the checkout is not at that commit. |
-| Tags | `:latest` and `:<full git commit sha>`. Only the `publish` job pushes them. The `build` job builds the image on every pull request and pushes nothing. |
-| Label | `vector-agent-template.commit` holds the full commit of the template. |
+| Source | `Apex-Fusion/vector-agent-template` at `AGENT_RUNTIME_TEMPLATE_COMMIT` in `.github/workflows/ci.yml`. |
+| Pin | `AGENT_RUNTIME_DIGEST` in `.github/workflows/ci.yml`. Use the digest of the full index. It keeps the image manifest and the provenance. |
+| Tags | `:latest` and `:<full git commit sha>` of the service repository. The `publish` job sets both tags to the same digest and checks their digests. |
+| Labels | `vector-agent-template.commit` gives the full template commit. `org.opencontainers.image.source` gives `https://github.com/Apex-Fusion/vector-service-agents`. |
 | In a compose file | `ghcr.io/apex-fusion/vector-service-agents/agent-runtime@sha256:<digest>`. A tag moves, so a compose file never names the image by a tag. |
 
-The operator takes the digest of the image that CI pushed for the reviewed commit, as for the mock service (RUNBOOK, step 6, "Run the mock service").
+On pull requests, CI builds the images of this repository without pushing them. On `main`, CI builds and pushes those images once after the tests pass. It adds the two tags to the pinned runtime in the same job.
 
-The host pulls with no login, so the package must be public. The first publish of a new package can make it private. After the first publish, check that the package is public: an anonymous `docker manifest inspect ghcr.io/apex-fusion/vector-service-agents/agent-runtime:latest` works. Run it with no login to `ghcr.io`. If the answer says `denied`, the package is private. An admin of the organisation then makes it public.
+A new push to `main` can replace a run that has not started. Use the tag of a reviewed service commit with a successful `publish` job.
+
+The host pulls without a login. Keep the package public. Check that `docker buildx imagetools inspect ghcr.io/apex-fusion/vector-service-agents/agent-runtime:latest` works without a login. If the package is private, ask a package admin to make it public.
 
 ### Move the pin
 
-The pin is one full commit of 40 hex digits. BuildKit does not resolve a short commit. Change the commit in one pull request, in all of these places:
+Publish a candidate image before you open the pull request that moves the pin. Use a Buildx builder that supports `linux/amd64` and provenance. Sign in to `ghcr.io` with write access to the `agent-runtime` package.
 
-1. The `ref` of the checkout of the template, in the job `build` and in the job `publish` of `.github/workflows/ci.yml`.
-2. The check step after each of the two checkouts.
-3. The label `vector-agent-template.commit` in the job `publish`.
-4. The build context of each compose file in `deploy/host`. Each context ends with `#<commit>`.
+1. Set `commit` to the full 40-digit SHA of the reviewed template commit. Build from that Git context. Push only the template tag.
 
-The compose files of `deploy/host` build the runtime on their own host from the same commit. They do not use this image. A test in `scripts/deploy.test.mjs` compares the four files with the workflow. The test fails when one place names another commit.
+   ```sh
+   image=ghcr.io/apex-fusion/vector-service-agents/agent-runtime
+   commit='<full template commit>'
+   metadata=$(mktemp)
+   docker buildx build --platform linux/amd64 --provenance=mode=min \
+     --file agent/Dockerfile \
+     --label org.opencontainers.image.source=https://github.com/Apex-Fusion/vector-service-agents \
+     --label "vector-agent-template.commit=$commit" \
+     --tag "$image:template-$commit" --push --metadata-file "$metadata" \
+     "https://github.com/Apex-Fusion/vector-agent-template.git#$commit"
+   ```
+
+2. After the push succeeds, read the digest from the build output file. Inspect the published image by digest. Check the platform and the labels in the table above.
+
+   ```sh
+   digest=$(jq -er '."containerimage.digest"' "$metadata")
+   rm "$metadata"
+   printf '%s\n' "$digest"
+   docker buildx imagetools inspect --format '{{json .Image}}' "$image@$digest"
+   ```
+
+3. Change `AGENT_RUNTIME_TEMPLATE_COMMIT` and `AGENT_RUNTIME_DIGEST` in `.github/workflows/ci.yml`. Set each runtime build context in `deploy/host` to the same template commit. Set `runtimeCommit` in `scripts/operator/usecases/inventory-reorder.ts` to that commit.
+
+Keep the template tag while the image is in use. Only CI sets `:latest` and the full service commit tag. The compose files of `deploy/host` still build the runtime on their own host from the pinned template commit.
 
 ## The operator image
 
@@ -180,12 +225,14 @@ Caddy runs on the host (the set-up of this folder), or in a container (section "
 | Order Desk runtimes (3) | 8102 to 8104 |
 | Prior Authorization Agent runtime (1) | 8105 |
 | Insurer Intake Agent runtime (1) | 8106 |
-| Runtimes of later agents (4) | 8107 to 8110 |
+| Sourcing Agent runtime (1) | 8107 |
+| Bid Desk runtimes (3) | 8108 to 8110 |
 | Reorder Agent service (1) | 9101 |
 | Order Desk service (1) | 9102 |
 | Prior Authorization Agent service (1) | 9103 |
 | Insurer Intake Agent service (1) | 9104 |
-| Services of later agents (4) | 9105 to 9108 |
+| Sourcing Agent service (1) | 9105 |
+| Bid Desk services (3) | 9106 to 9108 |
 | Mock service (1) | 9120 |
 
 Caddy on the host reaches a container by its port on `127.0.0.1`. Caddy in a container reaches it by its container name and its container port, on the network of the compose project. The port on `127.0.0.1` then serves the checks of the operator.
@@ -216,6 +263,7 @@ This shape is for Caddy on the host. A host whose proxy runs in a container uses
 
 On some hosts the proxy is a Caddy container, and no Caddy package is installed on the host. The packs of use case 1 (the Reorder Agent and the Order Desk) are written for such a host, and they fit no other: their upstreams are container names, and Caddy on the host cannot resolve them. The script, the main `Caddyfile` of this folder and the folder `/etc/caddy/agents` are not used there.
 The packs of use case 2 (the Prior Authorization Agent and the Insurer Intake Agent) are written for such a host in the same way.
+The packs of use case 3 (the Sourcing Agent and the three Bid Desks) are written for such a host in the same way.
 In this section, `<caddy container>` is the name of the Caddy container. `<caddyfile>` is the one file on the host that the container mounts as `/etc/caddy/Caddyfile`.
 
 | Item | Rule |
@@ -224,7 +272,7 @@ In this section, `<caddy container>` is the name of the Caddy container. `<caddy
 | The block of an agent | The lines of the snippet of the pack, from `# <agent> vhosts (BEGIN)` to `# <agent> vhosts (END)`. The two markers are exact lines. A command finds them to replace the block or to remove it. |
 | The upstreams | Container names and container ports, for example `reorder-service:9101` and `reorder-runtime:8080`. They are not ports on `127.0.0.1`. |
 | The network | Compose makes the default network of the project, `<project>_default`, when it starts the service. A pack has no `networks` key. Only the Caddy container joins it. |
-| The join | `docker network connect <project>_default <caddy container>`. Do it once for each project. Do it again after each new Caddy container, because a new container has none of the joins of the old one. |
+| The join | `docker network connect <project>_default <caddy container>`. Do it once for each project. The three Bid Desks are three projects, so the Caddy container joins one network for each of them: `bid-desk-alfa_default`, `bid-desk-bravo_default` and `bid-desk-charlie_default`. Do it again after each new Caddy container, because a new container has none of the joins of the old one. |
 | The write | Append the block to the end of `<caddyfile>`, in place. A mounted file does not follow a new file that replaces it. |
 | The check | `docker exec <caddy container> caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile`. The answer must say `Valid configuration`. |
 | The reload | `docker exec <caddy container> caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile`. Never restart Caddy. |
@@ -249,6 +297,7 @@ The shape of the block:
 Keep a copy of the Caddyfile before each change. Write it back, in place, when `caddy validate` fails. A new Caddy container reads the file when it starts, and it does not start with a file that fails.
 The runbooks of the two packs give the commands with the names of their projects and their markers: `RUNBOOK-reorder-agent.md` and `RUNBOOK-order-desk.md`, in the section "The Caddy block".
 The runbooks of the two packs of use case 2 give them in the same way: `RUNBOOK-prior-authorization-agent.md` and `RUNBOOK-insurer-intake-agent.md`.
+The runbooks of the packs of use case 3 give them in the same way: `RUNBOOK-sourcing-agent.md` and `RUNBOOK-bid-desk.md`. The second one has one block and one join for each of the three Bid Desks.
 
 ## DNS
 
@@ -381,5 +430,5 @@ A call needs the right host. `POST /admin/tenants` and every route of a system t
   Make each tenant again after such a restart (RUNBOOK, step 6, "Make or reset a tenant").
 - **Keys are made on the host and stay on it.** No key is made on another machine. No key leaves the host.
   A key file is in `/srv/agents/keys`, or in an env file with mode 600. See the RUNBOOK, section "Keys".
-- **The agents of this folder build no image on the host.** CI builds the images. A compose file names an image by its digest.
+- **The agents of this folder build no image on the host.** CI publishes the images. A compose file names an image by its digest.
 - **No container port is public.** See the section "Folders and ports".

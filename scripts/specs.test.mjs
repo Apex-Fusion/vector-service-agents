@@ -48,6 +48,8 @@ const AGENTS = {
   'order-desk': { profile: 'use-case', capability: 'supplychain.order.accept.v1', status: 'PROPOSED (built, not deployed). Since 2026-11-23.', record: NO_RECORD, adverts: 3 },
   'prior-authorization-agent': { profile: 'use-case', capability: 'health.priorauth.draft.v1', model: 'prior-authorization-agent-v1', status: 'PROPOSED (built, not deployed). Since 2026-11-24.', record: NO_RECORD },
   'insurer-intake-agent': { profile: 'use-case', capability: 'health.priorauth.intake.v1', model: 'insurer-intake-agent-v1', status: 'PROPOSED (built, not deployed). Since 2026-11-24.', record: NO_RECORD },
+  'sourcing-agent': { profile: 'use-case', capability: 'supplychain.rfq.evaluate.v1', model: 'sourcing-agent-v1', status: 'PROPOSED (built, not deployed). Since 2026-11-24.', record: NO_RECORD },
+  'bid-desk': { profile: 'use-case', capability: 'supplychain.rfq.quote.v1', model: 'bid-desk-v1', status: 'PROPOSED (built, not deployed). Since 2026-11-24.', record: NO_RECORD, adverts: 3 },
 };
 // The tests of the guide, the README table and the design read the entries of the deployed agents only. A use-case page has an entry in AGENTS and is not one of them.
 const DEPLOYED_AGENTS = Object.fromEntries(Object.entries(AGENTS).filter(([, agent]) => agent.profile === 'deployed'));
@@ -1298,6 +1300,8 @@ test('the READMEs: Agent History is DEPLOYED since 2026-10-15, Document Pipeline
     '| Order Desk | `supplychain.order.accept.v1` | PROPOSED |',
     '| Prior Authorization Agent | `health.priorauth.draft.v1` | PROPOSED |',
     '| Insurer Intake Agent | `health.priorauth.intake.v1` | PROPOSED |',
+    '| [Sourcing Agent](specs/sourcing-agent.md) | `supplychain.rfq.evaluate.v1` | PROPOSED |',
+    '| [Bid Desk](specs/bid-desk.md) | `supplychain.rfq.quote.v1` | PROPOSED |',
   ]);
   // No README says of an agent that it is not advertised or waits for its deployment: the four are advertised. The README of Advocate names "no advert" once, in its rule of the ceiling of the chat job.
   for (const [name, text] of [['agents/agent-history/README.md', agentReadme], ['agents/document-pipeline/README.md', pipelineReadme], ['agents/audio-snippets/README.md', snippetsReadme], ['agents/advocate/README.md', advocateReadme.replace('when no advert at or under it can be', '')], ['README.md', rootReadme]]) assert.equal(text.match(/not yet advertised|no advert\b|not posted|not in service|<ADVERT_REF>|waits for its deployment/i), null, name);
@@ -1310,7 +1314,7 @@ test('README: the section "Hire Agent History" sits between the status table and
   assert.equal(readme.split(heading).length - 1, 1, 'one such section');
   const start = readme.indexOf(heading);
   const links = readme.indexOf('\n- Hire one: `docs/HIRE.md`\n');
-  assert.ok(readme.slice(0, start).trimEnd().endsWith('| Insurer Intake Agent | `health.priorauth.intake.v1` | PROPOSED |'), 'right after the status table');
+  assert.ok(readme.slice(0, start).trimEnd().endsWith('| [Bid Desk](specs/bid-desk.md) | `supplychain.rfq.quote.v1` | PROPOSED |'), 'right after the status table');
   assert.ok(links > start, 'before the link list');
   const body = readme.slice(start + heading.length, links);
   const lines = body.split('\n').filter((l) => l.trim() !== '');
