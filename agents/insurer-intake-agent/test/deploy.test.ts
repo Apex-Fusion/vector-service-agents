@@ -13,10 +13,11 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, test } from 'vitest';
 import { parse, stringify } from 'yaml';
+import { FAULT_MODES } from '@vsa/usecase-kit/protocol';
 import { KEY_ROLES } from '../src/serve/keys.ts';
-import { JOB_DEADLINE_MS, MIN_PROCESSING_WINDOW_MS, PORT_DEFAULT, STATE_DIR_DEFAULT } from '../src/serve/settings.ts';
-import { SETTINGS, SHUTDOWN_WAIT_MS } from '../src/serve/start.ts';
-import { KEY_VARIABLES as KEY_OF_ROLE } from './serve/support.ts';
+import { CHECKS_READ_BUDGET_DEFAULT_MS, CHECKS_READ_BUDGET_MAX_MS, CHECKS_READ_BUDGET_MIN_MS, HOOK_READS, HOOK_READS_LIMIT_MS, JOB_DEADLINE_MS, MIN_PROCESSING_WINDOW_MS, PORT_DEFAULT, PRICE_DEFAULT_LOVELACE, STATE_DIR_DEFAULT } from '../src/serve/settings.ts';
+import { SETTINGS, SHUTDOWN_WAIT_MS, loadConfig } from '../src/serve/start.ts';
+import { AGENT_DID, CONTACT, KEY_VARIABLES as KEY_OF_ROLE, OTHER, SERVICE, SUPPLIER, TOKEN } from './serve/support.ts';
 
 // --- the files ---------------------------------------------------------------------------------------------------------------------------------------
 
@@ -439,5 +440,415 @@ describe('deploy/server/docker-compose.insurer-intake-agent.yml', () => {
     expect(composeText).toContain(NETWORK);
     expect(composeText.split('\n').filter((line) => /^\s*(networks|build):/.test(line))).toStrictEqual([]);
     expect(RUNTIME_UPSTREAM).toBe('intake-runtime:8080');
+  });
+});
+
+// --- the env example -----------------------------------------------------------------------------------------------------------------------------------
+
+const exampleText = readPack(FILES.example);
+
+/** The names of the tool that posts an advert. The operator posts the advert with the hosted tools, and the runtime reads the reference of its advert as ADVERT_REF. ADVERT_PRICE_LOVELACE is not among them: it is a setting of the service. */
+const POST_ADVERT_NAMES = ['ADVERT_MODEL', 'ADVERT_ENDPOINT_URL', 'ADVERT_DETAIL_URI', 'ADVERT_DETAIL_HASH'] as const;
+/** The names of the Prior Authorization Agent that this agent has not: the limits of a hire of another agent, the settings of the co-sign route, the DIDs of its two subagents and the folder of its state. */
+const NAMES_OF_THE_OTHER_AGENT = [
+  'HANDOFF_MAX_PRICE_LOVELACE', 'HANDOFF_MAX_SUPPLIER_BOND_LOVELACE', 'HANDOFF_MAX_BUYER_BOND_LOVELACE', 'COSIGN_ALLOWLIST', 'COSIGN_MAX_CONCURRENT', 'COSIGN_MAX_FUTURE_MS', 'COSIGN_LEDGER_TIMEOUT_MS',
+  'RECORD_READER_DID', 'DRAFTER_DID', 'PRIORAUTH_STATE_DIR',
+] as const;
+/** The four supplier lines: the runtime holds the key and the wallet, and the service reads the two public lines to publish them. */
+const SUPPLIER_LINES = ['SUPPLIER_PRIV_KEY_HEX', 'SUPPLIER_PUB_KEY_HEX', 'SUPPLIER_PKH', 'SUPPLIER_ADDRESS'] as const;
+/** The key of the service, followed by its key hash. */
+const KEY_LINES = KEY_VARIABLES.flatMap((name) => [name, name.replace('_PRIV_KEY_HEX', '_PKH')]);
+/** The names that the runtime reads from an env file (the template of the runtime). The last one is optional: the runtime has its own default. */
+const RUNTIME_READS = [
+  'SUPPLIER_PRIV_KEY_HEX', 'SUPPLIER_PUB_KEY_HEX', 'SUPPLIER_PKH', 'SUPPLIER_ADDRESS', 'NETWORK_ID', 'OGMIOS_URL', 'VECTOR_ZERO_TIME_MS', 'LIVE_CHAIN', 'ESCROW_REF_UTXO', 'ADVERT_REF_UTXO',
+  'IDENTITY_ESCROW_REF_UTXO', 'IDENTITY_ADVERT_REF_UTXO', 'IDENTITY_POLICY_ID', 'AGENT_ID', 'ADVERT_REF', 'CAPABILITY_KIND', 'SERVICE_URL', 'SERVICE_PRECHECK_URL', 'SERVICE_AUTH_HEADER',
+  'SERVICE_CONTENT_TYPE', 'SERVICE_TIMEOUT_MS', 'ADVERT_MAX_PROCESSING_MS', 'PUBLIC_ORIGIN', 'RELEASE_WATCHER', 'PORT', 'WALLET_HEALTH_INTERVAL_MS',
+] as const;
+const OPTIONAL_NAMES: readonly string[] = ['WALLET_HEALTH_INTERVAL_MS'];
+/** The values that are public chain data: the network, the node, the time of slot 0, the legacy scripts, and the identity registry that Vector mainnet published (the deployment of 2026-11-03). The example holds these and no other value of that shape. */
+const PUBLISHED: Readonly<Record<string, string>> = {
+  NETWORK_ID: '1',
+  OGMIOS_URL: 'https://ogmios.vector.mainnet.apexfusion.org',
+  VECTOR_ZERO_TIME_MS: '1756485600000',
+  LIVE_CHAIN: '1',
+  ESCROW_REF_UTXO: 'c8d84c6d67ec67a1efe5e9c6c06d53020e05d1bb96d1c55ecb1eb7d5010c4d54#0',
+  ADVERT_REF_UTXO: 'c8d84c6d67ec67a1efe5e9c6c06d53020e05d1bb96d1c55ecb1eb7d5010c4d54#1',
+  IDENTITY_POLICY_ID: 'd958b823faaa76977d0a07bd9622e87d8e2c85f6692f7f8e8db77762',
+  IDENTITY_ESCROW_REF_UTXO: '4c2d09858dab0cc22cc77dcb99efed570d909a66e0beb512041dea91005b5e82#0',
+  IDENTITY_ADVERT_REF_UTXO: '5efd18a1d90a6b87f1fd4b6fe93acfbe5be082260fd52be194b1088ade7c2758#0',
+  VECTOR_IDENTITY_LEGACY_ROOT: 'e4b6b17ce4a8f83aa17d3181ea140d2bd76c0cfa8a7c44ad69543800b4a0df01',
+  VECTOR_IDENTITY_CONFIG_SEED: '6c9856c70b1101f1a4e9ceb373188608013416eff48c51f5bb62706a65d41a2a#0',
+  VECTOR_IDENTITY_ESCROW_REF_UTXO: '4c2d09858dab0cc22cc77dcb99efed570d909a66e0beb512041dea91005b5e82#0',
+  VECTOR_IDENTITY_VAULT_REF_UTXO: 'd0bf8f73c915fcbf57ddba714256e520a9a0820bc9e643218db8cf54762d215b#0',
+};
+/** The values that this pack chooses: the terms of the advert (price 2, window 8 minutes), the time of one read of the hook, the model hire of the decision as Advocate has it (one model, price 1, both bonds 2 at most), and the stake of a challenge as the least stake of a claim. */
+const CHOSEN: Readonly<Record<string, string>> = {
+  AGENT_STATUS_CHIP: 'proposed',
+  FAULT_MODE: '',
+  ADVERT_PRICE_LOVELACE: String(PRICE_DEFAULT_LOVELACE),
+  ADVERT_MAX_PROCESSING_MS: String(MIN_PROCESSING_WINDOW_MS),
+  CHECKS_READ_BUDGET_MS: String(CHECKS_READ_BUDGET_DEFAULT_MS),
+  LLM_MODEL_ALLOWLIST: 'deepseek/deepseek-v4-flash',
+  LLM_MAX_PRICE_LOVELACE: '1000000',
+  LLM_MAX_SUPPLIER_BOND_LOVELACE: '2000000',
+  LLM_MAX_BUYER_BOND_LOVELACE: '2000000',
+  DISPUTE_CHALLENGE_STAKE_LOVELACE: '50000000',
+  DISPUTE_MIN_WINDOW_LEFT_MS: '600000',
+  DISPUTE_READ_TIMEOUT_MS: '20000',
+};
+/** The lines that an operator has to fill: a value in angle brackets stands for what the operator supplies. */
+const PLACEHOLDER_NAMES = ['OPERATOR_CONTACT', 'MOCK_PUBLIC_BASE', 'MOCK_MTLS_BASE', 'VECTOR_MODULE1_MANIFEST'];
+const MODULE1_MANIFEST = /^https:\/\/raw\.githubusercontent\.com\/Apex-Fusion\/vector-agent-modules\/(?:<commit>|[0-9a-f]{40})\/Module-1\/deploy\/identity\/mainnet\/manifest\.json$/;
+/** Lines whose value stays empty in the example: a key, a key hash, a line that the operator fills later, and a line for which the code has a default. */
+const EMPTY_LINES = [
+  ...SUPPLIER_LINES, ...KEY_LINES, 'AGENT_ID', 'ADVERT_REF', 'IDENTITY_ADDRESS', 'AGENT_VERSION', 'AGENT_STATUS_SINCE', 'ADVERT_EXPLORER_URL', 'AGENT_DID', 'FAULT_MODE',
+  'VECTOR_OGMIOS_URL', 'VECTOR_KOIOS_URL', 'VECTOR_SUBMIT_URL', 'VECTOR_MARKETPLACE_INDEXER_URL', 'IDENTITY_GATEWAY_URL', 'DISPUTE_RESOLUTION_DEADLINE_MS', 'DISPUTE_STARTED_LEASE_MS',
+];
+/** The first line of each block, in the order of the blocks: the supplier key, the service key, the token, the chain, the identity registry, the Module-1 manifest, the services that are read, the mock systems, the terms of the advert, the hook, the manifest, the hires, the dispute code, the fault switch. */
+const BLOCK_STARTS = [
+  'SUPPLIER_PRIV_KEY_HEX', 'INTAKE_SERVICE_PRIV_KEY_HEX', 'SERVICE_AUTH_HEADER', 'NETWORK_ID', 'IDENTITY_POLICY_ID', 'VECTOR_MODULE1_MANIFEST', 'VECTOR_OGMIOS_URL', 'MOCK_PUBLIC_BASE', 'ADVERT_PRICE_LOVELACE',
+  'CHECKS_READ_BUDGET_MS', 'OPERATOR_CONTACT', 'LLM_MODEL_ALLOWLIST', 'DISPUTE_CHALLENGE_STAKE_LOVELACE', 'FAULT_MODE',
+];
+/** The names that stand in the compose file and in the example too: the window of the advert (the compose file gives it to the runtime, and the service reads it from the file), the supplier key line (the service blanks it) and the service key line (the runtime blanks it). */
+const BOTH = ['ADVERT_MAX_PROCESSING_MS', 'SUPPLIER_PRIV_KEY_HEX', ...KEY_VARIABLES];
+
+interface Entry { readonly name: string; readonly value: string; readonly line: number }
+/** The NAME=value lines of an example, with their line numbers, and what is wrong with a line that is none. */
+function entriesOf(text: string): { readonly entries: readonly Entry[]; readonly problems: readonly string[] } {
+  const entries: Entry[] = [];
+  const problems: string[] = [];
+  text.split('\n').forEach((raw, at) => {
+    if (raw.trim() === '' || raw.startsWith('#')) return;
+    const hit = /^([A-Z][A-Z0-9_]*)=(.*)$/.exec(raw);
+    if (hit === null) problems.push(`line ${at + 1} is not a comment and not NAME=value`);
+    else entries.push({ name: hit[1], value: hit[2], line: at + 1 });
+  });
+  return { entries, problems };
+}
+const KEY_SHAPED = [/^[0-9a-f]{64}$/i, /^[0-9a-f]{56}$/i, /^addr1/, /ed25519_sk/i];
+const emptyValue = (value: string): boolean => value === '' || value === '""';
+
+/** What the compose file sets for the containers: the names that an example must not repeat, because the compose value wins. */
+function composeSetNames(compose: Model): Set<string> {
+  return new Set(Object.values(compose.services as Model).flatMap((service) => Object.keys(isModel(service.environment) ? service.environment : {})));
+}
+
+/** What is wrong with the example. An empty list is a pass. */
+function exampleProblems(text: string, compose: Model = parse(composeText) as Model): string[] {
+  const { entries, problems: lineProblems } = entriesOf(text);
+  const problems: string[] = [...lineProblems];
+  const seen = new Set<string>();
+  for (const { name } of entries) {
+    if (seen.has(name)) problems.push(`${name} is listed twice`);
+    seen.add(name);
+  }
+  const value = (name: string): string | undefined => entries.find((entry) => entry.name === name)?.value;
+  const allowed = new Set<string>([...SETTINGS, ...RUNTIME_READS]);
+  // A name that the compose file sets wins over the env file, so the example does not repeat it. The names of BOTH are the exception.
+  const setByCompose = composeSetNames(compose);
+  for (const { name, value: given } of entries) {
+    if ((POST_ADVERT_NAMES as readonly string[]).includes(name)) problems.push(`${name} is a name of the advert tool: the operator posts the advert, and the example holds no such name`);
+    else if (!allowed.has(name)) problems.push(`${name} is no setting of the service and no setting of the runtime`);
+    if (SECRET_NAME.test(name) && !emptyValue(given)) problems.push(`${name} must be empty`);
+    const published = Object.hasOwn(PUBLISHED, name) && PUBLISHED[name] === given;
+    if (!published && KEY_SHAPED.some((shape) => shape.test(given))) problems.push(`${name} looks like key material`);
+    if (setByCompose.has(name) && !BOTH.includes(name)) problems.push(`${name} is set by the compose file, which wins: a line here would do nothing`);
+  }
+  for (const name of allowed) {
+    if (value(name) === undefined && !OPTIONAL_NAMES.includes(name) && (!setByCompose.has(name) || BOTH.includes(name))) problems.push(`${name} is missing`);
+  }
+  for (const [name, wanted] of Object.entries({ ...PUBLISHED, ...CHOSEN })) {
+    const found = value(name);
+    if (found !== undefined && found !== wanted) problems.push(SECRET_NAME.test(name) ? `${name} must be the value of the pack` : `${name} must be ${JSON.stringify(wanted)}; found: ${JSON.stringify(found)}`);
+  }
+  for (const name of EMPTY_LINES) {
+    const found = value(name);
+    if (found !== undefined && !emptyValue(found)) problems.push(`${name} must be empty in the example`);
+  }
+  const bracketed = entries.filter((entry) => entry.value.includes('<')).map((entry) => entry.name);
+  if (!same([...bracketed].sort(), [...PLACEHOLDER_NAMES].sort())) problems.push(`the lines with a placeholder must be ${PLACEHOLDER_NAMES.join(', ')}; found: ${bracketed.join(', ')}`);
+  const manifest = value('VECTOR_MODULE1_MANIFEST');
+  if (manifest !== undefined && !MODULE1_MANIFEST.test(manifest)) problems.push('VECTOR_MODULE1_MANIFEST must be an https address of the Module-1 manifest, pinned to a commit: the placeholder <commit> or 40 hex digits');
+  const token = value('SERVICE_AUTH_HEADER');
+  if (token !== undefined && token !== '""') problems.push('SERVICE_AUTH_HEADER must be "" (quoted and empty): the value has a space, so it needs quotes');
+  const names = entries.map((entry) => entry.name);
+  if (!same(names.slice(0, SUPPLIER_LINES.length + KEY_LINES.length), [...SUPPLIER_LINES, ...KEY_LINES])) problems.push('the example must start with the four supplier lines and then the service key, followed by its key hash');
+  const starts = BLOCK_STARTS.map((name) => names.indexOf(name));
+  if (starts.some((at, index) => at >= 0 && starts.slice(0, index).some((before) => before > at))) problems.push(`the blocks must follow this order: ${BLOCK_STARTS.join(', ')}`);
+  return problems;
+}
+
+/** Appends one line at the end of a text. */
+const withLine = (text: string, line: string): string => `${text.endsWith('\n') ? text : `${text}\n`}${line}\n`;
+/** The place of the line of one name in a list of lines. A name that the text does not hold stops the test. */
+function lineOf(lines: readonly string[], name: string): number {
+  const at = lines.findIndex((line) => line.startsWith(`${name}=`));
+  expect(at, `the text has a line for ${name}`).toBeGreaterThanOrEqual(0);
+  return at;
+}
+/** The text with the value of one name replaced. */
+function withValue(text: string, name: string, value: string): string {
+  const lines = text.split('\n');
+  lines[lineOf(lines, name)] = `${name}=${value}`;
+  return lines.join('\n');
+}
+/** The text without the line of one name. */
+function without(text: string, name: string): string {
+  const lines = text.split('\n');
+  lines.splice(lineOf(lines, name), 1);
+  return lines.join('\n');
+}
+/** Exchanges two parts of a text, every copy of each. */
+function exchange(text: string, a: string, b: string): string {
+  const mark = '\u0000';
+  return swap(swap(swap(text, a, mark), b, a), mark, b);
+}
+
+// The proof that the example is the real thing: the example, filled in with the values that an operator gives, and joined with what the compose file sets for the service, is the environment that the service reads at
+// start. The real start code accepts it. The tests of the example use these three.
+const filled = (env: Readonly<Record<string, string>>): NodeJS.ProcessEnv => ({
+  ...env,
+  OPERATOR_CONTACT: CONTACT,
+  AGENT_DID,
+  ...Object.fromEntries(KEY_VARIABLES.map((name) => [name, SERVICE.privateKeyHex])),
+  SERVICE_AUTH_HEADER: TOKEN,
+  SUPPLIER_PKH: SUPPLIER.pkh,
+  SUPPLIER_PUB_KEY_HEX: SUPPLIER.pubKeyHex,
+  MOCK_PUBLIC_BASE: 'https://mock.example.test',
+  MOCK_MTLS_BASE: 'https://mock-mtls.example.test',
+  VECTOR_MODULE1_MANIFEST: swap(env.VECTOR_MODULE1_MANIFEST ?? '', '<commit>', 'a'.repeat(40)),
+});
+const exampleEnv = Object.fromEntries(entriesOf(exampleText).entries.map((entry) => [entry.name, entry.value === '""' ? '' : entry.value]));
+const containerEnv = (service: string): Record<string, string> => (parse(composeText) as Model).services[service].environment as Record<string, string>;
+
+describe('deploy/server/.env.insurer-intake-agent.example', () => {
+  test('the real example passes: the settings of the service and the names of the runtime, each one once, every secret empty, the published values as published', () => {
+    expect(exampleProblems(exampleText)).toStrictEqual([]);
+    const { entries } = entriesOf(exampleText);
+    expect(entries.length, 'the settings of the service that the compose file leaves to the example, and the names that only the runtime reads').toBe(50);
+    const names = entries.map((entry) => entry.name);
+    expect(new Set(names).size).toBe(names.length);
+    for (const name of names) expect(new Set<string>([...SETTINGS, ...RUNTIME_READS]).has(name), name).toBe(true);
+    for (const name of [...SUPPLIER_LINES, ...KEY_LINES, 'SERVICE_AUTH_HEADER']) expect(emptyValue(entries.find((entry) => entry.name === name)!.value), name).toBe(true);
+  });
+
+  test('the example holds the four supplier lines first, then the service key with its key hash, and the lines of the runtime that stay empty: the reference of the advert and the agent identifier', () => {
+    const { entries } = entriesOf(exampleText);
+    const names = entries.map((entry) => entry.name);
+    expect(names.slice(0, 6)).toStrictEqual(['SUPPLIER_PRIV_KEY_HEX', 'SUPPLIER_PUB_KEY_HEX', 'SUPPLIER_PKH', 'SUPPLIER_ADDRESS', 'INTAKE_SERVICE_PRIV_KEY_HEX', 'INTAKE_SERVICE_PKH']);
+    expect(names[6]).toBe('SERVICE_AUTH_HEADER');
+    expect(names.at(-1)).toBe('FAULT_MODE');
+    for (const name of ['ADVERT_REF', 'AGENT_ID', 'AGENT_DID', 'FAULT_MODE']) expect(entries.find((entry) => entry.name === name)!.value, name).toBe('');
+  });
+
+  test('the names that the example leaves out of the settings of the service are the three that the compose file sets, and the names that it adds are the ones that only the runtime reads', () => {
+    const names = new Set(entriesOf(exampleText).entries.map((entry) => entry.name));
+    expect(SETTINGS.filter((name) => !names.has(name))).toStrictEqual(['PORT', 'HOST', 'INTAKE_STATE_DIR']);
+    expect([...names].filter((name) => !(SETTINGS as readonly string[]).includes(name)).sort()).toStrictEqual([
+      'ADVERT_REF', 'ADVERT_REF_UTXO', 'AGENT_ID', 'ESCROW_REF_UTXO', 'IDENTITY_ADVERT_REF_UTXO', 'IDENTITY_ESCROW_REF_UTXO', 'LIVE_CHAIN', 'NETWORK_ID', 'OGMIOS_URL', 'SUPPLIER_ADDRESS', 'SUPPLIER_PRIV_KEY_HEX',
+      'VECTOR_ZERO_TIME_MS',
+    ]);
+  });
+
+  test('a name of the advert tool is refused one at a time, and the unchanged example is accepted', () => {
+    expect(exampleProblems(exampleText), 'the example as it is').toStrictEqual([]);
+    for (const name of POST_ADVERT_NAMES) {
+      const problems = exampleProblems(withLine(exampleText, `${name}=`));
+      expect(problems.some((problem) => problem === `${name} is a name of the advert tool: the operator posts the advert, and the example holds no such name`), `${name}: ${JSON.stringify(problems)}`).toBe(true);
+    }
+    expect(exampleProblems(exampleText).some((problem) => problem.includes('ADVERT_PRICE_LOVELACE')), 'the price of the advert is a setting of the service, so it stays').toBe(false);
+    expect(entriesOf(exampleText).entries.some((entry) => entry.name === 'ADVERT_PRICE_LOVELACE')).toBe(true);
+  });
+
+  test('a name of the Prior Authorization Agent is refused one at a time: no limit of a hire, no co-sign setting, no subagent and no state folder', () => {
+    expect(exampleProblems(exampleText), 'the example as it is').toStrictEqual([]);
+    for (const name of NAMES_OF_THE_OTHER_AGENT) {
+      expect((SETTINGS as readonly string[]).includes(name), `${name} is no setting of this service`).toBe(false);
+      const problems = exampleProblems(withLine(exampleText, `${name}=`));
+      expect(problems.some((problem) => problem === `${name} is no setting of the service and no setting of the runtime`), `${name}: ${JSON.stringify(problems)}`).toBe(true);
+    }
+  });
+
+  const faults: readonly Fault[] = [
+    // A key, a token or an address in a line that must stay empty.
+    ['a key in the line of the supplier key', (t) => withValue(t, 'SUPPLIER_PRIV_KEY_HEX', HEX), 'SUPPLIER_PRIV_KEY_HEX must be empty'],
+    ...KEY_VARIABLES.map((name): Fault => [`a key in the line of ${name}`, (t) => withValue(t, name, HEX), `${name} must be empty`]),
+    ['a token in the token line', (t) => withValue(t, 'SERVICE_AUTH_HEADER', `"Bearer ${HEX}"`), 'SERVICE_AUTH_HEADER must be empty'],
+    ['an unquoted token line', (t) => withValue(t, 'SERVICE_AUTH_HEADER', ''), 'SERVICE_AUTH_HEADER must be "" (quoted and empty)'],
+    ['a key in the line of a public key', (t) => withValue(t, 'SUPPLIER_PUB_KEY_HEX', HEX), /^SUPPLIER_PUB_KEY_HEX (must be empty|looks like key material)/],
+    ['a key hash in the line of the supplier', (t) => withValue(t, 'SUPPLIER_PKH', 'cd'.repeat(28)), /^SUPPLIER_PKH (must be empty|looks like key material)/],
+    ...KEY_VARIABLES.map((name): Fault => [`a key hash in the key hash line of ${name}`, (t) => withValue(t, name.replace('_PRIV_KEY_HEX', '_PKH'), 'cd'.repeat(28)), /_PKH (must be empty|looks like key material)/]),
+    ['an address in the line of the wallet', (t) => withValue(t, 'SUPPLIER_ADDRESS', 'addr1qxyz'), /^SUPPLIER_ADDRESS (must be empty|looks like key material)/],
+    ['a key in a line that is not its own', (t) => withValue(t, 'AGENT_DID', HEX), /^AGENT_DID (must be empty|looks like key material)/],
+    ['a reference of an advert in the example', (t) => withValue(t, 'ADVERT_REF', `${HEX}#0`), /^ADVERT_REF (must be empty|looks like key material)/],
+    ['an agent identifier in the example', (t) => withValue(t, 'AGENT_ID', HEX), /^AGENT_ID (must be empty|looks like key material)/],
+    // A name that the compose file sets: its value wins, so a line here does nothing.
+    ...['PORT=9104', 'HOST=0.0.0.0', 'INTAKE_STATE_DIR=/data', 'CAPABILITY_KIND=custom', `SERVICE_URL=http://${SERVICE_UPSTREAM}/`, `SERVICE_PRECHECK_URL=http://${SERVICE_UPSTREAM}/precheck`, 'SERVICE_CONTENT_TYPE=application/json',
+      'SERVICE_TIMEOUT_MS=360000', `PUBLIC_ORIGIN=https://${HOST}`, 'RELEASE_WATCHER=1'].map((line): Fault => [
+      `a line for a name that the compose file sets: ${line.slice(0, line.indexOf('='))}`, (t) => withLine(t, line), / is set by the compose file, which wins/,
+    ]),
+    // A name that the example must not hold, and a line that is no setting.
+    ['a name that is no setting', (t) => withLine(t, 'SOMETHING_ELSE=1'), 'SOMETHING_ELSE is no setting of the service and no setting of the runtime'],
+    ['a key variable of the Reorder Agent', (t) => withLine(t, 'REORDER_SERVICE_PRIV_KEY_HEX='), 'REORDER_SERVICE_PRIV_KEY_HEX is no setting of the service and no setting of the runtime'],
+    ['a key variable of the Prior Authorization Agent', (t) => withLine(t, 'PRIORAUTH_SERVICE_PRIV_KEY_HEX='), 'PRIORAUTH_SERVICE_PRIV_KEY_HEX is no setting of the service and no setting of the runtime'],
+    ['the stock reader of the Reorder Agent', (t) => withLine(t, 'STOCK_READER_DID='), 'STOCK_READER_DID is no setting of the service and no setting of the runtime'],
+    ['the state folder of the Reorder Agent', (t) => withLine(t, 'REORDER_STATE_DIR=/data'), 'REORDER_STATE_DIR is no setting of the service and no setting of the runtime'],
+    ['a name twice', (t) => withLine(t, 'FAULT_MODE='), 'FAULT_MODE is listed twice'],
+    ['a line that is no NAME=value', (t) => withLine(t, 'name = value'), /is not a comment and not NAME=value/],
+    // A line that is missing.
+    ['a missing line of the mock systems', (t) => without(t, 'MOCK_MTLS_BASE'), 'MOCK_MTLS_BASE is missing'],
+    ['a missing line of the runtime', (t) => without(t, 'LIVE_CHAIN'), 'LIVE_CHAIN is missing'],
+    ['a missing line of the reference of the advert', (t) => without(t, 'ADVERT_REF'), 'ADVERT_REF is missing'],
+    ['a missing supplier key line', (t) => without(t, 'SUPPLIER_PRIV_KEY_HEX'), 'SUPPLIER_PRIV_KEY_HEX is missing'],
+    ['a missing service key line', (t) => without(t, 'INTAKE_SERVICE_PRIV_KEY_HEX'), 'INTAKE_SERVICE_PRIV_KEY_HEX is missing'],
+    ['a missing key hash line of the service key', (t) => without(t, 'INTAKE_SERVICE_PKH'), 'INTAKE_SERVICE_PKH is missing'],
+    ['a missing budget of the hook', (t) => without(t, 'CHECKS_READ_BUDGET_MS'), 'CHECKS_READ_BUDGET_MS is missing'],
+    ['a missing line of the DID', (t) => without(t, 'AGENT_DID'), 'AGENT_DID is missing'],
+    ['a missing limit of the model hire', (t) => without(t, 'LLM_MAX_PRICE_LOVELACE'), 'LLM_MAX_PRICE_LOVELACE is missing'],
+    ['a missing stake of the challenge', (t) => without(t, 'DISPUTE_CHALLENGE_STAKE_LOVELACE'), 'DISPUTE_CHALLENGE_STAKE_LOVELACE is missing'],
+    ['a missing fault switch', (t) => without(t, 'FAULT_MODE'), 'FAULT_MODE is missing'],
+    // A value that the pack fixes.
+    ['a fault switch that is on', (t) => withValue(t, 'FAULT_MODE', 'alter_after_approval'), 'FAULT_MODE must be ""'],
+    ['a fault value of another agent', (t) => withValue(t, 'FAULT_MODE', 'confirm_wrong_lot'), 'FAULT_MODE must be ""'],
+    ['a status word of a live service', (t) => withValue(t, 'AGENT_STATUS_CHIP', 'live'), 'AGENT_STATUS_CHIP must be "proposed"'],
+    ['a status word in upper case', (t) => withValue(t, 'AGENT_STATUS_CHIP', 'proposed'.toUpperCase()), 'AGENT_STATUS_CHIP must be "proposed"'],
+    ['a window under the deadline of a job', (t) => withValue(t, 'ADVERT_MAX_PROCESSING_MS', '300000'), 'ADVERT_MAX_PROCESSING_MS must be "480000"'],
+    ['the window of the Prior Authorization Agent', (t) => withValue(t, 'ADVERT_MAX_PROCESSING_MS', '1800000'), 'ADVERT_MAX_PROCESSING_MS must be "480000"'],
+    ['another price of the advert', (t) => withValue(t, 'ADVERT_PRICE_LOVELACE', '5000000'), 'ADVERT_PRICE_LOVELACE must be "2000000"'],
+    ['the price of the Prior Authorization Agent', (t) => withValue(t, 'ADVERT_PRICE_LOVELACE', '3000000'), 'ADVERT_PRICE_LOVELACE must be "2000000"'],
+    ['an empty price', (t) => withValue(t, 'ADVERT_PRICE_LOVELACE', ''), 'ADVERT_PRICE_LOVELACE must be "2000000"'],
+    ['a budget of the hook that the six reads cannot keep', (t) => withValue(t, 'CHECKS_READ_BUDGET_MS', '1500'), 'CHECKS_READ_BUDGET_MS must be "1200"'],
+    ['an empty budget of the hook', (t) => withValue(t, 'CHECKS_READ_BUDGET_MS', ''), 'CHECKS_READ_BUDGET_MS must be "1200"'],
+    ['another policy of the identity registry', (t) => withValue(t, 'IDENTITY_POLICY_ID', '0'.repeat(56)), 'IDENTITY_POLICY_ID must be'],
+    ['another vault script', (t) => withValue(t, 'VECTOR_IDENTITY_VAULT_REF_UTXO', `${HEX}#0`), 'VECTOR_IDENTITY_VAULT_REF_UTXO must be'],
+    ['another escrow script of the runtime', (t) => withValue(t, 'IDENTITY_ESCROW_REF_UTXO', `${HEX}#0`), 'IDENTITY_ESCROW_REF_UTXO must be'],
+    ['a runtime that cannot write to the chain', (t) => withValue(t, 'LIVE_CHAIN', '0'), 'LIVE_CHAIN must be "1"'],
+    ['a placeholder where the pack gives a value', (t) => withValue(t, 'LLM_MAX_PRICE_LOVELACE', '<price>'), 'LLM_MAX_PRICE_LOVELACE must be "1000000"'],
+    ['a limit that the model hire does not take', (t) => withValue(t, 'LLM_MAX_BUYER_BOND_LOVELACE', '5000000'), 'LLM_MAX_BUYER_BOND_LOVELACE must be "2000000"'],
+    ['another model', (t) => withValue(t, 'LLM_MODEL_ALLOWLIST', 'other/model'), 'LLM_MODEL_ALLOWLIST must be "deepseek/deepseek-v4-flash"'],
+    ['a stake that no claim reaches', (t) => withValue(t, 'DISPUTE_CHALLENGE_STAKE_LOVELACE', '1000000'), 'DISPUTE_CHALLENGE_STAKE_LOVELACE must be "50000000"'],
+    ['a resolution deadline in the example', (t) => withValue(t, 'DISPUTE_RESOLUTION_DEADLINE_MS', '259200000'), 'DISPUTE_RESOLUTION_DEADLINE_MS must be empty in the example'],
+    ['a lease in the example', (t) => withValue(t, 'DISPUTE_STARTED_LEASE_MS', '60000'), 'DISPUTE_STARTED_LEASE_MS must be empty in the example'],
+    // A Module-1 manifest that is not pinned, and a placeholder that is not the pack's.
+    ['a Module-1 manifest that no commit pins', (t) => swap(t, '/<commit>/', '/main/'), 'VECTOR_MODULE1_MANIFEST must be an https address of the Module-1 manifest, pinned to a commit'],
+    ['a Module-1 manifest as a file', (t) => withValue(t, 'VECTOR_MODULE1_MANIFEST', '/etc/manifest.json'), 'VECTOR_MODULE1_MANIFEST must be an https address'],
+    ['a Module-1 manifest on http', (t) => swap(t, 'VECTOR_MODULE1_MANIFEST=https://', 'VECTOR_MODULE1_MANIFEST=http://'), 'VECTOR_MODULE1_MANIFEST must be an https address'],
+    ['a placeholder in another line', (t) => withValue(t, 'AGENT_DID', '<did>'), 'the lines with a placeholder must be'],
+    ['no placeholder where the operator fills a value', (t) => withValue(t, 'OPERATOR_CONTACT', 'ops'), 'the lines with a placeholder must be'],
+    // The order of the blocks.
+    ['the token before the key', (t) => exchange(t, '\nSERVICE_AUTH_HEADER=""\n', '\nINTAKE_SERVICE_PRIV_KEY_HEX=\n'), /^the (blocks must follow this order|example must start with)/],
+    ['the chain after the terms of the advert', (t) => exchange(t, '\nNETWORK_ID=1\n', '\nADVERT_PRICE_LOVELACE=2000000\n'), 'the blocks must follow this order'],
+    ['the budget of the hook before the terms of the advert', (t) => exchange(t, '\nCHECKS_READ_BUDGET_MS=1200\n', '\nADVERT_PRICE_LOVELACE=2000000\n'), 'the blocks must follow this order'],
+    ['the fault switch before the dispute code', (t) => exchange(t, '\nFAULT_MODE=\n', '\nDISPUTE_CHALLENGE_STAKE_LOVELACE=50000000\n'), 'the blocks must follow this order'],
+    ['a key hash before its key', (t) => swap(t, '\nINTAKE_SERVICE_PRIV_KEY_HEX=\nINTAKE_SERVICE_PKH=\n', '\nINTAKE_SERVICE_PKH=\nINTAKE_SERVICE_PRIV_KEY_HEX=\n'), 'the example must start with'],
+    ['the service key before the supplier lines', (t) => exchange(t, '\nSUPPLIER_PRIV_KEY_HEX=\n', '\nINTAKE_SERVICE_PRIV_KEY_HEX=\n'), 'the example must start with'],
+  ];
+  test('each copy of the example that breaks one rule is refused, in the words of that rule', () => {
+    expect(faults.length).toBeGreaterThan(60);
+    for (const [what, change, expected] of faults) {
+      const problems = exampleProblems(change(exampleText));
+      expect(problems.some((problem) => says(problem, expected)), `${what}: found ${JSON.stringify(problems)}`).toBe(true);
+    }
+  });
+
+  test('a problem about a secret line never shows the value that it found', () => {
+    const text = exampleProblems(withValue(withValue(exampleText, 'INTAKE_SERVICE_PRIV_KEY_HEX', HEX), 'SERVICE_AUTH_HEADER', `"Bearer ${HEX}"`)).join('\n');
+    expect(text).toContain('INTAKE_SERVICE_PRIV_KEY_HEX');
+    expect(text).toContain('SERVICE_AUTH_HEADER');
+    expect(text).not.toContain(HEX);
+  });
+
+  test('the published values are the ones that the example of the Order Desk holds for the chain and the identity registry', () => {
+    const orders = Object.fromEntries(entriesOf(readPack('.env.order-desk.example')).entries.map((entry) => [entry.name, entry.value]));
+    const values = Object.fromEntries(entriesOf(exampleText).entries.map((entry) => [entry.name, entry.value]));
+    expect(Object.keys(PUBLISHED)).toHaveLength(13);
+    for (const [name, wanted] of Object.entries(PUBLISHED)) {
+      expect(orders[name], `the example of the Order Desk holds ${name}`).toBe(wanted);
+      expect(values[name], `the example holds ${name} as published`).toBe(wanted);
+    }
+  });
+
+  test('no name of the compose file is repeated in the example with another value: the names in both are the window of the advert, the supplier key line and the service key line', () => {
+    const compose = parse(composeText) as Model;
+    const both = entriesOf(exampleText).entries.filter((entry) => composeSetNames(compose).has(entry.name));
+    expect(both.map((entry) => entry.name).sort()).toStrictEqual([...BOTH].sort());
+    expect(compose.services.runtime.environment.ADVERT_MAX_PROCESSING_MS).toBe(both.find((entry) => entry.name === 'ADVERT_MAX_PROCESSING_MS')!.value);
+    for (const name of ['SUPPLIER_PRIV_KEY_HEX', ...KEY_VARIABLES]) expect(emptyValue(both.find((entry) => entry.name === name)!.value), name).toBe(true);
+  });
+
+  test('the example, filled in and joined with the environment that the compose file gives the service, starts the real configuration of the service', () => {
+    const config = loadConfig({ ...filled(exampleEnv), ...containerEnv(SERVICE_NAME) });
+    expect([config.port, config.host, config.stateDir, config.checksBudgetMs]).toStrictEqual([9104, '0.0.0.0', '/data', 1200]);
+    expect(config.agentDid).toBe(AGENT_DID);
+    expect(config.service.pkh).toBe(SERVICE.pkh);
+    expect(config.limits).toMatchObject({ maxPriceLovelace: 1_000_000n, maxSupplierBondLovelace: 2_000_000n, maxBuyerBondLovelace: 2_000_000n });
+    expect(config.limits.allowlist).toStrictEqual(['deepseek/deepseek-v4-flash']);
+    expect(config.dispute).toMatchObject({ challenge_stake_lovelace: 50_000_000n, min_window_left_ms: 600_000, read_timeout_ms: 20_000 });
+    expect(config.module1Manifest).toBe(`https://raw.githubusercontent.com/Apex-Fusion/vector-agent-modules/${'a'.repeat(40)}/Module-1/deploy/identity/mainnet/manifest.json`);
+    const manifest = JSON.parse(config.manifest.text) as { terms: Record<string, number>; status: { chip: string } };
+    expect(manifest.terms).toMatchObject({ price_lovelace: 2_000_000, supplier_bond_lovelace: 1_000_000, buyer_bond_lovelace: 1_000_000, max_processing_ms: 480_000 });
+    expect(manifest.status.chip).toBe('proposed');
+  });
+
+  test('the example as it is does not start the service: it stops at the key, and at each line that the operator forgot', () => {
+    expect(() => loadConfig({ ...exampleEnv, ...containerEnv(SERVICE_NAME) })).toThrow(/^environment variable INTAKE_SERVICE_PRIV_KEY_HEX is required/);
+    const forgotten: ReadonlyArray<readonly [string, string | undefined, RegExp]> = [
+      ['SERVICE_AUTH_HEADER', '', /^environment variable SERVICE_AUTH_HEADER is required/],
+      ['AGENT_DID', '', /^environment variable AGENT_DID is required/],
+      ['SUPPLIER_PKH', '', /^environment variable SUPPLIER_PKH is required/],
+      ['MOCK_PUBLIC_BASE', exampleEnv.MOCK_PUBLIC_BASE, /^environment variable MOCK_PUBLIC_BASE must be an https origin/],
+      ['MOCK_MTLS_BASE', exampleEnv.MOCK_MTLS_BASE, /^environment variable MOCK_MTLS_BASE must be an https origin/],
+      ['VECTOR_MODULE1_MANIFEST', exampleEnv.VECTOR_MODULE1_MANIFEST, /^environment variable VECTOR_MODULE1_MANIFEST must be pinned to a commit/],
+    ];
+    for (const [name, value, expected] of forgotten) {
+      expect(() => loadConfig({ ...filled(exampleEnv), ...containerEnv(SERVICE_NAME), [name]: value }), name).toThrow(expected);
+    }
+  });
+
+  test('the fault switch of the example is empty, the agent has no fault value, and any value stops the start', () => {
+    const env = { ...filled(exampleEnv), ...containerEnv(SERVICE_NAME) };
+    expect(FAULT_MODES['insurer-intake-agent']).toStrictEqual([]);
+    expect(loadConfig(env), 'the empty switch of the example').toBeDefined();
+    for (const value of ['alter_after_approval', 'confirm_wrong_lot', 'on']) {
+      expect(() => loadConfig({ ...env, FAULT_MODE: value }), value).toThrow(/^environment variable FAULT_MODE must be empty \(insurer-intake-agent has no fault value\)/);
+    }
+  });
+
+  test('a key hash line that is not the hash of the service key stops the start, and the right hash is accepted', () => {
+    const env = { ...filled(exampleEnv), ...containerEnv(SERVICE_NAME) };
+    expect(() => loadConfig({ ...env, INTAKE_SERVICE_PKH: 'cd'.repeat(28) })).toThrow('environment variable INTAKE_SERVICE_PKH (56 characters) is not the key hash of the key in INTAKE_SERVICE_PRIV_KEY_HEX');
+    expect(loadConfig({ ...env, INTAKE_SERVICE_PKH: SERVICE.pkh }).service.pkh).toBe(SERVICE.pkh);
+  });
+
+  test('the key of the runtime and the key of the service are two keys: the real code refuses a service key that is the supplier key, and accepts another key', () => {
+    const env = { ...filled(exampleEnv), ...containerEnv(SERVICE_NAME) };
+    expect(() => loadConfig({ ...env, SUPPLIER_PKH: SERVICE.pkh, SUPPLIER_PUB_KEY_HEX: SERVICE.pubKeyHex })).toThrow(/^environment variable INTAKE_SERVICE_PRIV_KEY_HEX holds the key of SUPPLIER_PKH: the supplier key is the runtime's/);
+    expect(loadConfig({ ...env, SUPPLIER_PKH: OTHER.pkh, SUPPLIER_PUB_KEY_HEX: OTHER.pubKeyHex }).supplier.pkh).toBe(OTHER.pkh);
+  });
+
+  test('the node of the example is the default of the code, and the code takes an https address only: the janitor reads the tip of the node with it', () => {
+    const env = { ...filled(exampleEnv), ...containerEnv(SERVICE_NAME) };
+    expect(exampleEnv.VECTOR_OGMIOS_URL, 'the line is empty: the code has its own default').toBe('');
+    expect(loadConfig(env).endpoints.ogmiosUrl).toMatch(/^https:\/\//);
+    expect(() => loadConfig({ ...env, VECTOR_OGMIOS_URL: 'http://node.example.test' })).toThrow(/^environment variable VECTOR_OGMIOS_URL must be an https address/);
+    expect(loadConfig({ ...env, VECTOR_OGMIOS_URL: 'https://node.example.test' }).endpoints.ogmiosUrl).toBe('https://node.example.test');
+  });
+
+  test('the budget of one read of the hook is 1200 ms: six reads stay under 9 s, and the code refuses a budget that is out of its range', () => {
+    const env = { ...filled(exampleEnv), ...containerEnv(SERVICE_NAME) };
+    expect(exampleEnv.CHECKS_READ_BUDGET_MS).toBe('1200');
+    expect(HOOK_READS * CHECKS_READ_BUDGET_DEFAULT_MS).toBeLessThan(HOOK_READS_LIMIT_MS);
+    expect([CHECKS_READ_BUDGET_MIN_MS, CHECKS_READ_BUDGET_MAX_MS]).toStrictEqual([500, 1499]);
+    expect(() => loadConfig({ ...env, CHECKS_READ_BUDGET_MS: '1500' })).toThrow(/must be a whole number of milliseconds from 500 to 1499/);
+    expect(() => loadConfig({ ...env, CHECKS_READ_BUDGET_MS: '499' })).toThrow(/must be a whole number of milliseconds from 500 to 1499/);
+    expect(loadConfig({ ...env, CHECKS_READ_BUDGET_MS: '1499' }).checksBudgetMs).toBe(1499);
+  });
+
+  test('the runtime gets what it needs to boot from the example and the compose file, but its key and the reference of its advert; it holds no key of the service', () => {
+    const runtimeEnv: Record<string, string> = { ...exampleEnv, ...containerEnv(RUNTIME_NAME) };
+    const empty = ['SUPPLIER_PRIV_KEY_HEX', 'OGMIOS_URL', 'ADVERT_REF', 'NETWORK_ID', 'SERVICE_URL', 'ADVERT_MAX_PROCESSING_MS'].filter((name) => (runtimeEnv[name] ?? '') === '');
+    expect(empty).toStrictEqual(['SUPPLIER_PRIV_KEY_HEX', 'ADVERT_REF']);
+    for (const name of KEY_VARIABLES) expect(runtimeEnv[name], `the runtime holds no ${name}`).toBe('');
+    expect([runtimeEnv.LIVE_CHAIN, runtimeEnv.RELEASE_WATCHER], 'the release watcher needs LIVE_CHAIN').toStrictEqual(['1', '1']);
   });
 });
