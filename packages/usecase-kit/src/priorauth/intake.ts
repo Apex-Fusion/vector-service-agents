@@ -11,6 +11,9 @@
 // `status` and `missing` go together. `complete` has no missing requirement. `incomplete` has 1 to 20 ids, each an identifier of the insurer portal and none twice. The parser does not know the requirement set
 // of the insurer, so it does not check that an id names one of its requirements.
 //
+// The choice of the decision says the same. The agent files a request with the status that the model gave, so `choice.complete` is true exactly when the status is `complete`, and `choice.missing` names the
+// same requirements as `missing`, each one time and in any order. A record whose choice and status differ is refused. The choice may hold more members: the decision keeps the answer of the model as it came.
+//
 // `attestations` is what the agent found about the sender. The agent reports it and never refuses a job for it. Each member is one of four words. The fourth word, `unreadable`, means that a source could not
 // be read: it is not a pass, and it is not the refusal of a rule.
 //
@@ -19,8 +22,8 @@
 // the parsers that the order confirmation of use case 1 uses. A member is read one time as data. An accessor, the key `__proto__` and a member that is not listed are refused. The detail of a refusal names
 // the field and never repeats the value.
 import { accepted, checkMembers, parseDigest, parseDocument, refused } from '../protocol/index.ts';
-import type { Decision, Digest, JsonValue, ProtocolResult } from '../protocol/index.ts';
-import { objectOf, parseId, parseIds } from './ids.ts';
+import type { Decision, Digest, JsonValue, ProtocolResult, Refused } from '../protocol/index.ts';
+import { isList, objectOf, parseId, parseIds } from './ids.ts';
 import { parseApproval, parseChecks, parseDecisions, parseSender } from './parts.ts';
 import type { Approval, Sender } from './parts.ts';
 
@@ -65,6 +68,7 @@ export interface IntakeRecord {
     readonly principal_binding: AttestationState;
   };
   readonly checks: { readonly [name in IntakeCheck]: true };
+  /** Exactly one decision, named `completeness`. Its choice says what `status` and `missing` say. */
   readonly decisions: readonly Decision[];
   readonly fault_mode: '';
 }
@@ -98,6 +102,25 @@ function parseAttestations(value: JsonValue, field: string): ProtocolResult<Inta
   if (!isAttestationState(software)) return refused('bad_shape', `${field}.software must be one of ${STATE_WORDS}`);
   if (!isAttestationState(binding)) return refused('bad_shape', `${field}.principal_binding must be one of ${STATE_WORDS}`);
   return accepted({ provenance, software, principal_binding: binding });
+}
+
+/**
+ * A refusal unless the choice of the decision says what the record says. The agent files a request with the status that the model gave, so the choice is an object whose `complete` is true exactly when the
+ * status is `complete`, and whose `missing` is a list of the same requirement ids as the missing list of the record, each id one time. The order of the ids has no meaning. The choice may hold more members,
+ * because the decision keeps the answer of the model as it came. A member that only a prototype holds is not a member of the choice.
+ */
+function checkChoice(choice: JsonValue, field: string, status: IntakeStatus, missing: readonly string[]): Refused | null {
+  const answer = objectOf(choice, field);
+  if (!answer.ok) return answer;
+  const complete = Object.hasOwn(answer.value, 'complete') ? answer.value.complete : undefined;
+  if (complete !== (status === 'complete')) return refused('bad_shape', `${field}.complete must be true when the status is "complete", and false when the status is "incomplete"`);
+  const listed = Object.hasOwn(answer.value, 'missing') ? answer.value.missing : undefined;
+  if (listed === undefined || !isList(listed)) return refused('bad_shape', `${field}.missing must be a list`);
+  const chosen = new Set<JsonValue>(listed);
+  if (chosen.size !== listed.length || chosen.size !== missing.length || !missing.every((id) => chosen.has(id))) {
+    return refused('bad_shape', `${field}.missing must name the same requirements as the missing list of the record, each one time`);
+  }
+  return null;
 }
 
 /**
@@ -136,6 +159,9 @@ export function parseIntakeRecord(value: unknown): ProtocolResult<IntakeRecord> 
   if (!checks.ok) return checks;
   const decisions = parseDecisions(record.decisions, `${field}.decisions`, COMPLETENESS);
   if (!decisions.ok) return decisions;
+  // `parseDecisions` checked that the list holds exactly one decision.
+  const disagreement = checkChoice(decisions.value[0]!.choice, `${field}.decisions[0].choice`, status, missing.value);
+  if (disagreement !== null) return disagreement;
   if (record.fault_mode !== '') return refused('bad_shape', `${field}.fault_mode must be the empty text: the Insurer Intake Agent has no fault value`);
   const intake: IntakeRecord = {
     schema: INTAKE_RECORD_SCHEMA,

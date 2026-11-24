@@ -59,6 +59,8 @@ interface Rule {
   readonly member: readonly Step[];
   readonly bad: readonly unknown[];
   readonly good: readonly unknown[];
+  /** The good values at the level of the record, when they differ from `good`: a record takes a choice only when the choice says what the status says. */
+  readonly recordGood?: readonly unknown[];
 }
 
 const ORGANISATION_BAD: readonly unknown[] = ['a'.repeat(1025), 'a'.repeat(2000), 1, true, ['echo.example'], {}];
@@ -114,6 +116,7 @@ const RULES: readonly Rule[] = [
   {
     what: 'decision.choice', parse: decisionOf, root: DECISION, member: ['choice'], bad: [undefined],
     good: [null, true, 0, 1.5, 'text', [], [1, 'a', null], {}, { complete: false, missing: ['R3'], note: '' }, { nested: { deep: [{ a: 1 }] } }],
+    recordGood: [{ complete: true, missing: [] }, { complete: true, missing: [], note: '' }, { complete: true, missing: [], nested: { deep: [{ a: 1 }] } }],
   },
   { what: 'decision.name', parse: decisionOf, root: DECISION, member: ['name'], bad: [undefined], good: [] },
   { what: 'decision.inference', parse: decisionOf, root: DECISION, member: ['inference'], bad: [undefined, [], 'inference', null, 1], good: [] },
@@ -300,7 +303,7 @@ const ATTESTATIONS = ['provenance', 'software', 'principal_binding'] as const;
 const withValue = (path: readonly Step[], value: unknown): Json => change(golden('intake-record'), path, value);
 
 /** The golden record for a request that is not complete: the status, the missing requirements and the choice of the decision agree. */
-const incomplete = (missing: readonly unknown[]): Json => change(change(withValue(['status'], 'incomplete'), ['missing'], missing), [...DECISION, 'choice'], { complete: false, missing });
+const incomplete = (missing: readonly unknown[]): Json => change(change(withValue(['status'], 'incomplete'), ['missing'], missing), [...DECISION, 'choice'], { complete: false, missing: [...missing] });
 
 /** `count` requirement ids: `R0`, `R1` and so on. */
 const ids = (count: number): string[] => Array.from({ length: count }, (_, index) => `R${index}`);
@@ -604,6 +607,97 @@ describe('the decisions of the record', () => {
   });
 });
 
+describe('the choice of the decision and the record', () => {
+  /** The golden record for the status `status` and the missing requirements `missing`, with the choice `choice` in its decision. */
+  const recordWith = (status: string, missing: readonly unknown[], choice: unknown): Json => change(change(withValue(['status'], status), ['missing'], missing), [...DECISION, 'choice'], choice);
+  const CHOICE = `${RECORD}.decisions[0].choice`;
+
+  it('takes a choice that says what the record says: complete with no missing requirement, and incomplete with the missing requirements', () => {
+    const complete = must(parse(golden('intake-record')));
+    expect([complete.status, complete.missing, complete.decisions[0]!.choice]).toStrictEqual(['complete', [], { complete: true, missing: [] }]);
+    const partial = must(parse(incomplete(['R3', 'R4'])));
+    expect([partial.status, partial.missing, partial.decisions[0]!.choice]).toStrictEqual(['incomplete', ['R3', 'R4'], { complete: false, missing: ['R3', 'R4'] }]);
+  });
+
+  it('refuses the four records that break the rule: a complete record with a choice of incomplete, an incomplete record with a choice of complete, other missing ids, and a choice that is a text', () => {
+    expectRefused(parse(recordWith('complete', [], { complete: false, missing: ['R3'] })), `${CHOICE}.complete`);
+    expectRefused(parse(recordWith('incomplete', ['R3'], { complete: true, missing: [] })), `${CHOICE}.complete`);
+    expectRefused(parse(recordWith('incomplete', ['R3'], { complete: false, missing: ['R4'] })), `${CHOICE}.missing`);
+    expectRefused(parse(recordWith('complete', [], 'whatever')), CHOICE);
+    expect(parse(recordWith('complete', [], { complete: true, missing: [] })).ok).toBe(true);
+    expect(parse(recordWith('incomplete', ['R3'], { complete: false, missing: ['R3'] })).ok).toBe(true);
+  });
+
+  it.each([['a text', 'whatever'], ['null', null], ['a number', 1], ['true', true], ['a list', []], ['a list that holds the choice', [{ complete: true, missing: [] }]], ['the marker', MARKER]])(
+    'refuses a choice that is %s, and names the choice',
+    (_what, choice) => {
+      expectRefused(parse(recordWith('complete', [], choice)), CHOICE);
+      expectRefused(parse(recordWith('incomplete', ['R3'], choice)), CHOICE);
+    },
+  );
+
+  it('refuses a choice with no member complete, and a member complete that is not a boolean that fits the status', () => {
+    expectRefused(parse(recordWith('complete', [], { missing: [] })), `${CHOICE}.complete`);
+    expectRefused(parse(recordWith('incomplete', ['R3'], { missing: ['R3'] })), `${CHOICE}.complete`);
+    for (const complete of ['true', 'false', 1, 0, null, [], {}, [true], MARKER]) {
+      expectRefused(parse(recordWith('complete', [], { complete, missing: [] })), `${CHOICE}.complete`);
+      expectRefused(parse(recordWith('incomplete', ['R3'], { complete, missing: ['R3'] })), `${CHOICE}.complete`);
+    }
+    expect(parse(recordWith('complete', [], { complete: true, missing: [] })).ok).toBe(true);
+    expect(parse(recordWith('incomplete', ['R3'], { complete: false, missing: ['R3'] })).ok).toBe(true);
+  });
+
+  it('refuses a choice with no member missing, and a member missing that is not a list', () => {
+    expectRefused(parse(recordWith('complete', [], { complete: true })), `${CHOICE}.missing`);
+    expectRefused(parse(recordWith('incomplete', ['R3'], { complete: false })), `${CHOICE}.missing`);
+    for (const missing of ['R3', '', null, 1, true, {}, { first: 'R3' }, MARKER]) {
+      expectRefused(parse(recordWith('incomplete', ['R3'], { complete: false, missing })), `${CHOICE}.missing`);
+    }
+    for (const missing of ['', null, 0, false, {}, MARKER]) expectRefused(parse(recordWith('complete', [], { complete: true, missing })), `${CHOICE}.missing`);
+  });
+
+  it('refuses a missing list of the choice that does not name the same requirements: fewer, more, other ids, an id that is not a text, an id in another case, and an id two times', () => {
+    const record = (missing: unknown): Json => recordWith('incomplete', ['R1', 'R2'], { complete: false, missing });
+    for (const missing of [[], ['R1'], ['R2'], ['R1', 'R2', 'R3'], ['R1', 'R3'], ['R3', 'R4'], ['r1', 'r2'], ['R1', 'R1'], ['R1', 'R2', 'R2'], [1, 2], ['R1', null], [['R1'], ['R2']], ['R1', 'R2 '], ['R1', 'R2\n']]) {
+      expectRefused(parse(record(missing)), `${CHOICE}.missing`);
+    }
+    expectRefused(parse(recordWith('complete', [], { complete: true, missing: ['R1'] })), `${CHOICE}.missing`);
+    expect(parse(record(['R1', 'R2'])).ok).toBe(true);
+  });
+
+  it('takes the same requirements in another order, because the order of the ids has no meaning, and keeps the order of the record', () => {
+    const record = must(parse(recordWith('incomplete', ['R1', 'R2', 'R3'], { complete: false, missing: ['R3', 'R1', 'R2'] })));
+    expect(record.missing).toStrictEqual(['R1', 'R2', 'R3']);
+    expect(record.decisions[0]!.choice).toStrictEqual({ complete: false, missing: ['R3', 'R1', 'R2'] });
+  });
+
+  it('takes more members in the choice than complete and missing, and keeps them as they came, because the decision holds the answer of the model', () => {
+    const record = must(parse(recordWith('incomplete', ['R3'], { complete: false, missing: ['R3'], note: 'cafe\u0301', nested: { deep: [{ a: 1 }] } })));
+    expect(record.decisions[0]!.choice).toStrictEqual({ complete: false, missing: ['R3'], note: 'cafe\u0301', nested: { deep: [{ a: 1 }] } });
+  });
+
+  it('takes the status that the choice gives for 20 missing requirements', () => {
+    expect(must(parse(incomplete(ids(20)))).decisions[0]!.choice).toStrictEqual({ complete: false, missing: ids(20) });
+    expectRefused(parse(recordWith('incomplete', ids(20), { complete: false, missing: ids(19) })), `${CHOICE}.missing`);
+  });
+
+  it('reads no member that a prototype holds: a choice with no own member is refused, although the prototype holds both members', () => {
+    const inherited = { complete: { value: true, writable: true, enumerable: true }, missing: { value: [], writable: true, enumerable: true } };
+    const input = recordWith('complete', [], {});
+    expectRefused(withPrototype(Object.prototype, inherited, () => parse(input)), `${CHOICE}.complete`);
+    const half = recordWith('complete', [], { complete: true });
+    expectRefused(withPrototype(Object.prototype, { missing: inherited.missing }, () => parse(half)), `${CHOICE}.missing`);
+    expect(parse(golden('intake-record')).ok).toBe(true);
+  });
+
+  it('names the field and never repeats a value of the choice', () => {
+    const result = parse(recordWith('incomplete', ['R3'], { complete: false, missing: ['zq9 marker'] }));
+    expectRefused(result, `${CHOICE}.missing`);
+    const text = parse(recordWith('complete', [], MARKER));
+    expectRefused(text, CHOICE);
+  });
+});
+
 describe('the part parsers inside the record', () => {
   it.each(RULES.map((rule) => [rule.what, rule] as const))('%s: the record parser answers as the part parser does, with the name of its own field', (_what, rule) => {
     const path = [...rule.root, ...rule.member];
@@ -613,7 +707,7 @@ describe('the part parsers inside the record', () => {
       expectRefusedAt(result, RECORD, rule, value);
       expect(result).toStrictEqual(rule.parse(valueAt(withValue(path, value), rule.root) as JsonValue, place(RECORD, rule.root)));
     }
-    for (const value of rule.good) expect(parse(withValue(path, value)).ok, `${rule.what} ${shownValue(value)}`).toBe(true);
+    for (const value of rule.recordGood ?? rule.good) expect(parse(withValue(path, value)).ok, `${rule.what} ${shownValue(value)}`).toBe(true);
   });
 });
 
@@ -631,17 +725,17 @@ describe('the Unicode form of a text', () => {
   });
 
   it('checks each identifier as it is written: the Kelvin sign is refused, although NFC turns it into the letter K, and the twin with the letter K passes', () => {
-    const places: ReadonlyArray<readonly [string, Json, readonly Step[]]> = [
-      [`${RECORD}.request_number`, golden('intake-record'), ['request_number']], [`${RECORD}.intake_id`, golden('intake-record'), ['intake_id']],
-      [`${RECORD}.missing[0]`, incomplete(['R3']), ['missing', 0]], [`${RECORD}.decisions[0].inference.sub_job.capability_id`, golden('intake-record'), [...SUB_JOB, 'capability_id']],
+    const places: ReadonlyArray<readonly [string, (text: string) => Json]> = [
+      [`${RECORD}.request_number`, (text) => withValue(['request_number'], text)], [`${RECORD}.intake_id`, (text) => withValue(['intake_id'], text)],
+      [`${RECORD}.missing[0]`, (text) => incomplete([text])], [`${RECORD}.decisions[0].inference.sub_job.capability_id`, (text) => withValue([...SUB_JOB, 'capability_id'], text)],
     ];
-    for (const [where, base, path] of places) {
+    for (const [where, record] of places) {
       for (const text of ['\u212AO-1', 'SO-\u212A', 'x\u212Ay']) {
-        const result = parse(change(base, path, text));
+        const result = parse(record(text));
         expectRefused(result, where);
         expect(!result.ok && result.detail).not.toContain('\u212A');
       }
-      expect(parse(change(base, path, 'KO-1')).ok, where).toBe(true);
+      expect(parse(record('KO-1')).ok, where).toBe(true);
     }
   });
 
