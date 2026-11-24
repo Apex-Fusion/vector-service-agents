@@ -1,0 +1,18 @@
+{
+  "op": "propose",
+  "authority": {
+    "principal_did": "did:vector:1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f",
+    "delegation": "9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b"
+  },
+  "tenant": "run1",
+  "rfq": {
+    "rfq_id": "run1-rfq-1",
+    "items": [
+      { "sku": "GLV-NIT-M", "quantity": 100 },
+      { "sku": "SYR-10ML", "quantity": 250 },
+      { "sku": "MSK-N95", "quantity": 40 }
+    ],
+    "needed_by": "2026-12-20"
+  },
+  "weights": { "price": 0.4, "lead_time": 0.2, "reliability": 0.2, "compliance": 0.2 }
+}

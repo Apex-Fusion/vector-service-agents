@@ -1,0 +1,7 @@
+{
+  "invite": ["did:vector:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"],
+  "not_invited": [
+    { "did": "did:vector:b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2", "reason": "Its stake, its cases and its price list could not be read." },
+    { "did": "did:vector:c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3", "reason": "Its record is revoked." }
+  ]
+}
