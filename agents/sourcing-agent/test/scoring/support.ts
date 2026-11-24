@@ -112,6 +112,21 @@ export function expectFailed(result: ScoringResult, code: string, decisions: rea
   expect(result).toStrictEqual({ ok: false, code, decisions });
 }
 
+// The library of the compiler of the repository (ES2022) has no `Promise.withResolvers`, so these two use the executor form.
+/** A call that never gets an answer. */
+export function never<T>(): Promise<T> {
+  return new Promise<T>(() => undefined);
+}
+
+/** A call that a test answers later, from outside. */
+export function later<T>(): { readonly promise: Promise<T>; readonly resolve: (value: T) => void } {
+  let resolve: (value: T) => void = () => undefined;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve: (value) => resolve(value) };
+}
+
 /**
  * A fault switch that a caller made by hand, with a getter that counts the reads of `mode`. The kit makes the real ones, and its type is sealed: a test of a text that the kit refuses, or of the number of reads,
  * needs this one.
