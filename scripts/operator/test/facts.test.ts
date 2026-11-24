@@ -5,7 +5,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import type { WriteIo } from '../../checks/lib/files.ts';
-import type { AdvertFact, AttestationFact, ClaimFact, DeployFact, Facts, HoldFact, ManifestFact, OrganisationFact, RecordFact, StakeFact, TenantFact } from '../lib/contract.ts';
+import type {
+  AdvertFact, AttestationFact, ClaimFact, ComplianceFact, DeployFact, Facts, HoldFact, LifecycleFact, ManifestFact, OrganisationFact, RecordFact, RevocationFact, StakeFact, SubagentEndFact, TenantFact,
+} from '../lib/contract.ts';
 import { FactsConflict, FactsError, FactsFile } from '../lib/facts.ts';
 import { KEY_TEXT, LOOKALIKE_NAMES, LOOKALIKE_TEXTS, SECRET_NAMES, SECRET_TEXTS } from './support/secrets.ts';
 
@@ -40,6 +42,13 @@ const CLAIM: ClaimFact = {
 const TENANT: TenantFact = { name: 'clean-test', createdAt: TIME, seedKind: 'default' };
 const HOLD: HoldFact = { suspendTx: HEX_A, liftTx: null };
 const DEPLOY: DeployFact = { commit: 'a1b2c3d4e5'.repeat(4), images: { 'reorder-runtime': `registry.example/image@sha256:${HEX_C}` } };
+const COMPLIANCE: ComplianceFact = {
+  id: HEX_C, tx: HEX_B, digest: HEX_A, locator: 'https://agent.example/compliance.json', validUntil: '2027-12-01T10:00:00.000Z', issuedAt: TIME,
+  revokeTx: null, contestTx: null, replySha256: null, replyUri: null,
+};
+const REVOCATION: RevocationFact = { tx: HEX_B, reason: 9, invalidFrom: null, revokedAt: TIME };
+const LIFECYCLE_STEP: LifecycleFact = { tx: HEX_B, at: TIME };
+const SUBAGENT_END: SubagentEndFact = { tx: HEX_C, at: TIME, epochBefore: 3, epochAfter: 4 };
 
 interface Case { section: keyof Facts; path: string[]; fact: object; member: string; other: unknown }
 /** One fact for each section, the path that it goes in, and a member with another value that makes it a different fact. */
@@ -54,6 +63,10 @@ const CASES: Case[] = [
   { section: 'tenants', path: ['clean'], fact: TENANT, member: 'seedKind', other: 'custom' },
   { section: 'holds', path: ['clean'], fact: HOLD, member: 'suspendTx', other: HEX_C },
   { section: 'deploy', path: [], fact: DEPLOY, member: 'commit', other: 'f0e1d2c3b4'.repeat(4) },
+  { section: 'compliance', path: ['sourcing-agent'], fact: COMPLIANCE, member: 'digest', other: HEX_C },
+  { section: 'revocations', path: ['bid-desk-charlie'], fact: REVOCATION, member: 'reason', other: 65 },
+  { section: 'lifecycle', path: ['change-controller'], fact: LIFECYCLE_STEP, member: 'tx', other: HEX_C },
+  { section: 'subagentEnds', path: ['prior-authorization-agent'], fact: SUBAGENT_END, member: 'epochAfter', other: 5 },
 ];
 interface FieldCase { section: keyof Facts; path: string[]; fact: object; field: string; value: string; other: string }
 /** The fields that a later step sets, each with a fact that holds null in it. */
@@ -64,9 +77,13 @@ const FIELDS: FieldCase[] = [
   { section: 'holds', path: ['clean'], fact: { suspendTx: null, liftTx: null }, field: 'suspendTx', value: HEX_B, other: HEX_C },
   { section: 'holds', path: ['clean'], fact: HOLD, field: 'liftTx', value: HEX_B, other: HEX_C },
   { section: 'claims', path: ['clean', 'reorder-agent'], fact: CLAIM, field: 'withdrawTx', value: HEX_C, other: HEX_A },
+  { section: 'compliance', path: ['sourcing-agent'], fact: COMPLIANCE, field: 'revokeTx', value: HEX_A, other: HEX_B },
+  { section: 'compliance', path: ['sourcing-agent'], fact: COMPLIANCE, field: 'contestTx', value: HEX_B, other: HEX_C },
+  { section: 'compliance', path: ['sourcing-agent'], fact: COMPLIANCE, field: 'replySha256', value: HEX_C, other: HEX_A },
+  { section: 'compliance', path: ['sourcing-agent'], fact: COMPLIANCE, field: 'replyUri', value: 'https://agent.example/reply.json', other: 'https://agent.example/reply-2.json' },
 ];
 /** The sections whose facts take no field path. */
-const NO_FIELDS = ['records', 'adverts', 'manifests', 'attestations', 'tenants', 'deploy'] as const;
+const NO_FIELDS = ['records', 'adverts', 'manifests', 'attestations', 'tenants', 'deploy', 'revocations', 'lifecycle', 'subagentEnds'] as const;
 
 interface Made { path: string; facts: FactsFile; renames: () => number }
 /** A facts file in a new folder. `renames` counts the writes: every write of the file ends with one rename. */
@@ -228,8 +245,9 @@ describe('the fields of a fact', () => {
       ['stakes', ['reorder-agent'], ['openingRef', 'amountLovelace', 'verifiedAt', 'stakeref', 'token', 'tokenunit']],
       ['holds', ['clean'], ['suspend', 'lift', 'liftTX', 'withdrawTx']],
       ['claims', ['clean', 'reorder-agent'], ['claimRef', 'documentTx', 'claimTx', 'claimToken', 'withdrawtx', 'liftTx']],
+      ['compliance', ['sourcing-agent'], ['id', 'tx', 'digest', 'locator', 'validUntil', 'issuedAt', 'revoketx', 'RevokeTx', 'replyHash', 'withdrawTx', 'liftTx']],
     ];
-    const facts: Record<string, object> = { organisations: ORGANISATION, stakes: STAKE, holds: HOLD, claims: CLAIM };
+    const facts: Record<string, object> = { organisations: ORGANISATION, stakes: STAKE, holds: HOLD, claims: CLAIM, compliance: COMPLIANCE };
     for (const [section, path, names] of NAMES) {
       const made = fresh();
       put(made.facts, section, path, facts[section]);
@@ -371,6 +389,29 @@ describe('secrets', () => {
     expect(textOf(file)).toBe(before);
     expect(textOf(file)).not.toContain(KEY_TEXT);
   });
+  for (const [section, path, fact, member] of [
+    ['compliance', ['a'], COMPLIANCE, 'locator'], ['revocations', ['a'], REVOCATION, 'revokedAt'], ['lifecycle', ['a'], LIFECYCLE_STEP, 'at'], ['subagentEnds', ['a'], SUBAGENT_END, 'at'],
+  ] as const) {
+    it(`${section}: refuses each mark of a secret in a text, in a member named like a secret and in a name of the path, and accepts each text and each name that only looks like one`, () => {
+      const { facts, path: file } = fresh();
+      put(facts, section, path, fact);
+      const before = textOf(file);
+      for (const { text } of SECRET_TEXTS) {
+        expect(refusal(() => put(facts, section, path, { ...fact, [member]: text }, true)).reason, text).toBe('secret');
+        const isName = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(text);
+        expect(refusal(() => put(facts, section, [text], fact)).reason, text).toBe(isName ? 'secret' : 'path');
+      }
+      for (const name of [...SECRET_NAMES, KEY_TEXT]) {
+        expect(refusal(() => put(facts, section, [name], fact, true)).reason, name).toBe('secret');
+        expect(refusal(() => put(facts, section, path, { ...fact, [name]: 'x' }, true)).reason, name).toBe('secret');
+      }
+      expect(textOf(file)).toBe(before);
+      expect(textOf(file)).not.toContain(KEY_TEXT);
+      for (const [index, { text }] of LOOKALIKE_TEXTS.entries()) put(facts, section, [`r${index}`], { ...fact, [member]: text });
+      for (const name of LOOKALIKE_NAMES) put(facts, section, [name], fact);
+      expect(Object.keys(factAt(facts, section, []) as object)).toHaveLength(1 + LOOKALIKE_TEXTS.length + LOOKALIKE_NAMES.length);
+    });
+  }
 });
 
 describe('the value', () => {
@@ -404,6 +445,14 @@ describe('the value', () => {
       ['holds', ['clean'], HOLD, 'liftTx', [5, '', {}], [null, HEX_A]],
       ['deploy', [], DEPLOY, 'images', [{ a: 5 }, { 'a b': 'x' }, { a: '' }, 'text', null, [], ['a']], [{}, { a: 'x' }]],
       ['deploy', [], DEPLOY, 'commit', [5, '', null], ['a1b2c3d4e5']],
+      ['compliance', ['a'], COMPLIANCE, 'revokeTx', [5, '', {}], [null, HEX_A]],
+      ['compliance', ['a'], COMPLIANCE, 'replyUri', [5, '', []], [null, 'https://agent.example/reply.json']],
+      ['compliance', ['a'], COMPLIANCE, 'validUntil', [5, '', null], [TIME]],
+      ['revocations', ['a'], REVOCATION, 'reason', [-1, 1.5, '9', null, Number.NaN], [0, 9, 65]],
+      ['revocations', ['a'], REVOCATION, 'invalidFrom', [5, '', {}], [null, TIME]],
+      ['lifecycle', ['a'], LIFECYCLE_STEP, 'at', [5, '', null], [TIME]],
+      ['subagentEnds', ['a'], SUBAGENT_END, 'epochBefore', [-1, 1.5, '3', null], [0, 7]],
+      ['subagentEnds', ['a'], SUBAGENT_END, 'epochAfter', [-1, 1.5, '4', null], [0, 8]],
     ];
     for (const [section, path, fact, member, bad, good] of BAD) {
       for (const value of bad) expect(refusal(() => put(facts, section, path, { ...fact, [member]: value }, true)).reason, `${section}.${member}=${String(value)}`).toBe('value');
@@ -431,19 +480,23 @@ describe('the file', () => {
   it('is not made by open or by read, which give empty facts; a put makes it, with mode 600 in a folder with mode 700', () => {
     const path = join(folder(), 'state', 'facts.json');
     const facts = FactsFile.open(path, IDENTITY);
-    expect(facts.read()).toEqual({ records: {}, organisations: {}, stakes: {}, adverts: {}, manifests: {}, attestations: {}, claims: {}, tenants: {}, holds: {}, deploy: null });
+    expect(facts.read()).toEqual({
+      records: {}, organisations: {}, stakes: {}, adverts: {}, manifests: {}, attestations: {}, claims: {}, tenants: {}, holds: {}, deploy: null, compliance: {}, revocations: {}, lifecycle: {}, subagentEnds: {},
+    });
     expect(existsSync(path)).toBe(false);
     put(facts, 'records', ['a'], RECORD);
     expect(modeOf(path)).toBe(0o600);
     expect(modeOf(join(path, '..'))).toBe(0o700);
   });
-  it('holds the format, the identity and the ten sections, as JSON', () => {
+  it('holds the format, the identity and the fourteen sections, as JSON', () => {
     const { facts, path } = fresh();
     put(facts, 'records', ['a'], RECORD);
     const file = JSON.parse(textOf(path));
     expect(Object.keys(file)).toEqual(['format', 'useCase', 'network', 'facts']);
     expect([file.format, file.useCase, file.network]).toEqual([1, 'inventory-reorder', 'vector-mainnet']);
-    expect(Object.keys(file.facts)).toEqual(['records', 'organisations', 'stakes', 'adverts', 'manifests', 'attestations', 'claims', 'tenants', 'holds', 'deploy']);
+    expect(Object.keys(file.facts)).toEqual([
+      'records', 'organisations', 'stakes', 'adverts', 'manifests', 'attestations', 'claims', 'tenants', 'holds', 'deploy', 'compliance', 'revocations', 'lifecycle', 'subagentEnds',
+    ]);
     expect(file.facts.deploy).toBeNull();
     expect(textOf(path).endsWith('\n')).toBe(true);
   });
@@ -638,12 +691,17 @@ describe('the file', () => {
   });
 
   describe('a damaged file is an error and never an empty store', () => {
-    const empty = { records: {}, organisations: {}, stakes: {}, adverts: {}, manifests: {}, attestations: {}, claims: {}, tenants: {}, holds: {}, deploy: null };
+    const empty = {
+      records: {}, organisations: {}, stakes: {}, adverts: {}, manifests: {}, attestations: {}, claims: {}, tenants: {}, holds: {}, deploy: null, compliance: {}, revocations: {}, lifecycle: {}, subagentEnds: {},
+    };
     const envelope = (over: Record<string, unknown> = {}, facts: Record<string, unknown> = {}): Record<string, unknown> => ({ format: 1, ...IDENTITY, facts: { ...empty, ...facts }, ...over });
     const json = (value: unknown): string => `${JSON.stringify(value, null, 2)}\n`;
     const without = (source: Record<string, unknown>, name: string): Record<string, unknown> => Object.fromEntries(Object.entries(source).filter(([key]) => key !== name));
     const withoutHolds = without(empty, 'holds');
     const withoutMember = (name: string): Record<string, unknown> => without(envelope(), name);
+    const LATER = ['compliance', 'revocations', 'lifecycle', 'subagentEnds'];
+    const omit = (source: Record<string, unknown>, ...names: string[]): Record<string, unknown> => Object.fromEntries(Object.entries(source).filter(([key]) => !names.includes(key)));
+    const firstShape = omit(empty, ...LATER);
     const DAMAGED: [string, string][] = [
       ['text that is not JSON', 'not json'],
       ['an empty file', ''],
@@ -660,6 +718,17 @@ describe('the file', () => {
       ['a member that it does not take', json(envelope({ note: 'x' }))],
       ['a missing section', json(envelope({ facts: withoutHolds }))],
       ['a section that it does not list', json(envelope({ facts: { ...empty, extra: {} } }))],
+      ...LATER.map((name): [string, string] => [`thirteen sections: ${name} is missing`, json(envelope({ facts: omit(empty, name) }))]),
+      ['twelve sections: the first ten and two later ones', json(envelope({ facts: omit(empty, 'lifecycle', 'subagentEnds') }))],
+      ['eleven sections: the first ten and one later one', json(envelope({ facts: omit(empty, 'revocations', 'lifecycle', 'subagentEnds') }))],
+      ['nine sections: the first ten without holds', json(envelope({ facts: omit(firstShape, 'holds') }))],
+      ['the first ten sections and a section that it does not list', json(envelope({ facts: { ...firstShape, extra: {} } }))],
+      ['a fact of compliance of the wrong shape', json(envelope({}, { compliance: { a: { id: 'x' } } }))],
+      ['a fact of compliance with a later field of the wrong kind', json(envelope({}, { compliance: { a: { ...COMPLIANCE, revokeTx: 5 } } }))],
+      ['a revocation with a reason that is no number', json(envelope({}, { revocations: { a: { ...REVOCATION, reason: '9' } } }))],
+      ['a lifecycle step with no time', json(envelope({}, { lifecycle: { a: { tx: HEX_B } } }))],
+      ['a subagent end with an epoch that is a text', json(envelope({}, { subagentEnds: { a: { ...SUBAGENT_END, epochAfter: '4' } } }))],
+      ['a map of facts where a fact of lifecycle belongs', json(envelope({}, { lifecycle: { a: { b: LIFECYCLE_STEP } } }))],
       ['a section that is a list', json(envelope({}, { records: [] }))],
       ['a section that is a text', json(envelope({}, { claims: 'x' }))],
       ['a section that is null', json(envelope({}, { stakes: null }))],
@@ -691,10 +760,14 @@ describe('the file', () => {
       });
     }
     it('accepts a file that holds facts of each section, and opens the empty file that a run writes', () => {
-      const all = envelope({}, { records: { a: RECORD }, organisations: { echo: ORGANISATION }, stakes: { a: STAKE }, adverts: { a: { lot: ADVERT } }, manifests: { a: MANIFEST }, attestations: { a: { software: ATTESTATION } }, claims: { clean: { a: CLAIM } }, tenants: { clean: TENANT }, holds: { clean: HOLD }, deploy: DEPLOY });
+      const all = envelope({}, {
+        records: { a: RECORD }, organisations: { echo: ORGANISATION }, stakes: { a: STAKE }, adverts: { a: { lot: ADVERT } }, manifests: { a: MANIFEST }, attestations: { a: { software: ATTESTATION } }, claims: { clean: { a: CLAIM } },
+        tenants: { clean: TENANT }, holds: { clean: HOLD }, deploy: DEPLOY, compliance: { a: COMPLIANCE }, revocations: { a: REVOCATION }, lifecycle: { a: LIFECYCLE_STEP }, subagentEnds: { a: SUBAGENT_END },
+      });
       const facts = FactsFile.open(written(json(all)), IDENTITY);
       expect(facts.read().adverts.a!.lot).toEqual(ADVERT);
       expect(facts.read().deploy).toEqual(DEPLOY);
+      expect([facts.read().compliance.a, facts.read().revocations.a, facts.read().lifecycle.a, facts.read().subagentEnds.a]).toEqual([COMPLIANCE, REVOCATION, LIFECYCLE_STEP, SUBAGENT_END]);
       expect(FactsFile.open(written(json(envelope())), IDENTITY).read().records).toEqual({});
     });
     it('refuses to read and to put when the file is damaged after open, and never replaces it with an empty store', () => {
@@ -708,5 +781,54 @@ describe('the file', () => {
         expect(textOf(path), label).toBe(text);
       }
     });
+  });
+});
+
+describe('a file of the first shape of the pack: the ten sections that a run wrote before the four later sections', () => {
+  /** A file that the facts library of the first shape wrote in a real run of its code: a fact in each of its ten sections, with identity inventory-reorder on vector-mainnet. */
+  const FIRST_SHAPE_TEXT = readFileSync(new URL('./fixtures/facts-first-shape.json', import.meta.url), 'utf8');
+  const FIRST: Record<string, unknown> = JSON.parse(FIRST_SHAPE_TEXT).facts;
+  const FIRST_NAMES = ['records', 'organisations', 'stakes', 'adverts', 'manifests', 'attestations', 'claims', 'tenants', 'holds', 'deploy'];
+  const ALL_NAMES = [...FIRST_NAMES, 'compliance', 'revocations', 'lifecycle', 'subagentEnds'];
+  const LATER_EMPTY = { compliance: {}, revocations: {}, lifecycle: {}, subagentEnds: {} };
+  /** A copy of the file of the first shape, with mode 600, in a new folder. */
+  function copy(): string {
+    const path = join(folder(), 'facts.json');
+    writeFileSync(path, FIRST_SHAPE_TEXT, { mode: 0o600 });
+    chmodSync(path, 0o600);
+    return path;
+  }
+  it('has the ten sections of the first shape and no more, and a fact in each of them', () => {
+    expect(Object.keys(FIRST)).toEqual(FIRST_NAMES);
+    for (const name of FIRST_NAMES) expect(Object.keys(FIRST[name] as object).length > 0 || name === 'deploy', name).toBe(true);
+    expect(FIRST.deploy).not.toBeNull();
+  });
+  it('opens and reads with the four later sections empty, gives each fact as the file holds it, and does not change the file', () => {
+    const path = copy();
+    const facts = FactsFile.open(path, IDENTITY);
+    expect(facts.read()).toEqual({ ...FIRST, ...LATER_EMPTY });
+    expect(factAt(facts, 'holds', ['clean'])).toEqual(HOLD);
+    expect(textOf(path)).toBe(FIRST_SHAPE_TEXT);
+  });
+  it('gives the file all fourteen sections at its first put, keeps each fact that it held, and sets each fact once as before', () => {
+    const path = copy();
+    const facts = FactsFile.open(path, IDENTITY);
+    put(facts, 'compliance', ['sourcing-agent'], COMPLIANCE);
+    const file = JSON.parse(textOf(path));
+    expect(Object.keys(file.facts)).toEqual(ALL_NAMES);
+    for (const name of FIRST_NAMES) expect(file.facts[name], name).toEqual(FIRST[name]);
+    expect(file.facts.compliance).toEqual({ 'sourcing-agent': COMPLIANCE });
+    for (const name of ['revocations', 'lifecycle', 'subagentEnds']) expect(file.facts[name], name).toEqual({});
+    expect(FactsFile.open(path, IDENTITY).read().compliance['sourcing-agent']).toEqual(COMPLIANCE);
+    expect(refusal(() => put(facts, 'holds', ['clean'], { ...HOLD, suspendTx: HEX_C })).reason).toBe('conflict');
+  });
+  it('sets a field of a fact that the file of the first shape holds, and then holds fourteen sections', () => {
+    const path = copy();
+    const facts = FactsFile.open(path, IDENTITY);
+    expect(factAt(facts, 'holds', ['clean'])).toEqual({ suspendTx: HEX_A, liftTx: null });
+    put(facts, 'holds', ['clean', 'liftTx'], HEX_B);
+    const file = JSON.parse(textOf(path));
+    expect(Object.keys(file.facts)).toEqual(ALL_NAMES);
+    expect(file.facts.holds).toEqual({ clean: { suspendTx: HEX_A, liftTx: HEX_B } });
   });
 });

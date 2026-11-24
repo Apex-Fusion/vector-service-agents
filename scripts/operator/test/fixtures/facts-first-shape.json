@@ -1,0 +1,99 @@
+{
+  "format": 1,
+  "useCase": "inventory-reorder",
+  "network": "vector-mainnet",
+  "facts": {
+    "records": {
+      "reorder-agent": {
+        "did": "did:vector:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "id": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "tx": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+        "recordRef": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2#0",
+        "depositLovelace": "10000000",
+        "registeredAt": "2026-12-01T10:00:00.000Z"
+      }
+    },
+    "organisations": {
+      "echo": {
+        "txtName": "_did.echo.example",
+        "txtValue": "did:vector:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "verifiedAt": "2026-12-01T11:00:00.000Z"
+      }
+    },
+    "stakes": {
+      "reorder-agent": {
+        "openingRef": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2#1",
+        "stakeRef": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3#0",
+        "tokenUnit": null,
+        "amountLovelace": "10000000"
+      }
+    },
+    "adverts": {
+      "reorder-agent": {
+        "reorder-agent-v1": {
+          "ref": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2#0",
+          "tx": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+          "detailUri": "https://agent.example/agent.json",
+          "detailHash": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+          "endpoint": "https://agent.example",
+          "postedAt": "2026-12-01T10:00:00.000Z"
+        }
+      }
+    },
+    "manifests": {
+      "reorder-agent": {
+        "uri": "https://agent.example/agent.json",
+        "sha256": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+        "bytes": 2048,
+        "readAt": "2026-12-01T10:00:00.000Z"
+      }
+    },
+    "attestations": {
+      "reorder-agent": {
+        "provenance": {
+          "id": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+          "tx": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+          "digest": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+          "locator": "https://agent.example/attestation.json",
+          "validUntil": "2027-12-01T10:00:00.000Z",
+          "issuedAt": "2026-12-01T10:00:00.000Z",
+          "envelope": true
+        }
+      }
+    },
+    "claims": {
+      "clean": {
+        "reorder-agent": {
+          "claimRef": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2#0",
+          "documentTx": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+          "claimTx": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+          "claimToken": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3436c61696d",
+          "stakeLovelace": "50000000",
+          "windowMs": 1800000,
+          "stakedAt": "2026-12-01T10:00:00.000Z",
+          "withdrawableFrom": "2026-12-01T10:30:00.000Z",
+          "withdrawTx": null
+        }
+      }
+    },
+    "tenants": {
+      "clean": {
+        "name": "clean-test",
+        "createdAt": "2026-12-01T10:00:00.000Z",
+        "seedKind": "default"
+      }
+    },
+    "holds": {
+      "clean": {
+        "suspendTx": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "liftTx": null
+      }
+    },
+    "deploy": {
+      "commit": "a1b2c3d4e5a1b2c3d4e5a1b2c3d4e5a1b2c3d4e5",
+      "images": {
+        "reorder-runtime": "registry.example/image@sha256:c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3"
+      }
+    }
+  }
+}

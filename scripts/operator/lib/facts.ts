@@ -4,7 +4,8 @@
 // changes nothing, and another value is a FactsConflict unless the call says `replace`. A later step sets one field of a fact that an earlier step wrote (a stake reference, the time at which an
 // organisation was verified, the transaction that lifts a hold or withdraws a claim): the fact must exist, the field is null until it is set, and it is set once in the same way. Every call reads
 // the file again, so that two instances over one file see each other, and a `put` holds a lock file next to the facts file from the read to the rename, so that two runs cannot lose a fact of each
-// other. A file that is damaged, and a link, are an error and never an empty store. A message names a section and a path, and never a value.
+// other. A file that is damaged, and a link, are an error and never an empty store. A file with exactly the ten sections that the pack wrote first is not damaged: it is read with the four later
+// sections empty, and its first write gives it all fourteen. A message names a section and a path, and never a value.
 import { closeSync, lstatSync, mkdirSync, openSync, readFileSync, unlinkSync } from 'node:fs';
 import type { Stats } from 'node:fs';
 import { dirname } from 'node:path';
@@ -12,7 +13,7 @@ import { writeFileAtomically } from '../../checks/lib/files.ts';
 import type { WriteIo } from '../../checks/lib/files.ts';
 import { jsonSafe } from '../../checks/lib/format.ts';
 import type {
-  AdvertFact, AttestationFact, ClaimFact, DeployFact, Facts, FactsStore, HoldFact, ManifestFact, OrganisationFact, RecordFact, StakeFact, TenantFact,
+  AdvertFact, AttestationFact, ClaimFact, ComplianceFact, DeployFact, Facts, FactsStore, HoldFact, LifecycleFact, ManifestFact, OrganisationFact, RecordFact, RevocationFact, StakeFact, SubagentEndFact, TenantFact,
 } from './contract.ts';
 import { codeOf } from './registry.ts';
 import { holdsSecret, isSecretName } from './secrets.ts';
@@ -74,6 +75,12 @@ const CLAIM: Shape<ClaimFact> = {
 const TENANT: Shape<TenantFact> = { name: text, createdAt: text, seedKind: oneOf('default', 'custom') };
 const HOLD: Shape<HoldFact> = { suspendTx: textOrNull, liftTx: textOrNull };
 const DEPLOY: Shape<DeployFact> = { commit: text, images: textMap };
+const COMPLIANCE: Shape<ComplianceFact> = {
+  id: text, tx: text, digest: text, locator: text, validUntil: text, issuedAt: text, revokeTx: textOrNull, contestTx: textOrNull, replySha256: textOrNull, replyUri: textOrNull,
+};
+const REVOCATION: Shape<RevocationFact> = { tx: text, reason: whole, invalidFrom: textOrNull, revokedAt: text };
+const LIFECYCLE: Shape<LifecycleFact> = { tx: text, at: text };
+const SUBAGENT_END: Shape<SubagentEndFact> = { tx: text, at: text, epochBefore: whole, epochAfter: whole };
 
 /** What a section is: the number of names in the path of one fact, the fields that a later step sets, and the checks of the members of a fact. */
 interface SectionSpec { readonly depth: number; readonly fields: readonly string[]; readonly shape: Readonly<Record<string, Check>> }
@@ -89,10 +96,19 @@ const SECTIONS: { readonly [S in keyof Facts]: SectionSpec } = {
   tenants: { depth: 1, fields: [], shape: TENANT },
   holds: { depth: 1, fields: ['suspendTx', 'liftTx'] satisfies readonly (keyof HoldFact)[], shape: HOLD },
   deploy: { depth: 0, fields: [], shape: DEPLOY },
+  compliance: { depth: 1, fields: ['revokeTx', 'contestTx', 'replySha256', 'replyUri'] satisfies readonly (keyof ComplianceFact)[], shape: COMPLIANCE },
+  revocations: { depth: 1, fields: [], shape: REVOCATION },
+  lifecycle: { depth: 1, fields: [], shape: LIFECYCLE },
+  subagentEnds: { depth: 1, fields: [], shape: SUBAGENT_END },
 };
 const SECTION_NAMES = Object.keys(SECTIONS) as (keyof Facts)[];
+/** The sections that a file had when the pack wrote it first. A file with exactly these sections is read as a file whose later sections are empty. */
+const FIRST_SHAPE = ['records', 'organisations', 'stakes', 'adverts', 'manifests', 'attestations', 'claims', 'tenants', 'holds', 'deploy'] as const satisfies readonly (keyof Facts)[];
+const LATER_SECTIONS = SECTION_NAMES.filter((name) => !FIRST_SHAPE.some((first) => first === name));
 
-const emptyFacts = (): Facts => ({ records: {}, organisations: {}, stakes: {}, adverts: {}, manifests: {}, attestations: {}, claims: {}, tenants: {}, holds: {}, deploy: null });
+const emptyFacts = (): Facts => ({
+  records: {}, organisations: {}, stakes: {}, adverts: {}, manifests: {}, attestations: {}, claims: {}, tenants: {}, holds: {}, deploy: null, compliance: {}, revocations: {}, lifecycle: {}, subagentEnds: {},
+});
 
 /** True when an object has exactly the members of the shape, and each member passes its check. */
 function isFact(shape: Readonly<Record<string, Check>>, value: unknown): boolean {
@@ -142,17 +158,23 @@ function checkTree(section: string, node: unknown, depth: number, shape: Readonl
   }
 }
 
-/** The facts that a file holds, when each of its ten sections is valid. */
+/**
+ * The facts that a file holds, when it has each of the fourteen sections or exactly the ten sections of the first shape, and each section is valid. A file of the first shape has no later section:
+ * its facts hold each of them empty, and the read does not change the file.
+ */
 function factsOf(value: unknown): Facts {
   if (!isObject(value)) throw damaged('facts is not an object');
-  if (Object.keys(value).length !== SECTION_NAMES.length || !SECTION_NAMES.every((name) => Object.hasOwn(value, name))) throw damaged('facts does not have exactly the sections of the contract');
+  const complete = Object.keys(value).length === SECTION_NAMES.length && SECTION_NAMES.every((name) => Object.hasOwn(value, name));
+  const first = Object.keys(value).length === FIRST_SHAPE.length && FIRST_SHAPE.every((name) => Object.hasOwn(value, name));
+  if (!complete && !first) throw damaged('facts does not have exactly the sections of the contract, or exactly the sections of the first shape');
+  const sections: Record<string, unknown> = first ? { ...value, ...Object.fromEntries(LATER_SECTIONS.map((name) => [name, {}])) } : value;
   for (const name of SECTION_NAMES) {
     const spec = SECTIONS[name];
-    if (name === 'deploy' && value[name] === null) continue;
-    checkTree(name, value[name], spec.depth, spec.shape);
+    if (name === 'deploy' && sections[name] === null) continue;
+    checkTree(name, sections[name], spec.depth, spec.shape);
   }
   // Every section has the tree and the members that its type names: the checks above passed.
-  return value as unknown as Facts;
+  return sections as unknown as Facts;
 }
 
 /** Where a call writes: the names of the path of the fact, and the field when the path ends with one. */
