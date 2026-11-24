@@ -303,7 +303,7 @@ describe('agents/insurer-intake-agent/README.md: Run it', () => {
         'when `VECTOR_MODULE1_MANIFEST` is not an https address pinned to a commit', { VECTOR_MODULE1_MANIFEST: MODULE1_URL.split(MODULE1_COMMIT).join('main') },
         /^environment variable VECTOR_MODULE1_MANIFEST must be pinned to a commit/, { VECTOR_MODULE1_MANIFEST: MODULE1_URL },
       ],
-      ['when `IDENTITY_POLICY_ID` is not the policy that the four identity values give', { IDENTITY_POLICY_ID: 'ab'.repeat(28) }, /^environment variable IDENTITY_POLICY_ID is not the identity policy that/, {}],
+      ['when `IDENTITY_POLICY_ID` is not the policy that `VECTOR_IDENTITY_LEGACY_ROOT` and `VECTOR_IDENTITY_CONFIG_SEED` give', { IDENTITY_POLICY_ID: 'ab'.repeat(28) }, /^environment variable IDENTITY_POLICY_ID is not the identity policy that VECTOR_IDENTITY_LEGACY_ROOT and VECTOR_IDENTITY_CONFIG_SEED give/, {}],
     ];
     for (const [says, over, error, twin] of refusals) {
       expect(run, says).toContain(says);
