@@ -591,8 +591,7 @@ export async function checkEndOfValidity(flight: Pick<InFlight, 'valid_to'>, end
 }
 
 /**
- * Reads the status of the transaction of a flight that `settleInFlight` let go, a second time (a read that failed makes `settleInFlight` let a transaction go too), and says what to do. The record goes
- * back into the state file first, before the read: while the read waits for the indexer, the file holds the transaction, so a run that is stopped in that time loses nothing. Then:
+ * Rechecks an expired transaction without removing its record. The record stays on disk until the status or the original inputs show the result:
  *   - a number of confirmations, 0 included (the indexer counts the blocks on top of the block of the transaction, so 0 is the newest block): the transaction is on the chain. The step is recorded
  *     and its reserve of the cap stays.
  *   - a read that fails: nobody knows. The transaction stays in flight and the run stops, so that no step is built that may have landed.
@@ -607,7 +606,6 @@ export async function checkEndOfValidity(flight: Pick<InFlight, 'valid_to'>, end
 async function reconcile(flight: InFlight, parts: { node: NodeAccess; state: StateFile; clock: Clock; exposure: Exposure; go: GoFile | null; mode: Mode; out: Output }): Promise<string | null> {
   const { node, state, clock, exposure, go, mode, out } = parts;
   const where = `the transaction ${flight.tx_hash} of the step ${flight.step}`;
-  state.setInFlight(flight);
   let confirmations: number | null;
   try { confirmations = (await node.txStatus(flight.tx_hash)).confirmations; } catch (err) {
     return `the status of ${where} could not be read (${errorText(err)}). The transaction stays in flight, and nothing is built. Run again when the indexer answers.`;
@@ -797,19 +795,16 @@ async function execute<Extra>(def: TaskDefinition<Extra>, argv: readonly string[
   // `cleanup --release=<hash>`: the operator lets the transaction in flight go. The network guard above and the settle below are skipped: the release asks the guard and the tip of the node itself, and only
   // after the clock says that the validity is over.
   if (args.release !== null) return letGo(args.release, flight, { node: connections.node, network: connections.network, clock, state, evidence, exposure, go, mode: args.mode, out, progress: ctx.progress });
-  // The lines of `settleInFlight` are kept: for a transaction that it lets go, the second read below can show that the transaction is on the chain, and its line says the opposite.
-  const settleLines: string[] = [];
-  const settled = await settleInFlight({ state, node: connections.node, clock, out: (line) => { settleLines.push(line); }, mode: args.mode, awaitMs, pollMs });
-  if (settled.kind !== 'cleared') for (const line of settleLines) out.out(line);
+  const settled = await settleInFlight({ state, node: connections.node, clock, out: (line) => out.out(line), mode: args.mode, awaitMs, pollMs, onExpired: 'reconcile' });
   if (settled.kind === 'wait') {
     ctx.progress.step = settled.step;
     return endOf({ kind: 'wait', message: settled.message, untilMs: settled.untilMs }, args.mode, out);
   }
-  // `settleInFlight` also lets a transaction go when its own read of the status fails, and a cleared result has no hash: read the status again, and let the second read decide.
-  if (settled.kind === 'cleared' && flight !== null) {
-    const stop = await reconcile(flight, { node: connections.node, state, clock, exposure, go, mode: args.mode, out });
+  if (settled.kind === 'reconcile') {
+    const { flight: pending } = settled;
+    const stop = await reconcile(pending, { node: connections.node, state, clock, exposure, go, mode: args.mode, out });
     if (stop !== null) {
-      ctx.progress.step = flight.step;
+      ctx.progress.step = pending.step;
       throw new PreconditionError(stop);
     }
   }

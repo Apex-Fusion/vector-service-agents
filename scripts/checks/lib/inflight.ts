@@ -1,12 +1,12 @@
 // scripts/checks/lib/inflight.ts - what a check does with a transaction that it signed and did not see confirmed.
 // The signed bytes are in the state file (`in_flight`). Before any step is built again, a run settles them:
 //   - the indexer shows the transaction confirmed: the step is recorded as it was planned, and the transaction is let go;
-//   - the validity of the transaction ended more than a minute ago and the indexer does not know it: it cannot land, and it is let go;
+//   - the validity and grace period ended without confirmation: return the transaction for reconciliation when requested; otherwise clear it for the legacy checks;
 //   - it may still land: a dry run says until when; a submit run submits the same bytes again (the ledger takes a transaction once, so this is harmless) and waits.
 // A part of a step (the Pay of a hire, which a hire of the kit makes inside one step) has a name with a colon, like `hire:pay`, and is kept as a note, not as a step.
 import { duration, iso } from './format.ts';
 import type { Clock, NodeAccess } from './ports.ts';
-import type { StateFile } from './state.ts';
+import type { InFlight, StateFile } from './state.ts';
 
 /** After the end of its validity a transaction is let go only when this time has passed too: a node that is behind could still hold it. */
 export const GRACE_MS = 60_000;
@@ -19,12 +19,15 @@ export interface SettleContext {
   mode: 'dry' | 'submit';
   awaitMs: number;
   pollMs: number;
+  /** Return an expired, unconfirmed transaction without clearing its state. */
+  onExpired?: 'reconcile';
 }
 
 export type SettleResult =
   | { kind: 'none' }
   | { kind: 'recorded'; step: string; txHash: string }
   | { kind: 'cleared'; step: string; reason: string }
+  | { kind: 'reconcile'; flight: InFlight }
   | { kind: 'wait'; step: string; txHash: string; untilMs: number; message: string };
 
 /** What a confirmed transaction leaves in the state file: a step, or the note of a part of a step. */
@@ -66,6 +69,7 @@ export async function settleInFlight(context: SettleContext): Promise<SettleResu
   }
   const releaseAt = flight.valid_to + GRACE_MS;
   if (clock.now() > releaseAt) {
+    if (context.onExpired === 'reconcile') return { kind: 'reconcile', flight };
     state.clearInFlight();
     const reason = `the transaction ${flight.tx_hash} of the step ${flight.step} was not confirmed, and its validity ended at ${iso(flight.valid_to)}: it cannot land any more, and the step can be built again`;
     out(reason);
