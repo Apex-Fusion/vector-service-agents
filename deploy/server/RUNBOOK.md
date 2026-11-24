@@ -217,6 +217,55 @@ The body has two fields:
 
 The call has a third field, `seed`. It replaces whole parts of the default data: the stock, the catalogue, the records, the guidelines, the requirements and the vendors. Leave it out, and the tenant gets the default data.
 
+For use case 3, none of the default vendor organisations at `example.org` matches a Bid Desk. Scoring continues without vendor data. To give one tenant vendor data for all three desks, save the example body as `tenant.json`. In the command above, replace the `--data` argument with `--data @tenant.json`. Each vendor `organisation` must equal the desk's `BID_DESK_ORGANISATION`. Use spaces between words in vendor names and certifications. The Sourcing Agent rejects tabs and line breaks in these fields.
+
+```json
+{
+  "tenant": "demo-1",
+  "organisations": {
+    "supplier": "supplier.example.org",
+    "insurer": "insurer.example.org"
+  },
+  "seed": {
+    "vendors": [
+      {
+        "vendor_id": "V-1001",
+        "organisation": "alfa.vector.apexfusion.org",
+        "name": "Supplier Alfa (synthetic)",
+        "on_time_delivery_rate": 0.97,
+        "defect_rate": 0.01,
+        "years_as_vendor": 6,
+        "payment_terms_days": 30,
+        "certifications": ["ISO 9001"],
+        "last_audit": "2026-03-14"
+      },
+      {
+        "vendor_id": "V-1002",
+        "organisation": "bravo.vector.apexfusion.org",
+        "name": "Supplier Bravo (synthetic)",
+        "on_time_delivery_rate": 0.92,
+        "defect_rate": 0.03,
+        "years_as_vendor": 4,
+        "payment_terms_days": 45,
+        "certifications": ["ISO 9001"],
+        "last_audit": "2026-01-22"
+      },
+      {
+        "vendor_id": "V-1003",
+        "organisation": "charlie.vector.apexfusion.org",
+        "name": "Supplier Charlie (synthetic)",
+        "on_time_delivery_rate": 0.85,
+        "defect_rate": 0.06,
+        "years_as_vendor": 2,
+        "payment_terms_days": 60,
+        "certifications": [],
+        "last_audit": "2025-11-05"
+      }
+    ]
+  }
+}
+```
+
 The answer is `201` for a new tenant and `200` for a tenant that was made again (`"created":false`). The body lists the URL of each system of the tenant (`resources`) and the audience for JWT-SVIDs (`audiences`). A token must name one of these URLs exactly.
 The service holds 100 tenants at most. The 101st name gets `409`. No call removes a tenant. To make room, restart the service, which loses every tenant.
 
