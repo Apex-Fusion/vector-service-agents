@@ -1,0 +1,11 @@
+{
+  "vendor_id": "V-1001",
+  "organisation": "alfa.example.org",
+  "name": "Supplier Alfa (synthetic)",
+  "on_time_delivery_rate": 0.97,
+  "defect_rate": 0.01,
+  "years_as_vendor": 6,
+  "payment_terms_days": 30,
+  "certifications": ["ISO 9001"],
+  "last_audit": "2026-03-14"
+}

@@ -1,0 +1,9 @@
+{
+  "rfq_id": "run1-rfq-1",
+  "items": [
+    { "sku": "GLV-NIT-M", "quantity": 100 },
+    { "sku": "SYR-10ML", "quantity": 250 },
+    { "sku": "MSK-N95", "quantity": 40 }
+  ],
+  "needed_by": "2026-12-20"
+}
