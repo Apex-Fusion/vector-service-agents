@@ -28,7 +28,7 @@ export interface DeliveryDispute {
  * Files the challenge. One call of `challengeDelivery`, with the capability of the Insurer Intake Agent, the text of the statement S2 of its claim, the buyer keys and the evidence of the intake record. The result
  * is the result of the dispute folder as it is, and an error of the dispute folder is not caught here.
  */
-export function disputeDelivery(deps: { readonly dispute: Pick<Dispute, 'challengeDelivery'> }, input: DeliveryDispute, buyerPkhs: readonly string[]): Promise<ChallengeResult> {
+export async function disputeDelivery(deps: { readonly dispute: Pick<Dispute, 'challengeDelivery'> }, input: DeliveryDispute, buyerPkhs: readonly string[]): Promise<ChallengeResult> {
   return deps.dispute.challengeDelivery({
     counterparty: input.counterparty,
     escrow_ref: input.escrow_ref,
