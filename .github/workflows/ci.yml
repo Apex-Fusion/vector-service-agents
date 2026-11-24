@@ -8,6 +8,11 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 permissions:
   contents: read
+env:
+  AGENT_RUNTIME_IMAGE: ghcr.io/apex-fusion/vector-service-agents/agent-runtime
+  AGENT_RUNTIME_TEMPLATE_COMMIT: 'a05564cae3ca0e72a3591c8b2eb16c7909a60839'
+  # Pin the full index, not the platform manifest. The index keeps the provenance.
+  AGENT_RUNTIME_DIGEST: sha256:02329b1a881cb989a93f0ab5bcc92df48fcf8cc5803b8f52d7a13947e8ed6134
 jobs:
   test:
     runs-on: self-hosted
@@ -20,6 +25,14 @@ jobs:
         with: { node-version: 22, cache: pnpm }
       # deploy.test.mjs renders the compose files with docker compose config. The runner image has no docker compose, and without it those tests skip.
       - uses: docker/setup-compose-action@v2
+      - name: Check the pinned runtime image
+        shell: bash
+        run: |
+          image=$(docker buildx imagetools inspect --format \
+            '{{.Image.OS}}/{{.Image.Architecture}} {{index .Image.Config.Labels "vector-agent-template.commit"}} {{index .Image.Config.Labels "org.opencontainers.image.source"}}' \
+            "$AGENT_RUNTIME_IMAGE@$AGENT_RUNTIME_DIGEST")
+          printf '%s\n' "$image"
+          test "$image" = "linux/amd64 $AGENT_RUNTIME_TEMPLATE_COMMIT https://github.com/Apex-Fusion/vector-service-agents"
       # poppler-utils gives pdfinfo and pdftoppm, which the Document Pipeline renders PDFs with, and ffmpeg gives ffmpeg and ffprobe, which Audio Snippets
       # reads and cuts media with. REQUIRE_POPPLER and REQUIRE_ASR make a failed install fail the tests that need them instead of skipping them.
       - run: sudo apt-get update && sudo apt-get install -y poppler-utils ffmpeg
@@ -40,9 +53,9 @@ jobs:
         env:
           REQUIRE_POPPLER: "1"
           REQUIRE_ASR: "1"
-  # Every pull request and every push to main builds the thirteen images, with no push and no registry login, so that a stage that no longer builds fails before it
-  # reaches main. The publish job builds them again on main, and pushes them.
+  # Check the images of this repository on pull requests. Do not push them.
   build:
+    if: github.event_name == 'pull_request'
     runs-on: self-hosted
     timeout-minutes: 30
     steps:
@@ -96,21 +109,6 @@ jobs:
         with:
           context: .
           file: agents/sourcing-agent/Dockerfile
-          push: false
-      # The runtime of the agent template, built from the commit that the compose files of deploy/host build it from. The pin stands in the ref, in the check and in the
-      # label of the publish job, and a test holds the three equal to those compose files. This job pushes nothing.
-      # The checkout keeps no credential, because its folder is a build context.
-      - uses: actions/checkout@v4
-        with:
-          repository: Apex-Fusion/vector-agent-template
-          ref: a05564cae3ca0e72a3591c8b2eb16c7909a60839
-          path: runtime-template
-          persist-credentials: false
-      - run: test "$(git -C runtime-template rev-parse HEAD)" = a05564cae3ca0e72a3591c8b2eb16c7909a60839
-      - uses: docker/build-push-action@v6
-        with:
-          context: runtime-template
-          file: runtime-template/agent/Dockerfile
           push: false
       - uses: docker/build-push-action@v6
         with:
@@ -227,26 +225,6 @@ jobs:
             ghcr.io/apex-fusion/vector-service-agents/sourcing-agent:latest
             ghcr.io/apex-fusion/vector-service-agents/sourcing-agent:${{ github.sha }}
           labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-      # The same runtime, pushed. Every runtime of the agents host runs this one image, and a compose file names it by digest.
-      # The checkout keeps no credential, because its folder is a build context.
-      - uses: actions/checkout@v4
-        with:
-          repository: Apex-Fusion/vector-agent-template
-          ref: a05564cae3ca0e72a3591c8b2eb16c7909a60839
-          path: runtime-template
-          persist-credentials: false
-      - run: test "$(git -C runtime-template rev-parse HEAD)" = a05564cae3ca0e72a3591c8b2eb16c7909a60839
-      - uses: docker/build-push-action@v6
-        with:
-          context: runtime-template
-          file: runtime-template/agent/Dockerfile
-          push: true
-          tags: |
-            ghcr.io/apex-fusion/vector-service-agents/agent-runtime:latest
-            ghcr.io/apex-fusion/vector-service-agents/agent-runtime:${{ github.sha }}
-          labels: |
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            vector-agent-template.commit=a05564cae3ca0e72a3591c8b2eb16c7909a60839
       - uses: docker/build-push-action@v6
         with:
           context: .
@@ -265,3 +243,17 @@ jobs:
             ghcr.io/apex-fusion/vector-service-agents/operator:latest
             ghcr.io/apex-fusion/vector-service-agents/operator:${{ github.sha }}
           labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+      - name: Tag the pinned runtime image
+        shell: bash
+        run: |
+          docker buildx imagetools create --prefer-index=false \
+            --tag "$AGENT_RUNTIME_IMAGE:$GITHUB_SHA" \
+            --tag "$AGENT_RUNTIME_IMAGE:latest" \
+            "$AGENT_RUNTIME_IMAGE@$AGENT_RUNTIME_DIGEST"
+          for tag in "$GITHUB_SHA" latest; do
+            actual=$(docker buildx imagetools inspect --raw "$AGENT_RUNTIME_IMAGE:$tag" | sha256sum)
+            if [ "sha256:${actual%% *}" != "$AGENT_RUNTIME_DIGEST" ]; then
+              printf 'Unexpected digest for %s:%s: sha256:%s\n' "$AGENT_RUNTIME_IMAGE" "$tag" "${actual%% *}" >&2
+              exit 1
+            fi
+          done

@@ -1149,16 +1149,26 @@ describe('runPipeline: refusals before anything is posted', () => {
     }
   });
 
+  const boundaryPage = (bytes: number): Renderer => ({
+    pageCount: async () => 1,
+    render: async () => [{ index: 0, png: new Uint8Array(bytes) }],
+  });
+
   it('a page whose base64 is over the 12000000 characters the OCR supplier takes: page_too_large, before anything is posted (ruling R27)', async () => {
     const run = setup();
-    const page = (bytes: number): Renderer => ({ pageCount: async () => 1, render: async () => [{ index: 0, png: new Uint8Array(bytes) }] });
-    const error = await failure(runPipeline(request(), { ...run.deps, renderer: page(9_000_003) }), 'page_too_large');
+    const error = await failure(runPipeline(request({ max_pages: 1 }), { ...run.deps, renderer: boundaryPage(9_000_001) }), 'page_too_large');
     expect(error.message).toMatch(/12000004/);
     expect(run.m.calls).toStrictEqual([]);
-    // 9000000 bytes are exactly 12000000 characters of base64: taken.
-    const fits = setup();
-    expect((await runPipeline(request(), { ...fits.deps, renderer: page(9_000_000) })).pages[0].text).toBe('A page the stub does not know.');
+    expect(await states(run.m, escrowNo(1))).toStrictEqual(['unknown']);
   });
+
+  // The accepted path hashes and sends the full OCR payload. Only this case needs a longer watchdog.
+  it('accepts a page with exactly 12000000 base64 characters (ruling R27)', async () => {
+    const fits = setup();
+    const result = await runPipeline(request({ max_pages: 1 }), { ...fits.deps, renderer: boundaryPage(9_000_000) });
+    expect(fits.m.ocr.jobs.get('extract-job-1')?.request.image_b64).toHaveLength(12_000_000);
+    expect(result.pages[0].text).toBe('A page the stub does not know.');
+  }, 15_000);
 
   it('a request error of the intake passes through unchanged, and so does a failure of the renderer that is not about the document (ruling R28)', async () => {
     const run = setup();

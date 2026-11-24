@@ -1,23 +1,30 @@
 // agents/audio-snippets/test/worker-contract.test.ts
-// asr/test_worker.py holds the JSON contract of the worker with a stubbed model; it needs Python 3.9 or later and nothing else. CI, the host and the implementers' machine set REQUIRE_ASR=1,
-// and there a Python that does not run fails here instead of skipping.
+// The contract tests use a stub model for jobs. REQUIRE_ASR=1 also requires the real library for the startup check.
 import { describe, test, expect } from 'vitest';
-import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { CHILD_CLEANUP_MS, Child } from '../../../services/mock-systems/test/support/child.ts';
 import { ASR_PYTHON, PYTHON_READY, REQUIRE_ASR } from './support.ts';
 
 const workerSource = readFileSync(new URL('../asr/worker.py', import.meta.url), 'utf8');
+const agentDir = fileURLToPath(new URL('../', import.meta.url));
+const START_MS = 30_000;
+const CONTRACT_MS = 15_000;
 
 describe('asr/worker.py', () => {
   test.skipIf(!REQUIRE_ASR)('REQUIRE_ASR is set: Python 3.9 or later runs', () => { expect(PYTHON_READY).toBe(true); });
-  test.skipIf(!PYTHON_READY)('asr/test_worker.py passes: the contract of the worker, with a stubbed model; under REQUIRE_ASR nothing in it is skipped', () => {
-    const run = spawnSync(ASR_PYTHON, ['-I', fileURLToPath(new URL('../asr/test_worker.py', import.meta.url))], { encoding: 'utf8' });
-    expect(run.status, run.stderr).toBe(0);
-    expect(run.stderr).toMatch(/Ran 10 tests[\s\S]*OK/);
-    // The one test that needs faster-whisper skips without it; REQUIRE_ASR says it is installed, so a skip there is a missing library.
-    if (REQUIRE_ASR) expect(run.stderr).not.toContain('skipped=');
-  });
+  test.skipIf(!PYTHON_READY)('asr/test_worker.py passes: the contract of the worker, with a stubbed model; under REQUIRE_ASR nothing in it is skipped', async () => {
+    const run = new Child(ASR_PYTHON, ['-I', 'asr/test_worker.py'], { cwd: agentDir, label: 'ASR worker contract' });
+    try {
+      await run.waitFor(/^worker contract ready\r?\n/m, 'Python and ASR library startup', START_MS);
+      expect(await run.waitForExit('worker contract execution', CONTRACT_MS), run.diagnostics()).toEqual({ code: 0, signal: null });
+      expect(run.stderr).toMatch(/Ran 10 tests[\s\S]*OK/);
+      // REQUIRE_ASR requires the check that imports faster-whisper.
+      if (REQUIRE_ASR) expect(run.stderr).not.toContain('skipped=');
+    } finally {
+      await run.cleanup();
+    }
+  }, START_MS + CONTRACT_MS + CHILD_CLEANUP_MS + 5_000);
   // Python 3.9 is proven by running this file there: the implementers' machine runs the contract test with Python 3.9, the image and CI with 3.11.
   test('the worker prints ASCII only and carries the fixed options of the model, and the file itself is ASCII', () => {
     expect(workerSource).toContain('ensure_ascii=True');
