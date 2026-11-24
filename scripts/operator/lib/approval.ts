@@ -13,8 +13,8 @@ import type { RingView } from '../../checks/lib/guards.ts';
 import type { TxFacts } from '../../checks/lib/txfacts.ts';
 import { codeOf } from './registry.ts';
 
-/** The steps that cannot be undone: a record, a stake, an attestation (its deposit stays locked). A session names the ones that it may take. */
-export type IrreversibleTag = 'record' | 'stake' | 'attestation';
+/** The steps that cannot be undone: a record, a stake, an attestation (its deposit stays locked), the end of the subagents of a record, the revoke of an attestation, the revoke of a record, a change of the controller, the completion of a recovery, a retire and a successor. A session names the ones that it may take. */
+export type IrreversibleTag = 'record' | 'stake' | 'attestation' | 'end-subagents' | 'attestation-revoke' | 'record-revoke' | 'controller-change' | 'recovery-complete' | 'retire' | 'successor';
 
 export interface GoFile {
   approvedBy: string;
@@ -38,7 +38,9 @@ export class ApprovalError extends Error {
   }
 }
 
-const TAGS: readonly string[] = ['record', 'stake', 'attestation'];
+const TAGS: readonly string[] = [
+  'record', 'stake', 'attestation', 'end-subagents', 'attestation-revoke', 'record-revoke', 'controller-change', 'recovery-complete', 'retire', 'successor',
+] satisfies readonly IrreversibleTag[];
 const GO_MEMBERS = ['approvedBy', 'at', 'session', 'runWallet', 'capUnits', 'tasks', 'irreversible', 'expiresAt', 'external'];
 const EXTERNAL_MEMBERS = ['label', 'address', 'units'];
 const EXPOSURE_MEMBERS = ['format', 'session', 'entries'];
