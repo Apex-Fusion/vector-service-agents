@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, test } from 'vitest';
 import { parse as parseYaml } from 'yaml';
-import { ACCEPT_WINDOW_MS } from '@vsa/buyer-core';
+import { ACCEPT_WINDOW_MS, ATT_TYPES } from '@vsa/buyer-core';
 import { JANITOR_GRACE_MS, STRANDED_FILE } from '@vsa/hire-kit';
 import { LLM_ADVERT_REF } from '@vsa/hire-kit/testing';
 import { BUSY_TEXT, CONTEXT_HEADERS, HEARTBEAT_MS, JobSlot, MAX_BODY, RESERVATION_MS, STOPPING_TEXT, operatorsText, parseWire } from '@vsa/service-kit';
@@ -26,6 +26,7 @@ import { blake2b224Hex } from '@vsa/vector-read';
 import { TASK_NAMES } from '../../../scripts/operator/tasks/names.ts';
 import bidEvaluation from '../../../scripts/operator/usecases/bid-evaluation.ts';
 import { USE_CASE_NAMES } from '../../../scripts/operator/usecases/names.ts';
+import { COMPLIANCE_ATT_TYPE } from '../../sourcing-agent/src/compliance/read.ts';
 import { MemoryRfqBook, PASSED_CHECKS_TTL_MS, PassedChecks, createPrecheck, loadPriceList, rfqChecks } from '../src/checks/index.ts';
 import { QUOTE_DECISION, QUOTE_REFUSAL_STATUS, RUNTIME_MARGIN_MS, faultyPriceOf, runQuote } from '../src/job/index.ts';
 import type { QuoteChoice } from '../src/job/index.ts';
@@ -140,16 +141,6 @@ const jsonBlock = (text: string): string => /```json\n([\s\S]*?)\n```/.exec(text
 /** The source files of the service, each with its text. */
 const sourceDir = new URL('../src/', import.meta.url);
 const sources = (readdirSync(sourceDir, { recursive: true }) as string[]).map(String).filter((file) => file.endsWith('.ts')).map((file) => [file, readFileSync(new URL(file, sourceDir), 'utf8')] as const);
-/** The non-test TypeScript files below some folders of the repository, as `[path from its root, text]`. A folder that is not there gives none. */
-function repoSources(folders: readonly string[]): Array<readonly [string, string]> {
-  return folders
-    .filter((folder) => existsSync(`${root}${folder}`))
-    .flatMap((folder) => (readdirSync(`${root}${folder}`, { recursive: true }) as string[]).map((file) => `${folder}/${String(file)}`))
-    .filter((file) => file.endsWith('.ts') && !file.split('/').some((part) => part === 'node_modules' || part === 'test'))
-    .map((file) => [file, readFileSync(`${root}${file}`, 'utf8')] as const);
-}
-/** The `src` folder of each agent and of each package of the repository. */
-const srcFoldersOf = (parent: string): string[] => readdirSync(`${root}${parent}`).map((name) => `${parent}/${name}/src`);
 
 /** What the model says in the example of the page: it prices each item from the list of Bid Desk Alfa. */
 const ALFA_REASONING = 'The list gives 125 for 100 gloves, 28 for 250 syringes and 60 for 40 masks, so each line takes the unit price of its break and the lead time of its SKU.';
@@ -1209,21 +1200,23 @@ describe('specs/bid-desk.md: the receipt, the claim and the fault switch', () =>
     for (const item of ['the refund of the escrow of a revoked agent', 'the reclaim of an escrow in use case 3', 'a relying party that refuses a live token after its authority ends']) expect(lines[6], item).toContain(item);
     expect(known).toContain('The manifest states these eight, in this order, word for word. A test keeps them equal to `GAPS` in `agents/bid-desk/src/serve/gaps.ts`.');
     expect(known).toContain('The first five are the gaps of the agent. The sixth says whose keys the parties are. The seventh starts with a run-in lead and names three things that no run of use case 3 (supplier bid evaluation) covers. The eighth is the sentence of the kit about the fault switch.');
-    // The fourth gap names the compliance attestation. The Sourcing Agent reads it (type 0), the Bid Desk reads none, and nothing in this repository issues it.
-    expect(known).toContain('The fourth gap names the compliance attestation of a Bid Desk: an identity attestation (type 0) that the compliance registry issues about it. The Bid Desk does not read it. Only the Sourcing Agent reads it. Nothing in this repository issues it.');
-    expect(readFileSync(new URL('../../sourcing-agent/src/compliance/read.ts', import.meta.url), 'utf8')).toContain('export const COMPLIANCE_ATT_TYPE = 0;');
+    expect(COMPLIANCE_ATT_TYPE).toBe(ATT_TYPES.identity);
+    expect(known).toContain(`identity attestation (type ${ATT_TYPES.identity}) about a Bid Desk`);
+    expect(known).toContain('The Sourcing Agent reads it. The Bid Desk does not.');
+    expect(TASK_NAMES).toContain('compliance');
+    expect(bidEvaluation.compliance?.subjects).toEqual(INSTANCES.map((instance) => `bid-desk-${instance}`));
+    expect(USE_CASE_NAMES).not.toContain(bidEvaluation.name);
+    for (const part of [
+      "`compliance` task supports one attestation for each Bid Desk",
+      'checks the exact bytes of the published statement',
+      `valid for ${bidEvaluation.compliance?.validDays} days unless revoked first`,
+      "The demonstration registry's key signs the issue and can revoke it.",
+      'The current controller of the Bid Desk signs a `Contest` after the task verifies the revocation.',
+      'The reply on the ledger records the URI and SHA-256 digest, not the text.',
+      'The operator CLI does not enable use case 3 yet.',
+      'This task support does not show that any of these attestations exist on mainnet.',
+    ]) expect(known, part).toContain(part);
     expect(sources.filter(([, text]) => /attestation/i.test(text)).map(([file]) => file)).toStrictEqual(['serve/gaps.ts']);
-    const everySource = repoSources([...srcFoldersOf('agents'), ...srcFoldersOf('packages'), 'scripts']);
-    expect(everySource.length).toBeGreaterThan(100);
-    const readers = everySource.filter(([, text]) => /\bCOMPLIANCE_ATT_TYPE\b|\breadCompliance\b/.test(text)).map(([file]) => file);
-    expect(readers.length).toBeGreaterThan(0);
-    expect(readers.filter((file) => !file.startsWith('agents/sourcing-agent/src/'))).toStrictEqual([]);
-    // The one function that builds an attestation is called by the task `attest` of the operator pack (provenance and software), by the checks (approval and principal binding), and by nothing else.
-    expect(everySource.filter(([, text]) => text.includes('buildAttest(')).map(([file]) => file).sort()).toStrictEqual([
-      'packages/buyer-core/src/vendored/mcp/attestation-build.ts', 'scripts/checks/lib/check-attestations.ts', 'scripts/operator/tasks/attest.ts',
-    ]);
-    expect(readFileSync(`${root}scripts/operator/lib/contract.ts`, 'utf8')).toContain("readonly types: readonly ('provenance' | 'software')[]");
-    expect(readFileSync(`${root}scripts/checks/lib/check-attestations.ts`, 'utf8')).toContain("type: 'approval' | 'principal_binding';");
   });
 });
 

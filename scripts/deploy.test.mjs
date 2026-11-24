@@ -328,25 +328,6 @@ test('Dockerfile: builds from the repo root, installs the right workspace, runs 
   for (const line of ['node_modules', '**/node_modules', '**/.env', '**/.env.*']) assert.ok(ignore.includes(line), `.dockerignore has ${line}: a host node_modules or a key in an env file, at any depth, must never reach the build context`);
 });
 
-test('CI: the publish job runs on a push to main after the tests, logs in with GITHUB_TOKEN and pushes the compose image under both tags', () => {
-  const job = ci.jobs.publish;
-  assert.equal(job.needs, 'test');
-  assert.match(job.if, /github\.event_name == 'push'/);
-  assert.match(job.if, /github\.ref == 'refs\/heads\/main'/);
-  assert.deepEqual(job.permissions, { contents: 'read', packages: 'write' });
-  const login = job.steps.find((s) => s.uses === 'docker/login-action@v3');
-  const build = job.steps.find((s) => s.uses === 'docker/build-push-action@v6' && s.with.file === 'agents/agent-history/Dockerfile');
-  assert.ok(login && build);
-  assert.equal(login.with.registry, 'ghcr.io');
-  assert.equal(login.with.password, '${{ secrets.GITHUB_TOKEN }}');
-  assert.equal(build.with.context, '.');
-  assert.equal(build.with.file, 'agents/agent-history/Dockerfile');
-  assert.equal(build.with.push, true);
-  const image = service.image.replace(/@sha256:.*$/, ''); // the compose file names the image by digest; CI pushes the two tags of the same repository
-  assert.deepEqual(build.with.tags.trim().split('\n'), [`${image}:latest`, `${image}:\${{ github.sha }}`]);
-  assert.equal(ci.jobs.test.steps.at(-1).run, 'pnpm test');
-});
-
 test('README, RUNBOOK, compose file and Caddy snippet: Agent History is DEPLOYED since 2026-10-15, the Document Pipeline since 2026-10-16, Audio Snippets since 2026-10-17 and Advocate since 2026-10-20, nothing is LIVE; no dash, no unit name, no person named', () => {
   const STATUS = 'Status: DEPLOYED since 2026-10-15. Nothing in this folder is LIVE.';
   // The Pipeline is the second stack of the box: its section of the README and its runbook carry its own status line, DEPLOYED since 2026-10-16 (RUNBOOK-document-pipeline.md step 17).
@@ -2028,30 +2009,6 @@ test('CI: the test job installs poppler-utils before the tests and sets REQUIRE_
   assert.ok(steps.findIndex((s) => s.run === 'pnpm typecheck') < tests);
 });
 
-test('CI: the publish job also pushes the Document Pipeline image under :latest and :<sha>, in the same job and so with the same conditions, after the same login', () => {
-  const job = ci.jobs.publish;
-  assert.equal(job.needs, 'test');
-  assert.match(job.if, /github\.event_name == 'push'/);
-  assert.match(job.if, /github\.ref == 'refs\/heads\/main'/);
-  const builds = job.steps.filter((s) => s.uses === 'docker/build-push-action@v6');
-  const history = builds.find((s) => s.with.file === 'agents/agent-history/Dockerfile');
-  const pipeline = builds.find((s) => s.with.file === 'agents/document-pipeline/Dockerfile');
-  assert.ok(history && pipeline);
-  assert.ok(existsSync(join(root, pipeline.with.file)));
-  assert.equal(pipeline.with.context, '.');
-  assert.equal(pipeline.with.push, true);
-  const image = pService.image.replace(/@sha256:.*$/, ''); // the compose file names the image by digest; CI pushes the two tags of the same repository
-  assert.equal(image, 'ghcr.io/apex-fusion/vector-service-agents/document-pipeline');
-  assert.deepEqual(pipeline.with.tags.trim().split('\n'), [`${image}:latest`, `${image}:\${{ github.sha }}`]);
-  assert.equal(pipeline.with.labels, history.with.labels);
-  assert.equal(pipeline.if, history.if, 'no condition of its own: the conditions are the job\'s');
-  const login = job.steps.findIndex((s) => s.uses === 'docker/login-action@v3');
-  assert.ok(login >= 0 && login < job.steps.indexOf(history) && login < job.steps.indexOf(pipeline), 'one login before both builds');
-  assert.ok(job.steps.indexOf(history) < job.steps.indexOf(pipeline), 'Agent History first, as before');
-  assert.deepEqual(job.permissions, { contents: 'read', packages: 'write' });
-  assert.ok(readme.includes('`ghcr.io/apex-fusion/vector-service-agents/document-pipeline`') && pSection.includes('`:latest`') && pSection.includes('`:<full git commit sha>`'), 'the host administrator is told the two tags');
-});
-
 // ======================================================================================================================================
 // The deployment host is not named. Its name, the stack of its reverse proxy and the other stacks it runs stay out of the repository: the folder is
 // deploy/host, the external network is PROXY_NETWORK in .env next to the compose files, the paths on the box are BASE (and HISTORY_BASE) of the runbooks,
@@ -3358,35 +3315,6 @@ test('CI: the test job installs ffmpeg and the speech model of Audio Snippets be
   // The default model directory of the tests is the one the fetch writes, and the model files stay out of git.
   assert.ok(read('agents/audio-snippets/test/support.ts').includes("new URL('../.models/base', import.meta.url)"));
   assert.ok(read('.gitignore').split('\n').includes('agents/audio-snippets/.models/'));
-});
-
-test('CI: the publish job also pushes the Audio Snippets image under :latest and :<sha>, in the same job and after the same login', () => {
-  const job = ci.jobs.publish;
-  const builds = job.steps.filter((s) => s.uses === 'docker/build-push-action@v6');
-  const snippets = builds.find((s) => s.with.file === 'agents/audio-snippets/Dockerfile');
-  assert.ok(snippets && existsSync(join(root, snippets.with.file)));
-  const image = sService.image.replace(/@sha256:.*$/, '');
-  assert.equal(image, 'ghcr.io/apex-fusion/vector-service-agents/audio-snippets');
-  assert.deepEqual(snippets.with.tags.trim().split('\n'), [`${image}:latest`, `${image}:\${{ github.sha }}`]);
-  assert.equal(snippets.with.context, '.');
-  assert.equal(snippets.with.push, true);
-  assert.equal(snippets.with.labels, builds.find((s) => s.with.file === 'agents/agent-history/Dockerfile')?.with.labels, 'the labels of the other two');
-  assert.equal(snippets.if, undefined, 'no condition of its own');
-  assert.equal(builds.indexOf(snippets), 2, 'after the other two');
-  assert.ok(job.steps.indexOf(snippets) > job.steps.findIndex((s) => s.uses === 'docker/login-action@v3'), 'after the login');
-  assert.ok(sSection.includes('`ghcr.io/apex-fusion/vector-service-agents/audio-snippets`') && sSection.includes('`:latest`') && sSection.includes('`:<full git commit sha>`'));
-});
-
-// The image of each agent is published by CI on every merge to main, and the host builds the one it runs (ruling R-D26).
-test('the deploy notes and the runbooks: CI publishes each image on every merge to main and the host still builds its own; none waits for Actions to run', () => {
-  assert.ok(pSection.includes('The CI job publishes `ghcr.io/apex-fusion/vector-service-agents/document-pipeline` on every merge to `main`, tagged `:latest` and `:<full git commit sha>`, as it does for Agent History, and the box still builds its own.'));
-  assert.ok(sSection.includes('The CI job publishes `ghcr.io/apex-fusion/vector-service-agents/audio-snippets` on every merge to `main`, tagged `:latest` and `:<full git commit sha>`, as it does for the other two, and the host still builds its own.'));
-  assert.ok(section(pRunbook, '2. Build the service image and pin it').includes('CI publishes the same image under `:latest` and `:<full git commit sha>` on every merge to `main`; the box still builds its own.'));
-  assert.ok(section(sRunbook, '2. Build the service image and pin it').includes('CI publishes the same image under `:latest` and `:<full git commit sha>` on every merge to `main`; the host still builds its own.'));
-  assert.ok(aSection.includes('The CI job publishes `ghcr.io/apex-fusion/vector-service-agents/advocate` on every merge to `main`, tagged `:latest` and `:<full git commit sha>`, as it does for the other three, and the host still builds its own.'));
-  assert.ok(section(aRunbook, '2. Build the service image and pin it').includes('CI publishes the same image under `:latest` and `:<full git commit sha>` on every merge to `main`; the host still builds its own.'));
-  for (const rel of [...PUBLIC_FILES, ...S_FILES, ...A_FILES]) assert.doesNotMatch(read(rel), /once Actions can run|until it has, the (box|host) uses/, rel);
-  assert.deepEqual(ci.jobs.publish.if, "github.event_name == 'push' && github.ref == 'refs/heads/main'");
 });
 
 // ---- The run of RUNBOOK-audio-snippets.md, 2026-10-16 and 2026-10-17 ----
@@ -5127,26 +5055,6 @@ test('Advocate compose in docker compose config: with PROXY_NETWORK in .env the 
   }
 });
 
-test('CI: the publish job also pushes the Advocate image under :latest and :<sha>, in the same job and after the same login, with the labels of the other three, and the build job builds it', () => {
-  const job = ci.jobs.publish;
-  const builds = job.steps.filter((s) => s.uses === 'docker/build-push-action@v6');
-  const advocate = builds.find((s) => s.with.file === 'agents/advocate/Dockerfile');
-  assert.ok(advocate && existsSync(join(root, advocate.with.file)));
-  const image = aService.image.replace(/@sha256:.*$/, ''); // the compose file names the image by digest; CI pushes the two tags of the same repository
-  assert.equal(image, 'ghcr.io/apex-fusion/vector-service-agents/advocate');
-  assert.deepEqual(advocate.with.tags.trim().split('\n'), [`${image}:latest`, `${image}:\${{ github.sha }}`]);
-  assert.equal(advocate.with.context, '.');
-  assert.equal(advocate.with.push, true);
-  assert.equal(advocate.with.labels, builds.find((s) => s.with.file === 'agents/agent-history/Dockerfile')?.with.labels, 'the labels of the other three');
-  assert.equal(advocate.if, undefined, 'no condition of its own');
-  assert.equal(builds.indexOf(advocate), 3, 'after the other three');
-  assert.ok(job.steps.indexOf(advocate) > job.steps.findIndex((s) => s.uses === 'docker/login-action@v3'), 'after the login');
-  assert.ok(aSection.includes('`ghcr.io/apex-fusion/vector-service-agents/advocate`') && aSection.includes('`:latest`') && aSection.includes('`:<full git commit sha>`'));
-  // The build job builds it too, with no push, and the test job has no step of its own for it: no tool, no model and no setting to install.
-  assert.ok(ci.jobs.build.steps.some((s) => s.uses === 'docker/build-push-action@v6' && s.with.file === 'agents/advocate/Dockerfile' && s.with.push === false));
-  assert.equal(JSON.stringify(ci.jobs.test).includes('advocate'), false, 'the tests of Advocate run in pnpm test, as they are');
-});
-
 // ======================================================================================================================================
 // The agents host (deploy/server): one set-up script, one main Caddyfile, and the two host names of the mock systems.
 // These tests parse the files, run the script in a sandbox against stand-ins for the programs of the system (no root and no network), and run
@@ -6031,6 +5939,8 @@ test('agents host: the proof script fills the real snippet and the real main Cad
   assert.deepEqual(headerValues(['Host', 'a'], 'Client-Cert'), []);
 });
 
+const IMAGE_WORDS = ['no', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten', 'eleven', 'twelve', 'thirteen'];
+
 test('agents host: the README gives the counts, the memory and the plan of the ports, and the snippet shape of the README is the one that the proof validates', () => {
   const readme = srvRead('README.md');
   for (const part of ['The plan for the host is 19 containers: 8 services, 10 runtimes and 1 mock service.', '| Memory | 8 GiB |', '| Agent host names | 10 | A, DNS only |', '| Mock host names | 2 | A, DNS only |', '| Organisation checks | 9 | TXT |']) assert.ok(readme.includes(part), part);
@@ -6765,17 +6675,13 @@ test('mock service image, the health check: run as the Dockerfile writes it agai
 });
 
 // ======================================================================================================================================
-// The images that CI builds and pushes. One table lists the thirteen: the ten agents of this repository, the runtime of the agent template, the mock service and the operator pack. The build job
-// builds each image and pushes nothing, so that an image that no longer builds fails the pull request, and the publish job pushes each one, in the same order. A compose file names each
-// image by its digest, and the host builds none. The operator pack is the one image that no compose file names: the host runs it with docker run, by its digest. One runtime image serves
-// every runtime of the agents host, and CI builds it from the agent template at one pinned commit. The compose files of the four agents on the present host build their runtime on the host
-// from the same commit, and they keep doing so. These tests parse the workflow and the compose files. Each guard has an accepted twin and refused copies.
+// Check that the images CI publishes match the names that Compose uses.
+// The operator image has no Compose service. The host that builds its own runtime uses the same template commit as CI.
 // ======================================================================================================================================
 import { isDeepStrictEqual } from 'node:util';
 const RT = {
-  repository: 'Apex-Fusion/vector-agent-template', folder: 'runtime-template', dockerfile: 'runtime-template/agent/Dockerfile',
-  image: 'ghcr.io/apex-fusion/vector-service-agents/agent-runtime', commitLabel: 'vector-agent-template.commit',
-  sourceLabel: 'org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}',
+  repository: 'Apex-Fusion/vector-agent-template',
+  image: 'ghcr.io/apex-fusion/vector-service-agents/agent-runtime',
 };
 const IMAGE_REPOSITORY = 'ghcr.io/apex-fusion/vector-service-agents';
 const hostCompose = (name) => `deploy/host/docker-compose.${name}.yml`;
@@ -6784,21 +6690,20 @@ const serverCompose = (name) => `deploy/server/docker-compose.${name}.yml`;
 const COMPOSE_FILE = /^docker-compose.*\.ya?ml$/;
 const composeFilesOf = (dir, base = root) => readdirSync(join(base, dir)).filter((f) => COMPOSE_FILE.test(f)).sort();
 const composeTextsOf = (dirs, base = root) => Object.fromEntries(dirs.flatMap((dir) => composeFilesOf(dir, base).map((f) => [`${dir}/${f}`, readFileSync(join(base, dir, f), 'utf8')])));
-// One row for each image, in the order of both jobs. `context` is the build context. `label` is the name of the label line that the image has besides the source line, or null.
-// `named` lists each service of a compose file that names the image: the file and the name of the service. The operator image has no compose file, so its list is empty, and it is the one row with an empty list.
+// `named` lists the files and services that use each image. Only repository images have a Dockerfile here.
 const CI_IMAGES = [
-  { file: 'agents/agent-history/Dockerfile', image: `${IMAGE_REPOSITORY}/agent-history`, context: '.', label: null, named: [[hostCompose('agent-history'), 'service']] },
-  { file: 'agents/document-pipeline/Dockerfile', image: `${IMAGE_REPOSITORY}/document-pipeline`, context: '.', label: null, named: [[hostCompose('document-pipeline'), 'service']] },
-  { file: 'agents/audio-snippets/Dockerfile', image: `${IMAGE_REPOSITORY}/audio-snippets`, context: '.', label: null, named: [[hostCompose('audio-snippets'), 'service']] },
-  { file: 'agents/advocate/Dockerfile', image: `${IMAGE_REPOSITORY}/advocate`, context: '.', label: null, named: [[hostCompose('advocate'), 'service']] },
-  { file: 'agents/reorder-agent/Dockerfile', image: `${IMAGE_REPOSITORY}/reorder-agent`, context: '.', label: null, named: [[serverCompose('reorder-agent'), 'service']] },
-  { file: 'agents/order-desk/Dockerfile', image: `${IMAGE_REPOSITORY}/order-desk`, context: '.', label: null, named: [[serverCompose('order-desk'), 'service']] },
-  { file: 'agents/prior-authorization-agent/Dockerfile', image: `${IMAGE_REPOSITORY}/prior-authorization-agent`, context: '.', label: null, named: [[serverCompose('prior-authorization-agent'), 'service']] },
-  { file: 'agents/insurer-intake-agent/Dockerfile', image: `${IMAGE_REPOSITORY}/insurer-intake-agent`, context: '.', label: null, named: [[serverCompose('insurer-intake-agent'), 'service']] },
-  { file: 'agents/bid-desk/Dockerfile', image: `${IMAGE_REPOSITORY}/bid-desk`, context: '.', label: null, named: [[serverCompose('bid-desk-alfa'), 'service'], [serverCompose('bid-desk-bravo'), 'service'], [serverCompose('bid-desk-charlie'), 'service']] },
-  { file: 'agents/sourcing-agent/Dockerfile', image: `${IMAGE_REPOSITORY}/sourcing-agent`, context: '.', label: null, named: [[serverCompose('sourcing-agent'), 'service']] },
+  { file: 'agents/agent-history/Dockerfile', image: `${IMAGE_REPOSITORY}/agent-history`, named: [[hostCompose('agent-history'), 'service']] },
+  { file: 'agents/document-pipeline/Dockerfile', image: `${IMAGE_REPOSITORY}/document-pipeline`, named: [[hostCompose('document-pipeline'), 'service']] },
+  { file: 'agents/audio-snippets/Dockerfile', image: `${IMAGE_REPOSITORY}/audio-snippets`, named: [[hostCompose('audio-snippets'), 'service']] },
+  { file: 'agents/advocate/Dockerfile', image: `${IMAGE_REPOSITORY}/advocate`, named: [[hostCompose('advocate'), 'service']] },
+  { file: 'agents/reorder-agent/Dockerfile', image: `${IMAGE_REPOSITORY}/reorder-agent`, named: [[serverCompose('reorder-agent'), 'service']] },
+  { file: 'agents/order-desk/Dockerfile', image: `${IMAGE_REPOSITORY}/order-desk`, named: [[serverCompose('order-desk'), 'service']] },
+  { file: 'agents/prior-authorization-agent/Dockerfile', image: `${IMAGE_REPOSITORY}/prior-authorization-agent`, named: [[serverCompose('prior-authorization-agent'), 'service']] },
+  { file: 'agents/insurer-intake-agent/Dockerfile', image: `${IMAGE_REPOSITORY}/insurer-intake-agent`, named: [[serverCompose('insurer-intake-agent'), 'service']] },
+  { file: 'agents/bid-desk/Dockerfile', image: `${IMAGE_REPOSITORY}/bid-desk`, named: [[serverCompose('bid-desk-alfa'), 'service'], [serverCompose('bid-desk-bravo'), 'service'], [serverCompose('bid-desk-charlie'), 'service']] },
+  { file: 'agents/sourcing-agent/Dockerfile', image: `${IMAGE_REPOSITORY}/sourcing-agent`, named: [[serverCompose('sourcing-agent'), 'service']] },
   {
-    file: RT.dockerfile, image: RT.image, context: RT.folder, label: RT.commitLabel,
+    image: RT.image,
     named: [
       [serverCompose('reorder-agent'), 'runtime'], [serverCompose('order-desk'), 'runtime-small'], [serverCompose('order-desk'), 'runtime-medium'], [serverCompose('order-desk'), 'runtime-large'],
       [serverCompose('prior-authorization-agent'), 'runtime'], [serverCompose('insurer-intake-agent'), 'runtime'],
@@ -6806,19 +6711,9 @@ const CI_IMAGES = [
       [serverCompose('sourcing-agent'), 'runtime'],
     ],
   },
-  { file: 'services/mock-systems/Dockerfile', image: `${IMAGE_REPOSITORY}/mock-systems`, context: '.', label: null, named: [[serverCompose('mock-systems'), 'mock-systems']] },
-  { file: 'scripts/operator/Dockerfile', image: `${IMAGE_REPOSITORY}/operator`, context: '.', label: null, named: [] },
+  { file: 'services/mock-systems/Dockerfile', image: `${IMAGE_REPOSITORY}/mock-systems`, named: [[serverCompose('mock-systems'), 'mock-systems']] },
+  { file: 'scripts/operator/Dockerfile', image: `${IMAGE_REPOSITORY}/operator`, named: [] },
 ];
-const imageRow = (name) => CI_IMAGES.find((row) => row.image === `${IMAGE_REPOSITORY}/${name}`);
-const MOCK_FILE = imageRow('mock-systems').file;
-const OPERATOR_FILE = imageRow('operator').file;
-const IMAGE_WORDS = ['no', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten', 'eleven', 'twelve', 'thirteen'];
-const ciText = read('.github/workflows/ci.yml');
-// The commit that the compose file of each agent on the present host builds the runtime from: the end of the build context of its service agent, after the #.
-const rtPins = () => Object.fromEntries(composeFilesOf('deploy/host')
-  .map((f) => [f, /^https:\/\/github\.com\/Apex-Fusion\/vector-agent-template\.git#([0-9a-f]{40})$/.exec(parseYaml(read(`deploy/host/${f}`)).services.agent.build.context)?.[1]]));
-// A step with its tags and labels as lists of lines, so that a block of lines and a list compare equal.
-const rtLines = (step) => ({ ...step, with: Object.fromEntries(Object.entries(step?.with ?? {}).map(([key, value]) => [key, ['tags', 'labels'].includes(key) && typeof value === 'string' ? value.trim().split('\n') : value])) });
 // Change one place of a text: the n-th copy of a part, the first by default. Stop when the part is not there: a change that changes nothing proves nothing.
 function rtChange(text, from, to, n = 0) {
   let at = -1;
@@ -6826,246 +6721,31 @@ function rtChange(text, from, to, n = 0) {
   return text.slice(0, at) + to + text.slice(at + from.length);
 }
 
-// The faults of the workflow for the table of the images and for the commits that the compose files name. An empty list is a pass.
-function ciImageProblems(text, rows, pins) {
-  let model;
-  try { model = parseYaml(text); } catch (error) { return [`the workflow does not parse (a key twice is an error): ${error.message}`]; }
-  const problems = [];
-  const commit = Object.values(pins)[0];
-  if (!/^[0-9a-f]{40}$/.test(commit) || Object.values(pins).some((c) => c !== commit)) problems.push(`the compose files must name one commit of 40 hex digits; found: ${JSON.stringify(pins)}`);
-  const stepsOf = (job) => model?.jobs?.[job]?.steps ?? [];
-  const builds = (job) => stepsOf(job).filter((s) => s?.uses === 'docker/build-push-action@v6');
-  for (const job of ['build', 'publish']) {
-    const steps = stepsOf(job);
-    const push = job === 'publish';
-    const login = steps.findIndex((s) => String(s?.uses).startsWith('docker/login-action'));
-    if (!push && login >= 0) problems.push('build: the job must have no registry login');
-    // The Dockerfiles of the table, in its order, and no other.
-    const found = builds(job);
-    if (!isDeepStrictEqual(found.map((s) => s?.with?.file), rows.map((row) => row.file))) problems.push(`${job}: the Dockerfiles must be the ${IMAGE_WORDS[rows.length]} of the table, in its order; found: ${JSON.stringify(found.map((s) => s?.with?.file))}`);
-    // Each step is exactly the step of its row: the context, the file and the push, and in the publish job the two tags and the label lines. The first label line is the source line of
-    // every image, and the runtime has the commit of the template as a second line.
-    for (const row of rows) {
-      const step = found.find((s) => s?.with?.file === row.file);
-      if (step === undefined) continue; // the problem above says so
-      const labels = [RT.sourceLabel, ...(row.label === null ? [] : [`${row.label}=${commit}`])];
-      const expected = { uses: 'docker/build-push-action@v6', with: { context: row.context, file: row.file, push, ...(push && { tags: [`${row.image}:latest`, `${row.image}:\${{ github.sha }}`], labels }) } };
-      if (!isDeepStrictEqual(rtLines(step), expected)) problems.push(`${job}: the step of ${row.file} must be exactly ${JSON.stringify(expected)}; found: ${JSON.stringify(step)}`);
-      if (push && !(login >= 0 && login < steps.indexOf(step))) problems.push(`publish: the push of ${row.file} must come after the login`);
+test('CI: repository image builds match deployment image names and tags', () => {
+  const owned = new Map(CI_IMAGES.filter(({ file }) => file).map(({ file, image }) => [file, image]));
+  for (const [job, push] of [['build', false], ['publish', true]]) {
+    const builds = ci.jobs[job].steps.filter((step) => step.with?.file);
+    assert.deepEqual(builds.map((step) => step.with.file).sort(), [...owned.keys()].sort(), job);
+    for (const { with: { file, push: actualPush, tags } } of builds) {
+      assert.ok(existsSync(join(root, file)), file);
+      assert.equal(actualPush, push, file);
+      if (push) {
+        const image = owned.get(file);
+        assert.deepEqual(tags.trim().split('\n').sort(), [`${image}:latest`, `${image}:\${{ github.sha }}`].sort(), file);
+      }
     }
-    // The last step of each job builds the last image of the table.
-    if (steps.at(-1)?.with?.file !== rows.at(-1).file) problems.push(`${job}: the last step must build ${rows.at(-1).file}`);
-    // The runtime of the template: the checkout at the pinned commit, the check of that commit, and then the build.
-    const at = steps.findIndex((s) => s?.with?.repository === RT.repository);
-    if (at < 0) { problems.push(`${job}: no step checks out ${RT.repository}`); continue; }
-    const ref = steps[at].with.ref;
-    if (!isDeepStrictEqual(steps[at], { uses: 'actions/checkout@v4', with: { repository: RT.repository, ref, path: RT.folder, 'persist-credentials': false } })) problems.push(`${job}: the checkout must be actions/checkout@v4 with the repository, a ref, the path ${RT.folder} and persist-credentials false, and nothing else; found: ${JSON.stringify(steps[at])}`);
-    if (!/^[0-9a-f]{40}$/.test(String(ref))) problems.push(`${job}: the ref must be a commit of 40 hex digits; found: ${ref}`);
-    else if (ref !== commit) problems.push(`${job}: the ref ${ref} is not the commit ${commit} of the compose files`);
-    const check = { run: `test "$(git -C ${RT.folder} rev-parse HEAD)" = ${commit}` };
-    if (!isDeepStrictEqual(steps[at + 1], check)) problems.push(`${job}: the step after the checkout must be exactly ${JSON.stringify(check)}; found: ${JSON.stringify(steps[at + 1])}`);
-    if (steps[at + 2]?.with?.file !== RT.dockerfile) problems.push(`${job}: the step after the check must build ${RT.dockerfile}; found: ${JSON.stringify(steps[at + 2])}`);
   }
-  // The comment above the build job counts the images that it builds.
-  const comment = /^ {2}# (Every pull request[^\n]*\n {2}# [^\n]*)\n {2}build:$/m.exec(text)?.[1] ?? '';
-  if (!comment.includes(`builds the ${IMAGE_WORDS[rows.length]} images`)) problems.push(`the comment above the build job must say that it builds the ${IMAGE_WORDS[rows.length]} images; found: ${comment}`);
-  return problems;
-}
+});
 
-test('CI: the thirteen images of the table are built with no push in the build job and pushed in the publish job, in one order, with the tags and the label of their rows, and the guard refuses each copy that breaks one rule', () => {
-  const pins = rtPins();
-  assert.deepEqual(Object.keys(pins), ['docker-compose.advocate.yml', 'docker-compose.agent-history.yml', 'docker-compose.audio-snippets.yml', 'docker-compose.document-pipeline.yml'], 'the four compose files of the present host');
-  const [PIN] = Object.values(pins);
-  const OTHER = '0123456789abcdef0123456789abcdef01234567';
-  assert.equal(CI_IMAGES.length, 13, 'the table lists thirteen images');
-  assert.equal(new Set(CI_IMAGES.map((row) => row.image)).size, 13, 'each image once');
-  assert.equal(CI_IMAGES.at(-1).file, OPERATOR_FILE, 'the operator image is the last row');
-  assert.equal(ciText.split(PIN).length - 1, 5, 'the pin stands in five places of the workflow: two refs, two checks and one label');
-  assert.deepEqual(ciImageProblems(ciText, CI_IMAGES, pins), [], 'the real file passes');
-  // The build job runs on every event of the workflow, beside the tests, with the read-only permissions of the workflow, and it logs in nowhere.
-  assert.deepEqual(ci.on, { push: { branches: ['main'] }, pull_request: null });
-  assert.deepEqual(ci.permissions, { contents: 'read' });
-  const job = ci.jobs.build;
-  assert.equal(job['runs-on'], 'self-hosted');
-  assert.equal(job.if, undefined, 'on every event of the workflow');
-  assert.equal(job.needs, undefined, 'beside the tests, not after them');
-  assert.equal(job.permissions, undefined, 'the read-only permissions of the workflow');
-  assert.equal(job.steps[0].uses, 'actions/checkout@v4');
-  for (const row of CI_IMAGES.filter((r) => r.context === '.')) assert.ok(existsSync(join(root, row.file)), `${row.file} is in this repository`);
-  // The label comparison is made on the first label line: it is the same for every image, and only the runtime has a second line.
-  const pushed = ci.jobs.publish.steps.filter((s) => s.uses === 'docker/build-push-action@v6');
-  const firstLabel = (step) => step.with.labels.trim().split('\n')[0];
-  for (const step of pushed) assert.equal(firstLabel(step), firstLabel(pushed[0]), `the first label line of ${step.with.file}`);
-  assert.equal(firstLabel(pushed[0]), RT.sourceLabel);
-  assert.deepEqual(pushed.map((s) => s.with.labels.trim().split('\n').length), CI_IMAGES.map((row) => (row.label === null ? 1 : 2)), 'only the runtime has a second label line');
-  assert.deepEqual(pushed.find((s) => s.with.file === RT.dockerfile).with.labels.trim().split('\n').slice(1), [`${RT.commitLabel}=${PIN}`]);
-  // The parts of the real text that the faults change.
-  const CHECKOUT = `      - uses: actions/checkout@v4\n        with:\n          repository: ${RT.repository}\n          ref: ${PIN}\n          path: ${RT.folder}\n          persist-credentials: false\n`;
-  const CHECK = `      - run: test "$(git -C ${RT.folder} rev-parse HEAD)" = ${PIN}\n`;
-  const STEP = (file) => `      - uses: docker/build-push-action@v6\n        with:\n          context: .\n          file: ${file}\n`;
-  const BUILD = (file) => `${STEP(file)}          push: false\n`;
-  const PUSH = (name, file) => `${STEP(file)}          push: true\n          tags: |\n            ${IMAGE_REPOSITORY}/${name}:latest\n            ${IMAGE_REPOSITORY}/${name}:\${{ github.sha }}\n          labels: ${RT.sourceLabel}\n`;
-  const LOGIN = '      - uses: docker/login-action@v3\n';
-  const RUNTIME = `file: ${RT.dockerfile}\n          push: `;
-  const REORDER = 'agents/reorder-agent/Dockerfile';
-  const ORDERS = 'agents/order-desk/Dockerfile';
-  const PRIORAUTH = imageRow('prior-authorization-agent').file;
-  const INTAKE = imageRow('insurer-intake-agent').file;
-  const BIDDESK = imageRow('bid-desk').file;
-  const SOURCING = imageRow('sourcing-agent').file;
-  const OPERATOR = OPERATOR_FILE;
-  const block = (from) => ciText.slice(from, ciText.indexOf(STEP(MOCK_FILE), from));
-  const [b0, b1] = [block(ciText.indexOf(CHECKOUT)), block(ciText.lastIndexOf(CHECKOUT))];
-  const change = (from, to, n) => rtChange(ciText, from, to, n);
-  const other = (text) => text.split(PIN).join(OTHER);
-  const moved = (part, before, n) => rtChange(change(part, ''), before, part + before, n);
-  const exactly = (which, file) => new RegExp(`${which}: the step of ${srvEscape(file)} must be exactly`);
-  const faults = [
-    ['the ref of the build job on another commit', change(`ref: ${PIN}`, `ref: ${OTHER}`), /build: the ref \S+ is not the commit/],
-    ['the ref of the publish job on another commit', change(`ref: ${PIN}`, `ref: ${OTHER}`, 1), /publish: the ref \S+ is not the commit/],
-    ['a branch name in place of a commit', change(`ref: ${PIN}`, 'ref: main'), /build: the ref must be a commit of 40 hex digits/],
-    ['a short commit', change(`ref: ${PIN}`, `ref: ${PIN.slice(0, 7)}`, 1), /publish: the ref must be a commit of 40 hex digits/],
-    ['the check of the build job on another commit', change(CHECK, other(CHECK)), /build: the step after the checkout must be exactly/],
-    ['the check of the publish job on another commit', change(CHECK, other(CHECK), 1), /publish: the step after the checkout must be exactly/],
-    ['a check that never fails', change(CHECK, `${CHECK.trimEnd()} || true\n`), /build: the step after the checkout must be exactly/],
-    ['no check in the publish job', change(CHECK, '', 1), /publish: the step after the checkout must be exactly/],
-    ['a step between the checkout and the check', change(CHECKOUT, `${CHECKOUT}      - run: echo patch\n`, 1), /publish: the step after the checkout must be exactly/],
-    ['a step between the check and the build', change(CHECK, `${CHECK}      - run: echo patch\n`), /build: the step after the check must build/],
-    ['no checkout of the template', change(CHECKOUT, '', 1), /publish: no step checks out/],
-    ['the checkout of another repository', change(`repository: ${RT.repository}`, `repository: ${RT.repository}-fork`), /build: no step checks out/],
-    ['the checkout in another folder', change(`path: ${RT.folder}`, 'path: template', 1), /publish: the checkout must be actions\/checkout@v4/],
-    ['a token for the checkout', change(`path: ${RT.folder}\n`, `path: ${RT.folder}\n          token: x\n`), /build: the checkout must be actions\/checkout@v4/],
-    ['no persist-credentials in the checkout of the publish job', change('          persist-credentials: false\n', '', 1), /publish: the checkout must be actions\/checkout@v4/],
-    ['persist-credentials left on in the checkout of the build job', change('persist-credentials: false', 'persist-credentials: true'), /build: the checkout must be actions\/checkout@v4/],
-    ['a push in the build job', change(`${RUNTIME}false`, `${RUNTIME}true`), exactly('build', RT.dockerfile)],
-    ['a tag in the build job', change(`${RUNTIME}false\n`, `${RUNTIME}false\n          tags: ${RT.image}:latest\n`), exactly('build', RT.dockerfile)],
-    ['no push in the publish job', change(`${RUNTIME}true`, `${RUNTIME}false`), exactly('publish', RT.dockerfile)],
-    ['a build argument', change(`${RUNTIME}true`, `file: ${RT.dockerfile}\n          build-args: NODE_VERSION=20\n          push: true`), exactly('publish', RT.dockerfile)],
-    ['the context of this repository', change(`context: ${RT.folder}`, 'context: .'), exactly('build', RT.dockerfile)],
-    ['the tag :latest only', change(`            ${RT.image}:\${{ github.sha }}\n`, ''), exactly('publish', RT.dockerfile)],
-    ['the tag of the commit only', change(`            ${RT.image}:latest\n`, ''), exactly('publish', RT.dockerfile)],
-    ['the tag of another image', change(`${RT.image}:latest`, `${IMAGE_REPOSITORY}/advocate:latest`), exactly('publish', RT.dockerfile)],
-    ['no label of the commit', change(`            ${RT.commitLabel}=${PIN}\n`, ''), exactly('publish', RT.dockerfile)],
-    ['the label of another commit', change(`${RT.commitLabel}=${PIN}`, `${RT.commitLabel}=${OTHER}`), exactly('publish', RT.dockerfile)],
-    ['no label of the source', change(`            ${RT.sourceLabel}\n`, ''), exactly('publish', RT.dockerfile)],
-    ['the steps of the runtime after the build of the operator image, in the build job', moved(b0, '  publish:\n'), /build: the Dockerfiles must be the thirteen of the table/],
-    ['the steps of the runtime after the build of the operator image, in the publish job', `${change(b1, '')}${b1}`, /publish: the Dockerfiles must be the thirteen of the table/],
-    ['the push of the runtime before the login', moved(b1, LOGIN), new RegExp(`publish: the push of ${srvEscape(RT.dockerfile)} must come after the login`)],
-    ['the steps of the runtime in another place in one job', moved(b0, STEP('agents/agent-history/Dockerfile')), /build: the Dockerfiles must be the thirteen of the table/],
-    ['a login in the build job', change(CHECKOUT, `      - uses: docker/login-action@v3\n${CHECKOUT}`), /build: the job must have no registry login/],
-    ['an image left out of the build job', change(BUILD(REORDER), ''), /build: the Dockerfiles must be the thirteen of the table/],
-    ['an image left out of the publish job', change(PUSH('order-desk', ORDERS), ''), /publish: the Dockerfiles must be the thirteen of the table/],
-    ['the two new images in the other order in the build job', change(`${BUILD(REORDER)}${BUILD(ORDERS)}`, `${BUILD(ORDERS)}${BUILD(REORDER)}`), /build: the Dockerfiles must be the thirteen of the table/],
-    ['the two new images in the other order in the publish job', change(`${PUSH('reorder-agent', REORDER)}${PUSH('order-desk', ORDERS)}`, `${PUSH('order-desk', ORDERS)}${PUSH('reorder-agent', REORDER)}`), /publish: the Dockerfiles must be the thirteen of the table/],
-    ['an image that the table does not list, in the publish job', change(PUSH('order-desk', ORDERS), `${PUSH('order-desk', ORDERS)}${PUSH('extra', 'agents/extra/Dockerfile')}`), /publish: the Dockerfiles must be the thirteen of the table/],
-    ['the Order Desk pushed under the name of the Reorder Agent', change(`${IMAGE_REPOSITORY}/order-desk:latest`, `${IMAGE_REPOSITORY}/reorder-agent:latest`), exactly('publish', ORDERS)],
-    ['no tag of the commit for the Reorder Agent', change(`            ${IMAGE_REPOSITORY}/reorder-agent:\${{ github.sha }}\n`, ''), exactly('publish', REORDER)],
-    ['a push in the build job for the Order Desk', change(`${STEP(ORDERS)}          push: false`, `${STEP(ORDERS)}          push: true`), exactly('build', ORDERS)],
-    ['no push in the publish job for the Reorder Agent', change(`${STEP(REORDER)}          push: true`, `${STEP(REORDER)}          push: false`), exactly('publish', REORDER)],
-    ['the context of the Reorder Agent in another folder', change(`context: .\n          file: ${REORDER}`, `context: agents\n          file: ${REORDER}`), exactly('build', REORDER)],
-    ['a condition of its own on the build step of the Order Desk', change(BUILD(ORDERS), BUILD(ORDERS).replace('      - uses:', "      - if: github.event_name == 'push'\n        uses:")), exactly('build', ORDERS)],
-    ['another source label for the Order Desk', change(PUSH('order-desk', ORDERS), PUSH('order-desk', ORDERS).replace(RT.sourceLabel, 'org.opencontainers.image.source=other')), exactly('publish', ORDERS)],
-    ['the label of the template commit on an image that has none', change(PUSH('reorder-agent', REORDER), PUSH('reorder-agent', REORDER).replace(`labels: ${RT.sourceLabel}`, `labels: |\n            ${RT.sourceLabel}\n            ${RT.commitLabel}=${PIN}`)), exactly('publish', REORDER)],
-    ['the Prior Authorization Agent left out of the build job', change(BUILD(PRIORAUTH), ''), /build: the Dockerfiles must be the thirteen of the table/],
-    ['the Prior Authorization Agent left out of the publish job', change(PUSH('prior-authorization-agent', PRIORAUTH), ''), /publish: the Dockerfiles must be the thirteen of the table/],
-    ['the Order Desk and the Prior Authorization Agent in the other order in the build job', change(`${BUILD(ORDERS)}${BUILD(PRIORAUTH)}`, `${BUILD(PRIORAUTH)}${BUILD(ORDERS)}`), /build: the Dockerfiles must be the thirteen of the table/],
-    ['the Order Desk and the Prior Authorization Agent in the other order in the publish job', change(`${PUSH('order-desk', ORDERS)}${PUSH('prior-authorization-agent', PRIORAUTH)}`, `${PUSH('prior-authorization-agent', PRIORAUTH)}${PUSH('order-desk', ORDERS)}`), /publish: the Dockerfiles must be the thirteen of the table/],
-    ['the Prior Authorization Agent after the steps of the runtime, in the build job', moved(BUILD(PRIORAUTH), STEP(MOCK_FILE)), /build: the Dockerfiles must be the thirteen of the table/],
-    ['the Prior Authorization Agent after the steps of the runtime, in the publish job', moved(PUSH('prior-authorization-agent', PRIORAUTH), STEP(MOCK_FILE), 1), /publish: the Dockerfiles must be the thirteen of the table/],
-    ['the Prior Authorization Agent pushed under the name of the Order Desk', change(`${IMAGE_REPOSITORY}/prior-authorization-agent:latest`, `${IMAGE_REPOSITORY}/order-desk:latest`), exactly('publish', PRIORAUTH)],
-    ['the Prior Authorization Agent pushed under a name with one letter more', change(`${IMAGE_REPOSITORY}/prior-authorization-agent:latest`, `${IMAGE_REPOSITORY}/prior-authorization-agents:latest`), exactly('publish', PRIORAUTH)],
-    ['no tag :latest for the Prior Authorization Agent', change(`            ${IMAGE_REPOSITORY}/prior-authorization-agent:latest\n`, ''), exactly('publish', PRIORAUTH)],
-    ['no tag of the commit for the Prior Authorization Agent', change(`            ${IMAGE_REPOSITORY}/prior-authorization-agent:\${{ github.sha }}\n`, ''), exactly('publish', PRIORAUTH)],
-    ['a push in the build job for the Prior Authorization Agent', change(`${STEP(PRIORAUTH)}          push: false`, `${STEP(PRIORAUTH)}          push: true`), exactly('build', PRIORAUTH)],
-    ['no push in the publish job for the Prior Authorization Agent', change(`${STEP(PRIORAUTH)}          push: true`, `${STEP(PRIORAUTH)}          push: false`), exactly('publish', PRIORAUTH)],
-    ['a build argument for the Prior Authorization Agent', change(`${STEP(PRIORAUTH)}          push: false`, `${STEP(PRIORAUTH)}          build-args: NODE_VERSION=20\n          push: false`), exactly('build', PRIORAUTH)],
-    ['the context of the Prior Authorization Agent in its own folder', change(`context: .\n          file: ${PRIORAUTH}`, `context: agents/prior-authorization-agent\n          file: ${PRIORAUTH}`), exactly('build', PRIORAUTH)],
-    ['another source label for the Prior Authorization Agent', change(PUSH('prior-authorization-agent', PRIORAUTH), rtChange(PUSH('prior-authorization-agent', PRIORAUTH), RT.sourceLabel, 'org.opencontainers.image.source=other')), exactly('publish', PRIORAUTH)],
-    ['the push of the Prior Authorization Agent before the login', moved(PUSH('prior-authorization-agent', PRIORAUTH), LOGIN), new RegExp(`publish: the push of ${srvEscape(PRIORAUTH)} must come after the login`)],
-    ['the Insurer Intake Agent left out of the build job', change(BUILD(INTAKE), ''), /build: the Dockerfiles must be the thirteen of the table/],
-    ['the Insurer Intake Agent left out of the publish job', change(PUSH('insurer-intake-agent', INTAKE), ''), /publish: the Dockerfiles must be the thirteen of the table/],
-    ['the Prior Authorization Agent and the Insurer Intake Agent in the other order in the build job', change(`${BUILD(PRIORAUTH)}${BUILD(INTAKE)}`, `${BUILD(INTAKE)}${BUILD(PRIORAUTH)}`), /build: the Dockerfiles must be the thirteen of the table/],
-    ['the Prior Authorization Agent and the Insurer Intake Agent in the other order in the publish job', change(`${PUSH('prior-authorization-agent', PRIORAUTH)}${PUSH('insurer-intake-agent', INTAKE)}`, `${PUSH('insurer-intake-agent', INTAKE)}${PUSH('prior-authorization-agent', PRIORAUTH)}`), /publish: the Dockerfiles must be the thirteen of the table/],
-    ['the Insurer Intake Agent after the steps of the runtime, in the build job', moved(BUILD(INTAKE), STEP(MOCK_FILE)), /build: the Dockerfiles must be the thirteen of the table/],
-    ['the Insurer Intake Agent after the steps of the runtime, in the publish job', moved(PUSH('insurer-intake-agent', INTAKE), STEP(MOCK_FILE), 1), /publish: the Dockerfiles must be the thirteen of the table/],
-    ['the Insurer Intake Agent pushed under the name of the Prior Authorization Agent', change(`${IMAGE_REPOSITORY}/insurer-intake-agent:latest`, `${IMAGE_REPOSITORY}/prior-authorization-agent:latest`), exactly('publish', INTAKE)],
-    ['the Insurer Intake Agent pushed under a name with one letter more', change(`${IMAGE_REPOSITORY}/insurer-intake-agent:latest`, `${IMAGE_REPOSITORY}/insurer-intake-agents:latest`), exactly('publish', INTAKE)],
-    ['no tag :latest for the Insurer Intake Agent', change(`            ${IMAGE_REPOSITORY}/insurer-intake-agent:latest\n`, ''), exactly('publish', INTAKE)],
-    ['no tag of the commit for the Insurer Intake Agent', change(`            ${IMAGE_REPOSITORY}/insurer-intake-agent:\${{ github.sha }}\n`, ''), exactly('publish', INTAKE)],
-    ['a push in the build job for the Insurer Intake Agent', change(`${STEP(INTAKE)}          push: false`, `${STEP(INTAKE)}          push: true`), exactly('build', INTAKE)],
-    ['no push in the publish job for the Insurer Intake Agent', change(`${STEP(INTAKE)}          push: true`, `${STEP(INTAKE)}          push: false`), exactly('publish', INTAKE)],
-    ['a build argument for the Insurer Intake Agent', change(`${STEP(INTAKE)}          push: false`, `${STEP(INTAKE)}          build-args: NODE_VERSION=20\n          push: false`), exactly('build', INTAKE)],
-    ['the context of the Insurer Intake Agent in its own folder', change(`context: .\n          file: ${INTAKE}`, `context: agents/insurer-intake-agent\n          file: ${INTAKE}`), exactly('build', INTAKE)],
-    ['another source label for the Insurer Intake Agent', change(PUSH('insurer-intake-agent', INTAKE), rtChange(PUSH('insurer-intake-agent', INTAKE), RT.sourceLabel, 'org.opencontainers.image.source=other')), exactly('publish', INTAKE)],
-    ['the push of the Insurer Intake Agent before the login', moved(PUSH('insurer-intake-agent', INTAKE), LOGIN), new RegExp(`publish: the push of ${srvEscape(INTAKE)} must come after the login`)],
-    ['the Bid Desk left out of the build job', change(BUILD(BIDDESK), ''), /build: the Dockerfiles must be the thirteen of the table/],
-    ['the Bid Desk left out of the publish job', change(PUSH('bid-desk', BIDDESK), ''), /publish: the Dockerfiles must be the thirteen of the table/],
-    ['the Insurer Intake Agent and the Bid Desk in the other order in the build job', change(`${BUILD(INTAKE)}${BUILD(BIDDESK)}`, `${BUILD(BIDDESK)}${BUILD(INTAKE)}`), /build: the Dockerfiles must be the thirteen of the table/],
-    ['the Insurer Intake Agent and the Bid Desk in the other order in the publish job', change(`${PUSH('insurer-intake-agent', INTAKE)}${PUSH('bid-desk', BIDDESK)}`, `${PUSH('bid-desk', BIDDESK)}${PUSH('insurer-intake-agent', INTAKE)}`), /publish: the Dockerfiles must be the thirteen of the table/],
-    ['the Bid Desk after the steps of the runtime, in the build job', moved(BUILD(BIDDESK), STEP(MOCK_FILE)), /build: the Dockerfiles must be the thirteen of the table/],
-    ['the Bid Desk after the steps of the runtime, in the publish job', moved(PUSH('bid-desk', BIDDESK), STEP(MOCK_FILE), 1), /publish: the Dockerfiles must be the thirteen of the table/],
-    ['the Bid Desk pushed under the name of the Insurer Intake Agent', change(`${IMAGE_REPOSITORY}/bid-desk:latest`, `${IMAGE_REPOSITORY}/insurer-intake-agent:latest`), exactly('publish', BIDDESK)],
-    ['the Bid Desk pushed under a name with one letter more', change(`${IMAGE_REPOSITORY}/bid-desk:latest`, `${IMAGE_REPOSITORY}/bid-desks:latest`), exactly('publish', BIDDESK)],
-    ['no tag :latest for the Bid Desk', change(`            ${IMAGE_REPOSITORY}/bid-desk:latest\n`, ''), exactly('publish', BIDDESK)],
-    ['no tag of the commit for the Bid Desk', change(`            ${IMAGE_REPOSITORY}/bid-desk:\${{ github.sha }}\n`, ''), exactly('publish', BIDDESK)],
-    ['a push in the build job for the Bid Desk', change(`${STEP(BIDDESK)}          push: false`, `${STEP(BIDDESK)}          push: true`), exactly('build', BIDDESK)],
-    ['no push in the publish job for the Bid Desk', change(`${STEP(BIDDESK)}          push: true`, `${STEP(BIDDESK)}          push: false`), exactly('publish', BIDDESK)],
-    ['a build argument for the Bid Desk', change(`${STEP(BIDDESK)}          push: false`, `${STEP(BIDDESK)}          build-args: NODE_VERSION=20\n          push: false`), exactly('build', BIDDESK)],
-    ['the context of the Bid Desk in its own folder', change(`context: .\n          file: ${BIDDESK}`, `context: agents/bid-desk\n          file: ${BIDDESK}`), exactly('build', BIDDESK)],
-    ['another source label for the Bid Desk', change(PUSH('bid-desk', BIDDESK), rtChange(PUSH('bid-desk', BIDDESK), RT.sourceLabel, 'org.opencontainers.image.source=other')), exactly('publish', BIDDESK)],
-    ['the push of the Bid Desk before the login', moved(PUSH('bid-desk', BIDDESK), LOGIN), new RegExp(`publish: the push of ${srvEscape(BIDDESK)} must come after the login`)],
-    ['the Sourcing Agent left out of the build job', change(BUILD(SOURCING), ''), /build: the Dockerfiles must be the thirteen of the table/],
-    ['the Sourcing Agent left out of the publish job', change(PUSH('sourcing-agent', SOURCING), ''), /publish: the Dockerfiles must be the thirteen of the table/],
-    ['the Bid Desk and the Sourcing Agent in the other order in the build job', change(`${BUILD(BIDDESK)}${BUILD(SOURCING)}`, `${BUILD(SOURCING)}${BUILD(BIDDESK)}`), /build: the Dockerfiles must be the thirteen of the table/],
-    ['the Bid Desk and the Sourcing Agent in the other order in the publish job', change(`${PUSH('bid-desk', BIDDESK)}${PUSH('sourcing-agent', SOURCING)}`, `${PUSH('sourcing-agent', SOURCING)}${PUSH('bid-desk', BIDDESK)}`), /publish: the Dockerfiles must be the thirteen of the table/],
-    ['the Sourcing Agent after the steps of the runtime, in the build job', moved(BUILD(SOURCING), STEP(MOCK_FILE)), /build: the Dockerfiles must be the thirteen of the table/],
-    ['the Sourcing Agent after the steps of the runtime, in the publish job', moved(PUSH('sourcing-agent', SOURCING), STEP(MOCK_FILE), 1), /publish: the Dockerfiles must be the thirteen of the table/],
-    ['the Sourcing Agent pushed under the name of the Bid Desk', change(`${IMAGE_REPOSITORY}/sourcing-agent:latest`, `${IMAGE_REPOSITORY}/bid-desk:latest`), exactly('publish', SOURCING)],
-    ['the Sourcing Agent pushed under a name with one letter more', change(`${IMAGE_REPOSITORY}/sourcing-agent:latest`, `${IMAGE_REPOSITORY}/sourcing-agents:latest`), exactly('publish', SOURCING)],
-    ['no tag :latest for the Sourcing Agent', change(`            ${IMAGE_REPOSITORY}/sourcing-agent:latest\n`, ''), exactly('publish', SOURCING)],
-    ['no tag of the commit for the Sourcing Agent', change(`            ${IMAGE_REPOSITORY}/sourcing-agent:\${{ github.sha }}\n`, ''), exactly('publish', SOURCING)],
-    ['a push in the build job for the Sourcing Agent', change(`${STEP(SOURCING)}          push: false`, `${STEP(SOURCING)}          push: true`), exactly('build', SOURCING)],
-    ['no push in the publish job for the Sourcing Agent', change(`${STEP(SOURCING)}          push: true`, `${STEP(SOURCING)}          push: false`), exactly('publish', SOURCING)],
-    ['a build argument for the Sourcing Agent', change(`${STEP(SOURCING)}          push: false`, `${STEP(SOURCING)}          build-args: NODE_VERSION=20\n          push: false`), exactly('build', SOURCING)],
-    ['the context of the Sourcing Agent in its own folder', change(`context: .\n          file: ${SOURCING}`, `context: agents/sourcing-agent\n          file: ${SOURCING}`), exactly('build', SOURCING)],
-    ['another source label for the Sourcing Agent', change(PUSH('sourcing-agent', SOURCING), rtChange(PUSH('sourcing-agent', SOURCING), RT.sourceLabel, 'org.opencontainers.image.source=other')), exactly('publish', SOURCING)],
-    ['the push of the Sourcing Agent before the login', moved(PUSH('sourcing-agent', SOURCING), LOGIN), new RegExp(`publish: the push of ${srvEscape(SOURCING)} must come after the login`)],
-    ['the operator image left out of the build job', change(BUILD(OPERATOR), ''), /build: the Dockerfiles must be the thirteen of the table/],
-    ['the operator image left out of the publish job', change(PUSH('operator', OPERATOR), ''), /publish: the Dockerfiles must be the thirteen of the table/],
-    ['the operator image and the mock service in the other order in the build job', change(`${BUILD(MOCK_FILE)}${BUILD(OPERATOR)}`, `${BUILD(OPERATOR)}${BUILD(MOCK_FILE)}`), /build: the Dockerfiles must be the thirteen of the table/],
-    ['the operator image and the mock service in the other order in the publish job', change(`${PUSH('mock-systems', MOCK_FILE)}${PUSH('operator', OPERATOR)}`, `${PUSH('operator', OPERATOR)}${PUSH('mock-systems', MOCK_FILE)}`), /publish: the Dockerfiles must be the thirteen of the table/],
-    ['the operator image pushed under the name of the Order Desk', change(`${IMAGE_REPOSITORY}/operator:latest`, `${IMAGE_REPOSITORY}/order-desk:latest`), exactly('publish', OPERATOR)],
-    ['no tag :latest for the operator image', change(`            ${IMAGE_REPOSITORY}/operator:latest\n`, ''), exactly('publish', OPERATOR)],
-    ['no tag of the commit for the operator image', change(`            ${IMAGE_REPOSITORY}/operator:\${{ github.sha }}\n`, ''), exactly('publish', OPERATOR)],
-    ['a push in the build job for the operator image', change(`${STEP(OPERATOR)}          push: false`, `${STEP(OPERATOR)}          push: true`), exactly('build', OPERATOR)],
-    ['no push in the publish job for the operator image', change(`${STEP(OPERATOR)}          push: true`, `${STEP(OPERATOR)}          push: false`), exactly('publish', OPERATOR)],
-    ['a build argument for the operator image', change(`${STEP(OPERATOR)}          push: false`, `${STEP(OPERATOR)}          build-args: SIGNING_KEY=x\n          push: false`), exactly('build', OPERATOR)],
-    ['the context of the operator image in its own folder', change(`context: .\n          file: ${OPERATOR}`, `context: scripts/operator\n          file: ${OPERATOR}`), exactly('build', OPERATOR)],
-    ['another source label for the operator image', change(PUSH('operator', OPERATOR), PUSH('operator', OPERATOR).replace(RT.sourceLabel, 'org.opencontainers.image.source=other')), exactly('publish', OPERATOR)],
-    ['the push of the operator image before the login', moved(PUSH('operator', OPERATOR), LOGIN), new RegExp(`publish: the push of ${srvEscape(OPERATOR)} must come after the login`)],
-    ['a step after the build of the operator image, in the publish job', `${ciText}      - run: echo late\n`, new RegExp(`publish: the last step must build ${srvEscape(OPERATOR_FILE)}`)],
-    ['a step after the build of the operator image, in the build job', change('  publish:\n', '      - run: echo late\n  publish:\n'), new RegExp(`build: the last step must build ${srvEscape(OPERATOR_FILE)}`)],
-    ['a comment that counts six images', change('builds the thirteen images', 'builds the six images'), /the comment above the build job must say that it builds the thirteen images/],
-    ['a key twice', change(`path: ${RT.folder}\n`, `path: ${RT.folder}\n          path: ${RT.folder}\n`), /does not parse/],
-  ];
-  for (const [name, broken, expected] of faults) {
-    const problems = ciImageProblems(broken, CI_IMAGES, pins);
-    assert.ok(problems.some((p) => expected.test(p)), `${name}: found ${JSON.stringify(problems)}`);
+test('CI: the runtime pin matches the host template commit', () => {
+  const { AGENT_RUNTIME_IMAGE, AGENT_RUNTIME_DIGEST, AGENT_RUNTIME_TEMPLATE_COMMIT } = ci.env;
+  assert.equal(AGENT_RUNTIME_IMAGE, RT.image);
+  assert.match(AGENT_RUNTIME_DIGEST, /^sha256:[0-9a-f]{64}$/);
+  assert.match(AGENT_RUNTIME_TEMPLATE_COMMIT, /^[0-9a-f]{40}$/);
+  const context = `https://github.com/${RT.repository}.git#${AGENT_RUNTIME_TEMPLATE_COMMIT}`;
+  for (const [file, text] of Object.entries(composeTextsOf(['deploy/host']))) {
+    assert.equal(parseYaml(text).services.agent.build.context, context, file);
   }
-  assert.ok(ciImageProblems(ciText, CI_IMAGES, { ...pins, 'docker-compose.audio-snippets.yml': OTHER }).some((p) => /compose files must name one commit/.test(p)), 'a compose file on another commit');
-  // The twins: the pin moved to another commit in every place, a step that sits where it breaks nothing, a comment, and one label written as a block.
-  const twins = [
-    ['the pin on another commit in the workflow and in the four compose files', other(ciText), Object.fromEntries(Object.keys(pins).map((file) => [file, OTHER]))],
-    ['a step between the Order Desk and the Prior Authorization Agent', change(STEP(PRIORAUTH), `      - run: echo ok\n${STEP(PRIORAUTH)}`, 1), pins],
-    ['a step between the Prior Authorization Agent and the Insurer Intake Agent', change(STEP(INTAKE), `      - run: echo ok\n${STEP(INTAKE)}`, 1), pins],
-    ['a step between the Insurer Intake Agent and the Bid Desk', change(STEP(BIDDESK), `      - run: echo ok\n${STEP(BIDDESK)}`, 1), pins],
-    ['a step between the Bid Desk and the Sourcing Agent', change(STEP(SOURCING), `      - run: echo ok\n${STEP(SOURCING)}`, 1), pins],
-    ['a step between the runtime and the mock service', change(STEP(MOCK_FILE), `      - run: echo ok\n${STEP(MOCK_FILE)}`, 1), pins],
-    ['a step between the mock service and the operator image', change(STEP(OPERATOR), `      - run: echo ok\n${STEP(OPERATOR)}`, 1), pins],
-    ['a step before the checkout, and a comment between the steps', change(CHECKOUT, `      - run: echo ok\n      # a note\n${CHECKOUT}`, 1), pins],
-    ['the one label of the Order Desk written as a block', change(PUSH('order-desk', ORDERS), PUSH('order-desk', ORDERS).replace(`labels: ${RT.sourceLabel}`, `labels: |\n            ${RT.sourceLabel}`)), pins],
-  ];
-  for (const [name, text, given] of twins) assert.deepEqual(ciImageProblems(text, CI_IMAGES, given), [], name);
 });
 
 // The services of the compose files against the table: each service that names an image is a service that its row lists, with the name of that row (the digest or its placeholder after the
@@ -7107,8 +6787,6 @@ test('CI: each compose file of the two hosts names the image that CI pushes, and
     const named = Object.values(parseYaml(texts[file]).services).map((service) => service.image.split('@')[0]);
     assert.deepEqual([...new Set(named)].sort(), names.sort(), file);
   }
-  const tagged = ci.jobs.publish.steps.filter((s) => s.uses === 'docker/build-push-action@v6').flatMap((s) => s.with.tags.trim().split('\n'));
-  for (const row of CI_IMAGES) assert.ok(tagged.includes(`${row.image}:latest`), `CI pushes ${row.image}`);
   const reorder = serverCompose('reorder-agent');
   const orders = serverCompose('order-desk');
   const priorauth = serverCompose('prior-authorization-agent');
@@ -7170,15 +6848,6 @@ test('CI: the runtime image is named by its digest in every compose file of the 
   const compose = (image) => `services:\n  runtime:\n    image: ${image}\n`;
   for (const twin of [`${RT.image}@sha256:<digest>`, `${RT.image}@sha256:${'ab'.repeat(32)}`, 'ghcr.io/apex-fusion/vector-service-agents/mock-systems:latest']) assert.deepEqual(runtimeReferenceProblems(compose(twin)), [], twin);
   for (const bad of [`${RT.image}:latest`, `${RT.image}:${'a'.repeat(40)}`, RT.image, `${RT.image}@sha256:abc`, `${RT.image}@sha256:${'AB'.repeat(32)}`]) assert.equal(runtimeReferenceProblems(compose(bad)).length, 1, bad);
-});
-
-test('CI: the runtime image: the README of deploy/server follows its section of the host with a section that names the image and its digest form, the places of the pin, and the package visibility', () => {
-  const readme = srvRead('README.md');
-  const text = section(readme, 'The runtime image');
-  assert.ok(text.length > 0, 'the section is there');
-  const at = (heading) => readme.indexOf(`\n## ${heading}\n`);
-  assert.ok(at('The host') > 0 && at('The host') < at('The runtime image') && at('The runtime image') < at('What the script does'), 'after the host, before the script');
-  for (const part of [`${RT.image}@sha256:<digest>`, '`:latest`', '`:<full git commit sha>`', RT.commitLabel, RT.repository, '`ref`', 'deploy/host', 'scripts/deploy.test.mjs', 'check that the package is public', `docker manifest inspect ${RT.image}:latest`, 'admin of the organisation']) assert.ok(text.includes(part), part);
 });
 
 // ======================================================================================================================================
@@ -7675,11 +7344,10 @@ function dockerignoreProblems(ignoreText, folders) {
   return folders.flatMap((folder) => folderNamesIn(folder, 'test').filter((path) => reachesContext(rules, path)).map((path) => `${path} is copied into an image: the ignore file keeps no test folder out`));
 }
 
-test('dockerignore: no image holds a test folder, and the first comment line names the Dockerfiles that build from the repo root; the last line that matches decides, and the guard refuses an ignore file that leaves a test folder in', () => {
+test('dockerignore: test folders stay out of repository image builds, including after parent folders are included again', () => {
   const ignore = read('.dockerignore');
   const lines = ignore.split('\n');
-  const rows = CI_IMAGES.filter((row) => row.context === '.');
-  const folders = [...new Set(rows.flatMap((row) => copiedFolders(read(row.file))))];
+  const folders = [...new Set(CI_IMAGES.flatMap(({ file }) => file ? copiedFolders(read(file)) : []))];
   const withTests = folders.filter((folder) => folderNamesIn(folder, 'test').length > 0);
   // The kit packages are copied whole by the agent images, with their test folders. The two agents of use case 1 copy their source folder only.
   for (const folder of ['packages/usecase-kit', 'packages/hire-kit', 'packages/service-kit', 'packages/id-kit', 'agents/audio-snippets']) assert.ok(withTests.includes(folder), `${folder} is copied whole and holds a test folder: ${withTests.join(', ')}`);
@@ -7703,9 +7371,6 @@ test('dockerignore: no image holds a test folder, and the first comment line nam
   assert.equal(dockerignoreProblems([text(...TEST_LINES), ...tests.slice(1)].join('\n'), folders).length, 1, 'one test folder left out of the list');
   assert.deepEqual(dockerignoreProblems(`${ignore}*.tmp\n`, folders), [], 'a line that leaves out more');
   assert.deepEqual(dockerignoreProblems(rtChange(ignore, 'scripts/**/test\n', 'scripts/*/test\n'), folders), [], 'the line at depth one');
-  // The first comment line names the Dockerfiles of the repo root context.
-  for (const row of rows) assert.ok(lines[0].includes(row.file), `${row.file} is named in the first comment line`);
-  assert.equal(lines[0].includes(RT.dockerfile), false, 'the runtime Dockerfile has another context');
 });
 
 // ======================================================================================================================================

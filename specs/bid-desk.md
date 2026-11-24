@@ -498,7 +498,11 @@ The text of the request and of the price list reaches the model only inside the 
 
 ## Known gaps
 
-The manifest states these eight, in this order, word for word. A test keeps them equal to `GAPS` in `agents/bid-desk/src/serve/gaps.ts`. The first five are the gaps of the agent. The sixth says whose keys the parties are. The seventh starts with a run-in lead and names three things that no run of use case 3 (supplier bid evaluation) covers. The eighth is the sentence of the kit about the fault switch. The fourth gap names the compliance attestation of a Bid Desk: an identity attestation (type 0) that the compliance registry issues about it. The Bid Desk does not read it. Only the Sourcing Agent reads it. Nothing in this repository issues it.
+The manifest states these eight, in this order, word for word. A test keeps them equal to `GAPS` in `agents/bid-desk/src/serve/gaps.ts`. The first five are the gaps of the agent. The sixth says whose keys the parties are. The seventh starts with a run-in lead and names three things that no run of use case 3 (supplier bid evaluation) covers. The eighth is the sentence of the kit about the fault switch.
+
+The fourth gap describes an identity attestation (type 0) about a Bid Desk. The Sourcing Agent reads it. The Bid Desk does not. The operator pack's `compliance` task supports one attestation for each Bid Desk. The task checks the exact bytes of the published statement before it signs the issue. The attestation records the URI and its SHA-256 digest. It is valid for 365 days unless revoked first.
+
+The demonstration registry's key signs the issue and can revoke it. The current controller of the Bid Desk signs a `Contest` after the task verifies the revocation. The reply on the ledger records the URI and SHA-256 digest, not the text. The operator CLI does not enable use case 3 yet. This task support does not show that any of these attestations exist on mainnet.
 
 - A quote is the result of a paid job. It is not a binding offer.
 - The model prices the request. Nothing in this agent checks its lines against the price list: the buyer's agent can, because the price list and its hash are public.

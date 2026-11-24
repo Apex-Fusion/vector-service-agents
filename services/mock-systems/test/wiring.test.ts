@@ -14,8 +14,8 @@ import type { ApprovalCode, Outcome } from '../src/errors.ts';
 import { NO_APPROVAL_CHECK, startService } from '../src/start.ts';
 import { APPROVAL_READ_BUDGET_MS, wireApprovalCheck } from '../src/wiring.ts';
 import type { ApprovalSources } from '../src/wiring.ts';
-import { Child, childEnvironment } from './support/child.ts';
-import { freePort, listening, send as sendTo } from './support/net.ts';
+import { CHILD_PROBE_MS, CHILD_TEST_MS } from './support/child.ts';
+import { freePort, listening, send as sendTo, startChild } from './support/net.ts';
 import { callWithToken, delegateTo, rankingBody, rankingsOf, scenario } from './support/scenario.ts';
 import type { RankingBody } from './support/scenario.ts';
 import { APPROVAL_ID, HOUR, INSURER_ORG, OPERATOR_TOKEN, PUBLIC_BASE, SUPPLIER_ORG, T0, World, resourceOf, serviceEnvironment } from './support/world.ts';
@@ -252,19 +252,20 @@ describe('the budget of the ledger reads of the check', () => {
 
 describe('the start with the real wiring', () => {
   it('starts the real entry (node --import tsx src/index.ts) with a complete valid environment, answers the check of health, and stops on SIGTERM', async () => {
-    const port = await freePort();
     // The gateway and the ledger are at an address that nothing answers: the start must not need them.
     const dead = await nobody();
-    const settings = serviceEnvironment(port, { IDENTITY_GATEWAY_URL: dead, VECTOR_OGMIOS_URL: dead, VECTOR_KOIOS_URL: dead });
-    const child = new Child('src/index.ts', childEnvironment(settings));
-    await child.waitFor('"event":"listening"');
-    const health = await sendTo(port, { path: '/healthz', host: '127.0.0.1' });
-    expect([health.status, health.json]).toEqual([200, { ok: true }]);
-    expect(child.stderr).not.toContain('cannot start');
-    child.signal('SIGTERM');
-    expect(await child.exit).toEqual({ code: 0, signal: null });
-    expect(await listening(port)).toBe(false);
-  });
+    const { child, port } = await startChild('src/index.ts', (port) => serviceEnvironment(port, { IDENTITY_GATEWAY_URL: dead, VECTOR_OGMIOS_URL: dead, VECTOR_KOIOS_URL: dead }));
+    try {
+      const health = await sendTo(port, { path: '/healthz', host: '127.0.0.1', signal: AbortSignal.timeout(CHILD_PROBE_MS) });
+      expect([health.status, health.json], child.diagnostics()).toEqual([200, { ok: true }]);
+      expect(child.stderr).not.toContain('cannot start');
+      child.signal('SIGTERM');
+      expect(await child.waitForExit('exit after SIGTERM'), child.diagnostics()).toEqual({ code: 0, signal: null });
+      expect(await listening(port)).toBe(false);
+    } finally {
+      await child.cleanup();
+    }
+  }, CHILD_TEST_MS);
 
   it('gives the wiring the ledger of its settings, the gateway client and the clock of the service', async () => {
     const world = new World();

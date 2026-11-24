@@ -669,7 +669,9 @@ describe('delegationChainOf: the builders, the submit and the slot clock', () =>
 
   it('throws when the node cannot be read, in the builders and in the submit', async () => {
     const world = worldOf({ sub: null });
-    const built = await delegationChainOf(envOf(world)).buildDelegate(DELEGATE);
+    const live = delegationChainOf(envOf(world));
+    const built = await live.buildDelegate(DELEGATE);
+    expect(built.id).toMatch(/^[0-9a-f]{64}$/);
     const signed = subagentSigner.sign(agentSigner.sign(built.txCbor));
     const chain = delegationChainOf(envOf(down(world)));
     // The slot clock is not in this list: the buyer code keeps the start time of the chain for the whole process once it has read it, so a node that is down is not asked again.
@@ -678,9 +680,7 @@ describe('delegationChainOf: the builders, the submit and the slot clock', () =>
       () => chain.buildUndelegate({ changeAddress: WALLET, nowMs: NOW, id: SUB_ID, signer: AGENT.keyHash }),
       () => chain.submit(signed),
     ]) expect((await rejection(call())).message).toContain('the node is down');
-    // The twin: the same calls on a node that answers.
-    const live = delegationChainOf(envOf(world));
-    expect((await live.buildDelegate(DELEGATE)).id).toMatch(/^[0-9a-f]{64}$/);
+    // Send the same signed transaction to the node that can answer.
     expect(await live.slotAt(NOW)).toBe(slotOf(NOW));
     expect(await live.submit(signed)).toBe(built.txHash);
   });

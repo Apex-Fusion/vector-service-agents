@@ -6,7 +6,7 @@ Four rules hold for every step:
 
 - A runtime keeps its jobs in memory, and a service keeps the record of the checks of a job in memory. Never restart a container of a Bid Desk while a job runs (section "The restart rule").
 - No command in this runbook prints a key or a token. Never add one that does.
-- The host builds no image. CI builds the images, and each compose file names each image by its digest.
+- The host builds no image. CI publishes the images. Each compose file names each image by its digest.
 - Each Bid Desk is a compose project of its own. A step for one Bid Desk never touches the containers, the env file, the volume or the Caddy block of another.
 
 ## What it is
@@ -189,7 +189,7 @@ sed -n 's/^\(SUPPLIER_PKH\|BID_DESK_SERVICE_PKH\)=\(..*\)$/\2/p' /srv/agents/bid
 
 ## The images
 
-The compose files name two images. CI builds both, and it pushes each one under `:latest` and under `:<full git commit sha>`. Use the tag of the commit that was reviewed. The service image is `ghcr.io/apex-fusion/vector-service-agents/bid-desk`. The runtime image is `ghcr.io/apex-fusion/vector-service-agents/agent-runtime`. The three Bid Desks run one image of each, so each image gets one digest in the three files.
+CI builds the service image and reuses [the pinned runtime image](README.md#the-runtime-image). CI publishes both under `:latest` and `:<full git commit sha>`. Use the tag of a reviewed commit with a successful `publish` job. The service image is `ghcr.io/apex-fusion/vector-service-agents/bid-desk`. The runtime image is `ghcr.io/apex-fusion/vector-service-agents/agent-runtime`. The three Bid Desks run one image of each, so each image gets one digest in the three files.
 
 The pull needs no login when the package is public. If the answer says `denied`, the package is private: make it public in the settings of the package, or log in to `ghcr.io` with a token that has the scope `read:packages`. RUNBOOK.md (section "Run the mock service") does the same for the mock service.
 
