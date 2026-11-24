@@ -66,7 +66,8 @@ export const SCORING_RESERVE_MS = 960_000 + RANKING_RESERVE_MS;
 /** The most candidates that a ranking can list as excluded: the limit of the document. */
 const MOST_LISTED = 20;
 
-const TENANT_RULE = 'request.tenant must be 1 to 48 characters: lower-case letters, digits and hyphens, and it starts with a letter or a digit';
+/** The words that refuse a tenant which the schema of the manifest does not take. The job refuses such a tenant with them, and the intake of the service refuses it with the same words before the Claim. */
+export const TENANT_RULE = 'request.tenant must be 1 to 48 characters: lower-case letters, digits and hyphens, and it starts with a letter or a digit';
 
 /** The codes of the steps of this folder. The codes of a decision, of the fan-out and of the scoring pass through, and they are not in this list. */
 const OWN_FAILURES = [

@@ -31,6 +31,7 @@ const KEY_VARIABLES = new Map([
   [join('agents', 'prior-authorization-agent', 'src', 'serve', 'start.ts'), { service: 'PRIORAUTH_SERVICE_PRIV_KEY_HEX', delegation: ['PRIORAUTH_DELEGATION_1_PRIV_KEY_HEX', 'PRIORAUTH_DELEGATION_2_PRIV_KEY_HEX'], subagent: ['RECORD_READER_AUTH_PRIV_KEY_HEX', 'RECORD_READER_DELEGATION_PRIV_KEY_HEX', 'DRAFTER_AUTH_PRIV_KEY_HEX', 'DRAFTER_DELEGATION_PRIV_KEY_HEX'] }],
   [join('agents', 'insurer-intake-agent', 'src', 'serve', 'start.ts'), { service: 'INTAKE_SERVICE_PRIV_KEY_HEX', delegation: [], subagent: [] }],
   [join('agents', 'bid-desk', 'src', 'serve', 'start.ts'), { service: 'BID_DESK_SERVICE_PRIV_KEY_HEX', delegation: [], subagent: [] }],
+  [join('agents', 'sourcing-agent', 'src', 'serve', 'start.ts'), { service: 'SOURCING_SERVICE_PRIV_KEY_HEX', delegation: ['SOURCING_DELEGATION_1_PRIV_KEY_HEX', 'SOURCING_DELEGATION_2_PRIV_KEY_HEX'], subagent: ['SCORER_1_AUTH_PRIV_KEY_HEX', 'SCORER_1_DELEGATION_PRIV_KEY_HEX', 'SCORER_2_AUTH_PRIV_KEY_HEX', 'SCORER_2_DELEGATION_PRIV_KEY_HEX', 'SCORER_3_AUTH_PRIV_KEY_HEX', 'SCORER_3_DELEGATION_PRIV_KEY_HEX'] }],
 ]);
 const variablesOf = (keys) => [keys.service, ...keys.delegation, ...keys.subagent];
 /** A source of an agent that holds keys: every source in the folder of its start is held to the run of 64 hex characters. */
@@ -266,6 +267,7 @@ const DEPLOYMENTS = [
   { compose: join('deploy', 'server', 'docker-compose.bid-desk-alfa.yml'), runtimes: ['runtime'], service: 'service', start: join('agents', 'bid-desk', 'src', 'serve', 'start.ts') },
   { compose: join('deploy', 'server', 'docker-compose.bid-desk-bravo.yml'), runtimes: ['runtime'], service: 'service', start: join('agents', 'bid-desk', 'src', 'serve', 'start.ts') },
   { compose: join('deploy', 'server', 'docker-compose.bid-desk-charlie.yml'), runtimes: ['runtime'], service: 'service', start: join('agents', 'bid-desk', 'src', 'serve', 'start.ts') },
+  { compose: join('deploy', 'server', 'docker-compose.sourcing-agent.yml'), runtimes: ['runtime'], service: 'service', start: join('agents', 'sourcing-agent', 'src', 'serve', 'start.ts') },
   { compose: join('deploy', 'server', 'docker-compose.mock-systems.yml'), runtimes: [], service: 'mock-systems', holdsNoKey: true },
 ];
 /** What the list of deployments leaves out: a start that holds keys and has no compose file in it, a start that no list of keys names, and a compose file of the host that it does not list. */

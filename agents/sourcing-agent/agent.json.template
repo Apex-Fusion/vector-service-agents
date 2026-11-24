@@ -1,0 +1,365 @@
+{
+  "schema": "vector.agent-manifest.v2",
+  "name": "Sourcing Agent",
+  "capability_id": "supplychain.rfq.evaluate.v1",
+  "version": "0.1.0",
+  "description": "For a buying organisation: finds the suppliers that quote on the marketplace, asks each for a signed quote on a request for quotation, scores the quotes against price, lead time, reliability and compliance, and returns a ranked comparison. Once the organisation has approved the ranking, it writes it to the organisation's sourcing record.",
+  "operator": {
+    "name": "Apex Fusion Foundation",
+    "contact": "<OPERATOR_CONTACT>"
+  },
+  "identity": {
+    "did": "<AGENT_DID>",
+    "registry_address": "",
+    "supplier_key": "<AGENT_DID>#<SUPPLIER_PKH>"
+  },
+  "keys": {
+    "supplier_pkh": "<SUPPLIER_PKH>",
+    "pub_key_hex": "<SUPPLIER_PUB_KEY_HEX>",
+    "service_pkh": "<SOURCING_SERVICE_PKH>",
+    "delegation_pkhs": [
+      "<SOURCING_DELEGATION_1_PKH>",
+      "<SOURCING_DELEGATION_2_PKH>"
+    ],
+    "compliance_issuer_pkh": "<COMPLIANCE_ISSUER_PKH>"
+  },
+  "interface": {
+    "request_schema": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "op",
+            "authority",
+            "tenant",
+            "rfq",
+            "weights"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "op": {
+              "const": "propose"
+            },
+            "authority": {
+              "type": "object",
+              "required": [
+                "principal_did",
+                "delegation"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "principal_did": {
+                  "type": "string",
+                  "pattern": "^did:vector:[0-9a-f]{64}$",
+                  "description": "The DID of the principal who gave the delegation"
+                },
+                "delegation": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$",
+                  "description": "The identifier of the delegation that names this agent as its delegate"
+                }
+              }
+            },
+            "tenant": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 48,
+              "pattern": "^[a-z0-9][a-z0-9-]{0,47}$",
+              "description": "The tenant of the mock systems: 1 to 48 characters, lower-case letters, digits and hyphens, starting with a letter or a digit"
+            },
+            "rfq": {
+              "type": "object",
+              "required": [
+                "rfq_id",
+                "items",
+                "needed_by"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "rfq_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64,
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+                  "description": "The identifier of the request for quotation: 1 to 64 characters. A bidder gives one quote for each identifier and sender, so each propose needs a new identifier"
+                },
+                "items": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 20,
+                  "description": "The items to quote: 1 to 20 items, and each SKU one time",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "sku",
+                      "quantity"
+                    ],
+                    "additionalProperties": false,
+                    "properties": {
+                      "sku": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 64,
+                        "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+                        "description": "The SKU: 1 to 64 characters"
+                      },
+                      "quantity": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 1000000,
+                        "description": "The quantity: a whole number from 1 to 1000000"
+                      }
+                    }
+                  }
+                },
+                "needed_by": {
+                  "type": "string",
+                  "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+                  "description": "The date by which the goods are needed, as YYYY-MM-DD, a date that exists"
+                }
+              }
+            },
+            "weights": {
+              "type": "object",
+              "required": [
+                "price",
+                "lead_time",
+                "reliability",
+                "compliance"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "price": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "description": "A number from 0 to 1 with at most 4 decimal places"
+                },
+                "lead_time": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "description": "A number from 0 to 1 with at most 4 decimal places"
+                },
+                "reliability": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "description": "A number from 0 to 1 with at most 4 decimal places"
+                },
+                "compliance": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "description": "A number from 0 to 1 with at most 4 decimal places"
+                }
+              },
+              "description": "The weights of the four parts of a score. They sum to 1. The agent does not send them to the bidders"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "op",
+            "authority",
+            "tenant",
+            "proposal",
+            "approval"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "op": {
+              "const": "execute"
+            },
+            "authority": {
+              "type": "object",
+              "required": [
+                "principal_did",
+                "delegation"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "principal_did": {
+                  "type": "string",
+                  "pattern": "^did:vector:[0-9a-f]{64}$",
+                  "description": "The DID of the principal who gave the delegation"
+                },
+                "delegation": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$",
+                  "description": "The identifier of the delegation that names this agent as its delegate"
+                }
+              }
+            },
+            "tenant": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 48,
+              "pattern": "^[a-z0-9][a-z0-9-]{0,47}$",
+              "description": "The tenant of the mock systems: 1 to 48 characters, lower-case letters, digits and hyphens, starting with a letter or a digit"
+            },
+            "proposal": {
+              "type": "object",
+              "required": [
+                "document",
+                "salt",
+                "proposal_digest"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "document": {
+                  "type": "object",
+                  "description": "The ranking that propose returned"
+                },
+                "salt": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                "proposal_digest": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$",
+                  "description": "The digest of the salt and the document, which the hirer approved"
+                }
+              }
+            },
+            "approval": {
+              "description": "The approval of the hirer for the digest of the proposal, or null: the sourcing record refuses a ranking with no valid approval",
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "attestation",
+                    "issuer_did"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "attestation": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{64}$"
+                    },
+                    "issuer_did": {
+                      "type": "string",
+                      "pattern": "^did:vector:[0-9a-f]{64}$"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "response_schema": {
+      "$ref": "https://github.com/Apex-Fusion/vector-service-agents/blob/main/specs/sourcing-agent.md#response"
+    },
+    "routes": {
+      "job": "/v1/job",
+      "status": "/status",
+      "capability": "/capability"
+    },
+    "notes": [
+      "A request is one JSON object with the member op set to propose or to execute, with the members of that operation and no other member. A request that breaks a rule of the intake is refused with bad_shape (400).",
+      "propose lists the bidders that quote on the marketplace and makes a file of facts for each. The model chooses up to 3 bidders to invite. The agent hires each invited bidder for a signed quote, one after the other, and pays each quote from the vault of the delegation. The model decides whether to accept each quote. For each accepted quote, a scorer reads the vendor master through a sub-delegation, and the model scores the quote. The model gives the order. propose returns the ranking with its salt and its digest. It writes nothing to the sourcing record.",
+      "execute writes the ranking that the hirer approved to the sourcing record of the tenant. It makes no model call and no payment. The sourcing record checks the approval, and its refusal is the result of the job.",
+      "The route POST /cosign/delegate is open and takes no job: it signs only the Delegate that the rule in behaviour.cosign allows, for a principal key on the allowlist of the operator."
+    ]
+  },
+  "terms": {
+    "price_lovelace": 3000000,
+    "supplier_bond_lovelace": 1000000,
+    "buyer_bond_lovelace": 1000000,
+    "max_processing_ms": 5400000,
+    "input_limits": {
+      "request_bytes": 900000,
+      "rfq_items": 20,
+      "item_quantity": 1000000,
+      "tenant_chars": 48
+    }
+  },
+  "behaviour": {
+    "data_handling": "The request for quotation, the weights, the quotes, the files of the bidders and the entries of the vendor master are synthetic data, and they are held in memory while a job runs. On disk the service keeps the bookkeeping of the escrows it posts, the list of sub-delegations that it has to end, the record of the challenges it files and the register of the transactions it co-signed. The log carries job outcomes, counts and codes, never a request, a quote, a price list, a vendor entry or a key.",
+    "third_parties": [
+      "the identity gateway (the token requests of the agent and of its scorers, the DID resolutions, the catalog and the credentials of the bidders)",
+      "the marketplace indexer (the list of the adverts of the bidders)",
+      "the mock vendor master and the sourcing record (the calls above, with their tokens)",
+      "each invited Bid Desk (the request for quotation, the DID of this agent and the delegation, and not the weights)",
+      "a model supplier on the Vector marketplace, hired through a bonded escrow, and the model provider behind it (the prompt of each decision: the files of the bidders, a quote with its price list, a quote with its vendor entry and the weights, and the scores)",
+      "the Vector ledger (reads of stakes, cases and attestations, the sub-delegations and, on a refused quote, the evidence document and the challenge)"
+    ],
+    "operations": [
+      "propose",
+      "execute"
+    ],
+    "claim": {
+      "statements": [
+        {
+          "id": "S1",
+          "text": "Every score in a ranking cites the signed quote it was computed from."
+        },
+        {
+          "id": "S2",
+          "text": "This agent ranks only bidders whose signed quote it holds and accepted."
+        },
+        {
+          "id": "S3",
+          "text": "A ranking this agent writes to a sourcing record is the document whose digest its hirer approved."
+        }
+      ]
+    },
+    "cosign": {
+      "route": "/cosign/delegate",
+      "rule": "The agent signs one kind of transaction: a Delegate transaction of the delegation contract that names this agent as the delegate and one of its own delegation keys as the delegate key. The delegator must have signed the transaction first, and the delegator must be a principal key on the allowlist of the operator. The delegation key must have no live delegation and no other signed transaction whose window is open. The transaction must spend nothing of the agent, and it must have no certificate, no withdrawal and no other mint. Its validity window must end in the future, and not too far ahead, and the period of the delegation must not be over. The agent adds one witness of the delegation key and changes nothing else."
+    },
+    "fault_modes": [
+      "invert_scores"
+    ],
+    "model": {
+      "allowlist": [
+        "deepseek/deepseek-v4-flash"
+      ],
+      "max_price_lovelace": 1000000
+    },
+    "relying_on": {
+      "mock_systems": [
+        "GET /t/{tenant}/vendors",
+        "POST /t/{tenant}/sourcing/rankings"
+      ],
+      "gateway_routes": [
+        "POST /token",
+        "GET /1.0/identifiers/{did}",
+        "GET /agents/{agent}/credential",
+        "GET /.well-known/ard.json",
+        "GET /.well-known/jwks.json",
+        "GET /status/bsl/{n}"
+      ]
+    }
+  },
+  "status": {
+    "chip": "proposed",
+    "since": "2026-11-24"
+  },
+  "gaps": [
+    "The model chooses whom to invite, whether to accept each quote, every score and the final order. Nothing in this agent overrides it. The approver sees the signed quote behind every score.",
+    "A quote is a paid job, not a binding offer. Nothing on the ledger holds a bidder to its quote.",
+    "This agent does not check the approval of the hirer. The sourcing record does.",
+    "Reliability and compliance are read from a mock vendor master, a stake and one attestation by a demonstration registry.",
+    "A challenge can put a hold on the identity of a bidder. It does not return what the escrow of the quote locked.",
+    "A model call that fails ends the job. There is no second provider.",
+    "Every bidder is operated by the same foundation as this agent.",
+    "This agent hires the bidders one after the other: one delegation key pays for each hire, and a key runs one hire at a time.",
+    "A bidder file shows the state of the compliance attestation of one named issuer key, and it shows that the bidder replied when it did. The agent does not read the reply.",
+    "Before it pays a bidder, the agent reads the status of the record again and needs a price list that it can check. A bidder that fails either is left out with a reason.",
+    "The controller key, the Accountable key and the guardian keys of this deployment are held on one host by one operator, so a party is independent of the controller by key only.",
+    "What this does not show: no run covers the refund of the escrow of a revoked agent, the reclaim of an escrow in use case 3, or a relying party that refuses a live token after its authority ends. Tests cover that last case only.",
+    "This service has a fault switch for failure runs with these possible values: invert_scores (one scorer returns its component scores and its score reversed, as 100 minus each); this manifest is the same for every value, so only the field fault_mode of each result shows which value is active."
+  ],
+  "links": {
+    "spec": "https://github.com/Apex-Fusion/vector-service-agents/blob/main/specs/sourcing-agent.md",
+    "source": "https://github.com/Apex-Fusion/vector-service-agents/tree/main/agents/sourcing-agent",
+    "explorer_advert": ""
+  }
+}
