@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { encodeIdentitySpend } from '../../../packages/vector-read/src/identity-codec.ts';
+import { blake2b256Hex } from '../lib/platform.ts';
 import { awaitRecord, readConfirmedRecordSpend, readRecord, recordSpendPlan, resolverReading } from '../lib/record-spend.ts';
 import { parseOperatorSettings } from '../lib/settings.ts';
 import priorAuth from '../usecases/prior-authorization.ts';
@@ -43,16 +45,31 @@ describe('a record spend plan', () => {
 });
 
 describe('confirmed record-spend accounting', () => {
-  it('reads the exact transaction and returns raw details only when requested', async () => {
+  it('projects the exact payment values and only the requested spend details', async () => {
     const { w, fee } = await setup();
     const txHash = hashOf('confirmed transaction');
     const inputHash = hashOf('spent output');
-    const raw = { inline_datum: { bytes: null, value: { constructor: 0, fields: [] } }, asset_list: [] };
-    const out = { tx_hash: txHash, tx_index: 0, payment_addr: { bech32: fee }, value: '9000000', ...raw };
-    const input = { ...out, tx_hash: inputHash, value: '10000000' };
+    const scriptHash = w.chain.deployment.identity.hash;
+    const inline_datum = { bytes: 'd87980', value: { constructor: 0, fields: [] } };
+    const datum_hash = blake2b256Hex(Buffer.from(inline_datum.bytes, 'hex'));
+    const asset = { policy_id: scriptHash, asset_name: inputHash, quantity: '1' };
+    const details = { inline_datum, datum_hash, asset_list: [asset] };
+    const out = {
+      tx_hash: txHash, tx_index: 0, payment_addr: { bech32: fee }, value: '9000000', ...details,
+      inline_datum: { ...inline_datum, source: 'not part of the datum' }, asset_list: [{ ...asset, name: 'not part of the asset' }],
+    };
+    const input = { ...out, tx_hash: inputHash, value: '10000000', inline_datum: { ...inline_datum, bytes: null } };
+    const bytes = encodeIdentitySpend({ type: 'BumpEpoch' });
+    const redeemer = { hash: blake2b256Hex(Buffer.from(bytes, 'hex')), value: { constructor: 8, fields: [] } };
+    const spend = {
+      valid_contract: true, script_hash: scriptHash, spends_input: { tx_hash: inputHash, tx_index: 0 },
+      bytecode: 'not part of the proof',
+      input: { redeemer: { purpose: 'spend', datum: { ...redeemer, source: 'not part of the redeemer' } }, datum: inline_datum },
+    };
+    const mint = { valid_contract: true, script_hash: scriptHash, spends_input: null, input: { redeemer: { purpose: 'mint', datum: redeemer } } };
     let reported = [out];
     let withDetails = true;
-    let phaseTwo: Record<string, unknown> = { plutus_contracts: [{ valid_contract: true }] };
+    let phaseTwo: Record<string, unknown> = { plutus_contracts: [spend, mint] };
     const fetchImpl: typeof fetch = async (_url, init) => {
       expect(JSON.parse(String(init?.body))).toEqual({ _tx_hashes: [txHash], _inputs: true, _scripts: true, ...(withDetails ? { _assets: true } : {}) });
       return Response.json([{ tx_hash: txHash, fee: '1000000', inputs: [input], outputs: reported, ...phaseTwo }]);
@@ -60,13 +77,30 @@ describe('confirmed record-spend accounting', () => {
     const session = { node: w.node, chain: { ...w.chain, fetchImpl } };
     w.node.script.push({ confirmations: 1 }, { confirmations: 1 }, { confirmations: 0 });
     await expect(readConfirmedRecordSpend(session, txHash, { withDetails: true })).resolves.toStrictEqual({
-      fee: 1_000_000n, inputs: [{ ref: `${inputHash}#0`, address: fee, lovelace: 10_000_000n, ...raw }],
-      outputs: [{ ref: `${txHash}#0`, address: fee, lovelace: 9_000_000n, ...raw }],
+      fee: 1_000_000n, inputs: [{ ref: `${inputHash}#0`, address: fee, lovelace: 10_000_000n, ...details, inline_datum: { ...inline_datum, bytes: null } }],
+      outputs: [{ ref: `${txHash}#0`, address: fee, lovelace: 9_000_000n, ...details }],
+      spends: [{ scriptHash, inputRef: `${inputHash}#0`, redeemer }],
     });
     reported = [out, out];
     await expect(readConfirmedRecordSpend(session, txHash, { withDetails: true })).rejects.toThrow('same output reference more than once');
     reported = [out];
     await expect(readConfirmedRecordSpend(session, txHash, { withDetails: true })).rejects.toThrow('does not confirm the exact record spend');
+
+    for (const plutus_contracts of [[{ ...spend, spends_input: { ...spend.spends_input, tx_index: 1 } }], [spend, spend]]) {
+      phaseTwo = { plutus_contracts };
+      w.node.script.push({ confirmations: 1 });
+      await expect(readConfirmedRecordSpend(session, txHash, { withDetails: true })).rejects.toThrow('without an unambiguous regular spend input');
+    }
+    phaseTwo = { plutus_contracts: [{ ...spend, input: { redeemer: { purpose: 'spend', datum: { hash: redeemer.hash } } } }] };
+    w.node.script.push({ confirmations: 1 });
+    await expect(readConfirmedRecordSpend(session, txHash, { withDetails: true })).resolves.toMatchObject({
+      spends: [{ scriptHash, inputRef: `${inputHash}#0`, redeemer: { hash: redeemer.hash } }],
+    });
+    phaseTwo = { plutus_contracts: [spend] };
+    reported = [{ ...out, inline_datum: { ...out.inline_datum, bytes: '00'.repeat(16_385) } }];
+    w.node.script.push({ confirmations: 1 });
+    await expect(readConfirmedRecordSpend(session, txHash, { withDetails: true })).rejects.toThrow('unreadable Plutus data');
+    reported = [out];
 
     withDetails = false;
     phaseTwo = { valid_contract: true };
