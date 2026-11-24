@@ -21,12 +21,14 @@ import type { AgentSpec, UseCase } from '../../lib/contract.ts';
 import { formatOutRef, PURPOSE } from '../../lib/platform.ts';
 import { loadRegistry } from '../../lib/registry.ts';
 import { runTask } from '../../lib/runner.ts';
+import advertTask from '../../tasks/advert.ts';
 import task from '../../tasks/lifecycle.ts';
 import inventory from '../../usecases/inventory-reorder.ts';
 import { BRAVO, CORE_KEYS, MODULE_MANIFEST_PATH, organisationKeys, partiesOf } from '../../usecases/shared.ts';
 import { liveBuildAnswer, PackHosted } from './pack-hosted.ts';
 import type { HandlerAnswer } from './pack-hosted.ts';
 import { spendWorld } from './record-spend-builds.ts';
+import { StakeAdvertHosted } from './stake-advert-builds.ts';
 import { hashOf } from './task-world.ts';
 
 export const TARGET = 'bid-desk-bravo';
@@ -76,9 +78,10 @@ function archivedSpend(tx: string, input: Utxo, paidTo: string, fee: bigint, scr
       input: { redeemer: { purpose: 'spend', datum: { bytes: `d87${(9 + redeemer).toString(16)}80`, value: { constructor: redeemer, fields: [] } } } } }] };
 }
 
-export async function lifecycleWorld() {
+export async function lifecycleWorld({ activeAdvert = false }: { activeAdvert?: boolean } = {}) {
   const rig = await spendWorld({ use, agent: TARGET, parent: { subagentEpoch: 4 } });
   const { w, registry, store, context, fee, id } = rig;
+  const advertHosted = new StakeAdvertHosted(w.world, () => w.clock.now(), registry.hashOf('controller'));
   const heads = new Map<string, HandlerAnswer>();
   const schema = new PackHosted(Object.fromEntries(Object.values(TOOLS).map((name) => [name, () => heads.get(name)!])));
   const builds: Record<string, RecordSpendBuild> = {};
@@ -112,14 +115,19 @@ export async function lifecycleWorld() {
         endpoint_url: PROFILE.endpoint, detail_uri: PROFILE.detailUri, detail_hash: PROFILE.detailHash, advertised_at: start - DAY, status: 'Active', agent_id: id, ...over }) };
   }
   const posted = advert(hashOf('advert post'));
-  history.set(refOf(posted), { out: posted, spent: true });
+  history.set(refOf(posted), { out: posted, spent: !activeAdvert });
   store.put('adverts', [TARGET, agent.adverts[0]!.model], { ref: refOf(posted), tx: posted.txHash, ...PROFILE, postedAt: iso(start - DAY) });
   const advertTx = hashOf('advert terminal spend');
   const advertDeposit = posted.assets.lovelace;
   const advertFee = 200_000n;
   const supplier = registry.addressOf(SUPPLIER);
+  if (activeAdvert) {
+    w.world.chain.held.push(posted, ...[100_000_000n, 5_000_000n].map((lovelace, outputIndex) => ({
+      txHash: hashOf('supplier funding'), outputIndex, address: supplier, assets: { lovelace },
+    })));
+  }
   const retirement = archivedSpend(advertTx, posted, supplier, advertFee, w.chain.deployment.advert.hash, 2);
-  closeouts.set(advertTx, retirement);
+  if (!activeAdvert) closeouts.set(advertTx, retirement);
   const indexedAdverts = new Map<string, Utxo>();
   const values = (rows: typeof retirement.inputs) => rows.map((row) => ({
     ref: formatOutRef(row.tx_hash, row.tx_index), address: row.payment_addr.bech32, lovelace: BigInt(row.value),
@@ -159,7 +167,8 @@ export async function lifecycleWorld() {
         const row = history.get(ref);
         if (row === undefined) return [];
         const { out, spent } = row;
-        return [{ ...spentRow(out), is_spent: spent }];
+        const is_spent = activeAdvert && ref === refOf(posted) ? w.world.chain.find(ref) === undefined : spent;
+        return [{ ...spentRow(out), is_spent }];
       }));
     }
     if (route === '/api/v1/credential_utxos') {
@@ -176,7 +185,14 @@ export async function lifecycleWorld() {
       return Response.json([{ policy_id: claimScript, asset_name: CLAIM_TOKEN, minting_txs: claimBurn ? [burnEvent, mintEvent] : [mintEvent] }]);
     }
     if (route === '/api/v1/tx_info') {
-      const { _tx_hashes: hashes } = JSON.parse(String(init?.body)) as { _tx_hashes: string[] };
+      const { _tx_hashes: hashes, _inputs, _scripts, _assets } = JSON.parse(String(init?.body)) as {
+        _tx_hashes: string[]; _inputs: boolean; _scripts: boolean; _assets?: boolean;
+      };
+      if (advertHosted.built.some(({ txHash }) => txHash === hashes[0])) {
+        if (hashes.length !== 1 || !_inputs || !_scripts || !_assets) throw new Error('The retirement proof needs its exact transaction and spend details.');
+        const found = advertHosted.archivedRetirement(hashes[0]!);
+        return Response.json(found === null ? [] : [found]);
+      }
       const found = closeouts.get(hashes[0]!);
       if (found !== undefined) return Response.json([found]);
       if (!showCredit) return Response.json([]);
@@ -221,12 +237,19 @@ export async function lifecycleWorld() {
       at: iso(w.clock.now()), expiresAt: iso(w.clock.now() + 6 * 3_600_000) });
     writeFileSync(join(w.stateDir, 'running-images.json'), JSON.stringify({ generated_at: iso(w.clock.now()), images: {} }));
   }
-  const runBare = (...argv: string[]) => runTask(task, argv, w.deps({ hosted, fetchImpl: fetch, chain: { ...w.chain, fetchImpl: fetch }, readRegistry: (input) => {
+  const depsFor = (tools: HostedTools) => w.deps({ hosted: tools, fetchImpl: fetch, chain: { ...w.chain, fetchImpl: fetch }, readRegistry: (input) => {
     const loaded = loadRegistry(input);
     const sign = loaded.ring.sign.bind(loaded.ring);
     loaded.ring.sign = (hash, cbor) => { rig.signed.push(loaded.nameOfHash(hash)!); return sign(hash, cbor); };
     return loaded;
-  } }));
+  } });
+  const retireAdvert = () => {
+    const now = w.clock.now();
+    w.writeGo({ tasks: ['advert'], session: 'close-advert', at: iso(now), expiresAt: iso(now + 6 * 3_600_000) });
+    rig.showRunning([agent.adverts[0]!.runtimeContainer]);
+    return runTask(advertTask, ['cleanup', '--agent', TARGET, '--submit'], depsFor(advertHosted));
+  };
+  const runBare = (...argv: string[]) => runTask(task, argv, depsFor(hosted));
   const run = (...argv: string[]) => runBare(...argv, '--run', LABEL);
   const state = () => w.state('lifecycle', LABEL);
   const evidence = () => w.evidence('lifecycle', LABEL);
@@ -238,7 +261,8 @@ export async function lifecycleWorld() {
   const setCredit = (show: boolean) => { showCredit = show; };
   const setClaimBurn = (show: boolean) => { claimBurn = show; };
   go('first');
-  setAdvertReceipt(true);
+  if (!activeAdvert) setAdvertReceipt(true);
   return { ...rig, bravo, successor, successorId, successorDid, posted, originalClaim, history, advert, go, run, runBare, state, evidence, override, builds, build,
-    calls: schema.calls, setCredit, replace, closeouts, advertTx, indexedAdverts, claimTx, setAdvertReceipt, setClaimBurn, closeMovedClaim };
+    calls: schema.calls, setCredit, replace, closeouts, advertTx, indexedAdverts, claimTx, setAdvertReceipt, setClaimBurn, closeMovedClaim,
+    advertHosted, retireAdvert, supplier };
 }

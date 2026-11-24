@@ -101,6 +101,8 @@ Use `end-subagents` and `revoke-record` only in a session that names the action 
 
 The `lifecycle` task uses two approvals. Under the first, run `lifecycle run --run l1 --all --submit`. Exit 4 means the recovery must wait. `lifecycle status --run l1` gives the date from the record. Run the same command with a fresh approval after both clocks pass that date. Cleanup cannot undo these actions.
 
+Before the retirement step, close the claims of the selected agent. Under an approval for `advert`, run `advert cleanup --agent <agent> --submit`. Do not give `advert cleanup` a run label. Use the second lifecycle approval again to continue. The retirement step checks the confirmed `RetireAdvert` spend and the deposit minus the actual fee that the supplier received.
+
 ## The files
 
 The keys folder is the setting `OPERATOR_KEYS_DIR`.

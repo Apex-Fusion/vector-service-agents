@@ -367,6 +367,64 @@ describe('retirement and return', () => {
     expect(submits(f)).toBe(4);
   });
 
+  it('closes the record only after the per-agent advert task proves the exact refund', async () => {
+    const f = await lifecycleWorld({ activeAdvert: true });
+    await complete(f);
+    const advertRef = refOf(f.posted);
+    const { held } = f.w.world.chain;
+    f.w.world.chain.held = held.filter((out) => refOf(out) !== advertRef);
+    expect(await f.run('--submit')).toBe(2);
+    expect(f.w.screen.errorText).toContain('Retire the recorded adverts with advert cleanup');
+    expect(asked(f, TOOLS.retire)).toHaveLength(0);
+    f.w.world.chain.held = held;
+
+    const supplyBalance = async () => (await f.w.chain.provider.getUtxos(f.supplier))
+      .reduce((sum, out) => sum + out.assets.lovelace, 0n);
+    const before = await supplyBalance();
+    expect(await f.retireAdvert(), f.w.screen.errorText).toBe(0);
+    const { txHash, inputs, feeLovelace } = factsOf(f.w.node.submitted[3]!);
+    const { model, supplierKey, depositLovelace } = f.agent.adverts[0]!;
+    const step = `retire:${TARGET}:${model}`;
+    const creditLovelace = String(depositLovelace - feeLovelace);
+    expect(inputs).toContain(advertRef);
+    expect(await supplyBalance() - before).toBe(BigInt(creditLovelace));
+    expectOnly(f, 3, [supplierKey]);
+    expect(f.w.machine()).toMatchObject({ result: { agent: TARGET, model, tx: txHash, retire: advertRef, creditLovelace, refundVerified: true } });
+    expect(f.w.state('advert').notes[`part.${step}`]).toMatchObject({
+      tx_hash: txHash, verified_at: expect.any(String), refs: { retiredRef: advertRef },
+      facts: { supplierPkh: f.registry.hashOf(supplierKey), supplierAddress: f.supplier, creditLovelace, approvalSession: 'close-advert' },
+    });
+    expect(f.w.evidence('advert')).toContainEqual(expect.objectContaining({
+      step, status: 'info', shows: expect.objectContaining({ tx: txHash, retiredRef: advertRef, refundVerified: true }),
+    }));
+    expect(f.w.world.chain.find(advertRef)).toBeUndefined();
+
+    f.go('second');
+    const other = hashOf('unrelated retired advert');
+    const alter: (typeof f.advertHosted.rewriteRetirement)[] = [
+      () => null,
+      (row) => ({ ...row, outputs: row.outputs.map((out) => ({ ...out, payment_addr: { bech32: f.fee } })) }),
+      (row) => ({ ...row, outputs: row.outputs.map((out, i) => i === 0 ? { ...out, value: String(BigInt(out.value) + 1n) } : out) }),
+      (row) => ({ ...row, inputs: row.inputs.map((input) => input.tx_hash === f.posted.txHash ? { ...input, tx_hash: other } : input),
+        plutus_contracts: row.plutus_contracts.map((script) => ({ ...script, spends_input: { ...script.spends_input, tx_hash: other } })) }),
+    ];
+    const signed = [...f.signed];
+    for (const rewrite of alter) {
+      f.advertHosted.rewriteRetirement = rewrite;
+      expect(await f.run('--submit')).toBe(2);
+      expect(f.w.screen.errorText).toContain('RetireAdvert spend and its supplier credit could not be verified');
+    }
+    expect(f.signed).toEqual(signed);
+    expect(asked(f, TOOLS.retire)).toHaveLength(0);
+    expect(submits(f)).toBe(4);
+
+    f.advertHosted.rewriteRetirement = (row) => row;
+    expect(await f.run('--submit'), f.w.screen.errorText).toBe(0);
+    expect((await f.record()).record.status).toMatchObject({ type: 'Retired', successor: null });
+    expectOnly(f, 4, [SECOND, 'fee']);
+    expect(submits(f)).toBe(5);
+  });
+
   it('rejects a wrong withdrawal hash or a missing burn, and leaves a proved end unattributed', async () => {
     const f = await lifecycleWorld();
     await complete(f);
@@ -443,7 +501,7 @@ describe('retirement and return', () => {
     openSecond(f, await firstSession(f));
     f.setCredit(false);
     expect(await f.run('--all', '--submit')).toBe(1);
-    expect(f.w.screen.errorText).toContain('does not confirm the exact record spend');
+    expect(f.w.screen.errorText).toContain('does not confirm the exact spend');
     const state = f.state().steps.reclaim;
     expect(state).toMatchObject({ verified_at: null, tx_hash: f.builds[TOOLS.reclaim]!.txHash });
     expect(f.w.facts().lifecycle.reclaim).toBeUndefined();

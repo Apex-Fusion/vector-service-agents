@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { encodeIdentitySpend } from '../../../packages/vector-read/src/identity-codec.ts';
+import { readConfirmedSpend } from '../lib/confirmed-spend.ts';
 import { blake2b256Hex } from '../lib/platform.ts';
-import { awaitRecord, readConfirmedRecordSpend, readRecord, recordSpendPlan, resolverReading } from '../lib/record-spend.ts';
+import { awaitRecord, readRecord, recordSpendPlan, resolverReading } from '../lib/record-spend.ts';
 import { parseOperatorSettings } from '../lib/settings.ts';
 import priorAuth from '../usecases/prior-authorization.ts';
 import { spendWorld } from './support/record-spend-builds.ts';
@@ -76,36 +77,36 @@ describe('confirmed record-spend accounting', () => {
     };
     const session = { node: w.node, chain: { ...w.chain, fetchImpl } };
     w.node.script.push({ confirmations: 1 }, { confirmations: 1 }, { confirmations: 0 });
-    await expect(readConfirmedRecordSpend(session, txHash, { withDetails: true })).resolves.toStrictEqual({
+    await expect(readConfirmedSpend(session, txHash, { withDetails: true })).resolves.toStrictEqual({
       fee: 1_000_000n, inputs: [{ ref: `${inputHash}#0`, address: fee, lovelace: 10_000_000n, ...details, inline_datum: { ...inline_datum, bytes: null } }],
       outputs: [{ ref: `${txHash}#0`, address: fee, lovelace: 9_000_000n, ...details }],
       spends: [{ scriptHash, inputRef: `${inputHash}#0`, redeemer }],
     });
     reported = [out, out];
-    await expect(readConfirmedRecordSpend(session, txHash, { withDetails: true })).rejects.toThrow('same output reference more than once');
+    await expect(readConfirmedSpend(session, txHash, { withDetails: true })).rejects.toThrow('same output reference more than once');
     reported = [out];
-    await expect(readConfirmedRecordSpend(session, txHash, { withDetails: true })).rejects.toThrow('does not confirm the exact record spend');
+    await expect(readConfirmedSpend(session, txHash, { withDetails: true })).rejects.toThrow('does not confirm the exact spend');
 
     for (const plutus_contracts of [[{ ...spend, spends_input: { ...spend.spends_input, tx_index: 1 } }], [spend, spend]]) {
       phaseTwo = { plutus_contracts };
       w.node.script.push({ confirmations: 1 });
-      await expect(readConfirmedRecordSpend(session, txHash, { withDetails: true })).rejects.toThrow('without an unambiguous regular spend input');
+      await expect(readConfirmedSpend(session, txHash, { withDetails: true })).rejects.toThrow('without an unambiguous regular spend input');
     }
     phaseTwo = { plutus_contracts: [{ ...spend, input: { redeemer: { purpose: 'spend', datum: { hash: redeemer.hash } } } }] };
     w.node.script.push({ confirmations: 1 });
-    await expect(readConfirmedRecordSpend(session, txHash, { withDetails: true })).resolves.toMatchObject({
+    await expect(readConfirmedSpend(session, txHash, { withDetails: true })).resolves.toMatchObject({
       spends: [{ scriptHash, inputRef: `${inputHash}#0`, redeemer: { hash: redeemer.hash } }],
     });
     phaseTwo = { plutus_contracts: [spend] };
     reported = [{ ...out, inline_datum: { ...out.inline_datum, bytes: '00'.repeat(16_385) } }];
     w.node.script.push({ confirmations: 1 });
-    await expect(readConfirmedRecordSpend(session, txHash, { withDetails: true })).rejects.toThrow('unreadable Plutus data');
+    await expect(readConfirmedSpend(session, txHash, { withDetails: true })).rejects.toThrow('unreadable Plutus data');
     reported = [out];
 
     withDetails = false;
     phaseTwo = { valid_contract: true };
     w.node.script.push({ confirmations: 1 });
-    await expect(readConfirmedRecordSpend(session, txHash)).resolves.toStrictEqual({
+    await expect(readConfirmedSpend(session, txHash)).resolves.toStrictEqual({
       fee: 1_000_000n, inputs: [{ ref: `${inputHash}#0`, address: fee, lovelace: 10_000_000n }],
       outputs: [{ ref: `${txHash}#0`, address: fee, lovelace: 9_000_000n }],
     });
@@ -117,7 +118,7 @@ describe('confirmed record-spend accounting', () => {
     ]) {
       phaseTwo = unproved;
       w.node.script.push({ confirmations: 1 });
-      await expect(readConfirmedRecordSpend(session, txHash)).rejects.toThrow('no affirmative phase-two validity evidence');
+      await expect(readConfirmedSpend(session, txHash)).rejects.toThrow('no affirmative phase-two validity evidence');
     }
   });
 });

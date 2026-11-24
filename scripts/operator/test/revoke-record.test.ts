@@ -257,7 +257,7 @@ describe('reclaim', () => {
     f.archive.delete(built.txHash);
     f.w.node.neverConfirm = false;
     expect(await f.run(revokeRecord, ...CLEANUP)).toBe(1);
-    expect(f.w.screen.errorText).toContain('does not confirm the exact record spend');
+    expect(f.w.screen.errorText).toContain('does not confirm the exact spend');
     const pending = f.w.state('revoke-record').notes[`part.${step}`];
     expect(pending).toMatchObject({ tx_hash: built.txHash });
     expect(pending).not.toHaveProperty('verified_at');
