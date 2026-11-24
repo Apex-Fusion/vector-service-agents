@@ -146,7 +146,8 @@ function flagNames(def: Pick<TaskDefinition, 'flags' | 'valued'>): { booleans: R
 
 /**
  * Reads the command line of a task (the words after the name of the task). A word that is not known is refused: nothing is guessed, and a message never shows a value. A flag is given once. A
- * valued flag takes the next word or `--name=value`. `status` takes no flag but --run and --use-case.
+ * valued flag takes the next word or `--name=value`. A flag of the task takes an empty value too, but only as `--name=`: an empty word is never taken for a value, because a shell can drop a quote or an
+ * empty variable, and then the next word would become the value. `--run` and `--use-case` take no empty value. `status` takes no flag but --run and --use-case.
  */
 export function parseArguments(def: Pick<TaskDefinition, 'flags' | 'valued'>, argv: readonly string[]): Arguments {
   const names = flagNames(def);
@@ -172,9 +173,11 @@ export function parseArguments(def: Pick<TaskDefinition, 'flags' | 'valued'>, ar
       if (equals !== -1) throw new FlagError(`the flag --${name} takes no value`);
       on.add(name);
     } else {
-      const next = equals === -1 ? argv[index + 1] : word.slice(equals + 1);
-      if (next === undefined || next === '' || (equals === -1 && next.startsWith('--'))) throw new FlagError(`the flag --${name} needs a value`);
-      if (equals === -1) index += 1;
+      const attached = equals !== -1;
+      const next = attached ? word.slice(equals + 1) : argv[index + 1];
+      const emptyAllowed = attached && !GLOBAL_VALUES.includes(name);
+      if (next === undefined || (next === '' && !emptyAllowed) || (!attached && next.startsWith('--'))) throw new FlagError(`the flag --${name} needs a value`);
+      if (!attached) index += 1;
       values.set(name, next);
     }
   }
@@ -533,6 +536,20 @@ function endOf(outcome: StepOutcome, mode: Mode, out: Output): Ended {
   }
 }
 
+/**
+ * Loads the keys of a run: the keys that the task names, and the key `run` too in a submit run that needs the approval, because the approval names the wallet of that key and `requireGo` compares the
+ * two. This holds for a task that names no key as well: a task that signs nothing still runs under an approval. The key `run` may be missing for one task only, the task that makes the keys, on its
+ * first run. So when the task names no key and the file of `run` does not exist, the registry is empty, `requireGo` gets no wallet, and it lets only the task `keys` pass, with an approval that says
+ * `unset`. Once the key exists, that approval is refused. Any other fault of a key file, a bad mode or a bad text, stops the run, and so does a missing key that a task names.
+ */
+function loadKeys(read: NonNullable<RunDeps['readRegistry']>, where: { dir: string; useCase: string; specs: readonly KeySpec[] }, named: readonly string[], approvalNeeded: boolean): Registry {
+  const need = [...new Set([...named, ...(approvalNeeded ? ['run'] : [])])];
+  try { return read({ ...where, need }); } catch (err) {
+    if (named.length === 0 && need.length > 0 && err instanceof KeyStoreError && err.reason === 'missing') return read({ ...where, need: [] });
+    throw err;
+  }
+}
+
 /** Opens the files and the connections of a run, settles a transaction in flight, checks the network and the approval, and runs the task. It fills `ctx` as it goes. */
 async function execute<Extra>(def: TaskDefinition<Extra>, argv: readonly string[], deps: RunDeps, ctx: Context<Extra>): Promise<Ended> {
   const { out, clock } = deps;
@@ -546,10 +563,8 @@ async function execute<Extra>(def: TaskDefinition<Extra>, argv: readonly string[
   const extra = def.parse(deps.env, settings, use, args.flags);
   const submit = args.mode === 'submit';
   const approvalNeeded = submit && def.needs.approval === 'submit';
-  // A task that names no key gets an empty registry: it makes and loads its own keys. Any other task loads its keys, and the run key too when it needs the approval of the run.
   const named = def.needs.keys(use, args.flags);
-  const need = named.length === 0 ? [] : [...new Set([...named, ...(approvalNeeded ? ['run'] : [])])];
-  const registry = (deps.readRegistry ?? ((options) => loadRegistry(options)))({ dir: settings.keysDir, useCase: use.name, specs: use.keys, need });
+  const registry = loadKeys(deps.readRegistry ?? ((options) => loadRegistry(options)), { dir: settings.keysDir, useCase: use.name, specs: use.keys }, named, approvalNeeded);
   const base = join(settings.stateDir, args.run === null ? def.name : `${def.name}.${args.run}`);
   const identity = { check: def.name, network: settings.network.name, record: args.run === null ? use.name : `${use.name}:${args.run}` };
   const state = StateFile.open(`${base}.state.json`, identity);

@@ -77,6 +77,17 @@ describe('the arguments', () => {
     expect(parsed('--kind', 'status')).toMatchObject({ command: 'run' });
     expect(parsed().flags.has('submit')).toBe(false);
   });
+  it('take an empty value for a flag of the task only in the attached form: the flag is given, its value is the empty text, and the next word is not its value', () => {
+    const flags = parsed('--label=', '--kind=', '--submit').flags;
+    expect(flags.has('label')).toBe(true);
+    expect(flags.value('label')).toBe('');
+    expect(flags.value('kind')).toBe('');
+    expect(flags.has('submit')).toBe(true);
+    expect(parsed('--label=', 'cleanup')).toMatchObject({ command: 'cleanup' });
+    expect(parsed('--label=').flags.value('label')).toBe('');
+    expect(parsed().flags.has('label')).toBe(false);
+    expect(parsed().flags.value('label')).toBeUndefined();
+  });
   it('refuse a name that the task does not list when the task asks for it', () => {
     const flags = parsed().flags;
     expect(() => flags.has('typo')).toThrow('does not list');
@@ -98,10 +109,15 @@ describe('the arguments', () => {
     [['status', '--label', 'x'], 'takes only --run and --use-case'],
     [['--label'], 'the flag --label needs a value'],
     [['--label', '--submit'], 'the flag --label needs a value'],
-    [['--label='], 'the flag --label needs a value'],
+    [['--label=', '--label=x'], 'the flag --label is given twice'],
+    [['--label=', '--label', 'x'], 'the flag --label is given twice'],
+    [['status', '--label='], 'takes only --run and --use-case'],
     [['--label', ''], 'the flag --label needs a value'],
     [['--run'], 'the flag --run needs a value'],
     [['--run='], 'the flag --run needs a value'],
+    [['--run', ''], 'the flag --run needs a value'],
+    [['--use-case='], 'the flag --use-case needs a value'],
+    [['--use-case', ''], 'the flag --use-case needs a value'],
     [['--extra=1'], 'the flag --extra takes no value'],
     [['--submit=1'], 'the flag --submit takes no value'],
     [['--all=1'], 'the flag --all takes no value'],
@@ -184,6 +200,19 @@ describe('a dry run', () => {
     expect(w.state('toy').steps).toEqual({});
     expect(w.state('toy').in_flight).toBeNull();
     expect(w.exposure()).toEqual([]);
+  });
+});
+
+describe('the flags that a task reads', () => {
+  it('gives the task the empty value of a flag that was written --name=, a value that was given, and no value for a flag that was not given, and refuses an empty word', async () => {
+    const w = await taskWorld();
+    const seen: Array<[boolean, string | undefined]> = [];
+    const step: StepHandler = { name: 'one', run: async (session) => { seen.push([session.flags.has('label'), session.flags.value('label')]); return { kind: 'finished', message: 'seen' }; } };
+    expect(await w.run(toyTask([step]), '--label=')).toBe(0);
+    expect(await w.run(toyTask([step]), '--label', 'x')).toBe(0);
+    expect(await w.run(toyTask([step]))).toBe(0);
+    expect(await w.run(toyTask([step]), '--label', '')).toBe(2);
+    expect(seen).toEqual([[true, ''], [true, 'x'], [false, undefined]]);
   });
 });
 
@@ -275,7 +304,7 @@ describe('the keys of a run', () => {
       expect(asked).toEqual([need]);
     });
   }
-  it('gives a task that names no key an empty registry and reads no key file, in a submit run too', async () => {
+  it('asks for the run key of a task that names no key in a submit run, and gives it an empty registry when that file is missing: a dry run asks for no key', async () => {
     const empty = mkdtempSync(join(tmpdir(), 'operator-empty-keys-'));
     folders.push(empty);
     const w = await taskWorld({ env: { OPERATOR_KEYS_DIR: empty } });
@@ -284,7 +313,69 @@ describe('the keys of a run', () => {
     const readRegistry = (options: Parameters<typeof loadRegistry>[0]) => { asked.push([...(options.need ?? [])]); return loadRegistry(options); };
     const def = toyTask(twoSteps([]), { name: 'keys', needs: { keys: () => [], chain: false, hosted: [], approval: 'submit' } });
     expect(await runTask(def, ['--submit'], w.deps({ readRegistry }))).toBe(0);
+    expect(asked).toEqual([['run'], []]);
+    asked.length = 0;
+    expect(await runTask(def, [], w.deps({ readRegistry }))).toBe(0);
     expect(asked).toEqual([[]]);
+  });
+  describe('a task that names no key and needs the approval of a submit run', () => {
+    const quiet = (ran: string[]): TaskDefinition => toyTask(twoSteps(ran), { needs: { keys: () => [], chain: false, hosted: [], approval: 'submit' } });
+    const watching = (asked: string[][]) => (options: Parameters<typeof loadRegistry>[0]) => { asked.push([...(options.need ?? [])]); return loadRegistry(options); };
+    it('loads the run key when its file exists, so that the approval is checked against the wallet of the run: a task that signs nothing runs under the approval of the session', async () => {
+      const w = await taskWorld();
+      w.writeGo();
+      const asked: string[][] = [];
+      const seen: string[][] = [];
+      const step: StepHandler = { name: 'one', run: async (session) => { seen.push(session.registry.names()); return { kind: 'finished', message: 'seen' }; } };
+      const def = toyTask([step], { needs: { keys: () => [], chain: false, hosted: [], approval: 'submit' } });
+      expect(await runTask(def, ['--submit'], w.deps({ readRegistry: watching(asked) }))).toBe(0);
+      expect(asked).toEqual([['run']]);
+      expect(seen).toEqual([['run']]);
+    });
+    it('refuses an approval for another wallet and an approval that says unset, when the run key exists', async () => {
+      const w = await taskWorld();
+      const ran: string[] = [];
+      const cases: Array<[Partial<GoFile>, string]> = [[{ runWallet: w.keys.registry.addressOf('fee') }, 'another run wallet'], [{ runWallet: 'unset' }, 'says unset for runWallet']];
+      for (const [over, message] of cases) {
+        w.writeGo(over);
+        reset(w);
+        expect(await w.run(quiet(ran), '--submit'), message).toBe(2);
+        expect(w.screen.errorText).toContain(message);
+      }
+      expect(ran).toEqual([]);
+    });
+    it('refuses the task that makes the keys, run again with an approval that says unset once the run key exists, and lets it run under an approval for the wallet', async () => {
+      const w = await taskWorld();
+      const ran: string[] = [];
+      const keysTask = toyTask(twoSteps(ran), { name: 'keys', needs: { keys: () => [], chain: false, hosted: [], approval: 'submit' } });
+      w.writeGo({ runWallet: 'unset', tasks: ['keys'] });
+      expect(await w.run(keysTask, '--submit')).toBe(2);
+      expect(w.screen.errorText).toContain('says unset for runWallet');
+      expect(ran).toEqual([]);
+      w.writeGo({ tasks: ['keys'] });
+      reset(w);
+      expect(await w.run(keysTask, '--submit')).toBe(0);
+      expect(ran).toEqual(['one']);
+    });
+    it('stops with exit 2 for a run key file that is bad, and does not take that for a missing file', async () => {
+      const w = await taskWorld();
+      w.writeGo();
+      chmodSync(join(w.keys.root, 'shared', 'run.seed'), 0o644);
+      const asked: string[][] = [];
+      const ran: string[] = [];
+      expect(await runTask(quiet(ran), ['--submit'], w.deps({ readRegistry: watching(asked) }))).toBe(2);
+      expect(w.screen.errorText).toContain('the key run has mode 644');
+      expect(asked).toEqual([['run']]);
+      expect(ran).toEqual([]);
+    });
+    it('asks for no key when the task needs no approval, and when the run is a dry run', async () => {
+      const w = await taskWorld();
+      const asked: string[][] = [];
+      const never = toyTask(twoSteps([]), { needs: { keys: () => [], chain: false, hosted: [], approval: 'never' } });
+      expect(await runTask(never, ['--submit'], w.deps({ readRegistry: watching(asked) }))).toBe(0);
+      expect(await runTask(quiet([]), [], w.deps({ readRegistry: watching(asked) }))).toBe(0);
+      expect(asked).toEqual([[], []]);
+    });
   });
   it('stops with exit 2 when a key file is missing, names the key, and shows no seed and no path', async () => {
     const w = await taskWorld();
