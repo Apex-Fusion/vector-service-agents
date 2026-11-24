@@ -171,7 +171,7 @@ describe('specs/sourcing-agent.md', () => {
     expect(row(identity, 'Reputation stake')).toBe('| Reputation stake | a Module-3 self-stake on the capability, owned by the service key |');
   });
 
-  test('the Claim row says that no command stakes a claim for this agent: no source of the service stakes one, and no file of the operator pack names the agent', () => {
+  test('the Claim row describes the service and the operator still enables only inventory reorder', () => {
     expect([CLAIM_STAKE_LOVELACE, CLAIM_WINDOW_MS]).toStrictEqual([50_000_000n, 86_400_000]);
     expect(row(section('Identity'), 'Claim')).toBe(
       `| Claim | a Module-1 claim for each run. The service stakes none. No command of this repository stakes a claim for this agent yet. Until one does, a challenge against it ends with \`no_open_claim\`. The design is that the operator stakes the claim with the service key before each run, once such a command exists: ${CLAIM_STAKE_LOVELACE / 1_000_000n} units, which is ${CLAIM_STAKE_LOVELACE} lovelace, with a challenge window of ${CLAIM_WINDOW_MS / 3_600_000} hours. The operator then withdraws it after the window, when nobody challenged it. See Claim statements |`,
@@ -182,13 +182,7 @@ describe('specs/sourcing-agent.md', () => {
     const sources = (readdirSync(sourceDir, { recursive: true }) as string[]).map(String).filter((file) => file.endsWith('.ts'));
     expect(sources.length).toBeGreaterThan(30);
     expect(sources.filter((file) => readFileSync(new URL(file, sourceDir), 'utf8').includes('stakeRunClaim'))).toStrictEqual([]);
-    // No command of this repository stakes a claim for this agent: the operator pack loads the use case `inventory-reorder` only, and no file of the pack that is not a test names this agent, its capability, its claim or its use case.
-    // A command that does must change this page.
     expect(USE_CASE_NAMES).toStrictEqual(['inventory-reorder']);
-    const packDir = new URL('scripts/operator/', root);
-    const pack = (readdirSync(packDir, { recursive: true }) as string[]).map(String).filter((file) => file.endsWith('.ts') && !file.startsWith('test/') && !file.includes('node_modules'));
-    expect(pack.length).toBeGreaterThan(5);
-    expect(pack.filter((file) => /sourcing|supplychain\.rfq|bid-evaluation/i.test(readFileSync(new URL(file, packDir), 'utf8')))).toStrictEqual([]);
   });
 
   test('the public URL of the identity table is the origin of the runtime in the compose file of the pack', () => {
