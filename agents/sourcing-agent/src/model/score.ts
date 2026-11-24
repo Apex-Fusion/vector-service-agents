@@ -13,18 +13,12 @@
 // A parser checks the SHAPE of a choice and no business rule. It returns the value that it was given, or a refusal: it never clamps, fills in or changes a value. A number outside 0 to 100 is refused. No code
 // checks that the score follows from the four parts and the weights: the model decides the numbers. A refusal of a parser is `model_output_invalid` in the decision folder.
 import { parseComponents, parseScoreValue } from '@vsa/usecase-kit/bids';
-import type { Components, Quote, RfqDocument, Weights } from '@vsa/usecase-kit/bids';
+import type { Quote, RfqDocument, ScoreChoice, Weights } from '@vsa/usecase-kit/bids';
 import type { ChoiceParser, DecisionSpec } from '@vsa/usecase-kit/decision';
 import { accepted, checkMembers, isPlainObject, refused } from '@vsa/usecase-kit/protocol';
 import type { JsonValue } from '@vsa/usecase-kit/protocol';
 import { BIDDER_FILE_TEXT, bidderFacts } from './bidder.ts';
 import type { BidderFile } from './bidder.ts';
-
-/** The four component scores with the members of `Components`, as a type of plain members, so that the choice is JSON data. */
-type ScoreComponents = { -readonly [Name in keyof Components]: Components[Name] };
-
-/** What the model chooses for `score`: the four component scores and the score of the quote, each from 0 to 100. It is a type alias, so that it is JSON data. */
-export type ScoreChoice = { components: ScoreComponents; score: number };
 
 /**
  * An entry of the vendor master: what the buyer knows of a vendor. `name` and `certifications` are free texts of the vendor master. The reader of the vendor master writes the same shape in its own folder, and

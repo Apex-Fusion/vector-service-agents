@@ -14,7 +14,7 @@ import { CONFIRMATIONS_REQUIRED, GATEWAY_FAILURES, MIN_SUB_DELEGATION_MS, SUB_DE
 import {
   BID_CAPABILITIES, BID_DESK_CLAIM, BID_DESK_MODEL, EXCLUDED_REASONS, MAX_ITEM_QUANTITY, MAX_RFQ_ITEMS, QUOTE_SCHEMA, SCORE_COMPONENTS, SOURCING_CLAIM, SOURCING_MODEL, WEIGHT_NAMES, buildRanking, parsePriceList, parseQuote,
   parseRanking, priceFor,
-  priceListSha256, quoteTotals, receiptSha256, rfqSha256,
+  priceListSha256, quoteTotals, receiptSha256, reversedOf, rfqSha256,
 } from '@vsa/usecase-kit/bids';
 import type { ExcludedEntry, PriceList, Quote, RankedEntry } from '@vsa/usecase-kit/bids';
 import { COUNTERPARTY_REFUSED, EARLIER_PAY_MAY_LAND, INCONSISTENT_OUTCOME, INTERRUPTION_REASONS, PAY_UNCONFIRMED, checkRuntimeBody, checkWirePayload } from '@vsa/usecase-kit/buyer';
@@ -44,7 +44,7 @@ import { BID_DESK_REFUSALS, CHALLENGE_CODES, CODE, NOT_ACTIVE_STATUSES } from '.
 import { judgeQuote } from '../src/quotes/decide.ts';
 import { QUOTE_CODES, QUOTE_HIRE_RESERVE_MS } from '../src/quotes/index.ts';
 import { SCORER_JOB_TIMEOUT_MS, SCORER_NEED_MS, SCORERS_NEED_MS, SCORING_FAILURES, SUB_DELEGATION_VALID_MS } from '../src/scoring/index.ts';
-import { reversedOf, scoreFaultOf } from '../src/scoring/fault.ts';
+import { scoreFaultOf } from '../src/scoring/fault.ts';
 import { ADVERT_GAP, CANDIDATES_GAP, CHALLENGE_GAP, KEYS_GAP, NOT_SHOWN_GAP, QUOTE_TEXT_GAP, gapsFor } from '../src/serve/gaps.ts';
 import { DESCRIPTION, ID_CHARS, REQUEST_SCHEMA, TEMPLATE_ENV, manifestFromEnv } from '../src/serve/manifest.ts';
 import { RequestRefusal, parseJob } from '../src/serve/server.ts';

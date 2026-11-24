@@ -12,13 +12,12 @@ import { REDEEMER } from '../../../../packages/buyer-core/src/vendored/mcp/marke
 import { escrowCredentialOf } from '../../../../packages/buyer-core/src/vendored/mcp/marketplace-lineage.ts';
 import { activeKey, hasRight, PURPOSE, RIGHT } from '../../../../packages/buyer-core/src/vendored/mcp/identity-rules.ts';
 import type { KoiosUtxo } from '../../../../packages/buyer-core/src/vendored/mcp/marketplace-indexer.ts';
-import { BID_DESK_CLAIM, QUOTE_SCHEMA, parseComponents, parseQuote, parseRanking, parseScoreValue, receiptSha256 } from '../../../../packages/usecase-kit/src/bids/index.ts';
+import { BID_DESK_CLAIM, QUOTE_SCHEMA, parseComponents, parseQuote, parseRanking, parseScoreValue, receiptSha256, reversedChoice } from '../../../../packages/usecase-kit/src/bids/index.ts';
 import type { Quote, Ranking } from '../../../../packages/usecase-kit/src/bids/index.ts';
 import { EVIDENCE_STATEMENTS, evidenceReferences, readClaimDocument } from '../../../../packages/usecase-kit/src/dispute/index.ts';
 import { parseProposal, PROPOSAL_SCHEMA, RECEIPT_CHECKS, RESULT_SCHEMA } from '../../../../packages/usecase-kit/src/protocol/index.ts';
 import { requestSpecHash } from '../../../../packages/vector-read/src/index.ts';
 import { decodeAttestationDatum, decodeDelegationDatum, decodeIdentityDatum, utf8Hex } from '../../../../packages/vector-read/src/identity-codec.ts';
-import { reversedChoice } from '../../../../agents/sourcing-agent/src/scoring/fault.ts';
 import type { DelegationDatum, IdentityDatum } from '../../../../packages/vector-read/src/identity-codec.ts';
 import { PreconditionError } from '../../../checks/lib/session.ts';
 import { readLimited } from '../build-record.ts';

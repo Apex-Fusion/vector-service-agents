@@ -5,7 +5,7 @@
 //   ids        the capabilities and the model names of the two agents, and the rule of a SKU and of a request identifier
 //   rfq        the request for quotation, and its hash
 //   weights    the four weights of a ranking
-//   scores     the four component scores of a scorer, and the rule of one score
+//   scores     the four component scores of a scorer, the rule of one score, and exact decimal reversal
 //   ranking    the ranking of the Sourcing Agent with its excluded list, the hash of a quote receipt, and the builder of the ranking
 //   pricelist  the price list of a Bid Desk, the rule of the price, and the hash of the bytes of the list
 //   claims     the claim statements of the two agents
@@ -17,8 +17,8 @@ export { MAX_RFQ_ITEMS, parseRfqDocument, rfqSha256 } from './rfq.ts';
 export type { RfqDocument, RfqItem } from './rfq.ts';
 export { WEIGHT_NAMES, parseWeights } from './weights.ts';
 export type { Weights } from './weights.ts';
-export { SCORE_COMPONENTS, parseComponents, parseScoreValue } from './scores.ts';
-export type { Components } from './scores.ts';
+export { SCORE_COMPONENTS, parseComponents, parseScoreValue, reversedChoice, reversedOf } from './scores.ts';
+export type { Components, ScoreChoice } from './scores.ts';
 export { EXCLUDED_REASONS, RANKING_SCHEMA, buildRanking, parseRanking, receiptSha256 } from './ranking.ts';
 export type { ExcludedEntry, ExcludedReason, RankedEntry, RankedQuote, Ranking } from './ranking.ts';
 export { PRICE_LIST_SCHEMA, parsePriceList, priceFor, priceListSha256 } from './pricelist.ts';

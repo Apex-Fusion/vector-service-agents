@@ -13,6 +13,7 @@ import {
 } from '../../../../packages/buyer-core/test/fixtures/ledger-read-world.ts';
 import { advertUtxo, escrowUtxo, identityEscrow, IDENTITY_ADVERT } from '../../../../packages/buyer-core/test/fixtures/escrow-identity.fixture.ts';
 import { BID_DESK_CLAIM, QUOTE_CHECKS, QUOTE_SCHEMA, RANKING_SCHEMA, receiptSha256 } from '../../../../packages/usecase-kit/src/bids/index.ts';
+import type { Components } from '../../../../packages/usecase-kit/src/bids/index.ts';
 import { claimDocument, evidenceDocument } from '../../../../packages/usecase-kit/src/dispute/index.ts';
 import { makeProposal, PROPOSAL_SCHEMA, RECEIPT_CHECKS, RESULT_SCHEMA } from '../../../../packages/usecase-kit/src/protocol/index.ts';
 import type { ProtocolResult } from '../../../../packages/usecase-kit/src/protocol/index.ts';
@@ -486,7 +487,7 @@ export async function bidRun(kind: 'clean' | 'failure', options: Options = {}) {
       not_invited: omitted.map(({ id: desk }) => ({ did: did(desk), reason: 'The shortlist omits this bidder.' })) }, start + 1)];
     const quoted: Obj[] = [];
     const subJobs: Obj[] = [];
-    const ranked: Array<{ rank: number; desk_did: string; organisation: string; score: number; components: Obj; quote: Obj }> = [];
+    const ranked: Array<{ rank: number; desk_did: string; organisation: string; score: number; components: Components; quote: Obj }> = [];
     const excluded: Obj[] = [];
     for (const [n, desk] of selected.entries()) {
       const quoteStep = `quote${step.slice('propose'.length) || '-'}${n + 1}`;
@@ -538,6 +539,7 @@ export async function bidRun(kind: 'clean' | 'failure', options: Options = {}) {
       log.push(access(options.scorer === 'wrong-actor' && i === 0 ? [did(buyer.id)] : [did(scorer.id), did(buyer.id)], child, 'GET /vendors', start + 21, 200));
       choices.push(decision('score', { components: rankedBid.components, score: rankedBid.score }, start + 23));
       if (failure && index === 3 && i === 0) {
+        // Keep the expected reversal independent of the production arithmetic.
         rankedBid.score = options.reverse === 'wrong-score' ? 19.9 : 19.8;
         rankedBid.components = { price: options.reverse === 'wrong-price' ? 18.9 : 18.8, lead_time: options.reverse === 'wrong-lead-time' ? 20.8 : 20.7,
           reliability: options.reverse === 'wrong-reliability' ? 45.5 : 45.4, compliance: options.reverse === 'wrong-compliance' ? 8 : 7.9 };
