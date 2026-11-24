@@ -63,6 +63,52 @@ describe.each(READS)('the records of the $name read', (read) => {
     });
   });
 
+  describe('a list that does not answer after the run', () => {
+    /** The time of a read in which no call of the list waits: the base of the times below. */
+    async function duration(setup: (w: World) => void = () => undefined): Promise<number> {
+      const w = world();
+      setup(w);
+      await read.run(w);
+      return w.clock.now() - NOW;
+    }
+    const neverLands = (w: World): void => void (w.chain.faults.undelegateNeverLands = true);
+
+    it('gives the value 60,000 ms after the end when the removal of the entry never answers, and the id is out of use', async () => {
+      const clean = await duration();
+      const w = world();
+      w.sink.hangRemove = true;
+      expect(await read.run(w)).toStrictEqual(works);
+      expect(w.clock.now() - NOW).toBe(clean + 60_000);
+      expect(w.live.size).toBe(0);
+      expect(opsOf(w)).toStrictEqual(['add', 'put', 'remove', 'delete']);
+      expect(w.sink.entries.size).toBe(1);
+      expect(janitorPass(w.sink.entries, w.live)).toStrictEqual({ skipped: [], taken: [w.chain.subId] });
+    });
+
+    it('waits for a removal that answers 1 ms before the bound, and gives up at the bound: the twin', async () => {
+      const clean = await duration();
+      for (const [delay, waited] of [[59_999, 59_999], [60_000, 60_000], [600_000, 60_000]] as const) {
+        const w = world();
+        w.sink.removeDelayMs = delay;
+        expect(await read.run(w), `${delay}`).toStrictEqual(works);
+        expect(w.clock.now() - NOW, `${delay}`).toBe(clean + waited);
+        expect(w.live.size, `${delay}`).toBe(0);
+      }
+    });
+
+    it('gives the value 60,000 ms after the end when the update of the entry of an end that did not land never answers, and the id is out of use', async () => {
+      const clean = await duration(neverLands);
+      const w = world();
+      neverLands(w);
+      w.sink.hangPutAt.add(2);
+      expect(await read.run(w)).toStrictEqual(left);
+      expect(w.clock.now() - NOW).toBe(clean + 60_000);
+      expect(w.live.size).toBe(0);
+      expect(opsOf(w)).toStrictEqual(['add', 'put', 'put', 'delete']);
+      expect(w.sink.entries.get(w.chain.subId!)).toMatchObject({ left: { id: w.chain.subId, endTxHash: null } });
+    });
+  });
+
   describe('a sub-delegation that was not made', () => {
     it('removes the entry and takes the id out of use when the ledger shows another transaction under the identifier, and builds no Undelegate', async () => {
       const w = world();

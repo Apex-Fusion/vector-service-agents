@@ -67,6 +67,23 @@ describe.each(READS)('the $name read', (read) => {
     });
   });
 
+  describe('the validity of the sub-delegation', () => {
+    /** The validity that a read asks for is the wait for the confirmations, the job of 240,000 ms and 300,000 ms more. It starts with the read, and it is the same in the build, in the datum and in the entry of the list. */
+    const CASES: { name: string; over: RunOptions; valid: number }[] = [
+      { name: 'the full wait of 360,000 ms', over: {}, valid: 360_000 + 240_000 + 300_000 },
+      { name: 'a wait that the deadline trims to 260,000 ms', over: { deadline: NOW + 620_000 }, valid: 260_000 + 240_000 + 300_000 },
+      { name: 'the least wait of 180,000 ms', over: { deadline: NOW + LEAST_MS }, valid: 180_000 + 240_000 + 300_000 },
+    ];
+    it.each(CASES)('ends by itself $valid ms after the start of the read, with $name', async ({ over, valid }) => {
+      const w = world();
+      expect(await read.run(w, over)).toStrictEqual(gives(read));
+      expect(w.chain.params[0]!.notAfter - NOW).toBe(valid);
+      expect(w.chain.builtDelegates[0]!.delegation.notAfter - NOW).toBe(valid);
+      expect(w.sink.stored[0]!.left.notAfter - NOW).toBe(valid);
+      expect(valid).toBeLessThan(DEADLINE_MS);
+    });
+  });
+
   describe('the token', () => {
     const FAILURES: [string, () => GatewayRefused, string][] = [
       ['the gateway refuses', () => gatewayRefused(403, 'access_denied', 'words that the gateway wrote'), 'token_gateway_refused'],

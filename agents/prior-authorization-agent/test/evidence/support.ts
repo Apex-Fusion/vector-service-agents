@@ -122,6 +122,12 @@ export class SinkSpy implements LeftSink {
   /** The numbers of the calls of `put` that fail, counted from 1. */
   readonly failPutAt = new Set<number>();
   failRemove = false;
+  /** `remove` never answers. */
+  hangRemove = false;
+  /** `remove` answers only after this time of the clock, in milliseconds. */
+  removeDelayMs = 0;
+  /** The numbers of the calls of `put` that never answer, counted from 1. The entry is not stored. */
+  readonly hangPutAt = new Set<number>();
   /** `list` throws this error: the list cannot be read, or a file of it is damaged. */
   listFailure: (() => Error) | null = null;
   /** `list` answers only after this time of the clock, in milliseconds. */
@@ -136,11 +142,14 @@ export class SinkSpy implements LeftSink {
     this.steps.push({ op: 'put', id: entry.left.id });
     this.stored.push(entry);
     if (this.failPutAt.has(this.stored.length)) throw new Error('the disk is full');
+    if (this.hangPutAt.has(this.stored.length)) await new Promise<never>(() => undefined);
     this.entries.set(entry.left.id, entry);
   }
 
   async remove(id: DelegationId): Promise<void> {
     this.steps.push({ op: 'remove', id });
+    if (this.hangRemove) await new Promise<never>(() => undefined);
+    if (this.removeDelayMs > 0) await this.clock.sleep(this.removeDelayMs);
     if (this.failRemove) throw new Error('the disk is full');
     this.entries.delete(id);
   }

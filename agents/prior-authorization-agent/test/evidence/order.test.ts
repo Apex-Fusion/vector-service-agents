@@ -65,6 +65,16 @@ describe('both reads', () => {
     expect(undelegate!.at).toBeGreaterThan(delegate!.at);
   });
 
+  it('give each sub-delegation a validity of its own that starts with its read: the wait of 360,000 ms, the job of 240,000 ms and 300,000 ms more', async () => {
+    const w = world();
+    const seen = watchBuilds(w);
+    await runEvidence(w);
+    const [first, second] = w.chain.builtDelegates;
+    expect(first!.delegation.notAfter - seen[0]!.at).toBe(900_000);
+    expect(second!.delegation.notAfter - seen[1]!.at).toBe(900_000);
+    expect(seen[1]!.at).toBeGreaterThan(seen[0]!.at);
+  });
+
   it('hold the id of each read in the set of the sub-delegations in use only while the read runs: at the token request of the second read the first id is out and the second id is in', async () => {
     const w = world();
     await runEvidence(w);
@@ -288,6 +298,7 @@ describe('the time of the two reads', () => {
     expect(await runEvidence(exact, { deadline })).toStrictEqual(BOTH);
     await expectRecordedAndEnded(exact, 2);
     expect(exact.clock.now()).toBeLessThanOrEqual(deadline);
+    expect(exact.chain.builtDelegates[1]!.delegation.notAfter - start).toBe(180_000 + 240_000 + 300_000);
   });
 
   it('starts the second read with the time that the first read left: a first read that takes longer leaves less', async () => {
