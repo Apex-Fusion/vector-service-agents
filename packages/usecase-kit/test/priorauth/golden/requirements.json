@@ -1,0 +1,11 @@
+{
+  "service_code": "SYN-MRI-LS",
+  "title": "Intake requirements for imaging of the lumbar spine",
+  "requirements": [
+    { "id": "R1", "text": "The request names the ordering clinician." },
+    { "id": "R2", "text": "The request has at least one diagnosis code." },
+    { "id": "R3", "text": "The request has a justification that cites the criteria of the guideline." },
+    { "id": "R4", "text": "The request lists the records that support each criterion." },
+    { "id": "R5", "text": "The request states the hash of the set of records that the writer read." }
+  ]
+}

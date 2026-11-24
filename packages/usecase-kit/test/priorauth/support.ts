@@ -1,0 +1,138 @@
+// packages/usecase-kit/test/priorauth/support.ts
+// What the tests of the priorauth folder share: the golden files, a way to change a copy of a golden value at a path, a getter that counts its reads, a text that no form of the folder takes, a check for
+// a refusal, and a change of a prototype for the length of one call. A test of a later part of the folder adds a golden file and reads it with `golden`.
+import { readFileSync } from 'node:fs';
+import { expect } from 'vitest';
+import type { ProtocolResult } from '@vsa/usecase-kit/protocol';
+
+export type Json = Record<string, unknown>;
+export type Step = string | number;
+
+/** The exact text of a golden file: `request`, `record-set`, `guideline` or `requirements`. A name that has no file is an error of the test. */
+export const goldenText = (name: string): string => readFileSync(new URL(`./golden/${name}.json`, import.meta.url), 'utf8');
+
+/** A fresh value of a golden file, so that a test can change a member without changing the sample. */
+export const golden = (name: string): Json => JSON.parse(goldenText(name)) as Json;
+
+/** The value at `path` of `record`. A path that does not exist is an error of the test. */
+export function valueAt(record: unknown, path: readonly Step[]): unknown {
+  let at: unknown = record;
+  for (const step of path) {
+    if (typeof at !== 'object' || at === null) throw new Error(`the sample has no value at ${path.join('.')}`);
+    at = Reflect.get(at, step);
+  }
+  return at;
+}
+
+/** The object at `path` of `record`, for a test that changes it in place. */
+export function objectAt(record: Json, path: readonly Step[]): Json {
+  const found = valueAt(record, path);
+  if (typeof found !== 'object' || found === null || Array.isArray(found)) throw new Error(`the sample has no object at ${path.join('.')}`);
+  // The test names an object of a golden file, and the guard above says that it is an object.
+  return found as Json;
+}
+
+/** The list at `path` of `record`, for a test that changes it in place. */
+export function listAt(record: Json, path: readonly Step[]): unknown[] {
+  const found = valueAt(record, path);
+  if (!Array.isArray(found)) throw new Error(`the sample has no list at ${path.join('.')}`);
+  return found;
+}
+
+/**
+ * A deep copy of `record` with the value at `path` set to `value`. The value `undefined` removes the member instead. The path must exist, up to its last step: the copy of a path that does not
+ * exist is an error of the test.
+ */
+export function change(record: Json, path: readonly Step[], value: unknown): Json {
+  const copy = JSON.parse(JSON.stringify(record)) as Json;
+  const holder = valueAt(copy, path.slice(0, -1));
+  if (typeof holder !== 'object' || holder === null) throw new Error(`the sample has no member at ${path.join('.')}`);
+  const last = path[path.length - 1]!;
+  if (value === undefined) Reflect.deleteProperty(holder, last);
+  else Reflect.set(holder, last, value);
+  return copy;
+}
+
+/**
+ * A deep copy of `record` in which the member `name` of the object at `path` is a getter. The getter counts its reads and gives the value that the member had, so a parser that runs it would see a
+ * good value. `reads()` is the number of reads.
+ */
+export function withGetter(record: Json, path: readonly Step[], name: string): { readonly input: Json; readonly reads: () => number } {
+  const input = JSON.parse(JSON.stringify(record)) as Json;
+  const holder = objectAt(input, path);
+  const value: unknown = Reflect.get(holder, name);
+  let reads = 0;
+  Object.defineProperty(holder, name, { get() { reads += 1; return value; }, enumerable: true, configurable: true });
+  return { input, reads: () => reads };
+}
+
+/** A deep copy of `record` in which the object at `path` has an own member with the key `__proto__`, and the value of that member looks right: it is a copy of the object. */
+export function withProtoKey(record: Json, path: readonly Step[]): Json {
+  const input = JSON.parse(JSON.stringify(record)) as Json;
+  const holder = objectAt(input, path);
+  Object.defineProperty(holder, '__proto__', { value: JSON.parse(JSON.stringify(holder)) as Json, enumerable: true, configurable: true, writable: true });
+  return input;
+}
+
+/**
+ * A text that no identifier, date, digest or plain text takes: it has a space, a slash, a hash sign and a line break. A refusal must never repeat the value that failed, so a test that gives this
+ * text in a member checks that no part of it is in the detail. A free text takes a line break, so a test of a free text uses `BAD_TEXT` below.
+ */
+export const MARKER = 'zq9 marker/value#7f3\n';
+
+/** A text that no free text takes, because it ends with a control character, and that a refusal must never repeat. */
+export const BAD_TEXT = 'zq9 marker value\u0001';
+
+/** Values that are not a text. */
+export const NOT_TEXT: readonly unknown[] = [1, 0, true, null, {}, [], ['a']];
+
+/**
+ * Values that are not an identifier of a system, and identifiers that no member of a golden file holds. The bad values are the forms that the tests of the inventory folder give to the identifiers
+ * `po_number` and `sku`, and the Kelvin sign is in a test of its own.
+ */
+export const ID_BAD: readonly unknown[] = ['', 'a'.repeat(65), '-1', '.1', '_1', 'a b', 'a/b', 'a#b', 'a\n', 'a\u00e9', 'e\u0301', MARKER, ...NOT_TEXT];
+export const ID_GOOD: readonly unknown[] = ['a', 'run1-1', 'A.b_c-d', '9', 'a'.repeat(64)];
+
+/** Values that are not a date that exists, and dates. The bad values are the forms that the tests of the inventory folder give to the date `needed_by`. */
+export const DAY_BAD: readonly unknown[] = [
+  '2026-02-30', '2026-02-29', '2026-13-01', '2026-00-10', '2026-12-00', '2026-12-32', '2026-04-31', '2026-1-1', '20261201', '2026/12/01', '2026-12-01T00:00:00Z', ' 2026-12-01', '2026-12-01 ',
+  '2026-12-01\n', '0000-01-01', '0099-12-31', 'tomorrow', '', MARKER, 20261201, ...NOT_TEXT,
+];
+export const DAY_GOOD: readonly unknown[] = ['2026-12-01', '2026-02-28', '2028-02-29', '2000-02-29', '0100-01-01', '9999-12-31', '2026-04-30'];
+
+/** The value of a result that must have passed. */
+export function must<T, C extends string>(result: ProtocolResult<T, C>): T {
+  if (!result.ok) throw new Error(`the sample must pass, and it was refused: ${result.detail}`);
+  return result.value;
+}
+
+/** A refusal with the code `bad_shape`. The detail names `where`, and it never repeats the marker. */
+export function expectRefused(result: ProtocolResult<unknown, string>, where: string): void {
+  expect(result.ok, `a refusal that names ${where}`).toBe(false);
+  if (result.ok) return;
+  expect(result.code).toBe('bad_shape');
+  expect(result.detail).toContain(where);
+  expect(result.detail).not.toContain('zq9');
+  expect(result.detail).not.toContain('marker');
+}
+
+/** The message of the error that `run` throws, or an empty text when it throws nothing. A thrown value that is not an `Error` has no message. */
+export function messageOf(run: () => unknown): string {
+  try {
+    run();
+    return '';
+  } catch (error) {
+    return error instanceof Error ? error.message : '';
+  }
+}
+
+/** Defines the members on `target`, runs `body`, and removes the members in a `finally`. */
+export function withPrototype<T>(target: object, members: Readonly<Record<string, PropertyDescriptor>>, body: () => T): T {
+  const names = Object.keys(members);
+  try {
+    for (const name of names) Object.defineProperty(target, name, { ...members[name], configurable: true });
+    return body();
+  } finally {
+    for (const name of names) Reflect.deleteProperty(target, name);
+  }
+}
