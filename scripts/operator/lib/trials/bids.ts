@@ -17,7 +17,7 @@ function readPriceList(instance: string) {
     text = UTF8.decode(readFileSync(new URL(`../../../../agents/bid-desk/price-lists/${instance}.json`, import.meta.url)));
     json = JSON.parse(text);
   } catch {
-    throw new PreconditionError(`cannot read the published price list for ${instance} as UTF-8 JSON: run the trial from a complete checkout of the repository`);
+    throw new PreconditionError(`cannot read the published price list for ${instance} as UTF-8 JSON`);
   }
   return { list: requireBuilt(parsePriceList(json), 'published price list'), text, sha256: priceListSha256(text) };
 }
