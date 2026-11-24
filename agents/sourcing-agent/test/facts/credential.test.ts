@@ -162,10 +162,13 @@ describe('a source that cannot be read is unreadable and never valid', () => {
     expect(await readCredential(w.deps(), w.agent.did)).toBe('valid');
   });
 
-  it('is unreadable when the status list cannot be read, because the verifier refuses a credential that it cannot check against the list', async () => {
+  it('is unreadable when the status list cannot be read or cannot be used, because the verifier cannot check the credential against the list', async () => {
+    const list = (fault: Fault) => (w: CredentialWorld): void => w.gateway.fault('/status/bsl/0', fault);
     expect(await readAfter(() => undefined)).toStrictEqual({ word: 'valid', said: ['accepted'] });
-    expect(await readAfter((w) => w.gateway.fault('/status/bsl/0', LISTS_UNAVAILABLE))).toStrictEqual({ word: 'unreadable', said: ['credential.status_unknown'] });
-    expect(await readAfter((w) => w.gateway.fault('/status/bsl/0', 'network'))).toStrictEqual({ word: 'unreadable', said: ['credential.status_unknown'] });
+    expect(await readAfter(list(LISTS_UNAVAILABLE))).toStrictEqual({ word: 'unreadable', said: ['credential.status_unknown'] });
+    expect(await readAfter(list('network'))).toStrictEqual({ word: 'unreadable', said: ['credential.status_unknown'] });
+    // The list is read and it is no list of the gateway. The verifier says credential.status_list. That is a failure of the source, and no verdict on the credential.
+    expect(await readAfter(list({ status: 200, body: 'this is no status list', headers: { 'content-type': 'application/vc+jwt' } }))).toStrictEqual({ word: 'unreadable', said: ['credential.status_list'] });
   });
 
   it('is unreadable when the key set of the gateway cannot be read or cannot be used, and valid when it can', async () => {
@@ -177,9 +180,9 @@ describe('a source that cannot be read is unreadable and never valid', () => {
     expect(await readAfter(keys(keySetOf('{"keys":[]}')))).toStrictEqual({ word: 'unreadable', said: ['jwks.no_usable_key'] });
   });
 
-  // Each rule that the verifier gives for a credential has a word. A rule that says that a source was not read is unreadable. A rule of the credential itself is invalid.
-  const UNREADABLE_RULES = ['credential.status_unknown', 'keys.unavailable', ...KEY_SET_RULES];
-  const INVALID_RULES = [...CREDENTIAL_RULES, ...CREDENTIAL_CALL_RULES].filter((rule) => rule !== 'credential.status_unknown');
+  // Each rule that the verifier gives for a credential has a word. A rule that says that a source was not read, or was read and cannot be used, is unreadable. A rule of the credential itself is invalid.
+  const UNREADABLE_RULES = ['credential.status_unknown', 'credential.status_list', 'keys.unavailable', ...KEY_SET_RULES];
+  const INVALID_RULES = [...CREDENTIAL_RULES, ...CREDENTIAL_CALL_RULES].filter((rule) => !UNREADABLE_RULES.includes(rule));
 
   it.each(UNREADABLE_RULES)('is unreadable for the refusal %s, and valid for a credential that the verifier accepts', async (rule) => {
     const credential = (): Promise<GatewayResult<string>> => Promise.resolve(credentialOf('a.b.c'));
@@ -197,6 +200,7 @@ describe('a source that cannot be read is unreadable and never valid', () => {
     expect([...CREDENTIAL_RULES, ...CREDENTIAL_CALL_RULES].every((rule) => rule.startsWith('credential.'))).toBe(true);
     expect(KEY_SET_RULES.every((rule) => rule.startsWith('jwks.'))).toBe(true);
     expect(CREDENTIAL_CALL_RULES).toContain('credential.status_unknown');
+    expect(CREDENTIAL_CALL_RULES).toContain('credential.status_list');
   });
 
   const ODD_ANSWERS: Array<[what: string, answer: () => Promise<Check<unknown, string>>]> = [

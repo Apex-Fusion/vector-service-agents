@@ -7,9 +7,11 @@
 // A resolved case leaves no output, because each resolution burns the claim. So the claim of a resolved case is in no list, and only open challenges count. The effect of a verdict shows in the status of the
 // bidder (a hold) and not here.
 //
-// A source that cannot be read (a port throws or ends too late, a port gives no list, or a claim or a challenge has no text where the join needs one) is `{ ok: false }`. It is never 0: a count that was not read
-// says nothing about the bidder. `casesAgainstAll` reads each list one time for all the bidders. This file reads no network, no file and no environment variable: the sources are ports.
+// A source that cannot be read (a port throws or ends too late, a port gives no list, or a claim or a challenge has no text where the join needs one) is `{ ok: false }`. So is a text that `parseDid` refuses: it is
+// no DID, and nothing is read for it. It is never 0: a count that was not read says nothing about the bidder. `casesAgainstAll` reads each list one time for all the bidders. This file reads no network, no file and
+// no environment variable: the sources are ports.
 import type { ChallengeView, ClaimView } from '@vsa/usecase-kit/dispute';
+import { parseDid } from '@vsa/usecase-kit/protocol';
 import { callPort } from './bound.ts';
 import type { FactClock } from './bound.ts';
 
@@ -60,17 +62,22 @@ function countAgainst(claims: unknown, challenges: unknown, wanted: ReadonlySet<
   return counts;
 }
 
+/** The number of cases of each wanted DID from one read of each list, or null when a list cannot be read or is of a wrong shape. */
+async function readCounts(deps: CasesDeps, wanted: ReadonlySet<string>): Promise<Map<string, number> | null> {
+  const [claims, challenges] = await Promise.all([callPort(deps.clock, () => deps.claims()), callPort(deps.clock, () => deps.challenges())]);
+  return claims.ok && challenges.ok ? countAgainst(claims.value, challenges.value, wanted) : null;
+}
+
 /**
- * The cases against each of the DIDs, with one read of the claims and one read of the challenges. The answer has one entry for each DID, in the order given. When a list cannot be read, every entry is
- * `{ ok: false }`. With no DID, no list is read. It never throws.
+ * The cases against each of the DIDs, with one read of the claims and one read of the challenges. The answer has one entry for each text, in the order given. A text that `parseDid` refuses is no DID, so its entry
+ * is `{ ok: false }` and no list is read for it. When a list cannot be read, every entry is `{ ok: false }`. With no DID, no list is read. It never throws.
  */
 export async function casesAgainstAll(deps: CasesDeps, dids: readonly string[]): Promise<ReadonlyMap<string, CasesFact>> {
-  const wanted = new Set<string>(dids);
+  const given = new Set<string>(dids);
+  const wanted = new Set([...given].filter((did) => parseDid(did).ok));
+  const counts = wanted.size === 0 ? null : await readCounts(deps, wanted);
   const answer = new Map<string, CasesFact>();
-  if (wanted.size === 0) return answer;
-  const [claims, challenges] = await Promise.all([callPort(deps.clock, () => deps.claims()), callPort(deps.clock, () => deps.challenges())]);
-  const counts = claims.ok && challenges.ok ? countAgainst(claims.value, challenges.value, wanted) : null;
-  for (const did of wanted) answer.set(did, counts === null ? { ok: false } : { ok: true, cases: counts.get(did) ?? 0 });
+  for (const did of given) answer.set(did, counts === null || !wanted.has(did) ? { ok: false } : { ok: true, cases: counts.get(did) ?? 0 });
   return answer;
 }
 

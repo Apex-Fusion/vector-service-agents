@@ -1,7 +1,7 @@
 // agents/sourcing-agent/test/facts/cases.test.ts: the Module-1 cases against a bidder, as a fact for the file of a bidder. A case is a live challenge whose claim token is the token of a live claim of the bidder in the
 // state Challenged, the join that the dispute code of the kit uses to find its own challenge. A challenge output that names a claim in another state is no case, because anybody can make a challenge output. A resolved
-// case leaves no output, because each resolution burns the claim, so only open challenges count. The question: is a source that cannot be read ever a count? Does a challenge count against the wrong claimer, or by the
-// wrong key? Each refusal has its accepted twin.
+// case leaves no output, because each resolution burns the claim, so only open challenges count. The question: is a source that cannot be read ever a count? Is a text that is no DID ever a count? Does a challenge
+// count against the wrong claimer, or by the wrong key? Each refusal has its accepted twin.
 import { describe, expect, it } from 'vitest';
 import type { ChallengeView, ClaimView } from '@vsa/usecase-kit/dispute';
 import { FACT_READ_TIMEOUT_MS, casesAgainst, casesAgainstAll } from '../../src/facts/index.ts';
@@ -220,6 +220,38 @@ describe('the cases of several bidders in one read', () => {
     const world = lists(claims, challenges);
     const all = await casesAgainstAll(world.deps, []);
     expect(all.size).toBe(0);
+    expect(world.reads).toStrictEqual({ claims: 0, challenges: 0 });
+    expect(world.clock.asked).toStrictEqual([]);
+  });
+
+  // A text that the parser of the DID refuses cannot be the DID of a claimer. Its count is not 0: nothing was read for it.
+  const NOT_DIDS: Array<[what: string, text: string]> = [
+    ['a DID in upper case', BIDDER.toUpperCase()],
+    ['a DID with an identifier in upper case', `did:vector:${'A1'.repeat(32)}`],
+    ['an identifier with no did:vector: prefix', 'a1'.repeat(32)],
+    ['a DID with an identifier of 63 characters', BIDDER.substring(0, BIDDER.length - 1)],
+    ['a text that says that it is not a DID', 'not a did'],
+    ['an empty text', ''],
+  ];
+
+  it.each(NOT_DIDS)('is { ok: false } for %s, and no list is read for it', async (_what, text) => {
+    expect(await casesAgainst(lists(claims, challenges).deps, BIDDER)).toStrictEqual(cases(2));
+    const world = lists(claims, challenges);
+    expect(await casesAgainst(world.deps, text)).toStrictEqual(UNREAD);
+    expect(world.reads).toStrictEqual({ claims: 0, challenges: 0 });
+  });
+
+  it('gives { ok: false } for a text that is no DID and the count for each DID, with one read of each list and in the order given', async () => {
+    const world = lists(claims, challenges);
+    const all = await casesAgainstAll(world.deps, [BIDDER, 'not a did', OTHER, 'a1'.repeat(32)]);
+    expect([...all.entries()]).toStrictEqual([[BIDDER, cases(2)], ['not a did', UNREAD], [OTHER, cases(1)], ['a1'.repeat(32), UNREAD]]);
+    expect(world.reads).toStrictEqual({ claims: 1, challenges: 1 });
+  });
+
+  it('reads no list when no text is a DID', async () => {
+    const world = lists(claims, challenges);
+    const all = await casesAgainstAll(world.deps, ['not a did', 'a1'.repeat(32)]);
+    expect([...all.entries()]).toStrictEqual([['not a did', UNREAD], ['a1'.repeat(32), UNREAD]]);
     expect(world.reads).toStrictEqual({ claims: 0, challenges: 0 });
     expect(world.clock.asked).toStrictEqual([]);
   });

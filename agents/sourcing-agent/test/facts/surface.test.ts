@@ -29,8 +29,8 @@ describe('the facts folder', () => {
     expect(files).toStrictEqual(['bound.ts', 'cases.ts', 'credential.ts', 'index.ts', 'stake.ts']);
   });
 
-  test('imports the codec of vector-read, the types of the dispute kit and of the identity client, and its own files, and nothing else', () => {
-    const allowed = ['@vsa/vector-read', ...TYPE_ONLY, './bound.ts', './stake.ts', './cases.ts', './credential.ts'];
+  test('imports the codec of vector-read, the parser of the DID of the protocol kit, the types of the dispute kit and of the identity client, and its own files, and nothing else', () => {
+    const allowed = ['@vsa/vector-read', '@vsa/usecase-kit/protocol', ...TYPE_ONLY, './bound.ts', './stake.ts', './cases.ts', './credential.ts'];
     for (const name of files) {
       for (const { module } of importsOf(textOf(name))) {
         expect(module.startsWith('..'), `${name} imports a file of another folder: ${module}`).toBe(false);

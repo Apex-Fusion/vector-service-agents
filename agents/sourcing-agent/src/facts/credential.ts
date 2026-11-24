@@ -5,8 +5,8 @@
 //   valid       the gateway gave a credential and the verifier accepted it, so the status list shows the agent as neither revoked nor suspended
 //   invalid     the verifier refused the credential for a rule of the credential: a bad signature, another subject, a time that is over, a bit that is set
 //   absent      the gateway issues none: it does not know the agent (404), the agent is not Active (409) or its record ended (410)
-//   unreadable  a source could not be read: the gateway did not answer (503 while it builds its lists, a network failure, a bad answer, no answer in time), the key set could not be read or used, or the verifier
-//               could not read the status list in time. This is no verdict on the agent, and it is never `valid`
+//   unreadable  a source could not be read or used: the gateway did not answer (503 while it builds its lists, a network failure, a bad answer, no answer in time), the key set could not be read or used, or the
+//               verifier could not read the status list in time or could not use the list that it read. This is no verdict on the agent, and it is never `valid`
 //
 // Each word comes from the typed result of a port, from a status or a rule, and never from a text. No word of the gateway or of the verifier reaches the result. An answer that has not the form of a result is
 // `unreadable`, and so is a refusal whose rule this file does not know: it is no rule of the credential, so it is no verdict on the credential. This file reads no network, no file and no environment variable, and it
@@ -29,8 +29,8 @@ export interface CredentialDeps {
 /** The statuses with which the gateway says that it issues no credential: 404 for an agent that it does not know, 409 for an agent that is not Active and 410 for a record that ended. */
 const NO_CREDENTIAL_STATUSES: readonly number[] = [404, 409, 410];
 
-/** The rules with which the verifier says that a source was not read: the key set, and the status list of a credential. A rule of the key set starts with `jwks.`. */
-const NOT_READ_RULES: readonly string[] = ['keys.unavailable', 'credential.status_unknown'];
+/** The rules with which the verifier says that a source failed: the key set could not be read, or the status list was not read in time, or it was read and cannot be used. A rule of the key set starts with `jwks.`. */
+const NOT_READ_RULES: readonly string[] = ['keys.unavailable', 'credential.status_unknown', 'credential.status_list'];
 
 /**
  * The word for the answer of the verifier. The type says what a check is, and the port is not trusted to keep to it: an answer that is no object, that has no `ok` of true or false, or that refuses with a rule
