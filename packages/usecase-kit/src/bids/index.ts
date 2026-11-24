@@ -21,3 +21,5 @@ export type { ExcludedEntry, ExcludedReason, RankedEntry, RankedQuote, Ranking }
 export { PRICE_LIST_SCHEMA, parsePriceList, priceFor, priceListSha256 } from './pricelist.ts';
 export type { PriceBreak, PriceEntry, PriceList } from './pricelist.ts';
 export { BID_DESK_CLAIM, SOURCING_CLAIM } from './claims.ts';
+export { QUOTE_CHECKS, QUOTE_SCHEMA, parseQuote, quoteTotals } from './quote.ts';
+export type { Quote, QuoteLine } from './quote.ts';

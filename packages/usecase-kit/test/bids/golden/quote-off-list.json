@@ -1,0 +1,78 @@
+{
+  "schema": "vector.usecase.quote.v1",
+  "outcome": "done",
+  "rfq_id": "run1-rfq-1",
+  "rfq_sha256": "42ca167e867b2e8df3a82b7dc4a5b1c2a3a96f523e1f56a3863936a5dceadf35",
+  "desk_did": "did:vector:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+  "organisation": "alfa.example.org",
+  "lines": [
+    { "sku": "GLV-NIT-M", "quantity": 100, "unit_price": 100, "line_total": 10000, "lead_time_days": 14 },
+    { "sku": "MSK-N95", "quantity": 40, "unit_price": 60, "line_total": 2400, "lead_time_days": 21 }
+  ],
+  "total": 12400,
+  "lead_time_days": 21,
+  "valid_until": "2026-12-15",
+  "notes": "SYR-10ML is not quoted.",
+  "price_list_sha256": "cb4086f580328b375857bde3f4ac5744ee36f405ba3552bd760baf89d1a8765c",
+  "credential": "eyJhbGciOiJFZERTQSIsInR5cCI6InZjK2p3dCJ9.eyJ2YyI6eyJ0eXBlIjpbIlZlcmlmaWFibGVDcmVkZW50aWFsIl19fQ.Z29sZGVuIHF1b3RlIHNpZ25hdHVyZSwgbm90IGEgcmVhbCBzaWduYXR1cmU",
+  "sender": {
+    "did": "did:vector:ecececececececececececececececececececececececececececececececec",
+    "organisation": "echo.example",
+    "organisation_verified": true
+  },
+  "checks": {
+    "sender_active": true,
+    "sender_accountable": true,
+    "sender_key": true,
+    "delegation": true,
+    "delegation_usable": true,
+    "vault_paid": true,
+    "not_duplicate": true
+  },
+  "decisions": [
+    {
+      "name": "quote",
+      "choice": {
+        "lines": [
+          { "sku": "GLV-NIT-M", "quantity": 100, "unit_price": 125, "lead_time_days": 14 },
+          { "sku": "MSK-N95", "quantity": 40, "unit_price": 60, "lead_time_days": 21 }
+        ],
+        "valid_until": "2026-12-15",
+        "notes": "SYR-10ML is not quoted."
+      },
+      "reasoning": "The price list gives 125 for 100 boxes of GLV-NIT-M and 60 for 40 boxes of MSK-N95, so both lines take the listed price. SYR-10ML is left out.",
+      "inference": {
+        "path": "marketplace",
+        "sub_job": {
+          "capability_id": "llm.text.generate.v1",
+          "advert_ref": "c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5#0",
+          "escrow_ref": "6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d#0",
+          "supplier_pkh": "9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e",
+          "receipt": {
+            "escrow_ref": "6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d#0",
+            "supplier_pkh": "9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e",
+            "prompt_hash": "5555555555555555555555555555555555555555555555555555555555555555",
+            "response_hash": "6666666666666666666666666666666666666666666666666666666666666666",
+            "model": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 655,
+            "completion_tokens": 131,
+            "wallclock_ms": 3120
+          },
+          "receipt_signature": "7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f",
+          "verification": {
+            "escrow_ref_matches": true,
+            "response_hash_matches": true,
+            "supplier_key_matches": true,
+            "signature_valid": true,
+            "on_chain_hash_matches": true,
+            "prompt_hash_matches": true,
+            "model_matches": true,
+            "fields_match": true
+          }
+        },
+        "accepted": "confirmed"
+      }
+    }
+  ],
+  "fault_mode": "quote_off_price_list"
+}
