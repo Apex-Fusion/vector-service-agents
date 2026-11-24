@@ -3,6 +3,7 @@
 // a member of a wrong shape, a hash or a reference that is not in its canonical form, a refusal without its facts and any text with a mark of a secret are refused, and the message names the member and
 // never shows a value. The record and the reports are inputs: the task `evidence` checks each reference in them against a read of the chain before a file is written.
 import { lstatSync, readFileSync } from 'node:fs';
+import type { UseCase } from './contract.ts';
 import { holdsSecret } from './secrets.ts';
 
 /** A record or a report that breaks a rule. `member` is the path of the member, for example `hires[1].post_tx`. */
@@ -15,24 +16,40 @@ export class RunRecordError extends Error {
   }
 }
 
-export type RunKind = 'clean' | 'failure';
-/** The operation of a hire: the first word of its step. `propose` and `execute` hire the Reorder Agent, and `order-desk` is the hire of the Order Desk that the agent makes. */
-export type HireRole = 'propose' | 'execute' | 'order-desk';
+export type RunKind = 'clean' | 'failure' | 'lifecycle';
+export type ApprovalRole = 'approval' | 'binding';
+export interface ApprovalEntry {
+  readonly role: ApprovalRole; readonly attestation: string; readonly tx: string; readonly valid_until: number | null;
+  readonly revoked_tx: string | null; readonly supersedes: string | null;
+}
+export interface RunRecordPolicy {
+  readonly hireRoles: readonly string[];
+  agentOf(role: string): readonly string[];
+  readonly reportOptional: readonly string[];
+  readonly readLegacy?: boolean;
+  readonly allowRfqs?: boolean;
+}
 
 export interface DelegationEntry { readonly id: string; readonly tx: string; readonly ended_tx: string | null }
 export interface VaultEntry { readonly ref: string; readonly open_tx: string; readonly close_tx: string | null }
-export interface SubDelegationEntry { readonly id: string; readonly delegate_tx: string; readonly undelegate_tx: string }
+/** Old records do not name the subagent or the hire. The reader leaves these unknown. */
+export interface SubDelegationEntry {
+  readonly id: string; readonly delegate_tx: string; readonly undelegate_tx: string; readonly subagent: string | null; readonly hire: string | null;
+}
 export interface HireEntry {
   readonly step: string; readonly agent: string; readonly advert_ref: string; readonly escrow_ref: string; readonly post_tx: string;
-  readonly accept_tx: string | null; readonly reclaim_tx: string | null; readonly report_file: string;
+  readonly accept_tx: string | null; readonly reclaim_tx: string | null; readonly report_file: string | null;
 }
 export type Refusal =
   | { readonly step: string; readonly kind: 'ledger'; readonly evaluation_error: string; readonly transaction_body: string }
   | { readonly step: string; readonly kind: 'tool'; readonly message: string };
 export interface RunRecord {
-  readonly format: 1; readonly label: string; readonly kind: RunKind; readonly date: string; readonly tenant: string;
-  readonly delegations: readonly DelegationEntry[]; readonly vaults: readonly VaultEntry[]; readonly approval: { readonly attestation: string; readonly tx: string };
+  readonly format: 1; readonly label: string; readonly use_case: string; readonly kind: RunKind; readonly date: string; readonly tenant: string | null;
+  readonly delegations: readonly DelegationEntry[]; readonly vaults: readonly VaultEntry[]; readonly approvals: readonly ApprovalEntry[];
+  readonly challenged: string | null; readonly rfq_ids: readonly string[]; readonly lifecycle: readonly string[];
   readonly sub_delegations: readonly SubDelegationEntry[]; readonly hires: readonly HireEntry[]; readonly refusals: readonly Refusal[];
+  /** Reader metadata. It is never a member of the file. */
+  readonly legacy: boolean;
 }
 /** What the hirer got for one hire: the verdict of the receipt check, the table of checks, the receipt and its signature, and the text of the result. */
 export interface Report {
@@ -51,19 +68,22 @@ const SIGNATURE = /^[0-9a-f]{128}$/;
 const MODEL = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const CHECK_NAME = /^[a-z][a-z0-9_]{0,63}$/;
 const HEX_BODY = /^(?:[0-9a-fA-F]{2})+$/;
-/** The step of a hire: its operation, and an optional suffix for the second hire of an operation in one run. */
-export const HIRE_STEP = /^(propose|execute|order-desk)(?:-[a-z0-9]{1,8})?$/;
-const AGENT_OF: Readonly<Record<HireRole, string>> = { propose: 'reorder-agent', execute: 'reorder-agent', 'order-desk': 'order-desk' };
+const HIRE_SUFFIX = /^-[a-z0-9]{1,8}$/;
+const RFQ_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 const MOST_EVALUATION_CHARS = 20_000;
 const MOST_BODY_CHARS = 200_000;
 const MOST_MESSAGE_CHARS = 4_000;
 const MOST_RESULT_CHARS = 1_000_000;
 
-/** The role of a hire step, or null when the step is no step of a hire. */
-export function hireRoleOf(step: string): HireRole | null {
-  const found = HIRE_STEP.exec(step);
-  return found === null ? null : (found[1] as HireRole);
+/** Use the most specific role when one role is also the prefix of another. */
+export function hireRoleOf(step: string, roles: readonly string[]): string | null {
+  let match: string | null = null;
+  for (const role of roles) {
+    if (step === role) return role;
+    if (step.startsWith(role) && HIRE_SUFFIX.test(step.slice(role.length)) && (match === null || role.length > match.length)) match = role;
+  }
+  return match;
 }
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -134,12 +154,14 @@ function dateOf(reader: Reader, value: unknown): string {
   return value;
 }
 
-function hireOf(reader: Reader, value: unknown, index: number, steps: Set<string>, escrows: Set<string>, files: Set<string>): HireEntry {
+function hireOf(reader: Reader, value: unknown, index: number, use: Pick<UseCase, 'agents'>, policy: RunRecordPolicy, steps: Set<string>, escrows: Set<string>, files: Set<string>): HireEntry {
   const at = `hires[${index}]`;
   const hire = reader.exact(value, at, ['step', 'agent', 'advert_ref', 'escrow_ref', 'post_tx', 'accept_tx', 'reclaim_tx', 'report_file']);
-  const step = reader.named(hire.step, `${at}.step`, HIRE_STEP, 'the step of a hire: propose, execute or order-desk, and an optional suffix');
-  const role = hireRoleOf(step)!;
-  if (hire.agent !== AGENT_OF[role]) reader.fail(`${at}.agent`, `is not ${AGENT_OF[role]}, the agent of the step ${role}`);
+  const step = reader.named(hire.step, `${at}.step`, STEP_ID, 'the step of a hire');
+  const role = hireRoleOf(step, policy.hireRoles);
+  if (role === null) return reader.fail(`${at}.step`, 'does not name a hire role of the use case');
+  const agent = reader.named(hire.agent, `${at}.agent`, STEP_ID, 'an agent id of the use case');
+  if (!policy.agentOf(role).includes(agent) || !use.agents.some((one) => one.id === agent)) reader.fail(`${at}.agent`, `is not an agent of the hire role ${role}`);
   reader.unique(steps, step, `${at}.step`);
   const advert = reader.ref(hire.advert_ref, `${at}.advert_ref`);
   const escrow = reader.ref(hire.escrow_ref, `${at}.escrow_ref`);
@@ -148,10 +170,15 @@ function hireOf(reader: Reader, value: unknown, index: number, steps: Set<string
   const accept = reader.hashOrNull(hire.accept_tx, `${at}.accept_tx`);
   const reclaim = reader.hashOrNull(hire.reclaim_tx, `${at}.reclaim_tx`);
   if (accept !== null && reclaim !== null) reader.fail(`${at}.reclaim_tx`, 'is set beside accept_tx: an escrow ends once');
+  if (hire.report_file === null) {
+    if (!policy.reportOptional.includes(role)) reader.fail(`${at}.report_file`, 'is required for this hire role');
+    if (reclaim === null) reader.fail(`${at}.reclaim_tx`, 'is required when the hire has no report');
+    return { step, agent, advert_ref: advert, escrow_ref: escrow, post_tx: post, accept_tx: accept, reclaim_tx: reclaim, report_file: null };
+  }
   const file = reader.named(hire.report_file, `${at}.report_file`, REPORT_FILE, 'the name of a json file in the run folder');
   if (file.includes('..')) reader.fail(`${at}.report_file`, 'is not the name of a json file in the run folder');
   reader.unique(files, file, `${at}.report_file`);
-  return { step, agent: AGENT_OF[role], advert_ref: advert, escrow_ref: escrow, post_tx: post, accept_tx: accept, reclaim_tx: reclaim, report_file: file };
+  return { step, agent, advert_ref: advert, escrow_ref: escrow, post_tx: post, accept_tx: accept, reclaim_tx: reclaim, report_file: file };
 }
 
 function refusalOf(reader: Reader, value: unknown, index: number): Refusal {
@@ -168,22 +195,44 @@ function refusalOf(reader: Reader, value: unknown, index: number): Refusal {
   return { step, kind, evaluation_error: evaluation, transaction_body: body };
 }
 
-/**
- * Checks a run record. It is strict: each member of each object is named and each one must be there, and no other is allowed. Hashes are 64 lower-case hex characters and references have an index of at
- * most 6 digits. A hire has a step (an operation and an optional suffix), the agent of that operation, and at most one of accept_tx and reclaim_tx. A refusal of the ledger holds its evaluation error and
- * the hex body of its transaction, and a refusal of a tool holds its message. No text holds a mark of a secret. It throws a `RunRecordError` that names the member, and never a value.
- */
-export function parseRunRecord(value: unknown): RunRecord {
-  const reader: Reader = new Reader();
-  const top = reader.exact(value, 'the record', ['format', 'label', 'kind', 'date', 'tenant', 'delegations', 'vaults', 'approval', 'sub_delegations', 'hires', 'refusals']);
+/** Reads either strict input shape. Only a module that wrote the old shape may accept it. */
+export function parseRunRecord(value: unknown, use: Pick<UseCase, 'name' | 'agents' | 'subagents'>, policy: RunRecordPolicy): RunRecord {
+  const reader = new Reader();
+  const legacy = policy.readLegacy === true && isObject(value) && Object.hasOwn(value, 'approval');
+  const lifecycle = !legacy && isObject(value) && value.kind === 'lifecycle';
+  const common = ['format', 'label', 'kind', 'date', 'tenant', 'delegations', 'vaults', 'sub_delegations', 'hires', 'refusals'];
+  const top = reader.exact(value, 'the record', [
+    ...common, ...(legacy ? ['approval'] : ['use_case', 'approvals', 'challenged', 'rfq_ids']), ...(lifecycle ? ['lifecycle'] : []),
+  ]);
   if (top.format !== 1) reader.fail('format', 'is not 1');
+  if (!legacy && top.use_case !== use.name) reader.fail('use_case', 'does not name the current use case');
   const label = reader.named(top.label, 'label', LABEL, 'a label of 1 to 32 lower-case letters, digits and hyphens');
-  if (top.kind !== 'clean' && top.kind !== 'failure') reader.fail('kind', 'is neither clean nor failure');
-  const kind: RunKind = top.kind;
+  if (top.kind !== 'clean' && top.kind !== 'failure' && !lifecycle) reader.fail('kind', 'is not clean, failure or lifecycle');
+  const kind = top.kind as RunKind;
   const date = dateOf(reader, top.date);
-  const tenant = reader.named(top.tenant, 'tenant', TENANT, 'a tenant name of 1 to 48 lower-case letters, digits and hyphens');
+  if (lifecycle && top.tenant !== null) reader.fail('tenant', 'must be null in a lifecycle run');
+  const tenant = lifecycle ? null : reader.named(top.tenant, 'tenant', TENANT, 'a tenant name of 1 to 48 lower-case letters, digits and hyphens');
+  const candidate = legacy ? null : top.challenged;
+  const challenged = candidate === null ? null : reader.named(candidate, 'challenged', STEP_ID, 'an agent id or null');
+  if (challenged !== null && (kind !== 'failure' || !use.agents.some((agent) => agent.id === challenged))) {
+    reader.fail('challenged', 'must name an agent of the use case in a failure run');
+  }
+  const rfqSeen = new Set<string>();
+  const rfqIds = legacy ? [] : reader.list(top.rfq_ids, 'rfq_ids', 0, !lifecycle && policy.allowRfqs === true ? 8 : 0).map((value, i) => {
+    const member = `rfq_ids[${i}]`;
+    const id = reader.named(value, member, RFQ_ID, 'a request identifier');
+    reader.unique(rfqSeen, id, member);
+    return id;
+  });
+  const lifecycleSeen = new Set<string>();
+  const lifecycleSteps = !lifecycle ? [] : reader.list(top.lifecycle, 'lifecycle', 1, 32).map((value, i) => {
+    const member = `lifecycle[${i}]`;
+    const id = reader.named(value, member, STEP_ID, 'the name of a lifecycle fact');
+    reader.unique(lifecycleSeen, id, member);
+    return id;
+  });
   const delegationIds = new Set<string>();
-  const delegations = reader.list(top.delegations, 'delegations', 1, 8).map((item, i): DelegationEntry => {
+  const delegations = reader.list(top.delegations, 'delegations', lifecycle ? 0 : 1, lifecycle ? 0 : 8).map((item, i): DelegationEntry => {
     const at = `delegations[${i}]`;
     const entry = reader.exact(item, at, ['id', 'tx', 'ended_tx']);
     const id = reader.hash(entry.id, `${at}.id`);
@@ -191,30 +240,63 @@ export function parseRunRecord(value: unknown): RunRecord {
     return { id, tx: reader.hash(entry.tx, `${at}.tx`), ended_tx: reader.hashOrNull(entry.ended_tx, `${at}.ended_tx`) };
   });
   const vaultRefs = new Set<string>();
-  const vaults = reader.list(top.vaults, 'vaults', 1, 8).map((item, i): VaultEntry => {
+  const vaults = reader.list(top.vaults, 'vaults', lifecycle ? 0 : 1, lifecycle ? 0 : 8).map((item, i): VaultEntry => {
     const at = `vaults[${i}]`;
     const entry = reader.exact(item, at, ['ref', 'open_tx', 'close_tx']);
     const ref = reader.ref(entry.ref, `${at}.ref`);
     reader.unique(vaultRefs, ref, `${at}.ref`);
     return { ref, open_tx: reader.hash(entry.open_tx, `${at}.open_tx`), close_tx: reader.hashOrNull(entry.close_tx, `${at}.close_tx`) };
   });
-  const approval = reader.exact(top.approval, 'approval', ['attestation', 'tx']);
-  const subIds = new Set<string>();
-  const subDelegations = reader.list(top.sub_delegations, 'sub_delegations', 0, 16).map((item, i): SubDelegationEntry => {
-    const at = `sub_delegations[${i}]`;
-    const entry = reader.exact(item, at, ['id', 'delegate_tx', 'undelegate_tx']);
-    const id = reader.hash(entry.id, `${at}.id`);
-    reader.unique(subIds, id, `${at}.id`);
-    return { id, delegate_tx: reader.hash(entry.delegate_tx, `${at}.delegate_tx`), undelegate_tx: reader.hash(entry.undelegate_tx, `${at}.undelegate_tx`) };
+  const approvalIds = new Set<string>();
+  const approvals = legacy ? [legacyApproval(reader, top.approval)] : reader.list(top.approvals, 'approvals', 0, lifecycle ? 0 : 4).map((item, i): ApprovalEntry => {
+    const at = `approvals[${i}]`;
+    const entry = reader.exact(item, at, ['role', 'attestation', 'tx', 'valid_until', 'revoked_tx', 'supersedes']);
+    if (entry.role !== 'approval' && entry.role !== 'binding') return reader.fail(`${at}.role`, 'is neither approval nor binding');
+    const attestation = reader.hash(entry.attestation, `${at}.attestation`);
+    const end = entry.valid_until;
+    if (typeof end !== 'number' || !Number.isSafeInteger(end) || end < 1 || end > 8_640_000_000_000_000) {
+      return reader.fail(`${at}.valid_until`, 'is not a positive POSIX time in milliseconds');
+    }
+    const supersedes = reader.hashOrNull(entry.supersedes, `${at}.supersedes`);
+    if (supersedes === attestation) reader.fail(`${at}.supersedes`, 'names the attestation itself');
+    reader.unique(approvalIds, attestation, `${at}.attestation`);
+    return { role: entry.role, attestation, tx: reader.hash(entry.tx, `${at}.tx`), valid_until: end, revoked_tx: reader.hashOrNull(entry.revoked_tx, `${at}.revoked_tx`), supersedes };
   });
   const steps = new Set<string>();
   const escrows = new Set<string>();
   const files = new Set<string>();
-  const hires = reader.list(top.hires, 'hires', 1, 32).map((item, i) => hireOf(reader, item, i, steps, escrows, files));
+  const hires = reader.list(top.hires, 'hires', lifecycle ? 0 : 1, lifecycle ? 0 : 32).map((item, i) => hireOf(reader, item, i, use, policy, steps, escrows, files));
+  const subIds = new Set<string>();
+  const subDelegations = reader.list(top.sub_delegations, 'sub_delegations', 0, lifecycle ? 0 : 16).map((item, i): SubDelegationEntry => {
+    const at = `sub_delegations[${i}]`;
+    const fields = ['id', 'delegate_tx', 'undelegate_tx'];
+    const entry = reader.exact(item, at, legacy ? fields : [...fields, 'subagent', 'hire']);
+    const id = reader.hash(entry.id, `${at}.id`);
+    reader.unique(subIds, id, `${at}.id`);
+    const subagent = legacy ? null : reader.named(entry.subagent, `${at}.subagent`, STEP_ID, 'a subagent id');
+    const hire = legacy ? null : reader.named(entry.hire, `${at}.hire`, STEP_ID, 'a propose hire step');
+    if (subagent !== null && hire !== null) {
+      const child = use.subagents.find((one) => one.id === subagent);
+      if (child === undefined) return reader.fail(`${at}.subagent`, 'does not name a subagent of the use case');
+      const parent = hires.find((one) => one.step === hire);
+      if (parent === undefined || parent.agent !== child.parent || hireRoleOf(hire, policy.hireRoles) !== 'propose') {
+        reader.fail(`${at}.hire`, 'does not name a propose hire of the parent agent');
+      }
+    }
+    return { id, delegate_tx: reader.hash(entry.delegate_tx, `${at}.delegate_tx`), undelegate_tx: reader.hash(entry.undelegate_tx, `${at}.undelegate_tx`), subagent, hire };
+  });
   const refusals = reader.list(top.refusals, 'refusals', 0, 16).map((item, i) => refusalOf(reader, item, i));
   return {
-    format: 1, label, kind, date, tenant, delegations, vaults, approval: { attestation: reader.hash(approval.attestation, 'approval.attestation'), tx: reader.hash(approval.tx, 'approval.tx') },
-    sub_delegations: subDelegations, hires, refusals,
+    format: 1, label, use_case: use.name, kind, date, tenant, delegations, vaults, approvals, challenged, rfq_ids: rfqIds, lifecycle: lifecycleSteps,
+    sub_delegations: subDelegations, hires, refusals, legacy,
+  };
+}
+
+function legacyApproval(reader: Reader, value: unknown): ApprovalEntry {
+  const old = reader.exact(value, 'approval', ['attestation', 'tx']);
+  return {
+    role: 'approval', attestation: reader.hash(old.attestation, 'approval.attestation'), tx: reader.hash(old.tx, 'approval.tx'),
+    valid_until: null, revoked_tx: null, supersedes: null,
   };
 }
 
@@ -273,6 +355,25 @@ export interface TxInfo {
   readonly minted: readonly { readonly policy: string; readonly name: string; readonly quantity: bigint }[];
 }
 
+export interface ScriptSpend {
+  readonly script: string;
+  readonly input: string | null;
+  readonly valid: boolean;
+  readonly action: number;
+  readonly fields: readonly unknown[];
+}
+export interface ScriptTxIo {
+  readonly ref: string;
+  readonly credential: string | null;
+  readonly address: string | null;
+}
+export interface ScriptTxInfo extends TxInfo {
+  readonly inputs: readonly ScriptTxIo[];
+  readonly outputs: readonly ScriptTxIo[];
+  readonly spends: readonly ScriptSpend[];
+  readonly fee: bigint | null;
+}
+
 const POLICY_ID = /^[0-9a-f]{56}$/;
 const KOIOS_TIMEOUT_MS = 15_000;
 const MOST_KOIOS_CHARS = 4 * 1024 * 1024;
@@ -284,23 +385,31 @@ function networkCode(err: unknown): string {
   return typeof code === 'string' && /^[A-Z0-9_]{2,24}$/.test(code) ? code : 'ERROR';
 }
 
-/**
- * Reads one transaction from Koios `tx_info`, with its inputs and its minted tokens. The error messages name the route and the status only: no address, no body. A transaction that Koios does not list is an
- * error, and so is a row with no whole block time, with an input that is no output or with a minted token of a wrong shape. A row with no list of minted tokens minted none.
- */
-export async function txInfoOf(fetchImpl: typeof fetch, koiosUrl: string, txHash: string): Promise<TxInfo> {
+export class UnknownTransactionError extends Error {
+  constructor() { super('Koios does not know the transaction'); }
+}
+
+async function txRowOf(fetchImpl: typeof fetch, koiosUrl: string, txHash: string, scripts: boolean): Promise<Record<string, unknown>> {
   let response: Response;
   try {
     response = await fetchImpl(`${koiosUrl.replace(/\/+$/, '')}/api/v1/tx_info`, {
-      method: 'POST', headers: { accept: 'application/json', 'content-type': 'application/json' }, body: JSON.stringify({ _tx_hashes: [txHash], _inputs: true, _assets: true }),
+      method: 'POST', headers: { accept: 'application/json', 'content-type': 'application/json' },
+      body: JSON.stringify({ _tx_hashes: [txHash], _inputs: true, _assets: true, ...(scripts ? { _scripts: true } : {}) }),
       redirect: 'error', signal: AbortSignal.timeout(KOIOS_TIMEOUT_MS),
     });
   } catch (err) { throw new Error(`Koios tx_info could not be reached (${networkCode(err)})`); }
   if (!response.ok) throw new Error(`Koios tx_info answered ${response.status}`);
   let body: unknown;
   try { body = JSON.parse((await response.text()).slice(0, MOST_KOIOS_CHARS)) as unknown; } catch { throw new Error('Koios tx_info answered with a body that is no JSON'); }
-  const row = Array.isArray(body) ? body.find((one: unknown) => isObject(one) && String(one.tx_hash).toLowerCase() === txHash) as Record<string, unknown> | undefined : undefined;
-  if (row === undefined) throw new Error('Koios does not know the transaction');
+  if (Array.isArray(body) && body.length === 0) throw new UnknownTransactionError();
+  const row: unknown = Array.isArray(body) && body.length === 1 ? body[0] : undefined;
+  if (!isObject(row) || typeof row.tx_hash !== 'string' || row.tx_hash.toLowerCase() !== txHash) {
+    throw new Error('Koios tx_info did not return one row of the requested transaction');
+  }
+  return row;
+}
+
+function basicTxInfo(row: Record<string, unknown>): TxInfo {
   const stamp = row.tx_timestamp;
   if (typeof stamp !== 'number' || !Number.isSafeInteger(stamp) || stamp <= 0) throw new Error('Koios gives no block time for the transaction');
   if (!Array.isArray(row.inputs)) throw new Error('Koios gives no list of inputs for the transaction');
@@ -328,6 +437,52 @@ export async function txInfoOf(fetchImpl: typeof fetch, koiosUrl: string, txHash
     return { credential: isObject(address) && typeof address.cred === 'string' ? address.cred.toLowerCase() : null };
   });
   return { timeMs: stamp * 1000, inputs, outputs, minted };
+}
+
+/** Read the block time, inputs and mint. An empty result is not the same as a failed read. */
+export async function txInfoOf(fetchImpl: typeof fetch, koiosUrl: string, txHash: string): Promise<TxInfo> {
+  return basicTxInfo(await txRowOf(fetchImpl, koiosUrl, txHash, false));
+}
+
+/** Read successful script runs and the redeemers of the spends. Vector reports validation on each run. */
+export async function scriptTxInfoOf(fetchImpl: typeof fetch, koiosUrl: string, txHash: string): Promise<ScriptTxInfo> {
+  const row = await txRowOf(fetchImpl, koiosUrl, txHash, true);
+  const base = basicTxInfo(row);
+  if ((row.valid_contract !== undefined && row.valid_contract !== true) || !Array.isArray(row.plutus_contracts)) {
+    throw new Error('Koios does not show successful script validation');
+  }
+  const spends: ScriptSpend[] = [];
+  for (const run of row.plutus_contracts) {
+    const redeemer = isObject(run) && isObject(run.input) && isObject(run.input.redeemer) ? run.input.redeemer : null;
+    if (redeemer === null || !isObject(run)) throw new Error('Koios gives a script run without its redeemer');
+    if (run.valid_contract !== true) throw new Error('Koios does not show successful script validation for every run');
+    if (redeemer.purpose !== 'spend') continue;
+    const value = isObject(redeemer.datum) ? redeemer.datum.value : null;
+    if (!isObject(value) || !Object.hasOwn(value, 'constructor') || typeof value.constructor !== 'number' || !Number.isSafeInteger(value.constructor)
+         || !Array.isArray(value.fields) || typeof run.script_hash !== 'string' || !POLICY_ID.test(run.script_hash)) {
+      throw new Error('Koios gives an incomplete script spend');
+    }
+    let input: string | null = null;
+    if (run.spends_input !== null && run.spends_input !== undefined) {
+      const ref = run.spends_input;
+      if (!isObject(ref) || typeof ref.tx_hash !== 'string' || typeof ref.tx_index !== 'number' || !REF.test(`${ref.tx_hash}#${ref.tx_index}`)) {
+        throw new Error('Koios gives a script spend without a valid input reference');
+      }
+      input = `${ref.tx_hash}#${ref.tx_index}`;
+    }
+    spends.push({ script: run.script_hash, input, valid: run.valid_contract, action: value.constructor, fields: value.fields });
+  }
+  const addressOf = (io: Record<string, unknown>): string | null =>
+    isObject(io.payment_addr) && typeof io.payment_addr.bech32 === 'string' ? io.payment_addr.bech32 : null;
+  const inputs = (row.inputs as Record<string, unknown>[]).map((input, i) => ({ ...base.inputs[i]!, address: addressOf(input) }));
+  const outputs = (row.outputs as unknown[]).map((output, i) => {
+    if (!isObject(output) || typeof output.tx_index !== 'number' || !REF.test(`${txHash}#${output.tx_index}`)
+      || (output.tx_hash !== undefined && output.tx_hash !== txHash)) throw new Error('Koios gives an output without a valid reference');
+    return { ref: `${txHash}#${output.tx_index}`, credential: base.outputs[i]!.credential, address: addressOf(output) };
+  });
+  const fee = row.fee;
+  const validFee = typeof fee === 'string' ? /^\d{1,30}$/.test(fee) : typeof fee === 'number' && Number.isSafeInteger(fee) && fee >= 0;
+  return { ...base, inputs, outputs, spends, fee: validFee ? BigInt(fee as number | string) : null };
 }
 
 /** The block time of a transaction in POSIX milliseconds, read from Koios `tx_info` (the node gives the confirmations only). */

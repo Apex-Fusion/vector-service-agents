@@ -1,6 +1,6 @@
 // scripts/operator/tasks/claim.ts - the task `claim`: before a run, each agent stakes a Module-1 claim; after the challenge window, the same task withdraws the claims that nobody challenged.
 //
-//   run --run <label> --kind clean|failure   stakes the claim of the run for each agent, in the order of the data: `reorder-agent`, then `order-desk` (one step each)
+//   run --run <label> --kind clean|failure   stakes the claim of the run for each agent, in the order of the data (one step each)
 //   cleanup --run <label>                    withdraws each claim of the run that its facts hold, after its window; a claim that a challenge moved waits for its verdict
 //   status --run <label>                     shows the claims of the run from the facts, the time left of each window, and the open claims that the chain shows
 //   run --trial                              writes the documents for the test of the jury: no chain, no key, no transaction
@@ -16,35 +16,27 @@
 // The wait of a Challenged claim names the end of its challenge when exactly one live challenge output holds the claim token: the time of the challenge plus its resolution deadline. The challenge must be
 // resolved before that time, and after it anyone can submit TimeoutResolve. This pack builds no TimeoutResolve: the line only names it.
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { isCollateralOutput } from '../../checks/lib/collateral.ts';
 import { writeFileAtomically } from '../../checks/lib/files.ts';
 import { duration, iso, units } from '../../checks/lib/format.ts';
 import { PreconditionError } from '../../checks/lib/session.ts';
 import type { TxFacts } from '../../checks/lib/txfacts.ts';
-import { CHALLENGE_RESERVE_LOVELACE, CLAIM_STAKE_LOVELACE, CLAIM_WINDOW_MS, claimTypeOf } from '../lib/claim-constants.ts';
-import type { AgentSpec, ClaimFact, GuardedSignRequest, LandHost, StepOutcome, TaskDefinition, TaskSession } from '../lib/contract.ts';
+import { CLAIM_OF_KIND, CLAIM_STAKE_LOVELACE, CLAIM_WINDOW_MS, claimTypeOf } from '../lib/claim-constants.ts';
+import type { AgentSpec, ClaimFact, GuardedSignRequest, LandHost, OfflineTaskInput, OfflineTaskResult, StepOutcome, TaskDefinition, TaskSession } from '../lib/contract.ts';
 import { readRunning, requireRuntimesFree, runtimesOf } from '../lib/free.ts';
 import { DryStop, guardedSign, recordKitLanding, recordingProvider } from '../lib/guarded-sign.ts';
 import { planOf } from '../lib/plan.ts';
 import {
-  Dispute, INVENTORY_CAPABILITIES, ORDER_DESK_CLAIM, PURPOSE, REORDER_CLAIM, canonicalJson, canonicalSha256, claimDocument, createModule1Port, effectiveStatus, evidenceDocument, findRecord, keyHashOf,
-  koiosUtxoInfo, module1FromManifest, parseOrderConfirmation, parseOutRef, parsePurchaseOrder, readManifest, withdrawableFrom,
+  Dispute, PURPOSE, createModule1Port, effectiveStatus, findRecord, keyHashOf, koiosUtxoInfo, module1FromManifest, parseOutRef, readManifest, withdrawableFrom,
 } from '../lib/platform.ts';
 import { FlagError, runSteps } from '../lib/runner.ts';
 import type { StepHandler } from '../lib/runner.ts';
-// `lib/platform.ts` does not give these names, and this task is their only caller in the pack: the fee buffer of a Module-1 build and the reader of the URI of a document (buyer-core), the size limit
-// of a document for a juror, the types of the kit results and the queue of the wallet (the dispute and access folders of the kit), the lots file and the documents of the inventory (its folder), and
-// the checks of a receipt (the protocol folder).
+import { trialOf } from '../lib/trials/index.ts';
 import { MODULE1_FEE_BUFFER, txHashOfUri } from '../../../packages/buyer-core/src/index.ts';
 import type { Module1Deployment } from '../../../packages/buyer-core/src/index.ts';
 import { createSerialQueue } from '../../../packages/usecase-kit/src/access/index.ts';
-import { MAX_JUROR_DOCUMENT_BYTES } from '../../../packages/usecase-kit/src/dispute/index.ts';
-import type { ChallengeView, ClaimView, EvidenceDocumentInput, JurorDocument, Module1Port, Module1Provider, RunClaimNotStaked, WithdrawNotDone } from '../../../packages/usecase-kit/src/dispute/index.ts';
-import { CONFIRMATION_CHECKS, CONFIRMATION_SCHEMA, PO_SCHEMA, lotSizeOf, parseLotsFile } from '../../../packages/usecase-kit/src/inventory/index.ts';
-import type { LotName, LotsFile } from '../../../packages/usecase-kit/src/inventory/index.ts';
-import { RECEIPT_CHECKS } from '../../../packages/usecase-kit/src/protocol/index.ts';
+import type { ChallengeView, ClaimView, Module1Port, Module1Provider, RunClaimNotStaked, WithdrawNotDone } from '../../../packages/usecase-kit/src/dispute/index.ts';
 
 type Kind = 'clean' | 'failure';
 const KINDS: readonly Kind[] = ['clean', 'failure'];
@@ -69,7 +61,7 @@ const NOT_OPEN = 'not open';
 const stepOfDocument = (agent: AgentSpec): string => `claim:${agent.id}:document`;
 const stepOfClaim = (agent: AgentSpec): string => `claim:${agent.id}:claim`;
 const stepOfWithdraw = (agent: AgentSpec): string => `withdraw:${agent.id}`;
-const claimOf = (agent: AgentSpec): typeof REORDER_CLAIM => (agent.kind === 'reorder-agent' ? REORDER_CLAIM : ORDER_DESK_CLAIM);
+const claimOf = (agent: AgentSpec) => CLAIM_OF_KIND[agent.kind];
 const errorText = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 /**
  * A wait that never holds the process open: the kit bounds each read, build and confirmation with it, and the timer is not cancelled when the work ends first. (`Promise.withResolvers` is not in the
@@ -233,7 +225,7 @@ async function requireRecordOnChain(session: TaskSession<ClaimExtra>, agent: Age
 
 /**
  * The service wallet holds a pure output of 5 units or more (the collateral of the claim), and at least the stake, the fee buffer of a Module-1 build and the fee limits of the two transactions.
- * For a run of the kind `failure`, the wallet of the Reorder Agent must still hold the reserve for its own challenge after the claim: an open claim of an earlier run keeps its stake locked.
+ * For a run of the kind `failure`, a wallet with a challenge reserve must still hold that reserve after the claim. An open claim of an earlier run keeps its stake locked.
  */
 async function requireFunds(session: TaskSession<ClaimExtra>, agent: AgentSpec, kind: Kind): Promise<void> {
   const outputs = await session.chain.provider.getUtxos(session.registry.addressOf(agent.serviceKey));
@@ -244,11 +236,12 @@ async function requireFunds(session: TaskSession<ClaimExtra>, agent: AgentSpec, 
   if (held < needed) {
     throw new PreconditionError(`the service wallet of the agent ${agent.id} holds ${units(held)}, and the claim needs ${units(needed)}: the stake, the fee buffer of a Module-1 build and the fee limits of the two transactions. ${units(needed - held)} are missing`);
   }
-  if (kind === 'failure' && agent.kind === 'reorder-agent') {
+  const reserve = agent.claim.challengeReserveLovelace;
+  if (kind === 'failure' && reserve !== null) {
     const left = held - CLAIM_STAKE_LOVELACE - fees;
-    if (left < CHALLENGE_RESERVE_LOVELACE) {
+    if (left < reserve) {
       throw new PreconditionError(
-        `the service wallet of the agent ${agent.id} would hold ${units(left)} after the claim and its fees, and the run of the kind failure needs ${units(CHALLENGE_RESERVE_LOVELACE)} for a challenge: ${units(CHALLENGE_RESERVE_LOVELACE - left)} are missing. `
+        `the service wallet of the agent ${agent.id} would hold ${units(left)} after the claim and its fees, and the run of the kind failure needs ${units(reserve)} for a challenge: ${units(reserve - left)} are missing. `
         + 'An open claim of an earlier run keeps its stake locked: withdraw it with cleanup after its window, or fund the wallet',
       );
     }
@@ -675,145 +668,13 @@ async function status(session: TaskSession<ClaimExtra>): Promise<readonly string
 
 // ---- the trial documents ----
 
-// A DID, a hash or a reference that the facts do not hold is a made-up value, because the trial reads no chain. `trial.json` says which values are samples.
-const SAMPLE_ORDER_DESK_DID = `did:vector:${'5a'.repeat(32)}`;
-const SAMPLE_REORDER_DID = `did:vector:${'5b'.repeat(32)}`;
-const SAMPLE_MANIFEST_SHA256 = '5c'.repeat(32);
-const SAMPLE_CLAIM_REF = `${'ca'.repeat(32)}#0`;
-const SAMPLE_CLAIM_TOKEN = `636c6d5f${'0a'.repeat(28)}`;
-const SAMPLE_ESCROW_REF = `${'e5'.repeat(32)}#1`;
-const SAMPLE_ADVERT_REF = `${'b2'.repeat(32)}#0`;
-const SAMPLE_KEY_HASH = '0b'.repeat(28);
-const TRIAL_LOT: LotName = 'lot-medium';
-/** The lot that the fault `confirm_wrong_lot` of the Order Desk gives for the lot of the trial: the wrong lot of `lot-medium` is `lot-small`. */
-const TRIAL_WRONG_LOT: LotName = 'lot-small';
-
-/** The result of the builder of a juror document that the trial takes. A refusal of the builder, and a document over the limit, are a PreconditionError: nothing is written. */
-export function trialDocument(built: { readonly ok: true; readonly value: JurorDocument } | { readonly ok: false; readonly code: string; readonly detail: string }, what: string): JurorDocument {
-  if (!built.ok) throw new PreconditionError(`the ${what} cannot be made (${built.code}): ${built.detail}`);
-  if (built.value.bytes.length > MAX_JUROR_DOCUMENT_BYTES) throw new PreconditionError(`the ${what} has ${built.value.bytes.length} bytes, and a document for a juror has at most ${MAX_JUROR_DOCUMENT_BYTES}`);
-  return built.value;
-}
-
-interface TrialCase {
-  readonly name: string;
-  readonly sku: string;
-  readonly lot: LotName;
-  readonly quantity: number;
-  readonly fault: '' | 'confirm_wrong_lot';
-}
-
-/** The SKU and the lot size of the purchase order, and the three confirmations that do not agree with it. */
-interface TrialPlan { readonly sku: string; readonly size: number; readonly cases: readonly TrialCase[] }
-
-/** The lots file of the checkout of the repository. A trial runs from a checkout: the image of the pack does not hold the file. */
-function readLots(): LotsFile {
-  let json: unknown;
-  try { json = JSON.parse(readFileSync(new URL('../../../agents/order-desk/lots.json', import.meta.url), 'utf8')); } catch {
-    throw new PreconditionError('the lots file of the Order Desk cannot be read here: run the trial from a checkout of the repository');
-  }
-  const parsed = parseLotsFile(json);
-  if (!parsed.ok) throw new PreconditionError(`the lots file of the Order Desk is refused (${parsed.code}): ${parsed.detail}`);
-  return parsed.value;
-}
-
-/** The order is for the SKU of the clean run and its medium lot. The confirmations name another lot (the fault), another quantity and another SKU. */
-function trialPlan(session: TaskSession<ClaimExtra>): TrialPlan {
-  const file = readLots();
-  const clean = session.use.runs.find((run) => run.id === 'clean');
-  if (clean === undefined) throw new PreconditionError('the data of the use case has no clean run, so it names no SKU for the trial');
-  const size = lotSizeOf(file, clean.subject, TRIAL_LOT);
-  const wrongSize = lotSizeOf(file, clean.subject, TRIAL_WRONG_LOT);
-  if (size === null || wrongSize === null) throw new PreconditionError(`the lots file does not list the SKU ${clean.subject}`);
-  const other = session.use.runs.find((run) => run.id === 'failure' && run.subject !== clean.subject)?.subject ?? file.items.find((item) => item.sku !== clean.subject)?.sku;
-  if (other === undefined) throw new PreconditionError('the lots file lists no other SKU for the trial');
-  return {
-    sku: clean.subject, size,
-    cases: [
-      { name: 'wrong-lot', sku: clean.subject, lot: TRIAL_WRONG_LOT, quantity: wrongSize, fault: 'confirm_wrong_lot' },
-      { name: 'wrong-quantity', sku: clean.subject, lot: TRIAL_LOT, quantity: size * 2, fault: '' },
-      { name: 'wrong-sku', sku: other, lot: TRIAL_LOT, quantity: size, fault: '' },
-    ],
-  };
-}
-
-/** The decision of the Order Desk that a confirmation holds, with the made-up receipt of a model hire. */
-function sampleDecision(): Record<string, unknown> {
-  return {
-    name: 'availability', choice: 'available', reasoning: 'The lot is in stock.',
-    inference: {
-      path: 'marketplace', accepted: 'confirmed',
-      sub_job: {
-        capability_id: 'sample.chat.v1', advert_ref: SAMPLE_ADVERT_REF, escrow_ref: SAMPLE_ESCROW_REF, supplier_pkh: SAMPLE_KEY_HASH, receipt: {}, receipt_signature: 'sample-signature',
-        verification: Object.fromEntries(RECEIPT_CHECKS.map((name) => [name, true])),
-      },
-    },
-  };
-}
-
-/** The canonical text of a sample document, with a line feed at its end. */
-function canonicalText(value: unknown): string {
-  const written = canonicalJson(value);
-  if (!written.ok) throw new PreconditionError('a sample document has no canonical form');
-  return `${written.value}\n`;
-}
-
-/** What a trial case writes: the claim document and the evidence document for a juror, and the purchase order and the confirmation that the evidence is made from. */
-interface TrialFile { readonly file: string; readonly text: string; readonly juror: JurorDocument | null }
-interface TrialIds { readonly order: string; readonly reorder: string; readonly manifest: string }
-
-function trialFiles(plan: TrialPlan, trial: TrialCase, ids: TrialIds): TrialFile[] {
-  const order = parsePurchaseOrder({
-    schema: PO_SCHEMA, po_number: 'trial-1', tenant: 'trial', sku: plan.sku, lot: TRIAL_LOT, quantity: plan.size, needed_by: '2026-12-31', supplier_did: ids.order, advert_ref: SAMPLE_ADVERT_REF,
-    stock_reading_sha256: '5d'.repeat(32),
-  });
-  if (!order.ok) throw new PreconditionError(`the sample purchase order is refused (${order.code}): ${order.detail}`);
-  const orderSha = canonicalSha256(order.value);
-  if (!orderSha.ok) throw new PreconditionError('the sample purchase order has no canonical form');
-  const confirmed = parseOrderConfirmation({
-    schema: CONFIRMATION_SCHEMA, outcome: 'done', po_number: order.value.po_number, po_sha256: orderSha.value, sku: trial.sku, lot: trial.lot, quantity: trial.quantity, ship_by: '2026-12-31',
-    order_id: 'ORD-TRIAL-1', sender: { did: ids.reorder, organisation: 'echo.vector.apexfusion.org', organisation_verified: true },
-    approval: { attestation: '22'.repeat(32), issuer_did: null, valid_until: null },
-    checks: Object.fromEntries(CONFIRMATION_CHECKS.map((name) => [name, true])), decisions: [sampleDecision()], fault_mode: trial.fault,
-  });
-  if (!confirmed.ok) throw new PreconditionError(`the sample confirmation is refused (${confirmed.code}): ${confirmed.detail}`);
-  const confirmationSha = canonicalSha256(confirmed.value);
-  if (!confirmationSha.ok) throw new PreconditionError('the sample confirmation has no canonical form');
-  const claim = trialDocument(claimDocument({ agent_did: ids.order, capability_id: INVENTORY_CAPABILITIES.order, manifest_sha256: ids.manifest, claim: ORDER_DESK_CLAIM }), `claim document of the case ${trial.name}`);
-  const input: EvidenceDocumentInput = {
-    kind: 'order_confirmation', claim: SAMPLE_CLAIM_REF, claim_token: SAMPLE_CLAIM_TOKEN, against_did: ids.order, by_did: ids.reorder, escrow_ref: SAMPLE_ESCROW_REF,
-    statement_text: ORDER_DESK_CLAIM.statements[0].text, purchase_order: { ...order.value }, confirmation: JSON.parse(JSON.stringify(confirmed.value)), confirmation_sha256: confirmationSha.value,
-  };
-  const evidence = trialDocument(evidenceDocument(input), `evidence document of the case ${trial.name}`);
-  return [
-    { file: `${trial.name}.claim.txt`, text: claim.text, juror: claim },
-    { file: `${trial.name}.evidence.txt`, text: evidence.text, juror: evidence },
-    { file: `${trial.name}.purchase-order.json`, text: canonicalText(order.value), juror: null },
-    { file: `${trial.name}.confirmation.json`, text: canonicalText(confirmed.value), juror: null },
-  ];
-}
-
-/** What the run wrote, for the machine line: public values only. */
-const RESULTS = new WeakMap<object, Readonly<Record<string, unknown>>>();
-
-/**
- * Writes the documents of the trial into `<state>/trial`: for each case four files, and `trial.json` with the size and the SHA-256 of each. It reads no chain and signs nothing. Every document is built
- * before any file is written, so a refusal (a document over the limit, a sample that a parser refuses) writes nothing. The DIDs and the manifest hash are those of the facts when the facts hold them,
- * and made-up samples when they do not.
- */
-function writeTrial(session: TaskSession<ClaimExtra>): StepOutcome {
-  const facts = session.facts.read();
-  const ids: TrialIds = {
-    order: facts.records['order-desk']?.did ?? SAMPLE_ORDER_DESK_DID, reorder: facts.records['reorder-agent']?.did ?? SAMPLE_REORDER_DID, manifest: facts.manifests['order-desk']?.sha256 ?? SAMPLE_MANIFEST_SHA256,
-  };
-  const sample = { order_desk_did: facts.records['order-desk'] === undefined, reorder_agent_did: facts.records['reorder-agent'] === undefined, manifest_sha256: facts.manifests['order-desk'] === undefined, references: true };
-  const plan = trialPlan(session);
-  const built = plan.cases.map((trial) => ({ trial, files: trialFiles(plan, trial, ids) }));
+/** Build every document before writing any file. The trial receives public facts, but no chain or signing ports. */
+function writeTrial({ use, facts, stateDir, out }: OfflineTaskInput<ClaimExtra>): OfflineTaskResult {
+  const { cases: built, sample, subjects } = trialOf(use.name)(use, facts);
   const hashes: Record<string, string> = {};
-  const cases = built.map(({ trial, files }) => ({
-    case: trial.name,
-    purchase_order: { sku: plan.sku, lot: TRIAL_LOT, quantity: plan.size },
-    confirmation: { sku: trial.sku, lot: trial.lot, quantity: trial.quantity, fault_mode: trial.fault },
+  const cases = built.map(({ name, fields, files }) => ({
+    case: name,
+    ...fields,
     files: files.map((entry) => {
       const sha256 = createHash('sha256').update(entry.text, 'utf8').digest('hex');
       hashes[entry.file] = sha256;
@@ -823,16 +684,20 @@ function writeTrial(session: TaskSession<ClaimExtra>): StepOutcome {
   const index = {
     format: 1,
     note: 'The documents are for a test of the jury. A value that the sample object marks as a sample is made up: the trial reads no chain and makes no transaction. The references and the claim token are always samples.',
-    sample, order_desk_did: ids.order, reorder_agent_did: ids.reorder, manifest_sha256: ids.manifest, cases,
+    sample, ...subjects, cases,
   };
-  const dir = join(session.settings.stateDir, 'trial');
+  const dir = join(stateDir, 'trial');
   for (const { files } of built) for (const entry of files) writeFileAtomically(join(dir, entry.file), entry.text);
   writeFileAtomically(join(dir, 'trial.json'), `${JSON.stringify(index, null, 2)}\n`);
-  RESULTS.set(session, { trial: true, cases: plan.cases.map((trial) => trial.name), sample, sha256: hashes });
+  const names = built.map(({ name }) => name);
   const samples = Object.entries(sample).filter(([, made]) => made).map(([name]) => name.replaceAll('_', ' '));
-  session.out.out(`the trial documents are written: ${built.length} cases of ${built[0]?.files.length ?? 0} files each, and trial.json with the size and the SHA-256 of each file`);
-  session.out.out(`these values are samples that the trial made up: ${samples.join(', ')}`);
-  return { kind: 'done', message: `the trial documents are written for the cases ${plan.cases.map((trial) => trial.name).join(', ')}` };
+  const perCase = built[0]?.files.length ?? 0;
+  const counts = built.every(({ files }) => files.length === perCase)
+    ? `${built.length} cases of ${perCase} files each`
+    : `${built.length} cases with ${Object.keys(hashes).length} files`;
+  out.out(`the trial documents are written: ${counts}, and trial.json with the size and the SHA-256 of each file`);
+  out.out(`these values are samples that the trial made up: ${samples.join(', ')}`);
+  return { message: `the trial documents are written for the cases ${names.join(', ')}`, result: { trial: true, cases: names, sample, sha256: hashes } };
 }
 
 // ---- the task ----
@@ -858,14 +723,14 @@ const task: TaskDefinition<ClaimExtra> = {
     if (!trial && run === null) throw new FlagError('give --run <label>: the label of the run that the claims are for');
     return { trial, run, kind };
   },
+  offline: { matches: ({ trial }) => trial, run: writeTrial },
   async next(session) {
-    return session.extra.trial ? writeTrial(session) : runSteps(session, handlersOf(session));
+    return runSteps(session, handlersOf(session));
   },
   cleanup,
   status,
   result(session) {
-    const { run, trial } = session.extra;
-    if (trial) return RESULTS.get(session) ?? {};
+    const { run } = session.extra;
     if (run === null) return {};
     const claims = session.facts.read().claims[run] ?? {};
     const shown = Object.entries(claims).map(([id, fact]) => [id, {
