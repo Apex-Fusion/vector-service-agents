@@ -1,0 +1,25 @@
+# deploy/server/Caddyfile.insurer-intake-agent.snippet - the host block of the Insurer Intake Agent.
+#
+# The Insurer Intake Agent has one runtime in front of one service. The host name belongs to the runtime, and so to the advert:
+#   mp-suppliers-intake.vector.apexfusion.org   intake-runtime:8080
+# The block sends one path to the service, intake-service:9104: /agent.json (the manifest). The runtime does not serve it. Every other path goes to the runtime. The service gets no other public path:
+# POST / and POST /precheck of the service need the token that only the runtime holds. The service has no co-sign route.
+# All upstream names are container names of the compose project insurer-intake-agent (docker-compose.insurer-intake-agent.yml). The Caddy container of the host must join the network of that project, so that it resolves them:
+#   docker network connect insurer-intake-agent_default <caddy container>
+# A new Caddy container joins again. The network exists after the first start of the service.
+# The host name is a DNS-only name. Caddy ends TLS itself and gets its own certificate for the name. A proxy in front of the name would end TLS first, and it would replace the body of an error answer. A refusal of the hook is an error answer with a JSON body, and so is a job that the runtime cannot finish. The buyer needs that body.
+#
+# How the block gets in. The host has one Caddyfile, and the Caddy container mounts that one file. Add the lines from the marker BEGIN to the marker END to the end of that file, in place:
+# append to the file, so that it keeps its inode. A mounted file does not follow a new file that replaces it. Then validate the whole file in the Caddy container, and reload Caddy. Never restart it.
+# The two markers are exact lines. A command finds them to replace the block or to remove it, so keep them as they are.
+# RUNBOOK-insurer-intake-agent.md, "The Caddy block", gives the commands and the way back.
+# insurer-intake-agent vhosts (BEGIN)
+mp-suppliers-intake.vector.apexfusion.org {
+    handle /agent.json {
+        reverse_proxy intake-service:9104
+    }
+    handle {
+        reverse_proxy intake-runtime:8080
+    }
+}
+# insurer-intake-agent vhosts (END)
