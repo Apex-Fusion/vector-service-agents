@@ -533,19 +533,23 @@ A Bid Desk is the hired side. A job that fails answers with its HTTP status and 
 
 ## Back out
 
-To take one Bid Desk out of service. The order matters: the advert goes first, so that nobody can post an escrow against an agent that goes away. The other two Bid Desks, their containers and their blocks stay. To take all three out, run the steps for each Bid Desk in turn.
+To take one Bid Desk out of service, retire its listing first. An escrow that already exists can still need work. The other two Bid Desks, their containers and their blocks stay. To take all three out, run the steps for each Bid Desk in turn.
 
-1. Retire the active advert of this Bid Desk before stopping it. Use the hosted tools and the supplier key of its runtime. An empty `ADVERT_REF` does not prove that no Post landed. Check each recorded Post transaction and the current ledger outputs for this desk's agent ID, supplier and model. If a Post may still land, or the ledger read fails, stop here. Skip retirement only when no matching advert is active and no Post can still land. If an advert was active, confirm its retirement before continuing.
-2. Wait 2 minutes after the last job. Then check that its runtime says `free`, and stop its containers at once. Never check first and then wait. The command does the three steps without a gap. A job that was claimed before the retire still runs: when the runtime says `working`, nothing is stopped. Let the job end, and run the command again. Compose waits up to 330 seconds for the service. Run the command of the Bid Desk in its folder:
+1. Check each recorded Post and the current advert outputs for this desk's agent ID, supplier and model. An empty `ADVERT_REF` does not prove that no Post landed. If a Post may still land, or the ledger read fails, stop here. Retire every matching active advert with `vector_build_marketplace_advert_retire` and the supplier key of this desk's runtime. Confirm each Retire with `vector_await_transaction`. Skip retirement only when no matching advert is active and no Post can still land.
+2. If the runtime started, let its last job end and then wait 2 minutes. If the runtime never started, verify that fact with this desk's deployment record and container history. A missing container or a failed `/status` request is not proof.
+
+   For either path, complete [the ledger check](RUNBOOK.md#check-the-ledger-before-a-use-case-3-stop) before you stop anything. Leave the runtime, service and its Caddy block in place if work is outstanding or proof is unavailable.
+
+   If the runtime started, require `free` and zero active sessions at the stop. Run the command for this desk in its folder. Replace `<name>` and `<runtime port>` with the values in the table in "What it is". Compose waits up to 330 seconds for the service:
 
    ```sh
-   sleep 120; if curl -s --max-time 5 http://127.0.0.1:8108/status | grep -q '"status":"free"'; then docker compose -f docker-compose.bid-desk-alfa.yml stop; else echo 'the runtime does not say free: nothing was stopped'; fi
-   sleep 120; if curl -s --max-time 5 http://127.0.0.1:8109/status | grep -q '"status":"free"'; then docker compose -f docker-compose.bid-desk-bravo.yml stop; else echo 'the runtime does not say free: nothing was stopped'; fi
-   sleep 120; if curl -s --max-time 5 http://127.0.0.1:8110/status | grep -q '"status":"free"'; then docker compose -f docker-compose.bid-desk-charlie.yml stop; else echo 'the runtime does not say free: nothing was stopped'; fi
+   status=$(curl -fsS --max-time 5 http://127.0.0.1:<runtime port>/status) &&
+     printf '%s\n' "$status" | grep -q '"status":"free"' &&
+     printf '%s\n' "$status" | grep -Eq '"active_sessions":0[,}]' &&
+     docker compose -f docker-compose.bid-desk-<name>.yml stop
    ```
 
-   Run one of the three lines. Each line is the whole command of one Bid Desk: its port and its compose file.
-   If the runtime never started, use this desk's deployment record and container history to establish that fact. Check that no escrow for its advert has work outstanding. Only then may you stop the service alone with `docker compose -f docker-compose.bid-desk-<name>.yml stop service`. A missing container or a failed `/status` request is not proof. If any result is unknown, leave this desk and its Caddy block in place.
+   If the runtime never started, stop the service alone with `docker compose -f docker-compose.bid-desk-<name>.yml stop service`. Continue only after the applicable stop succeeds.
 3. Remove the Caddy block of that Bid Desk, with its own pair of markers, as section "The Caddy block" says. The blocks of the other two stay. Validate and reload Caddy.
 4. Leave the network of the project before the `down` command, because the Caddy container is on it. Do not use `-v`:
 
