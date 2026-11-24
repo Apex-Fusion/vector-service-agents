@@ -59,6 +59,8 @@ const entryOf = (index: number): Json => ({
   quote: { escrow_ref: `${(index + 100).toString(16).padStart(2, '0').repeat(32)}#0`, receipt_sha256: (index + 150).toString(16).padStart(2, '0').repeat(32), total: 1000 + index, lead_time_days: index },
 });
 const excludedOf = (index: number, reason = 'not_invited', code: string | null = null): Json => ({ desk_did: didOf(index), reason, code });
+/** `count` excluded entries for the bidders 21 and up, with the five reasons in turn: the bidders 1 to 20 are the ranked entries of `rankingOf(20)`. */
+const excludedList = (count: number): Json[] => Array.from({ length: count }, (_, index) => excludedOf(21 + index, EXCLUDED_REASONS[index % EXCLUDED_REASONS.length], index % 2 === 0 ? null : 'cannot_supply'));
 /** The golden ranking with `count` generated entries and the given excluded entries: the entries have no organisation. */
 const rankingOf = (count: number, excluded: Json[] = []): Json => ({ ...golden(), ranked: Array.from({ length: count }, (_, index) => entryOf(index + 1)), excluded });
 /** The ranking of 3 generated entries, with the ranks that the test gives. */
@@ -341,12 +343,15 @@ describe('parseRanking: the bidders', () => {
     expectRefused(parseRanking({ ...golden(), excluded: [excludedOf(40), excludedOf(40, 'failed', 'llm_timeout')] }), 'ranking.excluded[1].desk_did');
   });
 
-  it('takes a ranking of 20 ranked entries and many excluded entries, each bidder once', () => {
-    const ranking = rankingOf(20, Array.from({ length: 30 }, (_, index) => excludedOf(21 + index, EXCLUDED_REASONS[index % EXCLUDED_REASONS.length], index % 2 === 0 ? null : 'cannot_supply')));
-    const parsed = must(parseRanking(ranking));
+  it('takes a ranking of 20 ranked entries and 20 excluded entries, each bidder once, and refuses 21 excluded entries', () => {
+    const parsed = must(parseRanking(rankingOf(20, excludedList(20))));
     expect(parsed.ranked).toHaveLength(20);
-    expect(parsed.excluded).toHaveLength(30);
-    expect(new Set([...parsed.ranked, ...parsed.excluded].map((entry) => entry.desk_did)).size).toBe(50);
+    expect(parsed.excluded).toHaveLength(20);
+    expect(new Set([...parsed.ranked, ...parsed.excluded].map((entry) => entry.desk_did)).size).toBe(40);
+    const result = parseRanking(rankingOf(20, excludedList(21)));
+    expectRefused(result, 'ranking.excluded');
+    expect(!result.ok && result.detail).toContain('at most 20');
+    expect(parseRanking(rankingOf(20, excludedList(0))).ok).toBe(true);
   });
 
   it.each([
@@ -684,7 +689,7 @@ describe('the rankings that the sourcing record of the mock service takes', () =
   const many = (count: number): Json => rankingOf(count);
 
   const BOTH_TAKE = rowsOf('accepts', 'accepts', [
-    ['the golden ranking', golden()], ['one ranked entry and no excluded entry', many(1)], ['20 ranked entries', many(20)], ['20 ranked entries and an excluded entry', rankingOf(20, [excludedOf(40)])],
+    ['the golden ranking', golden()], ['one ranked entry and no excluded entry', many(1)], ['20 ranked entries', many(20)], ['20 ranked entries and an excluded entry', rankingOf(20, [excludedOf(40)])], ['20 ranked entries and 20 excluded entries', rankingOf(20, excludedList(20))],
     ['an excluded list that is empty', at(['excluded'], [])], ['an organisation on every entry', change(change(orgAt('alfa.example.org'), ['ranked', 1, 'organisation'], 'bravo.example.org'), ['ranked', 2, 'organisation'], 'charlie.example.org')],
     ['no organisation on any entry', many(3)], ['a score of 0 and four components of 0', change(change(golden(), ['ranked', 0, 'score'], 0), ['ranked', 0, 'components'], { price: 0, lead_time: 0, reliability: 0, compliance: 0 })],
     ['a score of 100 and four components of 100', change(change(golden(), ['ranked', 0, 'score'], 100), ['ranked', 0, 'components'], { price: 100, lead_time: 100, reliability: 100, compliance: 100 })],
@@ -698,7 +703,7 @@ describe('the rankings that the sourcing record of the mock service takes', () =
   const KIT_STRICTER = rowsOf('refuses', 'accepts', [
     ['the ranks 1 and 3', withRanks([1, 3, 4])], ['the ranks in the order 2, 1, 3', withRanks([2, 1, 3])], ['the ranks 3, 2, 1', withRanks([3, 2, 1])], ['the ranks 1000 and 1', withRanks([1000, 1])], ['the ranks 1, 2 and 1000', withRanks([1, 2, 1000])],
     ['a desk_did twice in ranked', at(['ranked', 2, 'desk_did'], DID_A)], ['a desk_did in ranked and in excluded', at(['excluded', 0, 'desk_did'], DID_A)],
-    ['a desk_did twice in excluded', { ...golden(), excluded: [excludedOf(40), excludedOf(40)] }], ['a bad desk_did in excluded', at(['excluded', 0, 'desk_did'], 'did:vector:abc')],
+    ['a desk_did twice in excluded', { ...golden(), excluded: [excludedOf(40), excludedOf(40)] }], ['a bad desk_did in excluded', at(['excluded', 0, 'desk_did'], 'did:vector:abc')], ['21 excluded entries', rankingOf(20, excludedList(21))],
     ['a score of 101', at(['ranked', 0, 'score'], 101)], ['a score of -1', at(['ranked', 0, 'score'], -1)], ['a score of 100.0001', at(['ranked', 0, 'score'], 100.0001)], ['a score that is a text', at(['ranked', 0, 'score'], '88.5')],
     ['a score that is null', at(['ranked', 0, 'score'], null)], ['a component of 100.5', at(['ranked', 0, 'components', 'price'], 100.5)], ['a component of -0.5', at(['ranked', 0, 'components', 'compliance'], -0.5)],
     ['a component that is a text', at(['ranked', 0, 'components', 'lead_time'], '80')], ['a fifth component', at(['ranked', 0, 'components', 'extra'], 1)], ['a missing component', at(['ranked', 0, 'components', 'reliability'], undefined)],
@@ -859,6 +864,11 @@ describe('buildRanking', () => {
     const entries = [...twenty, { ...twenty[0]!, desk_did: didOf(21) }];
     expect(buildRanking(buildInput({ entries: twenty, excluded: [] })).ok).toBe(true);
     expectRefused(buildRanking(buildInput({ entries, excluded: [] })), 'entries');
+  });
+
+  it('refuses more than 20 excluded entries, and takes 20, and names the excluded list', () => {
+    expect(buildRanking(buildInput({ excluded: excludedList(20) as never })).ok).toBe(true);
+    expectRefused(buildRanking(buildInput({ excluded: excludedList(21) as never })), 'ranking.excluded');
   });
 
   it('refuses entries that are not a list, and an entry that is not an object, and never throws', () => {

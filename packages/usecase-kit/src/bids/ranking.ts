@@ -38,6 +38,8 @@ export type ExcludedReason = (typeof EXCLUDED_REASONS)[number];
 
 /** The most entries that a ranked list holds: the most that the sourcing record takes. */
 const MAX_RANKED = 20;
+/** The most entries that an excluded list holds. The sourcing record does not read the list, so this limit is the kit's own: it keeps the document small. */
+const MAX_EXCLUDED = 20;
 /** The form of a tenant of the mock service: 1 to 48 lower-case letters, digits and hyphens, starting with a letter or a digit. */
 const TENANT = /^[a-z0-9][a-z0-9-]{0,47}$/;
 /** One label of a domain: 1 to 63 lower-case letters, digits and hyphens, starting and ending with a letter or a digit. */
@@ -172,7 +174,7 @@ function parseExcludedEntry(value: JsonValue, field: string): ProtocolResult<Exc
 
 /**
  * A ranking with exactly the members above, as a new plain object, or a refusal with the code `bad_shape`. The ranked list has 1 to 20 entries, and the ranks are 1 to n in the order of the list. Each
- * `desk_did` is in the ranking once, across `ranked` and `excluded`. The excluded list may be empty. `field` is the name that the detail of a refusal gives to the ranking: a caller that reads the document
+ * `desk_did` is in the ranking once, across `ranked` and `excluded`. The excluded list has 0 to 20 entries. `field` is the name that the detail of a refusal gives to the ranking: a caller that reads the document
  * of a proposal passes `proposal.document`.
  */
 export function parseRanking(value: unknown, field = 'ranking'): ProtocolResult<Ranking> {
@@ -196,6 +198,7 @@ export function parseRanking(value: unknown, field = 'ranking'): ProtocolResult<
   if (!ranked.ok) return ranked;
   const excludedList = copy.value.excluded;
   if (!isList(excludedList)) return refused('bad_shape', `${field}.excluded must be a list`);
+  if (excludedList.length > MAX_EXCLUDED) return refused('bad_shape', `${field}.excluded must have at most ${MAX_EXCLUDED} entries`);
   const excluded = valuesOf(Array.from(excludedList, (entry, index) => parseExcludedEntry(entry, `${field}.excluded[${index}]`)));
   if (!excluded.ok) return excluded;
   const seen = new Set<string>();
