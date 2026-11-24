@@ -48,6 +48,8 @@ export { PURPOSE, effectiveStatus } from './vendored/mcp/identity-rules.ts';
 export type { Effective, PurposeName } from './vendored/mcp/identity-rules.ts';
 export { ATT_TYPES, buildAttest, buildWithdrawAttestation } from './vendored/mcp/attestation-build.ts';
 export type { AttestBuild, AttestParams, AttTypeName, IssuerSigner, WithdrawBuild } from './vendored/mcp/attestation-build.ts';
+export { envelopeSigStructure, envelopeVerifies } from './vendored/mcp/attestation-build.ts';
+export type { EnvelopeFields } from './vendored/mcp/attestation-build.ts';
 export { buyerIdentityDeployment, buyerVaultDeployment, BUYER_IDENTITY_SETTINGS, VAULT_PAYER_IDENTITY_SETTINGS } from './deployment.ts';
 export { ocrPromptHash, ocrResponseHash, responsesPromptHash, responsesResponseHash, responsesOutputText, requestSpecHash } from './commitments.ts';
 export { planFleetPostEscrow, buildFleetPostEscrow, fleetPostTerms, isIdentityAdvert } from './fleet-build.ts';
