@@ -11,7 +11,7 @@ import type { LineCheck, PriceFacts } from '@vsa/usecase-kit/bids';
 import { evidenceDocument } from '@vsa/usecase-kit/dispute';
 import type { EvidenceDocumentInput, QuotePriceFacts } from '@vsa/usecase-kit/dispute';
 import { PARTIES } from '../dispute/support.ts';
-import { golden as inputGolden, goldenText as inputGoldenText, listAt, must } from './support.ts';
+import { golden as inputGolden, goldenText as inputGoldenText, listAt, must, withPrototype } from './support.ts';
 import type { Json } from './support.ts';
 
 const quoteText = readFileSync(new URL('./golden/quote-off-list.json', import.meta.url), 'utf8');
@@ -145,6 +145,57 @@ describe('quotePriceFacts: a line with no listed price', () => {
     (_what, input) => {
       expect(() => facts(input)).not.toThrow();
       expectRefusal(facts(input), 'no_listed_price', 'line');
+    },
+  );
+});
+
+describe('quotePriceFacts: a line that no price list prices', () => {
+  it.each([
+    ['a quantity of 0', { quantity: 0 }], ['a negative quantity', { quantity: -1 }], ['a quantity with a fraction', { quantity: 1.5 }], ['a quantity above 1,000,000', { quantity: 1_000_001 }],
+    ['a quantity that is a text', { quantity: '100' }], ['a quantity that is null', { quantity: null }], ['a quantity that is NaN', { quantity: Number.NaN }], ['no quantity', { quantity: undefined }],
+    ['a SKU that is the empty text', { sku: '' }], ['a SKU with a space', { sku: 'A B' }], ['a SKU that starts with a hyphen', { sku: '-A' }], ['a SKU of 65 characters', { sku: 'A'.repeat(65) }],
+    ['a SKU that is a number', { sku: 5 }], ['a SKU that is null', { sku: null }], ['a SKU with the Kelvin sign', { sku: '\u212A' }], ['no SKU', { sku: undefined }],
+  ])('refuses a line with %s: no_listed_price, and no facts', (_what, members) => {
+    expectRefusal(factsOf(members), 'no_listed_price', 'SKU and quantity');
+  });
+
+  it('takes the least and the greatest quantity, a SKU of 1 and of 64 characters, and a SKU that Object.prototype names: the twins of the rows above', () => {
+    for (const members of [{ quantity: 1 }, { quantity: 1_000_000 }, { sku: 'A' }, { sku: 'A'.repeat(64) }, { sku: 'constructor' }, {}]) expect(factsOf(members).ok, JSON.stringify(members)).toBe(true);
+  });
+
+  it('checks the SKU and the quantity before the prices: a line with no SKU gives no_listed_price whatever its prices are', () => {
+    for (const prices of [{ quoted_unit_price: 125 }, { quoted_unit_price: 100 }, { quoted_unit_price: null }]) expectRefusal(factsOf({ sku: '', ...prices }), 'no_listed_price', 'SKU and quantity');
+    expect(factsOf({ quoted_unit_price: 125 })).toMatchObject({ ok: false, code: 'no_contradiction' });
+  });
+});
+
+describe('quotePriceFacts: a member that only a prototype holds', () => {
+  const LINE = { sku: 'GLV-NIT-M', quantity: 100, quoted_unit_price: 100, listed_unit_price: 125 };
+
+  it.each([
+    ['sku', 'GLV-NIT-M', 'no_listed_price', 'SKU and quantity'], ['quantity', 100, 'no_listed_price', 'SKU and quantity'], ['listed_unit_price', 125, 'no_listed_price', 'listed unit price'],
+    ['quoted_unit_price', 100, 'no_contradiction', 'quoted unit price'],
+  ])('reads no %s of the line from a prototype: a line with no own member of that name is refused, although Object.prototype holds a good value', (name, value, code, where) => {
+    const line = Object.fromEntries(Object.entries(LINE).filter(([key]) => key !== name));
+    expectRefusal(withPrototype(Object.prototype, { [name]: { value, writable: true, enumerable: true } }, () => facts({ line, ...DIGESTS })), code, where);
+    expect(facts({ line: LINE, ...DIGESTS }).ok).toBe(true);
+  });
+
+  it.each([['price_list_sha256'], ['quote_sha256']])('reads no hash %s from a prototype: an input with no own member of that name is refused, and the twin gives facts', (name) => {
+    const input = Object.fromEntries(Object.entries({ line: LINE, ...DIGESTS }).filter(([key]) => key !== name));
+    expectRefusal(withPrototype(Object.prototype, { [name]: { value: 'cc'.repeat(32), writable: true, enumerable: true } }, () => facts(input)), 'no_listed_price', 'hash');
+    expect(facts({ line: LINE, ...DIGESTS }).ok).toBe(true);
+  });
+
+  it('reads no line from a prototype: an input with no own line is refused, although Object.prototype holds a good line', () => {
+    expectRefusal(withPrototype(Object.prototype, { line: { value: LINE, writable: true, enumerable: true } }, () => facts({ ...DIGESTS })), 'no_listed_price', 'line');
+  });
+
+  it.each([['undefined', undefined], ['null', null], ['a number', 7], ['a list', [DIGESTS.price_list_sha256]], ['an object', { hash: DIGESTS.price_list_sha256 }]])(
+    'refuses a hash that is %s, in either member: the input must hold two texts, and the twin gives facts',
+    (_what, hash) => {
+      for (const input of [{ line: LINE, ...DIGESTS, price_list_sha256: hash }, { line: LINE, ...DIGESTS, quote_sha256: hash }]) expectRefusal(facts(input), 'no_listed_price', 'hash');
+      expect(facts({ line: LINE, ...DIGESTS }).ok).toBe(true);
     },
   );
 });

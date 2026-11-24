@@ -7,8 +7,9 @@
 //   checkQuoteFromList    the quote names the hash of the price list that the agent read                                                                   (quote_not_from_list)
 //   lineChecks            for each line, the unit price that the quote gives and the unit price that the list gives, so that an agent can find the line that breaks the list
 //
-// The checks take a quote that `parseQuote` made. They read nothing: no clock, no network, no file. They never throw for data. A value that is not a quote, a request that is not a request for quotation, and
-// a hash that is not a digest are refused with the code of the rule, and no value is a pass because a member is missing. The quote is read from a copy that `parseDocument` makes (each member one time, as
+// The checks take a quote that `parseQuote` made, so a caller runs `parseQuote` first. They do not parse a whole quote: each check reads only the members that its rule needs. They read nothing: no clock, no
+// network, no file. They never throw for data. A value that lacks a member that the rule reads, or holds it in a wrong form, is refused with the code of the rule, and no value is a pass because a member is
+// missing. A request that is not a request for quotation and a hash that is not a digest are refused in the same way. The members are read from a copy that `parseDocument` makes (each member one time, as
 // data), and a member that only a prototype holds is not read. The detail of a refusal names the member and never repeats a value.
 //
 // A request item that the quote leaves out is no fault: a Bid Desk may quote some of the items and say in its notes which ones it leaves out. The quantity of a line is the quantity of its item, and not a
@@ -22,8 +23,8 @@ import type { Quote } from './quote.ts';
 import { parseRfqDocument, rfqSha256 } from './rfq.ts';
 import type { RfqDocument } from './rfq.ts';
 
-/** The member of a record that the record holds itself, or undefined. A member that only a prototype holds is not read, and the parser of the member refuses undefined. */
-const own = (record: object, name: string): unknown => (Object.hasOwn(record, name) ? Reflect.get(record, name) : undefined);
+/** The member of a record that the record holds itself, or undefined. A member that only a prototype holds is not read, and the parser of the member refuses undefined. `facts.ts` reads its line in the same way. */
+export const own = (record: object, name: string): unknown => (Object.hasOwn(record, name) ? Reflect.get(record, name) : undefined);
 
 /**
  * The quote answers the request. Three conditions, in this order, and the detail names the first that fails:
