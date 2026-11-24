@@ -36,8 +36,16 @@ const reset = (w: TaskWorld): void => {
   w.screen.lines.length = 0;
   w.screen.errors.length = 0;
 };
-const approve = (w: TaskWorld, over: Parameters<TaskWorld['writeGo']>[0] = {}): void => { w.writeGo({ runWallet: 'unset', tasks: ['keys'], ...over }); };
-const submit = (w: TaskWorld): Promise<number> => w.run(keysTask, '--submit');
+/** The run wallet that an approval names: `unset` while the file of the run key is missing, and the address of that key once the file exists, because the runner loads the run key for the approval. */
+const runWalletOf = (w: TaskWorld): string => {
+  const root = w.env.OPERATOR_KEYS_DIR!;
+  return existsSync(join(root, 'shared', 'run.seed')) ? loadRegistry({ dir: root, useCase: USE_CASE, specs: SPECS, need: ['run'] }).addressOf('run') : 'unset';
+};
+const approve = (w: TaskWorld, over: Parameters<TaskWorld['writeGo']>[0] = {}): void => { w.writeGo({ runWallet: runWalletOf(w), tasks: ['keys'], ...over }); };
+/** A submit run with the approval that fits the key files now. */
+const submit = (w: TaskWorld): Promise<number> => { approve(w); return w.run(keysTask, '--submit'); };
+/** A submit run with the approval file as it is: none, or the one that the test wrote. */
+const submitAsIs = (w: TaskWorld): Promise<number> => w.run(keysTask, '--submit');
 const folderOf = (spec: KeySpec): string => (spec.scope === 'shared' ? 'shared' : USE_CASE);
 const fileOf = (root: string, spec: KeySpec): string => join(root, folderOf(spec), `${spec.name}.seed`);
 const modeOf = (path: string): number => statSync(path).mode & 0o777;
@@ -115,7 +123,7 @@ describe('a dry run', () => {
 describe('the approval', () => {
   it('stops a submit run with exit 2 and makes nothing when there is no approval file', async () => {
     const { w, root } = await emptyWorld();
-    expect(await submit(w)).toBe(2);
+    expect(await submitAsIs(w)).toBe(2);
     expect(w.screen.errorText).toContain('the approval file does not exist');
     nothingMade(root);
     expect(w.machine()).toMatchObject({ task: 'keys', mode: 'submit', outcome: 'stopped', exit: 2 });
@@ -123,17 +131,31 @@ describe('the approval', () => {
   it('stops a submit run with exit 2 and makes nothing when the approval lists another task, or names a run wallet, and takes the approval that says unset and lists the task keys', async () => {
     const { w, root } = await emptyWorld();
     approve(w, { tasks: ['fund'] });
-    expect(await submit(w)).toBe(2);
+    expect(await submitAsIs(w)).toBe(2);
     expect(w.screen.errorText).toContain('only the task keys may run');
     approve(w, { runWallet: w.keys.registry.addressOf('run') });
     reset(w);
-    expect(await submit(w)).toBe(2);
+    expect(await submitAsIs(w)).toBe(2);
     expect(w.screen.errorText).toContain('no run key exists yet');
     nothingMade(root);
     approve(w);
     reset(w);
     expect(await submit(w)).toBe(0);
     expect(readdirSync(root).sort()).toEqual([USE_CASE, MANIFEST, 'shared']);
+  });
+  it('refuses the approval that says unset once the run key file exists, makes nothing, and takes the approval that names the run wallet', async () => {
+    const { w, root } = await emptyWorld();
+    expect(await submit(w)).toBe(0);
+    rmSync(fileOf(root, SPECS[2]!));
+    approve(w, { runWallet: 'unset' });
+    reset(w);
+    expect(await submitAsIs(w)).toBe(2);
+    expect(w.screen.errorText).toContain('the approval says unset for runWallet, and the run key exists: it must name the run wallet');
+    expect(existsSync(fileOf(root, SPECS[2]!))).toBe(false);
+    approve(w, { runWallet: registryOf(root, SPECS.filter((spec) => spec.name !== 'alpha')).addressOf('run') });
+    reset(w);
+    expect(await submitAsIs(w)).toBe(0);
+    expect(w.machine().result).toMatchObject({ made: ['alpha'] });
   });
 });
 
