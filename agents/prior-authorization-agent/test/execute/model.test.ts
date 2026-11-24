@@ -119,4 +119,26 @@ describe('the decision of the real decision folder', () => {
     expect(booked).toStrictEqual({ posted: 0, accepted: 0 });
     expect(w.m.llm.sends).toHaveLength(0);
   });
+
+  it('is failed with decision_failed when the model accepts a record that names another hash than the hash of the request that was sent: the model hire was paid, nothing is accepted, nothing is written and nothing is challenged', async () => {
+    const w = await world();
+    const { deps, booked } = await withModel(w);
+    w.answer({ request_sha256: OTHER_HASH });
+    w.m.llm.answer = said({ accept: true, mismatch: [] });
+    const result = await w.run(w.request(), T0, deps);
+    expect(words(result)).toBe('failed decision_failed Failed');
+    expect(result).toMatchObject({ decisions: [], challenge: null, writes: [] });
+    expect(hireOf(result)).toMatchObject({ accepted: 'no', paid_from_vault: true });
+    expect(await w.m.chain.escrowState(hireOf(result).escrow_ref)).toBe('Submitted');
+    expect(booked).toStrictEqual({ posted: 1, accepted: 1 });
+    expect(w.booked.accepted).toBe(0);
+    expect(w.store.calls).toHaveLength(0);
+    expect(w.tokens).toHaveLength(0);
+    expect(footprint(w)).toStrictEqual({ paid: 1, sends: 1, writes: 0, challenges: 0, asked: 0 });
+    // The twin: the same model that accepts a record that names the right hash is heard.
+    const right = await world();
+    const again = await withModel(right);
+    right.m.llm.answer = said({ accept: true, mismatch: [] });
+    expect(words(await right.run(right.request(), T0, again.deps))).toBe('completed none Completed');
+  });
 });

@@ -183,3 +183,47 @@ describe('a decision that failed, or that cannot be read', () => {
     expect(good.notes[0]).toContain('model_output_invalid');
   });
 });
+
+describe('an accept that the two hashes contradict', () => {
+  /** A model that accepts whatever it is given, with a decision that records the accept. */
+  function yes(): ScriptedAccept {
+    const model = new ScriptedAccept();
+    model.answer = () => ({ ok: true, decision: acceptDecision(true), choice: { accept: true, mismatch: [] } });
+    return model;
+  }
+
+  it('is decision_failed when the model accepts a record that names another hash than the hash of the request that was sent: nothing is accepted, and the decision and the record are not kept', async () => {
+    const { accept, judge, notes } = setup(yes());
+    expect(await judge.decide(deliveryOf(intakeRecordOf(REQUEST, { request_sha256: OTHER_HASH })))).toStrictEqual({ accept: false, reason: 'decision_failed' });
+    expect(accept.calls).toHaveLength(1);
+    expect(judge.learned()).toStrictEqual({ said: 'decision_failed', code: 'choice_against_hashes' });
+    expect(judge.learned()).not.toHaveProperty('decision');
+    expect(judge.learned()).not.toHaveProperty('record');
+    expect(notes).toStrictEqual(['execute: the decision accept_delivery failed (choice_against_hashes)']);
+  });
+
+  it('twin: the same model accepts a record that names the hash of the request that was sent, and the decision and the record are kept', async () => {
+    const { accept, judge } = setup(yes());
+    expect(await judge.decide(deliveryOf(intakeRecordOf(REQUEST)))).toStrictEqual({ accept: true });
+    expect(accept.calls).toHaveLength(1);
+    expect(judge.learned()).toStrictEqual({ said: 'accepted', decision: acceptDecision(true), record: typedRecord(intakeRecordOf(REQUEST)) });
+  });
+
+  it('compares the hash that the job gave with the hash that the record names: one record is accepted for the request that it names and refused for a request with another hash', async () => {
+    const named = setup(yes(), { request_number: 'run1-1', request_sha256: requestHash(REQUEST) });
+    expect(await named.judge.decide(deliveryOf(intakeRecordOf(REQUEST)))).toStrictEqual({ accept: true });
+    const another = setup(yes(), { request_number: 'run1-1', request_sha256: 'aa'.repeat(32) });
+    expect(await another.judge.decide(deliveryOf(intakeRecordOf(REQUEST)))).toStrictEqual({ accept: false, reason: 'decision_failed' });
+    expect(another.judge.learned()).toStrictEqual({ said: 'decision_failed', code: 'choice_against_hashes' });
+  });
+
+  it('leaves a no of the model alone: a no for two hashes that differ and a no for two hashes that are equal are both declined_by_model, and the evidence of the kit refuses the second one later', async () => {
+    for (const hash of [OTHER_HASH, requestHash(REQUEST)]) {
+      const model = new ScriptedAccept();
+      model.answer = () => ({ ok: true, decision: acceptDecision(false, ['request_sha256']), choice: { accept: false, mismatch: ['request_sha256'] } });
+      const { judge } = setup(model);
+      expect(await judge.decide(deliveryOf(intakeRecordOf(REQUEST, { request_sha256: hash })))).toStrictEqual({ accept: false, reason: 'declined_by_model' });
+      expect(judge.learned()?.said).toBe('declined_by_model');
+    }
+  });
+});

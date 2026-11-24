@@ -157,6 +157,7 @@ describe('every end that is not a completed hire', () => {
     ['a decision that failed', (w) => { w.accept.answer = () => ({ ok: false, code: 'model_output_invalid' }); }, 'failed'],
     ['a delivery that cannot be recorded', (w) => { w.receipt.depth = 40; }, 'failed'],
     ['a challenge that the dispute folder does not file', (w) => { w.answer({ request_sha256: OTHER_HASH }); w.dispute.failWith = new Error('the node fell over'); }, 'disputed'],
+    ['a model that accepts a record that names another hash than the hash of the request that was sent', (w) => { w.answer({ request_sha256: OTHER_HASH }); w.accept.answer = () => ({ ok: true, decision: acceptDecision(true), choice: { accept: true, mismatch: [] } }); }, 'failed'],
   ];
   for (const [name, arrange, outcome] of ENDS) {
     it(`never writes the submission and never asks for its token: ${name}`, async () => {

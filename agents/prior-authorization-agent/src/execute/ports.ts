@@ -71,7 +71,8 @@ export interface ExecuteDeps {
   readonly limits: HireLimits;
   /**
    * The decision `accept_delivery`: the model compares the hash of the request that this agent sent (`sent`) with the hash that the intake record names (`received`). Both sides hold a request number and a hash and
-   * nothing else. The job asks only after it checked in code that the record is an intake record, that it names the number of the request that was sent, and that it names this agent as the sender.
+   * nothing else. The job asks only after it checked in code that the record is an intake record, that it names the number of the request that was sent, and that it names this agent as the sender. The job
+   * does not act on a yes when the two hashes differ: that answer is a failed decision.
    */
   readonly acceptDelivery: (sent: RequestSide, received: RequestSide) => Promise<AcceptAnswer>;
   /** The challenge of a delivery that the model did not accept. */

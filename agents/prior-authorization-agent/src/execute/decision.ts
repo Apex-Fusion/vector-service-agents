@@ -10,9 +10,9 @@
 // The model gets two request numbers and two hashes, and nothing else: the number and the hash of the request that was sent (the hash is computed by the job from the document of the handoff, and never taken from the
 // record), and the number and the hash that the record names. No free text of the Insurer Intake Agent reaches the model.
 //
-// The decision accepts only for the boolean `true` of a choice that names no value and that is the choice that the recorded decision holds. Any other answer of the model port, a failure, a throw and a value of
-// another type included, is `decision_failed`, and nothing is accepted. The judge keeps what it learned (which of the five ends, the decision when the model made one, and the record when the model accepted), so
-// that the job reads it after the hire.
+// The decision accepts only for the boolean `true` of a choice that names no value and that is the choice that the recorded decision holds. The job acts on that accept only when the hash that the record names is
+// the hash of the request that was sent: an accept that the two hashes contradict is `decision_failed`. So is any other answer of the model port, a failure, a throw and a value of another type included, and
+// nothing is accepted. The judge keeps what it learned (which of the five ends, the decision when the model made one, and the record when the model accepted), so that the job reads it after the hire.
 import type { AcceptDecision } from '@vsa/hire-kit';
 import type { DeliveryDecision, VerifiedDelivery } from '@vsa/usecase-kit/buyer';
 import { parseIntakeRecord } from '@vsa/usecase-kit/priorauth';
@@ -58,6 +58,8 @@ export interface JudgeDeps {
 /** A code that may stand in a log line: lower-case letters, digits and "_", 64 characters at most. */
 const CODE = /^[a-z0-9_]{1,64}$/;
 const INVALID_CODE = 'invalid_code';
+/** The code of a decision that accepts while the hash that the record names is not the hash of the request that was sent. */
+const CHOICE_AGAINST_HASHES = 'choice_against_hashes';
 
 /** The code of a failed decision as the model port gave it, when it is a code. The text of a port could be anything, so no other text goes into a result or a log line. */
 function codeOf(value: unknown): string {
@@ -104,6 +106,11 @@ export function judgeDelivery(deps: JudgeDeps, sent: RequestSide): DeliveryJudge
     deps.note(line);
     return { accept: false, reason: said };
   };
+  const failed = (code: string): AcceptDecision => {
+    learned = { said: NOT_ACCEPTED.failed, code };
+    deps.note(`execute: the decision accept_delivery failed (${code})`);
+    return { accept: false, reason: NOT_ACCEPTED.failed };
+  };
   const decide = async (delivery: VerifiedDelivery): Promise<AcceptDecision> => {
     const parsed = delivery.result === null ? null : parseIntakeRecord(delivery.result);
     if (parsed === null || !parsed.ok) return refuse(NOT_ACCEPTED.invalid, 'execute: the answer of the Insurer Intake Agent is not an intake record, so the model was not asked');
@@ -123,11 +130,10 @@ export function judgeDelivery(deps: JudgeDeps, sent: RequestSide): DeliveryJudge
     } catch {
       read = unreadable('decision_threw');
     }
-    if (!read.ok) {
-      learned = { said: NOT_ACCEPTED.failed, code: read.code };
-      deps.note(`execute: the decision accept_delivery failed (${read.code})`);
-      return { accept: false, reason: NOT_ACCEPTED.failed };
-    }
+    if (!read.ok) return failed(read.code);
+    // The model accepts, and the hash that the record names is not the hash of the request that was sent. The facts contradict the choice, and the Accept cannot be undone, so the job does not act on it: the decision
+    // is a failure, nothing is accepted, nothing is written and nothing is challenged. A no of the model for two hashes that are equal stays a no: the evidence refuses it later, and it costs no stake.
+    if (read.accept && record.request_sha256 !== sent.request_sha256) return failed(CHOICE_AGAINST_HASHES);
     if (read.accept) {
       learned = { said: 'accepted', decision: read.decision, record };
       deps.note('execute: the model accepts the delivery');

@@ -169,6 +169,7 @@ describe('a delivery that is not accepted for a reason that is not a no of the m
     ['a decision that failed', (w) => { w.accept.answer = () => ({ ok: false, code: 'llm_supplier_unavailable' }); }, 'decision_failed', 1],
     ['a model port that throws', (w) => { w.accept.answer = () => { throw new Error('the port fell over'); }; }, 'decision_failed', 1],
     ['an answer of the model port that is not a decision', (w) => { w.accept.answer = () => 'accept'; }, 'decision_failed', 1],
+    ['a model that accepts a record that names another hash than the hash of the request that was sent', (w) => { w.answer({ request_sha256: OTHER_HASH }); w.accept.answer = () => ({ ok: true, decision: acceptDecision(true), choice: { accept: true, mismatch: [] } }); }, 'decision_failed', 1],
   ];
   for (const [name, arrange, code, asked] of ENDS) {
     it(`is failed with ${code} and no challenge: ${name}`, async () => {
