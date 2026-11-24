@@ -2,5 +2,5 @@
   "name": "@vsa/order-desk", "version": "0.1.0", "private": true, "type": "module",
   "scripts": { "start": "tsx src/index.ts", "test": "vitest run", "typecheck": "tsc --noEmit", "template": "node --import tsx scripts/render-template.mjs" },
   "dependencies": { "@vsa/buyer-core": "workspace:*", "@vsa/hire-kit": "workspace:*", "@vsa/id-kit": "workspace:*", "@vsa/service-kit": "workspace:*", "@vsa/usecase-kit": "workspace:*", "@vsa/vector-read": "workspace:*", "tsx": "^4.21.0" },
-  "devDependencies": { "vitest": "^5.0.5", "typescript": "^5.7.3", "@types/node": "^22.13.1", "yaml": "2.8.1" }
+  "devDependencies": { "vitest": "^5.0.5", "typescript": "^7.0.2", "@types/node": "^22.13.1", "yaml": "2.8.1" }
 }

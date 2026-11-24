@@ -42,3 +42,12 @@ Advocate writes the strongest one-sided brief for a position, with citations, an
 - Design: `docs/superpowers/specs/2026-10-13-vector-service-agents-design.md`
 
 Operated by the Apex Fusion Foundation. MIT.
+
+## The TypeScript compiler
+
+The type check uses TypeScript 7 (`typescript` ^7.0.2 in each `package.json`). Its `tsc` is a native program. On a Linux machine with 16 threads, `pnpm typecheck` took 3.4 s with it and 26.9 s with tsc 5.9.3 (median of 3 runs, 2026-11-24, no build info).
+
+- `pnpm typecheck` checks all workspaces. `pnpm --filter @vsa/hire-kit typecheck` checks one.
+- TypeScript 7 sets `types` to `[]` by default. `tsconfig.base.json` names `node`. A config that needs other global types must name them in `types`.
+- `scripts/checks/tsconfig.json` is not a workspace, and CI does not check it. It passes. To check it, run `pnpm exec tsc --noEmit -p scripts/checks`.
+- The main entry of `typescript` 7.0 has no compiler API. A script that needs the API must add `@typescript/typescript6` (the API of TypeScript 6) and import it.
