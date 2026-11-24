@@ -57,6 +57,8 @@ export const STATUS_OF = {
   duplicate_request: 409,
   duplicate_submission: 409,
   tenant_limit: 409,
+  tenant_exists: 409,
+  tenant_owner_mismatch: 409,
   tenant_changed: 409,
   body_too_large: 413,
   unsupported_media_type: 415,

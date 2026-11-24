@@ -32,7 +32,7 @@ const FAULT_NAME = /^[a-z][a-z_]{0,23}$/;
 interface Extra { result: Readonly<Record<string, unknown>> | null }
 
 /** One service of the file, as the script wrote it. */
-interface Seen { readonly service: string; readonly kind: string; readonly startedAt: string; readonly value: string }
+interface Seen { readonly kind: string; readonly startedAt: string; readonly value: string }
 
 /** What a step of this task ends with: shown only (a dry run of --set), or done. */
 type Ended = { kind: 'dry' } | { kind: 'done'; message: string };
@@ -100,7 +100,7 @@ function exactly(value: unknown, names: readonly string[]): Record<string, unkno
  * with no member twice, be at most 10 minutes old at `nowMs` (and no more than a minute from the future), list at least one service, and give each service a name, a kind, a container, a start time
  * (an ISO 8601 time with a zone) and an environment that holds the one variable FAULT_MODE as a text. Any other file is a PreconditionError. A refusal never shows a value of the file.
  */
-function readSeen(path: string, nowMs: number): Seen[] {
+function readSeen(path: string, nowMs: number): ReadonlyMap<string, Seen> {
   if (!Number.isFinite(nowMs)) throw new PreconditionError(`the clock gave no valid time, so ${FILE} cannot be checked`);
   let text: string;
   try { text = readFileSync(path, 'utf8'); } catch (err) {
@@ -117,7 +117,7 @@ function readSeen(path: string, nowMs: number): Seen[] {
   if (nowMs - generated > MAX_AGE_MS) throw new PreconditionError(`${FILE} is more than 10 minutes old: the script that runs the pack writes it before every run, so this is not the state of this run`);
   if (generated - nowMs > MAX_AHEAD_MS) throw new PreconditionError(`${FILE}: generated_at is in the future, so the clock or the file is wrong`);
   if (!Array.isArray(top.services) || top.services.length === 0) throw new PreconditionError(`${FILE}: services is not a list, or it is empty, and a guard that checks no service does not pass`);
-  const seen: Seen[] = [];
+  const seen = new Map<string, Seen>();
   top.services.forEach((item: unknown, index) => {
     const where = `${FILE}: services[${index}]`;
     const entry = exactly(item, ['service', 'kind', 'container', 'started_at', 'env']);
@@ -131,21 +131,29 @@ function readSeen(path: string, nowMs: number): Seen[] {
     if (env === null) throw new PreconditionError(`${where}: env is not an object that holds exactly the variable ${FAULT_MODE_VARIABLE}`);
     const value = env[FAULT_MODE_VARIABLE];
     if (typeof value !== 'string') throw new PreconditionError(`${where}: ${FAULT_MODE_VARIABLE} is not a text`);
-    seen.push({ service: String(entry.service), kind: String(entry.kind), startedAt: String(entry.started_at), value });
+    const container = String(entry.container);
+    if (seen.has(container)) throw new PreconditionError(`${FILE} names a container twice`);
+    seen.set(container, { kind: String(entry.kind), startedAt: String(entry.started_at), value });
   });
-  if (new Set(seen.map((one) => one.service)).size !== seen.length) throw new PreconditionError(`${FILE} names a service twice`);
   return seen;
 }
 
-/** The service of each agent of the use case, found by its kind: one service for each agent. A service of another kind is not a service of this use case, and it is not looked at. */
-function servicesOf(use: UseCase, seen: readonly Seen[]): Array<{ agent: AgentSpec; seen: Seen }> {
+/** Match each agent with its container. Ignore containers outside the use case. */
+function servicesOf(use: UseCase, seen: ReadonlyMap<string, Seen>): Array<{ agent: AgentSpec; seen: Seen }> {
   const found: Array<{ agent: AgentSpec; seen: Seen }> = [];
   const problems: string[] = [];
+  const containers = new Set<string>();
   for (const agent of use.agents) {
-    const matches = seen.filter((one) => one.kind === agent.kind);
-    if (matches.length === 0) problems.push(`${FILE} shows no service of the kind ${agent.kind} (the agent ${agent.id}): a check does not pass without a reading of each service of the use case`);
-    else if (matches.length > 1) problems.push(`${FILE} shows ${matches.length} services of the kind ${agent.kind} (the agent ${agent.id}): the check cannot tell which one is the service of the agent`);
-    else found.push({ agent, seen: matches[0]! });
+    const container = agent.serviceContainer;
+    if (containers.has(container)) {
+      problems.push(`two agents of the data name container ${container}: each agent must have its own container`);
+      continue;
+    }
+    containers.add(container);
+    const running = seen.get(container);
+    if (running === undefined) problems.push(`${FILE} shows no container ${container}: a check needs a reading of each service of the use case`);
+    else if (running.kind !== agent.kind) problems.push(`${FILE}: container ${container} has a different kind (expected ${agent.kind})`);
+    else found.push({ agent, seen: running });
   }
   if (problems.length > 0) throw new PreconditionError(problems.join('\n'));
   return found;
@@ -186,10 +194,10 @@ async function setSwitch(session: TaskSession<Extra>, value: string): Promise<En
     const now = env.get(FAULT_MODE_VARIABLE);
     if (now === undefined) throw new PreconditionError(`${label}: the file has no line ${FAULT_MODE_VARIABLE}: it is not made from the current example`);
     if (now === value) {
-      lines.push(`${FAULT_MODE_VARIABLE} in ${label} already holds ${named(value)}: no change`);
+      lines.push(`${FAULT_MODE_VARIABLE} in ${label} already holds ${named(value)}: no change (container ${agent.serviceContainer})`);
       continue;
     }
-    lines.push(`${dry ? 'would set' : 'set'} ${FAULT_MODE_VARIABLE} in ${label} to ${named(value)} (it holds ${named(now)} now)`);
+    lines.push(`${dry ? 'would set' : 'set'} ${FAULT_MODE_VARIABLE} in ${label} to ${named(value)} (it holds ${named(now)} now; container ${agent.serviceContainer})`);
     env.set(FAULT_MODE_VARIABLE, value);
     changes.push({ label, path, env });
   }
@@ -200,7 +208,7 @@ async function setSwitch(session: TaskSession<Extra>, value: string): Promise<En
   }
   for (const line of lines) session.out.out(line);
   for (const agent of agents) {
-    session.out.out(`the service of ${agent.id} reads ${FAULT_MODE_VARIABLE} when its container is created: create the service again by the restart rule, after each of its ${agent.statusUrls.length} runtime${agent.statusUrls.length === 1 ? '' : 's'} says free`);
+    session.out.out(`the service of ${agent.id} reads ${FAULT_MODE_VARIABLE} when its container is created: create the service again by the restart rule, after each of its ${agent.statusUrls.length} runtime${agent.statusUrls.length === 1 ? '' : 's'} says free (container ${agent.serviceContainer})`);
   }
   session.extra.result = { set: agents.map((agent) => ({ agent: agent.id, value })) };
   return dry ? { kind: 'dry' } : { kind: 'done', message: `${FAULT_MODE_VARIABLE} is ${named(value)} in ${changes.length} file${changes.length === 1 ? '' : 's'}` };
@@ -225,12 +233,11 @@ async function checkRun(session: TaskSession<Extra>, check: string): Promise<End
   if (session.flags.value('run') === undefined) throw new FlagError('--run <label> is required with --check: a check belongs to a run');
   const agent = checkedAgent(session.use, check, session.flags.value('agent'));
   const services = servicesOf(session.use, readSeen(join(session.settings.stateDir, FILE), session.clock.now()));
-  const guarded = services.map((one) => ({ service: one.seen.service, kind: one.agent.kind, env: { [FAULT_MODE_VARIABLE]: one.seen.value } }));
-  const expected = agent === null ? null : services.find((one) => one.agent.id === agent.id)!.seen.service;
-  const result = expected === null ? checkCleanRun(guarded) : checkFaultRun(guarded, { service: expected, value: check });
+  const guarded = services.map((one) => ({ service: one.agent.serviceContainer, kind: one.agent.kind, env: { [FAULT_MODE_VARIABLE]: one.seen.value } }));
+  const result = agent === null ? checkCleanRun(guarded) : checkFaultRun(guarded, { service: agent.serviceContainer, value: check });
   const shows = {
     check, agent: agent === null ? null : agent.id, ok: result.ok,
-    services: services.map((one) => ({ service: one.seen.service, started_at: one.seen.startedAt, value: shown(one.seen.value) })),
+    services: services.map((one) => ({ service: one.agent.serviceContainer, started_at: one.seen.startedAt, value: shown(one.seen.value) })),
   };
   for (const one of shows.services) session.out.out(`service ${one.service}: ${FAULT_MODE_VARIABLE} is ${named(one.value)}, started at ${one.started_at}`);
   if (session.mode === 'submit') session.evidence.add({ step: 'fault_check', status: 'info', shows });
@@ -261,7 +268,7 @@ const task: TaskDefinition<Extra> = {
   },
   async status(session) {
     const lines: string[] = [];
-    let seen: Seen[] | null = null;
+    let seen: ReadonlyMap<string, Seen> | null = null;
     try { seen = readSeen(join(session.settings.stateDir, FILE), session.clock.now()); } catch (err) {
       lines.push(`fault: no fresh reading of the services: ${err instanceof Error ? err.message : 'an error'}`);
     }
@@ -272,8 +279,13 @@ const task: TaskDefinition<Extra> = {
         const value = EnvFile.open(join(session.settings.agentsDir, agent.folder, agent.serviceEnvFile)).get(FAULT_MODE_VARIABLE);
         inFile = value === undefined ? `the file has no line ${FAULT_MODE_VARIABLE}` : `${FAULT_MODE_VARIABLE} in the file is ${named(value)}`;
       } catch (err) { inFile = `the file cannot be used (${reasonOf(err)})`; }
-      const running = seen === null ? [] : seen.filter((one) => one.kind === agent.kind);
-      const live = running.length === 1 ? `, in the running service ${running[0]!.service} it is ${named(running[0]!.value)} (started at ${running[0]!.startedAt})` : seen === null ? '' : `, the reading shows ${running.length} services of the kind ${agent.kind}`;
+      const container = agent.serviceContainer;
+      const running = seen?.get(container);
+      let live: string;
+      if (seen === null) live = `, no reading of container ${container}`;
+      else if (running === undefined) live = `, the reading shows no container ${container}`;
+      else if (running.kind !== agent.kind) live = `, container ${container} has a different kind (expected ${agent.kind})`;
+      else live = `, in the running service ${container} it is ${named(running.value)} (started at ${running.startedAt})`;
       lines.push(`fault: ${agent.id}: ${label}: ${inFile}${live}`);
     }
     return lines;

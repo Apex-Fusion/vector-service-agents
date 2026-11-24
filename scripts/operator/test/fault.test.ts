@@ -6,16 +6,17 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, describe, expect, it } from 'vitest';
 import { iso } from '../../checks/lib/format.ts';
+import type { UseCase } from '../lib/contract.ts';
 import { EnvFile } from '../lib/envfile.ts';
 import { loadTask } from '../lib/load.ts';
 import task from '../tasks/fault.ts';
+import BIDS from '../usecases/bid-evaluation.ts';
 import USE from '../usecases/inventory-reorder.ts';
+import PRIORAUTH from '../usecases/prior-authorization.ts';
 import { NOW, hashOf, taskWorld } from './support/task-world.ts';
 import type { TaskWorld } from './support/task-world.ts';
 
 const SERVER = fileURLToPath(new URL('../../../deploy/server/', import.meta.url));
-const NAMES = USE.keys.map((key) => key.name);
-const SHARED = USE.keys.filter((key) => key.scope === 'shared').map((key) => key.name);
 const REORDER = 'reorder-agent/.env.reorder-agent';
 const SERVICE = 'order-desk/.env.order-desk';
 const FAULT = 'confirm_wrong_lot';
@@ -31,11 +32,11 @@ afterAll(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: t
 type Service = Record<string, unknown>;
 
 /** The text of the file that the script writes: one service for each agent, both with the switch empty. `change` edits the document and the list of its services before the text is made. */
-function seenDoc(change: (doc: Record<string, unknown>, services: Service[]) => void = () => undefined, generatedAt = NOW - 5 * 60_000): string {
-  const services: Service[] = [
+function seenDoc(change: (doc: Record<string, unknown>, services: Service[]) => void = () => undefined, generatedAt = NOW - 5 * 60_000, rows?: readonly Service[]): string {
+  const services: Service[] = rows === undefined ? [
     { service: 'reorder-service', kind: 'reorder-agent', container: 'reorder-service', started_at: REORDER_STARTED, env: { FAULT_MODE: '' } },
     { service: 'orders-service', kind: 'order-desk', container: 'orders-service', started_at: DESK_STARTED, env: { FAULT_MODE: '' } },
-  ];
+  ] : rows.map((row) => ({ ...row }));
   const doc: Record<string, unknown> = { generated_at: iso(generatedAt), services };
   change(doc, services);
   return JSON.stringify(doc);
@@ -43,19 +44,20 @@ function seenDoc(change: (doc: Record<string, unknown>, services: Service[]) => 
 
 interface FaultWorld { readonly w: TaskWorld; readonly agents: string; path(file: string): string; value(file: string): string | undefined; seen(text: string): void }
 
-interface WorldOptions { readonly go?: boolean; readonly files?: boolean; readonly seen?: string | null }
+interface WorldOptions { readonly go?: boolean; readonly files?: boolean; readonly seen?: string | null; readonly use?: UseCase }
 
 async function faultWorld(options: WorldOptions = {}): Promise<FaultWorld> {
   const agents = mkdtempSync(join(tmpdir(), 'operator-agents-'));
   roots.push(agents);
-  for (const [folder, name] of [['reorder-agent', '.env.reorder-agent'], ['order-desk', '.env.order-desk']] as const) {
+  const use = options.use ?? USE;
+  for (const { folder, serviceEnvFile: name, exampleEnvFile } of use.agents) {
     mkdirSync(join(agents, folder), { mode: 0o750 });
     if (options.files !== false) {
-      copyFileSync(join(SERVER, `${name}.example`), join(agents, folder, name));
+      copyFileSync(join(SERVER, exampleEnvFile ?? `${name}.example`), join(agents, folder, name));
       chmodSync(join(agents, folder, name), 0o600);
     }
   }
-  const w = await taskWorld({ keys: NAMES, shared: SHARED, use: USE, env: { OPERATOR_AGENTS_DIR: agents } });
+  const w = await taskWorld({ use, env: { OPERATOR_USE_CASE: USE.name, OPERATOR_AGENTS_DIR: agents } });
   mkdirSync(w.stateDir, { recursive: true, mode: 0o700 });
   chmodSync(w.stateDir, 0o700);
   const seen = (text: string): void => { writeFileSync(join(w.stateDir, 'seen-services.json'), text, { mode: 0o600 }); };
@@ -84,27 +86,27 @@ describe('--set', () => {
     expect(text(f, SERVICE)).toBe(before.replace('\nFAULT_MODE=\n', `\nFAULT_MODE=${FAULT}\n`));
     expect(text(f, REORDER)).toBe(reorder);
     expect(mode(f.path(SERVICE))).toBe(0o600);
-    expect(f.w.screen.lines).toContain(`set FAULT_MODE in ${SERVICE} to ${FAULT} (it holds empty now)`);
-    expect(f.w.screen.lines).toContain('the service of order-desk reads FAULT_MODE when its container is created: create the service again by the restart rule, after each of its 3 runtimes says free');
+    expect(f.w.screen.lines).toContain(`set FAULT_MODE in ${SERVICE} to ${FAULT} (it holds empty now; container orders-service)`);
+    expect(f.w.screen.lines).toContain('the service of order-desk reads FAULT_MODE when its container is created: create the service again by the restart rule, after each of its 3 runtimes says free (container orders-service)');
     expect(f.w.machine()).toMatchObject({ task: 'fault', mode: 'submit', outcome: 'done', exit: 0, result: { set: [{ agent: 'order-desk', value: FAULT }] } });
     expect(await submit(f, '--agent', 'order-desk', '--set=')).toBe(0);
     expect(f.value(SERVICE)).toBe('');
     expect(text(f, SERVICE)).toBe(before);
-    expect(f.w.screen.lines).toContain(`set FAULT_MODE in ${SERVICE} to empty (it holds ${FAULT} now)`);
+    expect(f.w.screen.lines).toContain(`set FAULT_MODE in ${SERVICE} to empty (it holds ${FAULT} now; container orders-service)`);
   });
 
   it('takes the empty value for the Reorder Agent, which has no fault value, and for every agent when no agent is given', async () => {
     const f = await faultWorld();
     expect(await submit(f, '--agent', 'reorder-agent', '--set=')).toBe(0);
-    expect(f.w.screen.lines).toContain(`FAULT_MODE in ${REORDER} already holds empty: no change`);
-    expect(f.w.screen.lines).toContain('the service of reorder-agent reads FAULT_MODE when its container is created: create the service again by the restart rule, after each of its 1 runtime says free');
+    expect(f.w.screen.lines).toContain(`FAULT_MODE in ${REORDER} already holds empty: no change (container reorder-service)`);
+    expect(f.w.screen.lines).toContain('the service of reorder-agent reads FAULT_MODE when its container is created: create the service again by the restart rule, after each of its 1 runtime says free (container reorder-service)');
     expect(await submit(f, '--agent', 'order-desk', '--set', FAULT)).toBe(0);
     f.w.screen.lines.length = 0;
     expect(await submit(f, '--set=')).toBe(0);
     expect(f.value(SERVICE)).toBe('');
     expect(f.value(REORDER)).toBe('');
-    expect(f.w.screen.lines).toContain(`set FAULT_MODE in ${SERVICE} to empty (it holds ${FAULT} now)`);
-    expect(f.w.screen.lines).toContain(`FAULT_MODE in ${REORDER} already holds empty: no change`);
+    expect(f.w.screen.lines).toContain(`set FAULT_MODE in ${SERVICE} to empty (it holds ${FAULT} now; container orders-service)`);
+    expect(f.w.screen.lines).toContain(`FAULT_MODE in ${REORDER} already holds empty: no change (container reorder-service)`);
     expect(f.w.machine().result).toEqual({ set: [{ agent: 'reorder-agent', value: '' }, { agent: 'order-desk', value: '' }] });
   });
 
@@ -115,7 +117,7 @@ describe('--set', () => {
     f.w.screen.lines.length = 0;
     expect(await submit(f, '--agent', 'order-desk', '--set', FAULT)).toBe(0);
     expect(text(f, SERVICE)).toBe(before);
-    expect(f.w.screen.lines).toContain(`FAULT_MODE in ${SERVICE} already holds ${FAULT}: no change`);
+    expect(f.w.screen.lines).toContain(`FAULT_MODE in ${SERVICE} already holds ${FAULT}: no change (container orders-service)`);
     expect(f.w.machine().outcome).toBe('done');
   });
 
@@ -125,7 +127,7 @@ describe('--set', () => {
     expect(await dry(f, '--agent', 'order-desk', '--set', FAULT)).toBe(0);
     expect(text(f, SERVICE)).toBe(before);
     expect(f.w.machine()).toMatchObject({ mode: 'dry', outcome: 'dry', exit: 0 });
-    expect(f.w.screen.lines).toContain(`would set FAULT_MODE in ${SERVICE} to ${FAULT} (it holds empty now)`);
+    expect(f.w.screen.lines).toContain(`would set FAULT_MODE in ${SERVICE} to ${FAULT} (it holds empty now; container orders-service)`);
     expect(f.w.screen.lines.some((line) => line.startsWith('the service of order-desk reads FAULT_MODE'))).toBe(true);
   });
 
@@ -247,10 +249,9 @@ describe('--check with a clean run', () => {
       ['a member more in a service', seenDoc((_doc, services) => { services[0]!.image = 'x'; }), 'exactly the members service, kind, container, started_at and env'],
       ['a service that is no object', seenDoc((doc, services) => { doc.services = ['reorder', services[1]]; }), 'exactly the members service'],
       ['a name that is no name', seenDoc((_doc, services) => { services[0]!.service = 'two words'; }), 'service is not a name'],
-      ['a service named twice', seenDoc((_doc, services) => { services[1]!.service = 'reorder-service'; }), 'names a service twice'],
-      ['no service of the kind of the Order Desk', seenDoc((_doc, services) => { services.pop(); }), 'no service of the kind order-desk (the agent order-desk)'],
-      ['a service of the kind of the Order Desk that has another kind', seenDoc((_doc, services) => { services[1]!.kind = 'bid-desk'; }), 'no service of the kind order-desk'],
-      ['two services of the kind of the Order Desk', seenDoc((_doc, services) => { services.push({ service: 'orders-two', kind: 'order-desk', container: 'orders-two', started_at: DESK_STARTED, env: { FAULT_MODE: '' } }); }), '2 services of the kind order-desk'],
+      ['a container named twice', seenDoc((_doc, services) => { services[1]!.container = 'reorder-service'; }), 'names a container twice'],
+      ['no Order Desk container', seenDoc((_doc, services) => { services.pop(); }), 'shows no container orders-service'],
+      ['the Order Desk container with another kind', seenDoc((_doc, services) => { services[1]!.kind = 'bid-desk'; }), 'container orders-service has a different kind'],
       ['a FAULT_MODE named twice in the text', seenDoc().replace('"env":{"FAULT_MODE":""}}]', `"env":{"FAULT_MODE":"${FAULT}","FAULT_MODE":""}}]`), 'has a member twice'],
     ];
     for (const [label, seen, words] of table) {
@@ -275,6 +276,15 @@ describe('--check with a clean run', () => {
     });
     expect(await submit(other, '--run', 'r1', '--check', 'clean')).toBe(0);
     expect(entries(other)[0]!.shows).toEqual(shows('clean', null, true));
+  });
+
+  it('ignores a container outside the use case, even if its kind matches', async () => {
+    const reading = seenDoc((_doc, services) => {
+      services.push({ service: 'service', kind: 'order-desk', container: 'another-desk', started_at: DESK_STARTED, env: { FAULT_MODE: FAULT } });
+    });
+    const f = await faultWorld({ seen: reading });
+    expect(await submit(f, '--run', 'r1', '--check', 'clean')).toBe(0);
+    expect(entries(f)[0]!.shows).toEqual(shows('clean', null, true));
   });
 
   it('needs --run, takes no --agent, and takes --check clean only as that word', async () => {
@@ -356,6 +366,81 @@ describe('--check with the fault that a run needs', () => {
   });
 });
 
+describe('the containers of the additional agents', () => {
+  const QUOTE_FAULT = 'quote_off_price_list';
+  const cleanRows = (names: ReadonlyArray<readonly [string, string]>): Service[] => names.map(([kind, container]) => ({
+    service: 'service', kind, container, started_at: DESK_STARTED, env: { FAULT_MODE: '' },
+  }));
+  const prior = cleanRows([['prior-authorization-agent', 'priorauth-service'], ['insurer-intake-agent', 'intake-service']]);
+  // This order differs from the order of the agents in the data.
+  const bids = cleanRows([['bid-desk', 'bids-charlie-service'], ['sourcing-agent', 'sourcing-service'], ['bid-desk', 'bids-bravo-service'], ['bid-desk', 'bids-alfa-service']]);
+  const containers = ['sourcing-service', 'bids-alfa-service', 'bids-bravo-service', 'bids-charlie-service'];
+  const snapshot = (services: Service[], change?: (doc: Record<string, unknown>, rows: Service[]) => void): string => seenDoc(change, undefined, services);
+
+  it.each([
+    { use: PRIORAUTH, rows: prior, wanted: ['priorauth-service', 'intake-service'] },
+    { use: BIDS, rows: bids, wanted: containers },
+  ])('checks every container for $use.title with one Compose service label', async ({ use, rows, wanted }) => {
+    const f = await faultWorld({ use, seen: snapshot(rows) });
+    expect(await submit(f, '--run', 'r1', '--check', 'clean')).toBe(0);
+    expect(entries(f)[0]!.shows).toEqual({ check: 'clean', agent: null, ok: true, services: wanted.map((service) => ({ service, started_at: DESK_STARTED, value: '' })) });
+  });
+
+  it('reports the only flagged Bid Desk by container and refuses it if the container names are swapped', async () => {
+    const f = await faultWorld({ use: BIDS, seen: snapshot(bids, (_doc, rows) => { rows[0]!.env = { FAULT_MODE: QUOTE_FAULT }; }) });
+    expect(await submit(f, '--run', 'r1', '--check', 'clean')).toBe(1);
+    expect(f.w.screen.errorText).toContain('bids-charlie-service');
+    expect(await submit(f, '--run', 'r1', '--check', QUOTE_FAULT, '--agent', 'bid-desk-charlie')).toBe(0);
+    expect(entries(f)[1]!.shows).toEqual({
+      check: QUOTE_FAULT, agent: 'bid-desk-charlie', ok: true,
+      services: containers.map((service) => ({ service, started_at: DESK_STARTED, value: service === 'bids-charlie-service' ? QUOTE_FAULT : '' })),
+    });
+    f.seen(snapshot(bids, (_doc, rows) => {
+      rows[0]!.env = { FAULT_MODE: QUOTE_FAULT };
+      [rows[0]!.container, rows[3]!.container] = [rows[3]!.container, rows[0]!.container];
+    }));
+    expect(await submit(f, '--run', 'r1', '--check', QUOTE_FAULT, '--agent', 'bid-desk-charlie')).toBe(1);
+    expect(f.w.screen.errorText).toContain('bids-alfa-service');
+    expect(await f.w.run(task, 'status')).toBe(0);
+    expect(f.w.screen.lines).toContain(`fault: bid-desk-alfa: bid-desk-alfa/.env.bid-desk-alfa: FAULT_MODE in the file is empty, in the running service bids-alfa-service it is ${QUOTE_FAULT} (started at ${DESK_STARTED})`);
+  });
+
+  it('refuses two active switches, a missing container, a wrong kind and a shared container in the data', async () => {
+    const f = await faultWorld({ use: BIDS, seen: snapshot(bids, (_doc, rows) => {
+      rows[0]!.env = { FAULT_MODE: QUOTE_FAULT };
+      rows[2]!.env = { FAULT_MODE: QUOTE_FAULT };
+    }) });
+    expect(await submit(f, '--run', 'r1', '--check', QUOTE_FAULT, '--agent', 'bid-desk-charlie')).toBe(1);
+    expect(f.w.screen.errorText).toContain('bids-bravo-service');
+    f.seen(snapshot(bids, (_doc, rows) => { rows.shift(); }));
+    expect(await submit(f, '--run', 'r1', '--check', 'clean')).toBe(2);
+    expect(f.w.screen.errorText).toContain('shows no container bids-charlie-service');
+    f.seen(snapshot(bids, (_doc, rows) => { rows[0]!.kind = 'sourcing-agent'; }));
+    expect(await submit(f, '--run', 'r1', '--check', 'clean')).toBe(2);
+    expect(f.w.screen.errorText).toContain('container bids-charlie-service has a different kind');
+    expect(entries(f)).toHaveLength(1);
+
+    const agents = BIDS.agents.map((agent) => agent.id === 'bid-desk-charlie' ? { ...agent, serviceContainer: 'bids-bravo-service' } : agent);
+    const shared = await faultWorld({ use: { ...BIDS, agents }, seen: snapshot(bids) });
+    expect(await submit(shared, '--run', 'r1', '--check', 'clean')).toBe(2);
+    expect(shared.w.screen.errorText).toContain('two agents of the data name container bids-bravo-service');
+    expect(entries(shared)).toEqual([]);
+  });
+
+  it('changes the named desk file only and clears all four service files with --set=', async () => {
+    const f = await faultWorld({ use: BIDS, seen: snapshot(bids) });
+    const files = BIDS.agents.map(({ folder, serviceEnvFile }) => `${folder}/${serviceEnvFile}`);
+    const before = files.map((file) => text(f, file));
+    expect(await submit(f, '--agent', 'bid-desk-charlie', '--set', QUOTE_FAULT)).toBe(0);
+    expect(files.map(f.value)).toEqual(['', '', '', QUOTE_FAULT]);
+    expect(files.slice(0, 3).map((file) => text(f, file))).toEqual(before.slice(0, 3));
+    expect(await submit(f, '--agent', 'sourcing-agent', '--set', 'invert_scores')).toBe(0);
+    expect(await submit(f, '--set=')).toBe(0);
+    expect(files.map((file) => text(f, file))).toEqual(before);
+    expect(f.w.machine().result).toEqual({ set: BIDS.agents.map(({ id }) => ({ agent: id, value: '' })) });
+  });
+});
+
 describe('a value that has the form of a key', () => {
   // 64 hex characters that start with a letter: the form of a key in hex. It must never reach a stream, the evidence or the result line.
   const KEY = `a${hashOf('fault key').slice(1)}`;
@@ -377,7 +462,7 @@ describe('a value that has the form of a key', () => {
     expect(f.w.screen.lines).toContain(`fault: order-desk: ${SERVICE}: FAULT_MODE in the file is ${PHRASE}, in the running service orders-service it is empty (started at ${DESK_STARTED})`);
     f.w.screen.lines.length = 0;
     expect(await submit(f, '--agent', 'order-desk', '--set=')).toBe(0);
-    expect(f.w.screen.lines).toContain(`set FAULT_MODE in ${SERVICE} to empty (it holds ${PHRASE} now)`);
+    expect(f.w.screen.lines).toContain(`set FAULT_MODE in ${SERVICE} to empty (it holds ${PHRASE} now; container orders-service)`);
     expect(f.value(SERVICE)).toBe('');
     expect([...f.w.screen.lines, ...f.w.screen.errors].join('\n')).not.toContain(KEY);
   });
@@ -452,7 +537,7 @@ describe('the status', () => {
     const missing = await faultWorld({ go: false, seen: null });
     expect(await missing.w.run(task, 'status')).toBe(0);
     expect(missing.w.screen.lines.some((line) => line.startsWith('fault: no fresh reading of the services: seen-services.json does not exist'))).toBe(true);
-    expect(missing.w.screen.lines).toContain(`fault: order-desk: ${SERVICE}: FAULT_MODE in the file is empty`);
+    expect(missing.w.screen.lines).toContain(`fault: order-desk: ${SERVICE}: FAULT_MODE in the file is empty, no reading of container orders-service`);
     const stale = await faultWorld({ go: false, seen: seenDoc(undefined, NOW - 700_000) });
     expect(await stale.w.run(task, 'status')).toBe(0);
     expect(stale.w.screen.lines.some((line) => line.includes('more than 10 minutes old'))).toBe(true);
