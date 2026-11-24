@@ -669,6 +669,57 @@ describe('a transaction in flight', () => {
   /** The time after which a transaction of `strand` cannot land any more, and the run may let it go. */
   const AFTER_VALIDITY = NOW + 30 * 60_000 + 61_000;
 
+  it('refuses to settle a pending transaction for a task without approvals and makes status read-only', async () => {
+    const w = await taskWorld();
+    const { hash, def } = await strand(w, [], { applied: false });
+    const ran: string[] = [];
+    const never = toyTask(twoSteps(ran), { needs: { ...def.needs, approval: 'never' } });
+    const state = join(w.stateDir, 'toy.state.json');
+    const cap = join(w.stateDir, 'exposure.s1.json');
+    const evidence = join(w.stateDir, 'toy.evidence.json');
+    const sameState = readFileSync(state);
+    const sameCap = readFileSync(cap);
+    const networkReads = w.node.networkReads;
+    rmSync(evidence);
+    w.node.neverConfirm = false;
+    w.node.script.push({ confirmations: null });
+
+    const untouched = () => {
+      expect(ran).toEqual([]);
+      expect(w.node.networkReads).toBe(networkReads);
+      expect(w.node.reads).toEqual([]);
+      expect(w.node.inputReads).toEqual([]);
+      expect(w.node.submitted).toEqual([]);
+      expect(readFileSync(state)).toEqual(sameState);
+      expect(readFileSync(cap)).toEqual(sameCap);
+      expect(existsSync(evidence)).toBe(false);
+    };
+    const refuses = async (...argv: string[]) => {
+      reset(w);
+      expect(await w.run(never, ...argv)).toBe(2);
+      expect(w.screen.errorText).toContain('the task toy does not allow transactions');
+      expect(w.screen.errorText).not.toContain(hash);
+      expect(w.machine()).toMatchObject({ outcome: 'stopped', exit: 2 });
+      untouched();
+    };
+    await refuses('run');
+    await refuses('run', '--submit');
+    await refuses('cleanup');
+    await refuses('cleanup', '--submit');
+    w.clock.t = AFTER_VALIDITY;
+    await refuses('cleanup', '--release', hash, '--submit');
+    rmSync(w.goPath);
+    await refuses('run', '--submit');
+    writeFileSync(w.goPath, 'this is not JSON', { mode: 0o600 });
+    await refuses('run', '--submit');
+
+    reset(w);
+    expect(await w.run(never, 'status')).toBe(0);
+    expect(w.screen.text).toContain(`in flight: the step one, transaction ${hash}`);
+    expect(w.screen.text).not.toContain(w.state('toy').in_flight!.signed_cbor);
+    untouched();
+  });
+
   it('renders offline without keys or a node and never reconciles a pending payment', async () => {
     const w = await taskWorld();
     const render = toyTask([], { offline: {
@@ -772,8 +823,6 @@ describe('a transaction in flight', () => {
   });
 
   describe('the reserve of a transaction that cannot land any more', () => {
-    /** The toy task with no need of an approval: its steps record themselves and land nothing, so it runs with --submit and no approval file. */
-    const unapproved = (ran: string[]): TaskDefinition => toyTask(twoSteps(ran), { needs: { keys: () => ['run', 'fee'], chain: true, hosted: [], approval: 'never' } });
     it('is given back when the validity ended, and a second read that works does not know the hash: the step is built again with its own reserve', async () => {
       const w = await taskWorld();
       const ran: string[] = [];
@@ -944,17 +993,6 @@ describe('a transaction in flight', () => {
         expect(w.state('toy').in_flight?.tx_hash).toBe(hash);
         expect(w.exposure().map((entry) => entry.tx_hash)).toEqual([hash]);
         expect(w.evidence('toy')).toEqual([]);
-      });
-      it('lets the transaction go for a task that needs no approval, and says that its reserve stays when no approval file is loaded', async () => {
-        const w = await taskWorld();
-        const { hash } = await strand(w, [], { applied: false });
-        w.clock.t = AFTER_VALIDITY;
-        rmSync(w.goPath);
-        expect(await w.run(unapproved([]), 'cleanup', '--release', hash, '--submit')).toBe(0);
-        expect(w.screen.text).toContain('No approval file is loaded, so its reserve stays in the cap file of its session.');
-        expect(w.state('toy').in_flight).toBeNull();
-        expect(w.exposure().map((entry) => entry.tx_hash)).toEqual([hash]);
-        expect(w.evidence('toy')).toEqual([expect.objectContaining({ status: 'info', shows: expect.objectContaining({ transaction: hash, session: null }) })]);
       });
     });
     describe('the release of a transaction that may still land, or that the indexer knows', () => {
@@ -1291,34 +1329,6 @@ describe('a transaction in flight', () => {
       expect(w.state('toy').steps.one!.tx_hash).toBe(hash);
       expect(w.exposure().map((entry) => entry.tx_hash)).toEqual([hash]);
       expect(w.node.reads.filter((read) => read === hash)).toHaveLength(1);
-    });
-    it('stays when no approval file is loaded, and a line says so: a run with --submit of a task that needs no approval lets the transaction go and goes on', async () => {
-      const w = await taskWorld();
-      const ran: string[] = [];
-      const { hash } = await strand(w, [], { applied: false });
-      rmSync(w.goPath);
-      w.clock.t = AFTER_VALIDITY;
-      w.node.neverConfirm = false;
-      w.node.script.push({ confirmations: null }, { confirmations: null });
-      expect(await w.run(unapproved(ran), '--submit')).toBe(0);
-      expect(w.exposure().map((entry) => entry.tx_hash)).toEqual([hash]);
-      expect(w.screen.text).toContain(`the transaction ${hash} of the step one is not on the chain, and its validity ended at ${iso(NOW + 30 * 60_000)}: it cannot land any more. No approval file is loaded, so its reserve stays in the cap file of its session.`);
-      expect(w.state('toy').in_flight).toBeNull();
-      expect(ran).toEqual(['one']);
-    });
-    it('stays when the approval file does not load in a run that needs none, and the line says why', async () => {
-      const w = await taskWorld();
-      const ran: string[] = [];
-      const { hash } = await strand(w, [], { applied: false });
-      writeFileSync(w.goPath, 'this is not JSON', { mode: 0o600 });
-      w.clock.t = AFTER_VALIDITY;
-      w.node.neverConfirm = false;
-      w.node.script.push({ confirmations: null }, { confirmations: null });
-      expect(await w.run(unapproved(ran), '--submit')).toBe(0);
-      expect(w.exposure().map((entry) => entry.tx_hash)).toEqual([hash]);
-      expect(w.screen.text).toContain('the approval file could not be used (the approval file is not JSON)');
-      expect(w.screen.text).toContain('No approval file is loaded');
-      expect(ran).toEqual(['one']);
     });
     it('stops a submit run with exit 2 before the settle when the approval file does not load, and leaves the transaction in flight with no read of its status', async () => {
       const w = await taskWorld();
