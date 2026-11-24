@@ -5,7 +5,7 @@
 import { INVENTORY_CAPABILITIES } from '../../../packages/usecase-kit/src/inventory/index.ts';
 import { CHALLENGE_RESERVE_LOVELACE } from '../lib/claim-constants.ts';
 import type { KeyUse, UseCase } from '../lib/contract.ts';
-import { ALFA, COLLATERAL, CORE_KEYS, DELTA, DEMONSTRATION_SENTENCE, ECHO, MODULE_MANIFEST_PATH, RUNTIME_COMMIT, line, organisationKeys, partiesOf } from './shared.ts';
+import { ALFA, COLLATERAL, CORE_KEYS, DELTA, DEMONSTRATION_SENTENCE, ECHO, MODULE_MANIFEST_PATH, RESULT_REFS, RESULT_WORDING, RUNTIME_COMMIT, line, organisationKeys, partiesOf } from './shared.ts';
 
 const REORDER_ENV = '.env.reorder-agent';
 const ORDER_ENV = '.env.order-desk';
@@ -205,57 +205,159 @@ const USE_CASE: UseCase = {
     { id: 'failure', subject: 'MSK-N95', tenantPrefix: 'reorder-failure', vaultUnits: 8.3, perTxUnits: 7, totalUnits: 7 },
   ],
   evidenceSteps: [
-    { id: 'r1-01', run: 'clean', what: 'The hirer delegates to the Reorder Agent. The agent co-signs. The hirer submits.', primitive: 'Delegation with a co-signature', actor: 'hirer' },
-    { id: 'r1-02', run: 'clean', what: 'The hirer opens a vault under the delegation.', primitive: 'Vault', actor: 'hirer' },
-    { id: 'r1-03', run: 'clean', what: 'The hirer hires `propose`.', primitive: 'Escrow: post, claim, submit, accept', actor: 'hirer' },
+    {
+      id: 'r1-01', run: 'clean', what: 'The hirer delegates to the Reorder Agent. The agent co-signs. The hirer submits.',
+      primitive: 'Delegation with a co-signature', actor: 'hirer', proof: { refs: { delegation: 1, transaction: 1 } },
+    },
+    {
+      id: 'r1-02', run: 'clean', what: 'The hirer opens a vault under the delegation.',
+      primitive: 'Vault', actor: 'hirer', proof: { refs: { vault: 1, transaction: 1 } },
+    },
+    {
+      id: 'r1-03', run: 'clean', what: 'The hirer hires `propose`.',
+      primitive: 'Escrow: post, claim, submit, accept', actor: 'hirer', proof: { refs: RESULT_REFS.hire },
+    },
     {
       id: 'r1-04', run: 'clean', what: 'The agent sub-delegates the stock read to its subagent. The subagent reads the stock with a token that has a two-link chain.',
       primitive: 'Sub-delegation, token exchange with the delegation chain', actor: 'agent',
+      proof: { refs: { delegation: 1, transaction: 1 }, routes: [['GET /erp/stock/{sku}', 'token', 2]] },
     },
     {
       id: 'r1-05', run: 'clean', what: 'A model decides the lot. The agent returns the purchase order, the salt and the digest, and ends the sub-delegation.',
       primitive: 'Model call from the marketplace, signed work record', actor: 'agent',
+      proof: { refs: { escrow: 1, transaction: 1 } },
     },
-    { id: 'r1-06', run: 'clean', what: 'The hirer approves the digest.', primitive: 'Attestation: approval', actor: 'hirer' },
-    { id: 'r1-07', run: 'clean', what: 'The hirer hires `execute`.', primitive: 'Escrow', actor: 'hirer' },
-    { id: 'r1-08', run: 'clean', what: 'The agent pays the advert of the approved lot from the vault and sends the handoff.', primitive: 'Vault payment, agent hires agent', actor: 'agent' },
+    { id: 'r1-06', run: 'clean', what: 'The hirer approves the digest.', primitive: 'Attestation: approval', actor: 'hirer', proof: { refs: RESULT_REFS.approval } },
+    { id: 'r1-07', run: 'clean', what: 'The hirer hires `execute`.', primitive: 'Escrow', actor: 'hirer', proof: { refs: RESULT_REFS.hire } },
+    {
+      id: 'r1-08', run: 'clean', what: 'The agent pays the advert of the approved lot from the vault and sends the handoff.',
+      primitive: 'Vault payment, agent hires agent', actor: 'agent', proof: { refs: { escrow: 1, transaction: 1 } },
+    },
     {
       id: 'r1-09', run: 'clean', what: 'The Order Desk checks the handoff before its claim, decides availability, writes the order to the supplier portal with its X.509 identity and submits.',
       primitive: 'Pre-claim check, X.509 SVID, model call', actor: 'counterparty',
+      proof: { refs: { escrow: 2 }, routes: [['POST /supplier/orders', 'x509-svid', null]] },
     },
     {
       id: 'r1-10', run: 'clean', what: 'The agent checks the receipt, decides to accept, accepts, writes the purchase order to the PO store with a token, and returns.',
       primitive: 'Receipt checks, accept, token for a route', actor: 'agent',
+      proof: { refs: { escrow: 1, transaction: 1 }, routes: [['POST /po', 'token', 1]], settlement: { type: 'receipt', handoffRole: 'order-desk' } },
     },
-    { id: 'r1-11', run: 'clean', what: 'The hirer closes the vault and ends the delegation.', primitive: 'Vault close, undelegate', actor: 'hirer' },
+    {
+      id: 'r1-11', run: 'clean', what: 'The hirer closes the vault and ends the delegation.',
+      primitive: 'Vault close, undelegate', actor: 'hirer', proof: { refs: RESULT_REFS.close },
+    },
     {
       id: 'r2-a', run: 'failure', what: 'The order for the large lot meets a payment above the limit of the delegation. The vault script refuses at the node evaluation.',
       primitive: 'Value limit of a vault', actor: 'agent',
+      proof: { refs: RESULT_REFS.hire, refusals: ['ledger'] },
     },
     {
       id: 'r2-b', run: 'failure', what: 'The same approved order goes to `execute` again after one settled order. The vault script refuses: the total is spent.',
       primitive: 'Value limit of a vault', actor: 'agent',
+      proof: { refs: RESULT_REFS.hire, refusals: ['ledger'] },
     },
     {
       id: 'r2-c', run: 'failure',
       what: 'The Order Desk runs with the fault `confirm_wrong_lot`. The model of the agent refuses the confirmation, publishes the evidence and challenges the claim of the Order Desk.',
       primitive: 'Module-1 challenge', actor: 'agent',
+      proof: { refs: { claim: 1, transaction: 1, challenge: 1 } },
     },
-    { id: 'r2-d', run: 'failure', what: 'The jury decides. The Order Desk gets a hold of 7 days, reason 64.', primitive: 'Module-1 verdict and hold', actor: 'relay' },
+    {
+      id: 'r2-d', run: 'failure', what: 'The jury decides. The Order Desk gets a hold of 7 days, reason 64.',
+      primitive: 'Module-1 verdict and hold', actor: 'relay', proof: { refs: RESULT_REFS.verdict },
+    },
     {
       id: 'r2-e', run: 'failure', what: 'Check the Order Desk escrow for an accept or reclaim.',
       primitive: 'Escrow: release', actor: 'counterparty',
+      proof: { refs: { escrow: 1 }, settlement: { type: 'none-recorded' } },
     },
-    { id: 'r2-f', run: 'failure', what: 'A new `propose` that names the Order Desk during the hold finds no listed advert and fails.', primitive: 'Hold removes the agent from the listing', actor: 'agent' },
+    {
+      id: 'r2-f', run: 'failure', what: 'A new `propose` that names the Order Desk during the hold finds no listed advert and fails.',
+      primitive: 'Hold removes the agent from the listing', actor: 'agent', proof: { refs: RESULT_REFS.hire },
+    },
     {
       id: 'r2-g', run: 'failure', what: 'The Accountable key of the organisation of the Order Desk places a hold on it and lifts it.',
       primitive: 'Hold and lift by a party', actor: 'operator',
+      proof: { refs: RESULT_REFS.close },
     },
     {
       id: 'r2-h', run: 'failure', what: 'The hirer ends the delegation. An approved order goes to `execute` and the payment fails. The gateway refuses a token request under that delegation.',
       primitive: 'End of a delegation, token refusal', actor: 'hirer',
+      proof: { refs: { transaction: 3, escrow: 1 }, refusals: ['ledger', 'tool'] },
     },
   ],
+  results: {
+    runPrefix: 'use-case-1',
+    wording: {
+      'Delegation with a co-signature': {
+        shows: 'The ledger holds a delegation from the hirer to the agent. The agent co-signed it.',
+        doesNotShow: 'That the agent keeps to the limits of the delegation. The steps with a value limit test that.',
+      },
+      'Vault': {
+        shows: 'The ledger holds a vault under the delegation. The vault holds funds of the hirer.',
+        doesNotShow: 'That the vault refuses a payment above the limit. The steps with a value limit test that.',
+      },
+      'Escrow: post, claim, submit, accept': {
+        shows: 'The hire settled through the escrow. The ledger holds the post, the claim, the submit and the accept.',
+        doesNotShow: 'That the answer of the agent is right. The hirer checks the signed work record.',
+      },
+      'Sub-delegation, token exchange with the delegation chain': {
+        shows: 'The agent gave its subagent one narrow right. The gateway issued a token for a chain of two delegations.',
+        doesNotShow: 'That a token stops working after a delegation ends. Tests alone cover that case.',
+      },
+      'Model call from the marketplace, signed work record': {
+        shows: 'A model from the marketplace made the decision. Its signed work record is on the ledger.',
+        doesNotShow: 'That the decision is right. The model result is a sample, and another run can differ.',
+      },
+      'Attestation: approval': RESULT_WORDING.approval,
+      'Escrow': {
+        shows: 'The hire settled through the escrow. The ledger holds each transaction of the escrow.',
+        doesNotShow: 'That the order is right. The steps of the Order Desk show the order.',
+      },
+      'Vault payment, agent hires agent': {
+        shows: 'The agent paid the advert of the Order Desk from the vault of the hirer. The payment is inside the limit.',
+        doesNotShow: 'That a payment above the limit fails. The failure run tests that.',
+      },
+      'Pre-claim check, X.509 SVID, model call': {
+        shows: 'The Order Desk checked the handoff before it claimed the escrow. It proved its identity with an X.509 certificate. A model decided the availability.',
+        doesNotShow: 'That the supplier portal is a real system. The portal is a mock service.',
+      },
+      'Receipt checks, accept, token for a route': {
+        shows: 'The agent ran the receipt checks and accepted the work. It wrote the purchase order with a token for that route.',
+        doesNotShow: 'That the store of purchase orders is a real system. It is a mock service.',
+      },
+      'Vault close, undelegate': RESULT_WORDING.close,
+      'Value limit of a vault': {
+        shows: 'The vault script refused a payment above the limit when the node evaluated the transaction.',
+        doesNotShow: 'That the limit suits the hirer. It shows only that the script holds the limit.',
+      },
+      'Module-1 challenge': {
+        shows: 'The agent challenged the claim of the Order Desk. The evidence is on the ledger.',
+        doesNotShow: RESULT_WORDING.challenge.doesNotShow,
+      },
+      'Module-1 verdict and hold': {
+        shows: 'The jury decided. The Order Desk got a hold of 7 days with the reason 64.',
+        doesNotShow: RESULT_WORDING.verdict.doesNotShow,
+      },
+      'Escrow: release': {
+        shows: 'The evidence records neither an accept nor a reclaim for this escrow.',
+        doesNotShow: 'Whether the escrow ended, who spent it, or who received funds.',
+      },
+      'Hold removes the agent from the listing': {
+        shows: 'During the hold the marketplace listed no advert of the Order Desk. A new proposal found none.',
+        doesNotShow: 'That the listing returns after the hold. The end-state check reads that.',
+      },
+      'Hold and lift by a party': {
+        shows: 'The Accountable key of the organisation put a hold on the Order Desk and lifted it.',
+        doesNotShow: 'That another party can hold. It shows the Accountable party only.',
+      },
+      'End of a delegation, token refusal': {
+        shows: 'After the hirer ended the delegation, the payment failed. The gateway refused a token request under that delegation.',
+        doesNotShow: 'That a system that holds a live token refuses it after the end. Tests alone cover that case.',
+      },
+    },
+  },
   moduleManifestPath: MODULE_MANIFEST_PATH,
   runtimeCommit: RUNTIME_COMMIT,
   records: [],

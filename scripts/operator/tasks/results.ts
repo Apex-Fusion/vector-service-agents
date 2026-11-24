@@ -4,8 +4,8 @@
 //   status                                              lists the evidence files and says whether the page exists
 //
 // The page has one table for each run: a row for each step of the data of the use case for the kind of the run, with the primitive that the step used, the reference that the evidence file holds
-// for it, and what the step shows and does not show. The two sentences come from one table of this file, for each primitive of the data. A step counts as shown only when the evidence file holds a
-// reference for it: a step with no reference and a step that did not run say so, and give no reference. The page starts with the text of the header file of the operator, verbatim. That text names
+// for it, and what the step shows and does not show. The use case gives the sentences and the proof for each step. A step counts as shown only when the evidence file satisfies that proof.
+// A step with no reference and a step that did not run say so, and give no reference. The page starts with the text of the header file of the operator, verbatim. That text names
 // the group that the results go to, and the name is in no file of the repository. The page ends with the section "Not covered".
 // A label is the name of an evidence file without `.json`: the file `<state>/evidence/private/<label>.json`, or the file `<state>/evidence/<label>.json` (a public file has the date and the number
 // of the run in its name). Without `--runs` the page takes the public labels only: a private file goes into the page when `--runs` names its label. The header file must lie outside the key folder,
@@ -17,8 +17,9 @@ import type { Dirent, Stats } from 'node:fs';
 import { isAbsolute, join, relative, sep } from 'node:path';
 import { writeFileAtomically } from '../../checks/lib/files.ts';
 import { PreconditionError } from '../../checks/lib/session.ts';
-import type { StepOutcome, TaskDefinition, TaskSession, UseCase } from '../lib/contract.ts';
+import type { ProjectedResultRoute, ResultProof, ResultsSpec, StepOutcome, TaskDefinition, TaskSession, UseCase } from '../lib/contract.ts';
 import { codeOf } from '../lib/registry.ts';
+import { MOST_RESULT_REFS, resultRefShape } from '../lib/result-policy.ts';
 import { FlagError, runSteps } from '../lib/runner.ts';
 import { holdsSecret } from '../lib/secrets.ts';
 
@@ -29,7 +30,6 @@ export const HEADER_LIMIT_BYTES = 8192;
 
 const EVIDENCE_LIMIT_BYTES = 4 * 1024 * 1024;
 const MOST_RUNS = 16;
-const MOST_REFS = 32;
 const MOST_NOTE_CHARS = 2000;
 const LABEL = /^[a-z0-9][a-z0-9-]{0,31}$/;
 const PUBLIC_LABEL = /^(\d{4}-\d{2}-\d{2})-([a-z][a-z0-9-]{0,62})-run-[1-9][0-9]?$/;
@@ -43,218 +43,7 @@ const REF_KIND = /^[a-z][a-z0-9_-]{0,31}$/;
 /** A line of an env file: a name and an equals sign at the start of a line. A header names a group in plain words, so it holds no such line. */
 const ENV_LINE = /^[A-Za-z_][A-Za-z0-9_]*=/m;
 
-// ---- what each primitive shows and does not show ----
-
-export interface Sentences { readonly shows: string; readonly doesNotShow: string }
-
-/**
- * One entry for each primitive that the data of the use case names (a test holds the keys to the data). `shows` says what a step with a reference proves. `doesNotShow` says what it leaves open. The
- * sentences are short, and they say no more than the reference can prove.
- */
-export const SHOWS: Readonly<Record<string, Sentences>> = {
-  'Delegation with a co-signature': {
-    shows: 'The ledger holds a delegation from the hirer to the agent. The agent co-signed it.',
-    doesNotShow: 'That the agent keeps to the limits of the delegation. The steps with a value limit test that.',
-  },
-  'Vault': {
-    shows: 'The ledger holds a vault under the delegation. The vault holds funds of the hirer.',
-    doesNotShow: 'That the vault refuses a payment above the limit. The steps with a value limit test that.',
-  },
-  'Escrow: post, claim, submit, accept': {
-    shows: 'The hire settled through the escrow. The ledger holds the post, the claim, the submit and the accept.',
-    doesNotShow: 'That the answer of the agent is right. The hirer checks the signed work record.',
-  },
-  'Sub-delegation, token exchange with the delegation chain': {
-    shows: 'The agent gave its subagent one narrow right. The gateway issued a token for a chain of two delegations.',
-    doesNotShow: 'That a token stops working after a delegation ends. Tests alone cover that case.',
-  },
-  'Model call from the marketplace, signed work record': {
-    shows: 'A model from the marketplace made the decision. Its signed work record is on the ledger.',
-    doesNotShow: 'That the decision is right. The model result is a sample, and another run can differ.',
-  },
-  'Attestation: approval': {
-    shows: 'An approval attestation of the hirer is on the ledger. It names the digest of the proposal.',
-    doesNotShow: 'That the hirer read the proposal. The attestation covers the digest only.',
-  },
-  'Escrow': {
-    shows: 'The evidence names the escrow for the hire.',
-    doesNotShow: 'That the work met the request or that the buyer accepted it.',
-  },
-  'Vault payment, agent hires agent': {
-    shows: 'The agent paid the advert of the Order Desk from the vault of the hirer. The payment is inside the limit.',
-    doesNotShow: 'That a payment above the limit fails. The failure run tests that.',
-  },
-  'Pre-claim check, X.509 SVID, model call': {
-    shows: 'The Order Desk checked the handoff before it claimed the escrow. It proved its identity with an X.509 certificate. A model decided the availability.',
-    doesNotShow: 'That the supplier portal is a real system. The portal is a mock service.',
-  },
-  'Receipt checks, accept, token for a route': {
-    shows: 'The evidence records a completed hire, acceptance of the intake work and an allowed write to the route with a token.',
-    doesNotShow: 'That the write reached a real system. The route is part of a mock service.',
-  },
-  'Vault close, undelegate': {
-    shows: 'The ledger holds the close of the vault and the end of the delegation.',
-    doesNotShow: 'That a system refuses a live token after the end. Tests alone cover that case.',
-  },
-  'Value limit of a vault': {
-    shows: 'The vault script refused a payment above the limit when the node evaluated the transaction.',
-    doesNotShow: 'That the limit suits the hirer. It shows only that the script holds the limit.',
-  },
-  'Module-1 challenge': {
-    shows: 'The ledger records a challenge and its evidence.',
-    doesNotShow: 'That the challenge is right. The jury decides that.',
-  },
-  'Module-1 verdict and hold': {
-    shows: 'The recorded verdict puts a time-limited hold on the challenged agent.',
-    doesNotShow: 'That another jury decides the same way. The jury result is a sample.',
-  },
-  'Escrow: release': {
-    shows: 'The evidence records neither an accept nor a reclaim for this escrow.',
-    doesNotShow: 'Whether the escrow ended, who spent it, or who received funds.',
-  },
-  'Hold removes the agent from the listing': {
-    shows: 'The marketplace listing during the hold did not show the held agent.',
-    doesNotShow: 'That the listing will show the advert again after the hold.',
-  },
-  'Proposal during a verified hold': {
-    shows: 'The signed proposal during the hold names the other two Bid Desks and omits Bid Desk Charlie.',
-    doesNotShow: 'Which adverts the marketplace listed at that time.',
-  },
-  'Hold and lift by a party': {
-    shows: 'The Accountable key of the organisation put a hold on the Order Desk and lifted it.',
-    doesNotShow: 'That another party can hold. It shows the Accountable party only.',
-  },
-  'End of a delegation, token refusal': {
-    shows: 'After the hirer ended the delegation, the payment failed. The gateway refused a token request under that delegation.',
-    doesNotShow: 'That a system that holds a live token refuses it after the end. Tests alone cover that case.',
-  },
-  'Delegation with a co-signature, attestation: principal binding, vault': {
-    shows: 'The delegation, binding attestation and vault link the hirer to the agent.',
-    doesNotShow: 'The private document or salt behind the binding digest.',
-  },
-  'Escrow, two sub-delegations, token exchange with the delegation chain, model call from the marketplace': {
-    shows: 'The evidence links the proposal hire to two delegated reads and the model call for the justification.',
-    doesNotShow: 'That the records or guideline came from real systems, or that the justification is correct.',
-  },
-  'Escrow, vault payment, agent hires agent': {
-    shows: 'The execute hire led to a vault payment for a separate intake hire.',
-    doesNotShow: 'That the insurer decided to cover the request.',
-  },
-  'Pre-claim check, attestation reads, JWT-SVID, model call': {
-    shows: 'The intake evidence records the checks, the model decision and an allowed filing with a JWT identity.',
-    doesNotShow: 'That the attestations were mandatory or that the request reached a real insurer.',
-  },
-  'Attestation: revoke and approve again, refusal before the claim, reclaim to a vault': {
-    shows: 'The evidence links the revoked approval to a refusal and reclaim, and the linked approval to the later hire.',
-    doesNotShow: 'That a new approval can change the old one or make it valid again.',
-  },
-  'Attestation: approval that ends, refusal before the claim': {
-    shows: 'The approval had expired when the handoff was refused before the claim.',
-    doesNotShow: 'That an expired approval was the cause of any other refusal.',
-  },
-  'Digest check of an approval, refusal before the claim': {
-    shows: 'Intake refused the changed request before the claim. The mock system records no filing for it.',
-    doesNotShow: 'That the check decides whether the request is medically correct.',
-  },
-  'End of the subagents, token refusal': {
-    shows: 'The evidence ties the end transaction to revoked subagent resolutions and a refused token request.',
-    doesNotShow: 'That a relying party stops accepting a token that it already holds.',
-  },
-  'Delegation with a co-signature, vault': {
-    shows: 'The ledger records the co-signed delegation and the vault it authorizes.',
-    doesNotShow: 'That the agent used or exhausted the vault limit.',
-  },
-  'Marketplace list, catalog and status list reads, model call from the marketplace': {
-    shows: 'The evidence links the bidder facts to the model call for the shortlist.',
-    doesNotShow: 'That every possible bidder was listed or that the shortlist is optimal.',
-  },
-  'Vault payment, pre-claim check, model call, accept': {
-    shows: 'The evidence links three vault-paid quote hires to the checks, model decisions and accept transactions.',
-    doesNotShow: 'That the quotes were the best available or that the agents guarantee delivery.',
-  },
-  'Three sub-delegations, token exchange with the delegation chain, model call': {
-    shows: 'The evidence links three distinct delegated reads to the proposal and the model call for the ranking.',
-    doesNotShow: 'That the ranking is optimal or that this model repeats it.',
-  },
-  'Escrow, token for a route': {
-    shows: 'The execute hire and the allowed token write are recorded for this ranking.',
-    doesNotShow: 'That the write made an award in a real procurement system.',
-  },
-  'Attestation: revoke and reply': {
-    shows: 'The attestation is revoked. The bidder facts record the hash of its reply.',
-    doesNotShow: 'That the reply restores the attestation or that either party is right.',
-  },
-  'Refusal by a system with no approval': {
-    shows: 'The mock system refused the write when the request had no approval.',
-    doesNotShow: 'That the system would refuse a valid approval or check the ranking itself.',
-  },
-  'Revoke of a record by a party': {
-    shows: 'The evidence names the transaction and its record output.',
-    doesNotShow: 'Which party authorized the transaction, the reason, or when signatures became invalid.',
-  },
-  'Change of the controller': {
-    shows: 'The record shows the new controller after the change transaction.',
-    doesNotShow: 'That this controller can recover the record without the required guardians.',
-  },
-  'Recovery start': {
-    shows: 'The recorded recovery start names the next controller and when recovery can complete.',
-    doesNotShow: 'That the recovery has completed.',
-  },
-  'Waiting time of a recovery': {
-    shows: 'The tool refused to build a completion before the recovery window opened.',
-    doesNotShow: 'That the ledger refused a submitted completion. None was submitted early.',
-  },
-  'Recovery completion': {
-    shows: 'The completion after the wait put the next controller in control.',
-    doesNotShow: 'That a recovery can bypass the waiting period.',
-  },
-  'Retire of a record': {
-    shows: 'The record became a tombstone. The retire transaction left its deposit.',
-    doesNotShow: 'That this transaction set a successor or reclaimed the deposit.',
-  },
-  'Successor of an ended record': {
-    shows: 'The tombstone names the successor record.',
-    doesNotShow: 'That the successor inherits a claim, delegation or advert.',
-  },
-  'Reclaim of an ended record': {
-    shows: 'The reclaim took the deposit above the ledger minimum and left the tombstone.',
-    doesNotShow: 'That this operation returns funds from a hire escrow.',
-  },
-};
-
-// A use case can establish more than the generic wording, or preserve established wording for that case.
-const CASE_SHOWS: Readonly<Partial<Record<UseCase['name'], Readonly<Record<string, Sentences>>>>> = {
-  'inventory-reorder': {
-    'Escrow': {
-      shows: 'The hire settled through the escrow. The ledger holds each transaction of the escrow.',
-      doesNotShow: 'That the order is right. The steps of the Order Desk show the order.',
-    },
-    'Receipt checks, accept, token for a route': {
-      shows: 'The agent ran the receipt checks and accepted the work. It wrote the purchase order with a token for that route.',
-      doesNotShow: 'That the store of purchase orders is a real system. It is a mock service.',
-    },
-    'Module-1 challenge': {
-      shows: 'The agent challenged the claim of the Order Desk. The evidence is on the ledger.',
-      doesNotShow: SHOWS['Module-1 challenge']!.doesNotShow,
-    },
-    'Module-1 verdict and hold': {
-      shows: 'The jury decided. The Order Desk got a hold of 7 days with the reason 64.',
-      doesNotShow: SHOWS['Module-1 verdict and hold']!.doesNotShow,
-    },
-    'Hold removes the agent from the listing': {
-      shows: 'During the hold the marketplace listed no advert of the Order Desk. A new proposal found none.',
-      doesNotShow: 'That the listing returns after the hold. The end-state check reads that.',
-    },
-  },
-  'bid-evaluation': {
-    'Escrow: release': {
-      shows: 'The evidence records a confirmed Release spend of this quote escrow.',
-      doesNotShow: 'Who submitted the transaction or how much the supplier received.',
-    },
-  },
-};
-
-/** The fixed texts of the page. A test strips these, the table above, the data and the evidence from a page, and finds nothing left. */
+/** The fixed texts of the page. A test strips these, the use case data and the evidence from a page, and finds nothing left. */
 export const PAGE_TEXT = {
   results: 'results',
   intro: 'This page lists the steps of each run. A row names the primitive that the step used and the reference that the evidence file holds for it. A step counts as shown only when the evidence file holds a reference for it. A step that did not run says so and gives its reason.',
@@ -294,92 +83,6 @@ function refOf(raw: unknown): Ref | null {
   return kind === 'transaction' && !HASH.test(value) ? null : { kind, value };
 }
 
-type Refusal = 'ledger' | 'tool' | 'projected-tool';
-type RouteRead = readonly [route: string, credential: string, links: number | null, count?: number, decision?: 'refused'];
-type ProjectedRoute = readonly [route: string, credential: 'token' | 'jwt-svid', decision: 'allowed' | 'refused', links: number, count: number, status: number];
-interface StepProof {
-  readonly refs: Readonly<Record<string, number>>;
-  readonly refusals?: readonly Refusal[];
-  readonly routes?: readonly RouteRead[];
-  readonly projectedRoutes?: readonly ProjectedRoute[];
-  readonly settlement?: { readonly type: 'receipt' } | { readonly type: 'none-recorded' } | { readonly type: 'release' } | { readonly type: 'intake-handoff' };
-  readonly recordFromTransaction?: 'record' | 'hold';
-}
-interface CaseProof { readonly number: number; readonly steps: Readonly<Record<string, StepProof>> }
-
-const HIRE = { transaction: 2, escrow: 1 } as const;
-const CLOSE = { transaction: 2 } as const;
-const APPROVAL = { attestation: 1, transaction: 1 } as const;
-const VERDICT = { case: 1, transaction: 1, hold: 1 } as const;
-const RECORD = { transaction: 1, record: 1 } as const;
-
-/** Minimum distinct references for each row. The assembler checks the ledger and the actual operation; this task checks its saved evidence. */
-const PROOF: Readonly<Record<string, CaseProof>> = {
-  'inventory-reorder': { number: 1, steps: {
-    'r1-01': { refs: { delegation: 1, transaction: 1 } },
-    'r1-02': { refs: { vault: 1, transaction: 1 } },
-    'r1-03': { refs: HIRE },
-    'r1-04': { refs: { delegation: 1, transaction: 1 }, routes: [['GET /erp/stock/{sku}', 'token', 2]] },
-    'r1-05': { refs: { escrow: 1, transaction: 1 } },
-    'r1-06': { refs: APPROVAL },
-    'r1-07': { refs: HIRE },
-    'r1-08': { refs: { escrow: 1, transaction: 1 } },
-    'r1-09': { refs: { escrow: 2 }, routes: [['POST /supplier/orders', 'x509-svid', null]] },
-    'r1-10': { refs: { escrow: 1, transaction: 1 }, routes: [['POST /po', 'token', 1]], settlement: { type: 'receipt' } },
-    'r1-11': { refs: CLOSE },
-    'r2-a': { refs: HIRE, refusals: ['ledger'] },
-    'r2-b': { refs: HIRE, refusals: ['ledger'] },
-    'r2-c': { refs: { claim: 1, transaction: 1, challenge: 1 } },
-    'r2-d': { refs: VERDICT },
-    'r2-e': { refs: { escrow: 1 }, settlement: { type: 'none-recorded' } },
-    'r2-f': { refs: HIRE },
-    'r2-g': { refs: CLOSE },
-    'r2-h': { refs: { transaction: 3, escrow: 1 }, refusals: ['ledger', 'tool'] },
-  } },
-  'prior-authorization': { number: 2, steps: {
-    'r1-01': { refs: { delegation: 1, attestation: 1, vault: 1, transaction: 3 } },
-    'r1-02': { refs: { escrow: 2, delegation: 2, transaction: 4 }, projectedRoutes: [
-      ['GET /records/orders/{order_id}', 'token', 'allowed', 2, 1, 200], ['GET /guidelines/{code}', 'token', 'allowed', 2, 1, 200],
-    ] },
-    'r1-03': { refs: APPROVAL },
-    'r1-04': { refs: { escrow: 2, transaction: 3, vault: 1 } },
-    'r1-05': { refs: { escrow: 2, transaction: 1 }, projectedRoutes: [['POST /insurer/requests', 'jwt-svid', 'allowed', 0, 1, 201]] },
-    'r1-06': { refs: { escrow: 1, transaction: 1 }, projectedRoutes: [['POST /records/orders/{order_id}/submission', 'token', 'allowed', 1, 1, 201]], settlement: { type: 'intake-handoff' } },
-    'r1-07': { refs: CLOSE },
-    'r2-d': { refs: { attestation: 2, escrow: 3, transaction: 6 } },
-    'r2-e': { refs: { attestation: 1, escrow: 1, transaction: 2 } },
-    'r2-a': { refs: { escrow: 2, transaction: 2 } },
-    'r2-b': { refs: { claim: 1, challenge: 1 } },
-    'r2-b-hold': { refs: VERDICT },
-    'r2-c': { refs: { hold: 1, transaction: 1 }, refusals: ['projected-tool'], recordFromTransaction: 'hold' },
-    'r2-f': { refs: { transaction: 1, did: 2, probe: 2 } },
-  } },
-  'bid-evaluation': { number: 3, steps: {
-    'r1-01': { refs: { delegation: 1, vault: 1, transaction: 2 } },
-    'r1-02': { refs: HIRE },
-    'r1-03': { refs: { bidder: 3, escrow: 1 } },
-    'r1-04': { refs: { escrow: 9, transaction: 6 } },
-    'r1-05': { refs: { delegation: 3, transaction: 6, escrow: 1 }, projectedRoutes: [['GET /vendors', 'token', 'allowed', 2, 3, 200]] },
-    'r1-06': { refs: APPROVAL },
-    'r1-07': { refs: HIRE, projectedRoutes: [['POST /sourcing/rankings', 'token', 'allowed', 1, 1, 201]] },
-    'r1-08': { refs: CLOSE },
-    'r2-a': { refs: { escrow: 1, claim: 1, challenge: 1 } },
-    'r2-a-release': { refs: { escrow: 1, transaction: 1 }, settlement: { type: 'release' } },
-    'r2-a-hold': { refs: VERDICT },
-    'r2-b': { refs: { attestation: 1, escrow: 1, transaction: 4 } },
-    'r2-c': { refs: { escrow: 1, hold: 1, transaction: 2 } },
-    'r2-d': { refs: HIRE, projectedRoutes: [['POST /sourcing/rankings', 'token', 'refused', 1, 1, 403]] },
-    'r2-e': { refs: RECORD, recordFromTransaction: 'record' },
-    'l1-01': { refs: RECORD },
-    'l1-02': { refs: RECORD },
-    'l1-03': { refs: CLOSE, refusals: ['tool'] },
-    'l1-04': { refs: RECORD },
-    'l1-05': { refs: RECORD },
-    'l1-06': { refs: RECORD },
-    'l1-07': { refs: RECORD },
-  } },
-};
-
 /** The run record accepts a role followed by one short alphanumeric suffix. */
 function hasHireRole(step: unknown, role: string): boolean {
   return typeof step === 'string' && (step === role || (step.startsWith(role) && /^-[a-z0-9]{1,8}$/.test(step.slice(role.length))));
@@ -397,7 +100,7 @@ function hireFor(hires: readonly unknown[], escrow: string): Record<string, unkn
 }
 
 /** A publishable spend needs the assembler's terminal proof, not an empty Accept or Reclaim field. */
-function releaseOf(refs: readonly Ref[], hires: readonly unknown[], proof: unknown): boolean {
+function releaseOf(refs: readonly Ref[], hires: readonly unknown[], proof: unknown, hireRole: string): boolean {
   if (!isObject(proof) || Object.keys(proof).length !== 5 || proof.action !== 'Release') return false;
   const { escrow_ref: escrow, tx, spent_output: spent, at } = proof;
   if (typeof escrow !== 'string' || !OUTPUT_REF.test(escrow) || typeof tx !== 'string' || !HASH.test(tx)
@@ -406,22 +109,22 @@ function releaseOf(refs: readonly Ref[], hires: readonly unknown[], proof: unkno
   if (refs.length !== 2 || !refs.some(({ kind, value }) => kind === 'escrow' && value === escrow)
       || !refs.some(({ kind, value }) => kind === 'transaction' && value === tx)) return false;
   const hire = hireFor(hires, escrow);
-  return hire !== null && hasHireRole(hire.step, 'quote') && hire.post_tx === escrow.slice(0, 64)
+  return hire !== null && hasHireRole(hire.step, hireRole) && hire.post_tx === escrow.slice(0, 64)
     && hire.verdict === 'VERIFIED' && hire.accept_tx === null && hire.reclaim_tx === null;
 }
 
 /** The public assembler proof binds the signed handoff to the independently confirmed Accept without publishing the signed contents. */
-function intakeHandoffOf(refs: readonly Ref[], hires: readonly unknown[], doc: Record<string, unknown>): boolean {
+function intakeHandoffOf(refs: readonly Ref[], hires: readonly unknown[], doc: Record<string, unknown>, executeRole: string, intakeRole: string): boolean {
   const proof = doc.handoff_evidence;
   if (!isObject(proof) || Object.keys(proof).length !== 7) return false;
   const { execute_step: executeStep, execute_escrow: executeEscrow, execute_result_sha256: digest,
     intake_step: intakeStep, intake_escrow: intakeEscrow, signed_acceptance: signed, confirmed_accept_tx: accept } = proof;
-  if (!hasHireRole(executeStep, 'execute') || !hasHireRole(intakeStep, 'intake') || typeof executeEscrow !== 'string' || !OUTPUT_REF.test(executeEscrow)
+  if (!hasHireRole(executeStep, executeRole) || !hasHireRole(intakeStep, intakeRole) || typeof executeEscrow !== 'string' || !OUTPUT_REF.test(executeEscrow)
       || typeof intakeEscrow !== 'string' || !OUTPUT_REF.test(intakeEscrow) || intakeEscrow === executeEscrow
       || typeof digest !== 'string' || !HASH.test(digest) || typeof accept !== 'string' || !HASH.test(accept)
       || (signed !== 'confirmed' && signed !== 'pending')) return false;
   if (doc.escrow_ref !== executeEscrow || doc.result_sha256 !== digest || doc.verdict !== 'VERIFIED' || !isObject(doc.result_projection)
-      || doc.result_projection.operation !== 'execute' || doc.result_projection.outcome !== 'completed' || doc.result_projection.exit_state !== 'Completed') return false;
+      || doc.result_projection.operation !== executeRole || doc.result_projection.outcome !== 'completed' || doc.result_projection.exit_state !== 'Completed') return false;
   const execute = hireFor(hires, executeEscrow);
   const intake = hireFor(hires, intakeEscrow);
   return execute !== null && execute.step === executeStep && execute.result_sha256 === digest && execute.verdict === 'VERIFIED'
@@ -431,14 +134,15 @@ function intakeHandoffOf(refs: readonly Ref[], hires: readonly unknown[], doc: R
 }
 
 /** The assembler's public links, receipt and check results must agree before a row claims an accepted, completed hire. */
-function settlementOf(settlement: NonNullable<StepProof['settlement']>, refs: readonly Ref[], doc: Record<string, unknown>): boolean {
+function settlementOf(settlement: NonNullable<ResultProof['settlement']>, refs: readonly Ref[], doc: Record<string, unknown>): boolean {
   const hires: unknown[] = Array.isArray(doc.hires) ? doc.hires : [];
-  if (settlement.type === 'release') return releaseOf(refs, hires, doc.release);
-  if (settlement.type === 'intake-handoff') return intakeHandoffOf(refs, hires, doc);
+  if (settlement.type === 'release') return releaseOf(refs, hires, doc.release, settlement.hireRole);
+  if (settlement.type === 'intake-handoff') return intakeHandoffOf(refs, hires, doc, settlement.executeRole, settlement.intakeRole);
   if (settlement.type === 'none-recorded') {
     const matching = hires.filter((hire) => isObject(hire) && refs.some(({ kind, value }) => kind === 'escrow' && value === hire.escrow_ref));
     return matching.length === 1 && isObject(matching[0]) && matching[0].accept_tx === null && matching[0].reclaim_tx === null;
   }
+  if (settlement.type !== 'receipt') return false;
   const { accept_tx: accept, escrow_ref: escrow, result_sha256: digest, result, receipt, receipt_signature: signature, checks } = doc;
   if (typeof accept !== 'string' || !HASH.test(accept) || typeof escrow !== 'string' || !OUTPUT_REF.test(escrow)
       || typeof digest !== 'string' || typeof result !== 'string' || createHash('sha256').update(result).digest('hex') !== digest
@@ -455,14 +159,14 @@ function settlementOf(settlement: NonNullable<StepProof['settlement']>, refs: re
   const received = hireFor(hires, handoff);
   if (carried === null || received === null || carried.accept_tx !== accept || carried.reclaim_tx !== null || carried.result_sha256 !== digest) return false;
   const { step, accept_tx: intakeAccept, reclaim_tx: intakeReclaim, result_sha256: intakeDigest, verdict } = received;
-  if (!hasHireRole(step, 'order-desk')) return false;
+  if (!hasHireRole(step, settlement.handoffRole)) return false;
   // The assembler confirms the Accept for this escrow independently of when the result was signed.
   return verdict === 'VERIFIED' && intakeReclaim === null && typeof intakeDigest === 'string' && HASH.test(intakeDigest)
     && typeof intakeAccept === 'string' && HASH.test(intakeAccept) && refs.some(({ kind, value }) => kind === 'transaction' && value === intakeAccept);
 }
 
 /** Attribution stays in the assembler. The reader checks its exact step proof against the sanitized events. */
-function projectedRoutesOf(id: string, required: readonly ProjectedRoute[], doc: Record<string, unknown>): boolean {
+function projectedRoutesOf(id: string, required: readonly ProjectedResultRoute[], doc: Record<string, unknown>): boolean {
   if (!Array.isArray(doc.route_evidence) || !isObject(doc.mock) || !Array.isArray(doc.mock.log)) return false;
   const proofs = (doc.route_evidence as unknown[]).filter((row): row is Record<string, unknown> => isObject(row) && row.step === id);
   if (proofs.length !== required.length) return false;
@@ -482,14 +186,15 @@ function projectedRoutesOf(id: string, required: readonly ProjectedRoute[], doc:
   return true;
 }
 
-function proofOf(proof: StepProof | undefined, id: string, refs: readonly Ref[], doc: Record<string, unknown>): boolean {
+function proofOf(proof: ResultProof | undefined, id: string, refs: readonly Ref[], doc: Record<string, unknown>): boolean {
   if (proof === undefined) return false;
   for (const [kind, count] of Object.entries(proof.refs)) {
+    const shape = resultRefShape(kind);
+    if (shape === undefined) return false;
     const values = new Set<string>();
     for (const ref of refs) {
       if (ref.kind !== kind) continue;
-      const valid = kind === 'delegation' || kind === 'attestation' || kind === 'case' || kind === 'transaction' || kind === 'bidder' ? HASH.test(ref.value)
-        : kind === 'did' ? DID.test(ref.value) : kind === 'probe' ? REF_VALUE.test(ref.value) : OUTPUT_REF.test(ref.value);
+      const valid = (shape === 'hash' ? HASH : shape === 'did' ? DID : shape === 'text' ? REF_VALUE : OUTPUT_REF).test(ref.value);
       if (valid) values.add(ref.value);
     }
     if (values.size < count) return false;
@@ -524,13 +229,12 @@ function proofOf(proof: StepProof | undefined, id: string, refs: readonly Ref[],
 }
 
 /** The run of an evidence file. A file that is not the evidence of a run of this use case is a PreconditionError that names the file by its label and the rule that it breaks, never a value. */
-export function parseEvidence(value: unknown, label: string, use: Pick<UseCase, 'name' | 'agents' | 'runs' | 'evidenceSteps'>): PageRun {
+export function parseEvidence(value: unknown, label: string, use: Pick<UseCase, 'name' | 'agents' | 'runs' | 'evidenceSteps' | 'results'>): PageRun {
   const bad = (rule: string): Error => new PreconditionError(`the evidence file ${label} is not usable: ${rule}`);
   if (!isObject(value)) throw bad('it is not a JSON object');
   const { kind, date, steps } = value;
   if (typeof kind !== 'string' || !use.runs.some((run) => run.id === kind)) throw bad('kind is not the id of a run of the use case');
-  const profile = Object.hasOwn(PROOF, use.name) ? PROOF[use.name] : undefined;
-  if (profile === undefined || value.run !== `use-case-${profile.number}-${kind}` || (value.use_case !== undefined && value.use_case !== use.name)) {
+  if (value.run !== `${use.results.runPrefix}-${kind}` || (value.use_case !== undefined && value.use_case !== use.name)) {
     throw bad('run does not name this use case and run kind');
   }
   if (typeof value.capability_id !== 'string' || !use.agents.some(({ capability }) => capability === value.capability_id)) {
@@ -538,25 +242,26 @@ export function parseEvidence(value: unknown, label: string, use: Pick<UseCase, 
   }
   if (typeof date !== 'string' || !DATE.test(date) || Number.isNaN(Date.parse(date))) throw bad('date is not a date of the form YYYY-MM-DD');
   if (!Array.isArray(steps)) throw bad('steps is not a list');
-  const allowed = new Set(use.evidenceSteps.filter((step) => step.run === kind || step.run === 'both').map((step) => step.id));
+  const allowed = new Map(use.evidenceSteps.filter((step) => step.run === kind || step.run === 'both').map((step) => [step.id, step]));
   const parsed = new Map<string, EvidenceStep>();
   steps.forEach((raw: unknown, index) => {
     const where = `steps[${index}]`;
     if (!isObject(raw)) throw bad(`${where} is not an object`);
     const { id, status, refs, note } = raw;
     if (typeof id !== 'string' || !STEP_ID.test(id)) throw bad(`${where}.id is not a step id`);
-    if (!allowed.has(id)) throw bad(`${where}.id is not a step of a run of this kind`);
+    const step = allowed.get(id);
+    if (step === undefined) throw bad(`${where}.id is not a step of a run of this kind`);
     if (parsed.has(id)) throw bad(`${where}.id repeats a step`);
     if (status !== 'shown' && status !== 'not_run') throw bad(`${where}.status is neither shown nor not_run`);
-    if (!Array.isArray(refs) || refs.length > MOST_REFS) throw bad(`${where}.refs is not a list of at most ${MOST_REFS} references`);
+    if (!Array.isArray(refs) || refs.length > MOST_RESULT_REFS) throw bad(`${where}.refs is not a list of at most ${MOST_RESULT_REFS} references`);
     const list = refs.map(refOf);
     if (list.some((ref) => ref === null)) throw bad(`${where}.refs holds a value that is no reference`);
     if (note !== undefined && note !== null && (typeof note !== 'string' || note.length > MOST_NOTE_CHARS)) throw bad(`${where}.note is not a text of at most ${MOST_NOTE_CHARS} characters`);
     const text = typeof note === 'string' ? note : '';
     if (holdsSecret(id) || holdsSecret(text) || list.some((ref) => ref !== null && (holdsSecret(ref.value) || holdsSecret(ref.kind)))) throw bad(`${where} holds a mark of a secret`);
     const refs_ = list.filter((ref): ref is Ref => ref !== null);
-    const proof = Object.hasOwn(profile.steps, id) ? profile.steps[id] : undefined;
-    parsed.set(id, { id, status, refs: refs_, note: text, complete: status === 'shown' && proofOf(proof, id, refs_, value) });
+    const complete = status === 'shown' && Object.hasOwn(use.results.wording, step.primitive) && proofOf(step.proof, id, refs_, value);
+    parsed.set(id, { id, status, refs: refs_, note: text, complete });
   });
   if (holdsSecret(label) || holdsSecret(kind) || holdsSecret(date)) throw bad('it holds a mark of a secret');
   return { label, kind, date, steps: parsed };
@@ -573,9 +278,9 @@ function refText(ref: Ref): string {
 }
 
 /** The six cells of the row of a step. Do not apply the step's full summary to partial evidence. */
-function rowOf(step: UseCase['evidenceSteps'][number], found: EvidenceStep | undefined, overrides: Readonly<Partial<Record<string, Sentences>>> | undefined): string[] {
-  if (!Object.hasOwn(SHOWS, step.primitive)) throw new PreconditionError(`the table of shows and does not show has no entry for the primitive of the step ${step.id}`);
-  const text = overrides !== undefined && Object.hasOwn(overrides, step.primitive) ? overrides[step.primitive]! : SHOWS[step.primitive]!;
+function rowOf(step: UseCase['evidenceSteps'][number], found: EvidenceStep | undefined, wording: ResultsSpec['wording']): string[] {
+  if (!Object.hasOwn(wording, step.primitive)) throw new PreconditionError(`the table of shows and does not show has no entry for the primitive of the step ${step.id}`);
+  const text = wording[step.primitive]!;
   const head = [step.id, cell(step.what), cell(step.primitive)];
   if (found === undefined) return [...head, PAGE_TEXT.none, `${PAGE_TEXT.notRun} ${PAGE_TEXT.noEntry}`, PAGE_TEXT.wholeStep];
   if (found.status === 'not_run') {
@@ -588,14 +293,13 @@ function rowOf(step: UseCase['evidenceSteps'][number], found: EvidenceStep | und
 }
 
 /** The page: the header, the title, one table for each run, and the section "Not covered". The header comes first and verbatim. */
-export function renderPage(input: { header: string; use: Pick<UseCase, 'name' | 'title' | 'evidenceSteps' | 'notCovered'>; runs: readonly PageRun[] }): string {
+export function renderPage(input: { header: string; use: Pick<UseCase, 'title' | 'evidenceSteps' | 'results' | 'notCovered'>; runs: readonly PageRun[] }): string {
   const { lead, items } = input.use.notCovered;
-  const overrides = Object.hasOwn(CASE_SHOWS, input.use.name) ? CASE_SHOWS[input.use.name] : undefined;
   const body: string[] = [`# ${input.use.title}: ${PAGE_TEXT.results}`, '', PAGE_TEXT.intro, ''];
   for (const run of input.runs) {
     body.push(`## ${PAGE_TEXT.run} ${run.label}: ${run.kind}, ${run.date}`, '', `| ${PAGE_TEXT.columns.join(' | ')} |`, `|${PAGE_TEXT.columns.map(() => '---').join('|')}|`);
     for (const step of input.use.evidenceSteps.filter((spec) => spec.run === run.kind || spec.run === 'both')) {
-      body.push(`| ${rowOf(step, run.steps.get(step.id), overrides).join(' | ')} |`);
+      body.push(`| ${rowOf(step, run.steps.get(step.id), input.use.results.wording).join(' | ')} |`);
     }
     body.push('');
   }

@@ -36,6 +36,7 @@ const taskMembers = (name: string, change: Members = {}): Members => ({
 const taskFile = (name: string, change: Members = {}): string => moduleOf(taskMembers(name, change));
 const useCaseMembers = (name: string, change: Members = {}): Members => ({
   name: JSON.stringify(name), title: "'A test use case'", keys: '[]', organisations: '[]', agents: '[]', subagents: '[]', funding: '[]', attestations: '[]', runs: '[]', evidenceSteps: '[]',
+  results: "{ runPrefix: 'use-case-1', wording: {} }",
   moduleManifestPath: "'Module-1/deploy/manifest.json'", runtimeCommit: "'main'", records: '[]', compliance: 'null', lifecycle: 'null', tenantSeed: 'null',
   tenantOrganisations: "{ supplier: 'alfa.example', insurer: 'delta.example' }", notCovered: "{ lead: 'No run covers this item:', items: ['A sentence.'] }", ...change,
 });
@@ -239,6 +240,57 @@ describe('loadUseCase', () => {
         const err = await refusal(() => loadUseCase('inventory-reorder', baseWith({ 'usecases/inventory-reorder.ts': source })));
         expect(err.reason).toBe('shape');
         expect(err.message).toContain('inventory-reorder');
+      });
+    }
+  });
+  describe('the results policy', () => {
+    const word = { shows: 'The ledger holds the record.', doesNotShow: 'That the record is current.' };
+    const results = { runPrefix: 'use-case-1', wording: { Record: word } };
+    const step = { id: 'read', run: 'clean', what: 'Read the record.', primitive: 'Record', actor: 'operator' };
+    const proof = {
+      refs: { transaction: 1, record: 1 },
+      refusals: ['projected-tool'],
+      routes: [['GET /legacy', 'x509-svid', null]],
+      projectedRoutes: [['POST /records', 'token', 'allowed', 0, 1, 201]],
+      recordFromTransaction: 'record',
+      settlement: { type: 'release', hireRole: 'quote' },
+    };
+    const load = (config: string | null, entry: unknown) => loadUseCase('inventory-reorder', baseWith({
+      'usecases/inventory-reorder.ts': useCaseFile('inventory-reorder', { results: config, evidenceSteps: JSON.stringify([entry]) }),
+    }));
+
+    it('loads exact wording and the proof for each configured step', async () => {
+      const use = await load(JSON.stringify(results), { ...step, proof });
+      expect(use.results).toEqual(results);
+      expect(use.evidenceSteps).toEqual([{ ...step, proof }]);
+    });
+
+    const wrong: readonly [string, string | null, unknown][] = [
+      ['results is not an object', null, proof],
+      ['results has no usable run prefix', JSON.stringify({ ...results, runPrefix: 'use-case-01' }), proof],
+      ['results wording is not an object', JSON.stringify({ ...results, wording: [] }), proof],
+      ['an evidence step has no results wording', JSON.stringify({ ...results, wording: { Else: word } }), proof],
+      ['an evidence step has no usable results sentences', JSON.stringify({ ...results, wording: { Record: { ...word, shows: ' ' } } }), proof],
+      ['results wording names a primitive with no evidence step', JSON.stringify({ ...results, wording: { Record: word, Else: word } }), proof],
+      ['an evidence step has no results reference proof', JSON.stringify(results), undefined],
+      ['an evidence step has an unknown results proof field', JSON.stringify(results), { ...proof, projectedRoute: [] }],
+      ['an evidence step has no results reference thresholds', JSON.stringify(results), { ...proof, refs: {} }],
+      ['an evidence step has an unknown results reference kind', JSON.stringify(results), { ...proof, refs: { transction: 1 } }],
+      ['an evidence step has invalid results reference thresholds', JSON.stringify(results), { ...proof, refs: { transaction: 0 } }],
+      ['an evidence step has invalid results reference thresholds', JSON.stringify(results), { ...proof, refs: { transaction: 1.5 } }],
+      ['an evidence step has invalid results reference thresholds', JSON.stringify(results), { ...proof, refs: { transaction: 30, record: 3 } }],
+      ['an evidence step has invalid results refusal kinds', JSON.stringify(results), { ...proof, refusals: ['tool', 'tool'] }],
+      ['an evidence step has an invalid results route rule', JSON.stringify(results), { ...proof, routes: [['GET /legacy', 'x509-svid', -1]] }],
+      ['an evidence step has an invalid projected results route rule', JSON.stringify(results), { ...proof, projectedRoutes: [['POST /records', 'token', 'allowed', 0, 0, 201]] }],
+      ['an evidence step has an invalid projected results route rule', JSON.stringify(results), { ...proof, projectedRoutes: [['POST /records', 'token', 'allowed', 0, 1, 600]] }],
+      ['an evidence step has an invalid transaction-linked results reference', JSON.stringify(results), { ...proof, recordFromTransaction: 'did' }],
+      ['an evidence step has an invalid results settlement rule', JSON.stringify(results), { ...proof, settlement: { type: 'release' } }],
+    ];
+    for (const [message, config, rule] of wrong) {
+      it(`refuses data when ${message}`, async () => {
+        const err = await refusal(() => load(config, { ...step, proof: rule }));
+        expect(err.reason).toBe('shape');
+        expect(err.message).toContain(message);
       });
     }
   });

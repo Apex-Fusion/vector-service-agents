@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { TASK_NAMES } from '../tasks/names.ts';
 import { USE_CASE_NAMES } from '../usecases/names.ts';
 import type { TaskDefinition, UseCase } from './contract.ts';
+import { resultPolicyProblem } from './result-policy.ts';
 
 /** The folder of the pack: the folders `tasks` and `usecases` are below it. The loaders take another folder when a test gives one. */
 export const PACK_URL: URL = new URL('../', import.meta.url);
@@ -76,7 +77,7 @@ function useCaseProblem(value: unknown): string | null {
   if (notCovered !== null) return notCovered;
   for (const member of USE_CASE_OBJECTS_OR_NULL) if (value[member] !== null && !isObject(value[member])) return `${member} is neither an object nor null`;
   for (const member of USE_CASE_OBJECTS) if (!isObject(value[member])) return `${member} is not an object`;
-  return null;
+  return resultPolicyProblem(value.results, value.evidenceSteps as readonly unknown[]);
 }
 
 /** The entry of a closed list that equals `name`. A name that is not in the list is refused, and the refusal shows the list and not the name. */

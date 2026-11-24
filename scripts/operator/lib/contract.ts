@@ -13,6 +13,7 @@ import type { Exposure, GoFile, IrreversibleTag } from './approval.ts';
 import type { DohLookup } from './dns.ts';
 import type { ResultCommand } from './output.ts';
 import type { KeySpec, Registry } from './registry.ts';
+import type { ResultRefKind } from './result-policy.ts';
 import type { AgentKind } from '../../../packages/usecase-kit/src/protocol/index.ts';
 export type { StepOutcome };
 
@@ -77,8 +78,30 @@ export interface VendorSeed {
 }
 /** `subject` is the item that the run is about, a SKU for example. A run of the kind `lifecycle` has no tenant and no vault. */
 export interface RunSpec { readonly id: 'clean' | 'failure' | 'lifecycle'; readonly subject: string; readonly tenantPrefix: string; readonly vaultUnits: number; readonly perTxUnits: number; readonly totalUnits: number }
+type ResultRoute = readonly [route: string, credential: 'token' | 'jwt-svid' | 'x509-svid', links: number | null, count?: number, decision?: 'refused'];
+export type ProjectedResultRoute = readonly [route: string, credential: 'token' | 'jwt-svid', decision: 'allowed' | 'refused', links: number, count: number, status: number];
+type ResultSettlement =
+  | { readonly type: 'receipt'; readonly handoffRole: string }
+  | { readonly type: 'none-recorded' }
+  | { readonly type: 'release'; readonly hireRole: string }
+  | { readonly type: 'intake-handoff'; readonly executeRole: string; readonly intakeRole: string };
+export interface ResultProof {
+  /** The minimum number of distinct references of each kind. */
+  readonly refs: Readonly<Partial<Record<ResultRefKind, number>>>;
+  readonly refusals?: readonly ('ledger' | 'tool' | 'projected-tool')[];
+  readonly routes?: readonly ResultRoute[];
+  readonly projectedRoutes?: readonly ProjectedResultRoute[];
+  readonly settlement?: ResultSettlement;
+  readonly recordFromTransaction?: 'record' | 'hold';
+}
+export interface ResultWording { readonly shows: string; readonly doesNotShow: string }
+export interface ResultsSpec {
+  readonly runPrefix: `use-case-${number}`;
+  readonly wording: Readonly<Record<string, ResultWording>>;
+}
 export interface EvidenceStepSpec {
   readonly id: string; readonly run: 'clean' | 'failure' | 'lifecycle' | 'both'; readonly what: string; readonly primitive: string; readonly actor: 'hirer' | 'agent' | 'counterparty' | 'operator' | 'relay';
+  readonly proof: ResultProof;
 }
 export interface UseCase {
   readonly name: string; readonly title: string; readonly keys: readonly KeySpec[]; readonly organisations: readonly OrganisationSpec[];
@@ -86,6 +109,7 @@ export interface UseCase {
   readonly legacyOrganisationWriter?: string;
   readonly agents: readonly AgentSpec[]; readonly subagents: readonly SubagentSpec[]; readonly funding: readonly FundingLine[];
   readonly attestations: readonly AttestationSpec[]; readonly runs: readonly RunSpec[]; readonly evidenceSteps: readonly EvidenceStepSpec[];
+  readonly results: ResultsSpec;
   readonly moduleManifestPath: string; readonly runtimeCommit: string;
   /** The records that are neither an agent nor a subagent. */
   readonly records: readonly RecordSpec[];

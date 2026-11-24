@@ -6,12 +6,13 @@ import type * as NodeFs from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
-import results, { EXPLORER_TX, HEADER_LIMIT_BYTES, PAGE_TEXT, SHOWS, parseEvidence, renderPage } from '../tasks/results.ts';
+import results, { EXPLORER_TX, HEADER_LIMIT_BYTES, PAGE_TEXT, parseEvidence, renderPage } from '../tasks/results.ts';
 import data from '../usecases/inventory-reorder.ts';
 import priorAuthorization from '../usecases/prior-authorization.ts';
 import bidEvaluation from '../usecases/bid-evaluation.ts';
 import { USE_CASE_NAMES } from '../usecases/names.ts';
 import type { UseCase } from '../lib/contract.ts';
+import { resultPolicyProblem } from '../lib/result-policy.ts';
 import { USE_CASE, hashOf, taskWorld } from './support/task-world.ts';
 import type { TaskWorld } from './support/task-world.ts';
 import { KEY_TEXT } from './support/secrets.ts';
@@ -84,8 +85,8 @@ interface Rig {
 }
 
 async function makeRig(over: Partial<UseCase> = {}): Promise<Rig> {
-  const { name, title, runs, agents, evidenceSteps, notCovered } = { ...data, ...over };
-  const world = await taskWorld({ keys: ['run', 'fee'], env: { OPERATOR_USE_CASE: USE_CASE }, use: { name, title, runs, agents, evidenceSteps, notCovered } });
+  const { name, title, runs, agents, evidenceSteps, results: resultSpec, notCovered } = { ...data, ...over };
+  const world = await taskWorld({ keys: ['run', 'fee'], env: { OPERATOR_USE_CASE: USE_CASE }, use: { name, title, runs, agents, evidenceSteps, results: resultSpec, notCovered } });
   mkdirSync(world.stateDir, { recursive: true, mode: 0o700 });
   chmodSync(world.stateDir, 0o700);
   const header = join(world.dir, 'header.txt');
@@ -167,19 +168,23 @@ describe('the task results', () => {
     expect(complete(hires.map((hire) => hire.escrow_ref === original.handoff.escrow_ref ? { ...hire, accept_tx: null } : hire))).toBe(false);
   });
 
-  for (const [use, number, fixtureDir] of [
-    [priorAuthorization, 2, process.env.RESULTS_UC2_GOLDENS], [bidEvaluation, 3, process.env.RESULTS_UC3_GOLDENS],
+  for (const [use, number, kinds, fixtureDir] of [
+    [priorAuthorization, 2, ['clean', 'failure'], process.env.RESULTS_UC2_GOLDENS],
+    [bidEvaluation, 3, ['clean', 'failure'], process.env.RESULTS_UC3_GOLDENS],
+    [bidEvaluation, 3, ['lifecycle'], process.env.RESULTS_UC3_LIFECYCLE_GOLDENS],
   ] as const) {
-    const kinds = ['clean', 'failure'] as const;
+    const lifecycle = kinds[0] === 'lifecycle';
+    const subject = lifecycle ? bidEvaluation.lifecycle!.agent : use.agents[0]!.id;
+    const group = lifecycle ? 'the use case 3 lifecycle producer file' : `both use case ${number} producer files`;
     const files = kinds.map((kind) => join(fixtureDir ?? LOCAL_GOLDENS, `evidence-uc${number}-${kind}.json`));
     // Separate branches can supply the producer fixtures. An enabled use case must have the local copies if none are supplied.
     const enabled = USE_CASE_NAMES.some((name: string) => name === use.name);
-    it.skipIf(!enabled && fixtureDir === undefined && !files.some((path) => existsSync(path)))(`renders all verified rows from both use case ${number} producer files`, async () => {
+    it.skipIf(!enabled && fixtureDir === undefined && !files.some((path) => existsSync(path)))(`renders all verified rows from ${group}`, async () => {
       const rig = await makeRig(use);
       for (const [index, file] of files.entries()) {
         const source = readFileSync(file, 'utf8');
         const value: AssemblerFixture = JSON.parse(source);
-        const label = `${value.date}-${use.agents[0]!.id}-run-${index + 1}`;
+        const label = `${value.date}-${subject}-run-${index + 1}`;
         const parsed = parseEvidence(value, label, use);
         expect(parsed.kind).toBe(kinds[index]);
         expect(parsed.steps.size).toBe(use.evidenceSteps.filter(({ run }) => run === parsed.kind).length);
@@ -193,7 +198,7 @@ describe('the task results', () => {
           if (complete) expect(shown).not.toMatch(/^Not (?:run|shown)/);
           else expect(shown).toMatch(/^Not run/);
         }
-        expect(page).not.toMatch(/route_evidence|handoff_evidence|spiffe:|"act":/);
+        expect(page).not.toMatch(/route_evidence|handoff_evidence|message_sha256|spiffe:|"act":/);
       }
     });
   }
@@ -247,8 +252,8 @@ describe('the task results', () => {
       const page = renderPage({ header: HEADER, use, runs: [runOf([shown('r1-02', [transaction('vault'), output('vault', 'vault')])])] });
       const row = rowOf(page, 'r1-02');
       expect(row[3]).toBe(`[\`${tx('vault')}\`](${EXPLORER_TX}${tx('vault')}); vault \`${tx('vault')}#0\``);
-      expect(row[4]).toBe(SHOWS['Vault']!.shows);
-      expect(row[5]).toBe(SHOWS['Vault']!.doesNotShow);
+      expect(row[4]).toBe(use.results.wording['Vault']!.shows);
+      expect(row[5]).toBe(use.results.wording['Vault']!.doesNotShow);
     });
 
     it('never writes a step as shown when the evidence has no reference for it', () => {
@@ -256,9 +261,9 @@ describe('the task results', () => {
       const row = rowOf(page, 'r1-02');
       expect(row[3]).toBe(PAGE_TEXT.none);
       expect(row[4]).toBe(PAGE_TEXT.noReference);
-      expect(row[4]).not.toBe(SHOWS['Vault']!.shows);
+      expect(row[4]).not.toBe(use.results.wording['Vault']!.shows);
       expect(row[5]).toBe(PAGE_TEXT.wholeStep);
-      expect(page).not.toContain(SHOWS['Vault']!.shows);
+      expect(page).not.toContain(use.results.wording['Vault']!.shows);
     });
 
     it('writes a step that did not run as not run, with its reason and no reference', () => {
@@ -266,7 +271,7 @@ describe('the task results', () => {
       const row = rowOf(page, 'r1-02');
       expect(row[3]).toBe(PAGE_TEXT.none);
       expect(row[4]).toBe(`${PAGE_TEXT.notRun} The member did not open a vault.`);
-      expect(page).not.toContain(SHOWS['Vault']!.shows);
+      expect(page).not.toContain(use.results.wording['Vault']!.shows);
     });
 
     it('gives no reference to a step that did not run, even when the evidence holds one, and says when it has no reason', () => {
@@ -321,7 +326,7 @@ describe('the task results', () => {
       expect(rowOf(rig.page(), 'r1-04')[4]).toBe(PAGE_TEXT.noReference);
       expect(rowOf(rig.page(), 'r1-01')[4]).toBe(PAGE_TEXT.partialReference);
       expect(rowOf(rig.page(), 'r1-06')[4]).toBe(PAGE_TEXT.partialReference);
-      expect(rig.page()).not.toContain(SHOWS['Receipt checks, accept, token for a route']!.shows);
+      expect(rig.page()).not.toContain(priorAuthorization.results.wording['Receipt checks, accept, token for a route']!.shows);
     });
 
     it('writes the bid evaluation lifecycle page from only the recorded evidence', async () => {
@@ -356,13 +361,13 @@ describe('the task results', () => {
         const page = renderPage({ header: HEADER, use, runs: [run] });
         expect(page).not.toContain('Order Desk');
         expect(page).not.toContain('purchase order');
-        expect(page).toContain(SHOWS['Module-1 challenge']!.shows);
+        expect(page).toContain(use.results.wording['Module-1 challenge']!.shows);
         const hold = rowOf(page, 'r2-c');
         const primitive = use === bidEvaluation ? 'Proposal during a verified hold' : 'Hold removes the agent from the listing';
         expect(hold[2]).toBe(primitive);
-        expect(hold[4]).toBe(SHOWS[primitive]!.shows);
-        expect(hold[5]).toBe(SHOWS[primitive]!.doesNotShow);
-        expect(page).toContain(SHOWS['Module-1 verdict and hold']!.shows);
+        expect(hold[4]).toBe(use.results.wording[primitive]!.shows);
+        expect(hold[5]).toBe(use.results.wording[primitive]!.doesNotShow);
+        expect(page).toContain(use.results.wording['Module-1 verdict and hold']!.shows);
       }
     });
 
@@ -413,8 +418,8 @@ describe('the task results', () => {
       expect(rowOf(render(refs, write, { ...settlement, hires: [execute, unrelated] }), 'r1-06')[4]).toBe(PAGE_TEXT.partialReference);
       expect(rowOf(render(refs, write, { ...settlement, hires: [execute, { ...intake, step: 'execute-2' }] }), 'r1-06')[4]).toBe(PAGE_TEXT.partialReference);
       const full = render(refs, write, settlement);
-      expect(rowOf(full, 'r1-01')[4]).toBe(SHOWS['Delegation with a co-signature, attestation: principal binding, vault']!.shows);
-      expect(rowOf(full, 'r1-06')[4]).toBe(SHOWS['Receipt checks, accept, token for a route']!.shows);
+      expect(rowOf(full, 'r1-01')[4]).toBe(priorAuthorization.results.wording['Delegation with a co-signature, attestation: principal binding, vault']!.shows);
+      expect(rowOf(full, 'r1-06')[4]).toBe(priorAuthorization.results.wording['Receipt checks, accept, token for a route']!.shows);
     });
 
     it('requires the exact terminal Release proof and checked quote hire', () => {
@@ -474,16 +479,20 @@ describe('the task results', () => {
       expect(row[5]).toBe('Which party authorized the transaction, the reason, or when signatures became invalid.');
     });
 
-    it('requires two distinct wait transactions and the recorded early tool refusal', () => {
+    it('requires two distinct wait transactions and the public digest of the early tool refusal', () => {
       const start = transaction('recovery start');
       const finish = transaction('recovery complete');
       const check = (refs: unknown[], refusals: unknown[]) => parseEvidence(doc('lifecycle', '2026-12-04', [{ id: 'l1-03', status: 'shown', refs }], {
         run: 'use-case-3-lifecycle', capability_id: bidEvaluation.agents[2]!.capability, refusals,
       }), BIDS_LABEL, bidEvaluation).steps.get('l1-03')!.complete;
-      const refused = [{ step: 'l1-03', kind: 'tool', message: 'The recovery window has not opened.' }];
-      expect(check([start, start], refused)).toBe(false);
+      const message = 'The recovery window has not opened.';
+      const refused = { step: 'l1-03', kind: 'tool', message_sha256: createHash('sha256').update(message).digest('hex') };
+      expect(check([start, start], [refused])).toBe(false);
       expect(check([start, finish], [])).toBe(false);
-      expect(check([start, finish], refused)).toBe(true);
+      expect(check([start, finish], [{ step: 'l1-03', kind: 'tool', message }])).toBe(false);
+      expect(check([start, finish], [{ ...refused, step: 'l1-02' }])).toBe(false);
+      expect(check([start, finish], [{ ...refused, message_sha256: 'not-a-digest' }])).toBe(false);
+      expect(check([start, finish], [refused])).toBe(true);
     });
 
     it('reads the lead and items from the case data', () => {
@@ -808,20 +817,43 @@ describe('the task results', () => {
   });
 
   describe('the table of what a primitive shows and does not show', () => {
-    it('has exactly the primitives of the data, each with two sentences and no dash that is not a hyphen', () => {
-      expect(new Set(Object.keys(SHOWS))).toEqual(new Set(USE_CASES.flatMap((use) => use.evidenceSteps.map((step) => step.primitive))));
-      for (const [primitive, text] of Object.entries(SHOWS)) {
-        expect(text.shows.length, primitive).toBeGreaterThan(20);
-        expect(text.doesNotShow.length, primitive).toBeGreaterThan(20);
-        expect(`${text.shows}${text.doesNotShow}`).toMatch(/^[\x20-\x7e]*$/);
+    it('has exactly the primitives of each case, each with two sentences and no dash that is not a hyphen', () => {
+      for (const use of USE_CASES) {
+        expect(resultPolicyProblem(use.results, use.evidenceSteps)).toBeNull();
+        expect(new Set(Object.keys(use.results.wording))).toEqual(new Set(use.evidenceSteps.map((step) => step.primitive)));
+        for (const [primitive, text] of Object.entries(use.results.wording)) {
+          expect(text.shows.length, primitive).toBeGreaterThan(20);
+          expect(text.doesNotShow.length, primitive).toBeGreaterThan(20);
+          expect(`${text.shows}${text.doesNotShow}`).toMatch(/^[\x20-\x7e]*$/);
+        }
       }
+    });
+
+    it('uses only the selected case data for the run, row proof and wording', () => {
+      const evidence = doc('clean', '2026-12-01', [
+        { id: 'r1-02', status: 'shown', refs: [transaction('vault'), output('vault', 'vault')] },
+      ], { run: 'use-case-47-clean' });
+      const use = {
+        ...data, name: 'test-case', results: {
+          runPrefix: 'use-case-47' as const,
+          wording: { ...data.results.wording, Vault: { shows: 'The case declares what this row shows.', doesNotShow: 'The case declares its limit.' } },
+        },
+      };
+      const checked = parseEvidence(evidence, 'test', use);
+      expect(rowOf(renderPage({ header: HEADER, use, runs: [checked] }), 'r1-02')[4]).toBe(use.results.wording.Vault.shows);
+      const stricter = { ...use, evidenceSteps: use.evidenceSteps.map((step) => step.id === 'r1-02' ? { ...step, proof: { refs: { vault: 2, transaction: 1 } } } : step) };
+      expect(parseEvidence(evidence, 'test', stricter).steps.get('r1-02')?.complete).toBe(false);
+      expect(() => parseEvidence(evidence, 'test', data)).toThrow('run does not name this use case and run kind');
     });
 
     it('stops a run with exit 2 when a step of the data has a primitive that the table lacks, and passes with the primitive in the table', async () => {
       for (const primitive of ['A primitive that is new', 'constructor']) {
-        const added = { id: 'r1-12', run: 'clean' as const, what: 'A step that the table does not know.', primitive, actor: 'agent' as const };
-        const rig = await makeRig({ evidenceSteps: [...data.evidenceSteps, added] });
-        rig.put('public', CLEAN, cleanDoc());
+        const added = { id: 'r1-12', run: 'clean' as const, what: 'A step that the table does not know.', primitive, actor: 'agent' as const, proof: { refs: { transaction: 1 } } };
+        const enough = cleanDoc({ steps: [...cleanSteps(), { id: added.id, status: 'shown', refs: [transaction('unknown primitive')] }] });
+        const incomplete = { ...data, evidenceSteps: [...data.evidenceSteps, added] };
+        expect(parseEvidence(enough, CLEAN, incomplete).steps.get(added.id)?.complete).toBe(false);
+        const rig = await makeRig(incomplete);
+        rig.put('public', CLEAN, enough);
         expect(await rig.run(...NO_ARGUMENTS(rig), '--submit')).toBe(2);
         expect(rig.world.screen.errorText).toContain('no entry for the primitive of the step r1-12');
         expect(existsSync(rig.pagePath)).toBe(false);
@@ -848,13 +880,10 @@ describe('the task results', () => {
       expect(await rig.run(...NO_ARGUMENTS(rig), '--runs', `${CLEAN},${FAILURE}`, '--submit')).toBe(0);
       const page = rig.page();
       const refs = [...cleanSteps(), ...failureSteps()].flatMap((step) => step.refs).flatMap((ref) => (typeof ref === 'string' ? [ref] : isLabelled(ref) ? [ref.kind, ref.value] : []));
-      const historicalPrimitives = ['Escrow', 'Receipt checks, accept, token for a route', 'Module-1 challenge', 'Module-1 verdict and hold', 'Hold removes the agent from the listing'];
-      const historicalText = readFileSync(GOLDEN, 'utf8').split('\n').map((line) => line.split(' | '))
-        .filter((columns) => historicalPrimitives.includes(columns[2] ?? '')).flatMap((columns) => [columns[4]!, columns[5]!.slice(0, -2)]);
       const known = [
         HEADER, data.title, EXPLORER_TX, CLEAN, FAILURE, 'clean', 'failure', '2026-12-01', '2026-12-03', NOTE, ...refs,
-        ...Object.values(PAGE_TEXT).flat(), data.notCovered.lead, ...data.notCovered.items, ...historicalText,
-        ...Object.values(SHOWS).flatMap((text) => [text.shows, text.doesNotShow]), ...data.evidenceSteps.flatMap((step) => [step.id, step.what, step.primitive]),
+        ...Object.values(PAGE_TEXT).flat(), data.notCovered.lead, ...data.notCovered.items,
+        ...Object.values(data.results.wording).flatMap((text) => [text.shows, text.doesNotShow]), ...data.evidenceSteps.flatMap((step) => [step.id, step.what, step.primitive]),
       ];
       let rest = page;
       for (const text of [...new Set(known)].sort((a, b) => b.length - a.length)) rest = rest.split(text).join('');
