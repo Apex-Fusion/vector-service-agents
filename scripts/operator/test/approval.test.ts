@@ -25,6 +25,10 @@ const GO: GoFile = {
 };
 const fileOf = (over: Partial<GoFile> = {}): GoFile => ({ ...GO, ...over });
 const jsonOf = (over: Record<string, unknown> = {}): string => JSON.stringify({ ...GO, ...over });
+/** The ten tags of the steps that cannot be undone, in the order of the list that the loader names. */
+const TEN_TAGS = [
+  'record', 'stake', 'attestation', 'end-subagents', 'attestation-revoke', 'record-revoke', 'controller-change', 'recovery-complete', 'retire', 'successor',
+] as const satisfies readonly IrreversibleTag[];
 /** A transaction hash for a test: 64 lower-case hex characters that always hold letters, so that its upper-case form is another text. Each n from 0 to 89 gives its own hash. */
 const hashOf = (n: number): string => (0xa0 + (n % 90)).toString(16).repeat(32);
 const modeOf = (path: string): number => statSync(path).mode & 0o777;
@@ -168,6 +172,9 @@ describe('loadGo', () => {
       ['65 tasks', { tasks: Array.from({ length: 65 }, (_, i) => `task-${i}`) }, 'tasks'],
       ['no irreversible', { irreversible: undefined }, 'irreversible'], ['an irreversible that is one text', { irreversible: 'record' }, 'irreversible'],
       ['a tag that is not in the list of tags', { irreversible: ['record', 'bogus'] }, 'irreversible'], ['a tag in upper case', { irreversible: ['Record'] }, 'irreversible'],
+      ['a tag with an underscore for the hyphen', { irreversible: ['record_revoke'] }, 'irreversible'], ['a tag in the singular', { irreversible: ['end-subagent'] }, 'irreversible'],
+      ['a tag in upper case that the list holds in lower case', { irreversible: ['Record-Revoke'] }, 'irreversible'], ['a tag with a space for the hyphen', { irreversible: ['recovery complete'] }, 'irreversible'],
+      ['an empty tag', { irreversible: [''] }, 'irreversible'], ['a tag that is only a part of one', { irreversible: ['revoke'] }, 'irreversible'],
       ['a tag that is a number', { irreversible: [5] }, 'irreversible'],
       ['external that is not a list', { external: 'x' }, 'external'], ['external that is an object', { external: {} }, 'external'], ['an external entry that is a number', { external: [5] }, 'external'],
       ['an external entry that is null', { external: [null] }, 'external'],
@@ -200,6 +207,7 @@ describe('loadGo', () => {
       ['a cap of 0', { capUnits: 0 }], ['a cap of one lovelace', { capUnits: 0.000001 }], ['a cap of 100.5', { capUnits: 100.5 }], ['a cap of 1000', { capUnits: 1000 }],
       ['one task', { tasks: ['fund'] }], ['a task with hyphens and digits', { tasks: ['end-state', 'stage-2'] }], ['64 tasks', { tasks: Array.from({ length: 64 }, (_, i) => `task-${i}`) }],
       ['no irreversible tags', { irreversible: [] }], ['all three tags', { irreversible: ['record', 'stake', 'attestation'] }],
+      ['all ten tags', { irreversible: [...TEN_TAGS] }], ['one of the seven later tags', { irreversible: ['retire'] }],
       ['an empty external list', { external: [] }],
       ['an external entry with the least amount and the most', { external: [{ label: 'a', address: 'addr1qa', units: 0.000001 }, { label: 'b', address: 'addr1qb', units: 1000 }] }],
       ['an external label of 32 characters', { external: [{ label: 'a'.repeat(32), address: 'addr1qa', units: 1 }] }],
@@ -281,6 +289,21 @@ describe('requireGo', () => {
     expect(refusal(() => requireGo(fileOf({ irreversible: [] }), { ...NEED, irreversible: ['record'] })).message).toContain('record');
     expect(refusal(() => requireGo(go, { ...NEED, irreversible: tagsOf('something-else') })).message).toContain('something-else');
     expect(requireGo(fileOf({ irreversible: ['record', 'stake', 'attestation'] }), { ...NEED, irreversible: ['record', 'stake', 'attestation'] }).irreversible).toHaveLength(3);
+  });
+  it('accepts the step of each of the ten tags when the file lists the tag, and refuses it when the file lists the other nine or none, and the message names that tag', () => {
+    for (const tag of TEN_TAGS) {
+      const need: GoNeed = { ...NEED, irreversible: [tag] };
+      const go = load(jsonOf({ irreversible: [tag] }));
+      expect(requireGo(go, need), tag).toBe(go);
+      const refused = `the approval does not list the irreversible tag ${tag} in irreversible`;
+      expect(refusal(() => requireGo(load(jsonOf({ irreversible: TEN_TAGS.filter((other) => other !== tag) })), need)).message, tag).toBe(refused);
+      expect(refusal(() => requireGo(load(jsonOf({ irreversible: [] })), need)).message, tag).toBe(refused);
+    }
+  });
+  it('lists the ten tags in the refusal of a tag that is none of them, in that order, and the loader takes each of the ten', () => {
+    const message = refusal(() => load(jsonOf({ irreversible: ['bogus'] }))).message;
+    expect(message.slice(message.indexOf(' from ') + ' from '.length).split(', ')).toEqual([...TEN_TAGS]);
+    for (const tag of TEN_TAGS) expect(load(jsonOf({ irreversible: [tag] })).irreversible, tag).toEqual([tag]);
   });
   it('refuses a run that does not say which tags its step carries: the type forbids it, and a call that skips the type is refused too', () => {
     const withoutTags = { task: 'fund', runWallet: RUN, nowMs: NOW };

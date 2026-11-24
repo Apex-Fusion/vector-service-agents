@@ -915,14 +915,10 @@ describe('specs/insurer-intake-agent.md: the receipt, the claim and the fault sw
     const sources = readdirSync(sourceDir, { recursive: true, encoding: 'utf8' }).filter((file) => file.endsWith('.ts'));
     expect(sources.length).toBeGreaterThan(10);
     expect(sources.filter((file) => readFileSync(new URL(file, sourceDir), 'utf8').includes('stakeRunClaim'))).toStrictEqual([]);
-    // No command of this repository stakes a claim for this agent or for the Prior Authorization Agent. The operator pack loads the use case `inventory-reorder` only, its claim task chooses between the claim of the Reorder Agent and
-    // the claim of the Order Desk, and no source of the pack outside its tests names a claim or a capability of use case 2. So a challenge against either agent ends with `no_open_claim`, as the page says.
+    // The loader and the two claims that the task can stake determine which agents the command supports.
     expect(USE_CASE_NAMES).toStrictEqual(['inventory-reorder']);
     const packDir = new URL('../../../scripts/operator/', import.meta.url);
-    const pack = readdirSync(packDir, { recursive: true, encoding: 'utf8' }).filter((file) => file.endsWith('.ts') && !file.startsWith('test/'));
-    expect(pack.length).toBeGreaterThan(10);
     expect(readFileSync(new URL('tasks/claim.ts', packDir), 'utf8')).toContain("agent.kind === 'reorder-agent' ? REORDER_CLAIM : ORDER_DESK_CLAIM");
-    expect(pack.filter((file) => /PRIORAUTH_|INTAKE_CLAIM|health\.priorauth/.test(readFileSync(new URL(file, packDir), 'utf8')))).toStrictEqual([]);
     // The example environment sets the stake of a challenge, and it sets it once. A challenge targets a claim whose stake is not above that number, so a claim of 50 units is a target.
     expect(envExample.split('\n').filter((line) => line.startsWith('DISPUTE_CHALLENGE_STAKE_LOVELACE='))).toStrictEqual([`DISPUTE_CHALLENGE_STAKE_LOVELACE=${CLAIM_STAKE_LOVELACE}`]);
     // S2 is the statement that a wrong intake record breaks: the evidence of an intake record is about S2.

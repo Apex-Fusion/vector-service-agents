@@ -10,7 +10,10 @@ export { FAULT_MODE_VARIABLE, checkCleanRun, checkFaultRun } from '../../../pack
 export {
   INVENTORY_CAPABILITIES, LOT_NAMES, ORDER_DESK_CLAIM, REORDER_CLAIM, parseOrderConfirmation, parsePurchaseOrder,
 } from '../../../packages/usecase-kit/src/inventory/index.ts';
-export { canonicalJson, canonicalSha256, isFaultSetting } from '../../../packages/usecase-kit/src/protocol/index.ts';
+export { BID_CAPABILITIES, BID_DESK_CLAIM, SOURCING_CLAIM } from '../../../packages/usecase-kit/src/bids/index.ts';
+export { INTAKE_CLAIM, PRIORAUTH_CAPABILITIES, PRIORAUTH_CLAIM } from '../../../packages/usecase-kit/src/priorauth/index.ts';
+export { AGENT_KINDS, canonicalJson, canonicalSha256, isFaultSetting } from '../../../packages/usecase-kit/src/protocol/index.ts';
+export type { AgentKind } from '../../../packages/usecase-kit/src/protocol/index.ts';
 export { requestRouteToken } from '../../../packages/usecase-kit/src/access/index.ts';
 export { keyObjectOfRawKey } from '../../../packages/usecase-kit/src/live/index.ts';
 

@@ -722,16 +722,16 @@ function trialPlan(session: TaskSession<ClaimExtra>): TrialPlan {
   const file = readLots();
   const clean = session.use.runs.find((run) => run.id === 'clean');
   if (clean === undefined) throw new PreconditionError('the data of the use case has no clean run, so it names no SKU for the trial');
-  const size = lotSizeOf(file, clean.sku, TRIAL_LOT);
-  const wrongSize = lotSizeOf(file, clean.sku, TRIAL_WRONG_LOT);
-  if (size === null || wrongSize === null) throw new PreconditionError(`the lots file does not list the SKU ${clean.sku}`);
-  const other = session.use.runs.find((run) => run.id === 'failure' && run.sku !== clean.sku)?.sku ?? file.items.find((item) => item.sku !== clean.sku)?.sku;
+  const size = lotSizeOf(file, clean.subject, TRIAL_LOT);
+  const wrongSize = lotSizeOf(file, clean.subject, TRIAL_WRONG_LOT);
+  if (size === null || wrongSize === null) throw new PreconditionError(`the lots file does not list the SKU ${clean.subject}`);
+  const other = session.use.runs.find((run) => run.id === 'failure' && run.subject !== clean.subject)?.subject ?? file.items.find((item) => item.sku !== clean.subject)?.sku;
   if (other === undefined) throw new PreconditionError('the lots file lists no other SKU for the trial');
   return {
-    sku: clean.sku, size,
+    sku: clean.subject, size,
     cases: [
-      { name: 'wrong-lot', sku: clean.sku, lot: TRIAL_WRONG_LOT, quantity: wrongSize, fault: 'confirm_wrong_lot' },
-      { name: 'wrong-quantity', sku: clean.sku, lot: TRIAL_LOT, quantity: size * 2, fault: '' },
+      { name: 'wrong-lot', sku: clean.subject, lot: TRIAL_WRONG_LOT, quantity: wrongSize, fault: 'confirm_wrong_lot' },
+      { name: 'wrong-quantity', sku: clean.subject, lot: TRIAL_LOT, quantity: size * 2, fault: '' },
       { name: 'wrong-sku', sku: other, lot: TRIAL_LOT, quantity: size, fault: '' },
     ],
   };

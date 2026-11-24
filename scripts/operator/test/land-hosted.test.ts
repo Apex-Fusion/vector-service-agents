@@ -34,10 +34,12 @@ const PACK_TOOLS = [
   'vector_build_identity_register', 'vector_build_identity_update', 'vector_build_reputation_stake_open', 'vector_build_reputation_stake', 'vector_get_reputation_stake',
   'vector_build_marketplace_advert_post', 'vector_build_marketplace_advert_retire', 'vector_build_identity_suspend', 'vector_build_identity_unsuspend', 'vector_resolve_did',
   'vector_marketplace_list_suppliers', 'vector_get_attestation', 'vector_check_attestation', 'vector_get_delegation', 'vector_get_vault', 'vector_get_jury_cases',
+  'vector_build_identity_end_subagents', 'vector_build_identity_revoke', 'vector_build_identity_change_controller', 'vector_build_identity_recovery_start', 'vector_build_identity_recovery_complete',
+  'vector_build_identity_retire', 'vector_build_identity_set_successor', 'vector_build_identity_reclaim', 'vector_build_attestation_revoke', 'vector_build_attestation_contest',
 ];
 
 describe('the captured schemas and PackHosted', () => {
-  it('hold the 16 tools that the pack calls, and the date and the server of the capture', () => {
+  it('hold the 26 tools that the pack calls, and the date and the server of the capture', () => {
     expect(Object.keys(PACK_SCHEMAS).sort()).toEqual([...PACK_TOOLS].sort());
     expect(PACK_CAPTURE.date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     expect(PACK_CAPTURE.server.trim()).not.toBe('');

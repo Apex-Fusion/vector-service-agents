@@ -40,7 +40,7 @@ The first column is the name of the task. The flags are those of the task, besid
 
 | Task | What it does | Flags | With `--submit` | Writes |
 |---|---|---|---|---|
-| `keys` | Makes the missing keys of the use case on the host, and prints the address of the run wallet. It never replaces a key file and never prints a seed. | none | Needs the approval, and the approval says `unset` for the run wallet until the run key exists. Makes the key files. A dry run lists the keys that it would make and writes nothing. | The key files and `keys-public.json`. |
+| `keys` | Makes keys on first setup and shows the run wallet address. It never replaces a key file or prints a seed. | `--initialize` | Needs the approval. Use `--initialize` only for first setup. A dry run lists the keys and makes none. | The key files, `keys-public.<use case>.json` and `keys-initialized.json`. |
 | `fund` | Sends units from the run wallet to the other wallets of the use case. The step `collateral` sends one pure output of exactly 5 units to each wallet that has none. The step `float` sends each wallet what its balance lacks to its collateral and its float. | `--member <label>` | Needs the approval. Signs with the run key and submits. With `--member <label>` it sends the amount that the approval gives to the one external address that the approval names for that label, once. | The state file and the evidence file. |
 | `register` | Registers the record of each agent and of its subagent, and then waits until the gateway shows the organisation of each agent as verified. A dry run prints the DID, the TXT name and the TXT value, and writes a note. | none | Needs the approval, and the approval names the tag `record`. It refuses until the note of a dry run exists for the same DID and three public resolvers show the TXT value. | The facts `records` and `organisations`. |
 | `stake` | Makes the Module-3 stake of each agent in two steps, `open` and `create`. The owner of the stake is the service key of the agent. | none | Needs the approval, and the approval names the tag `stake`: the minimum of a stake never returns. | The fact `stakes`. |
@@ -62,7 +62,20 @@ A task that spends a wallet that a running service also uses (`claim`, `stake`, 
 
 `results` takes the header file, the text that starts the page, from a path outside the keys folder. The file stays outside the repository, and it holds no run of 40 or more hex characters. Without `--runs`, the page takes the public evidence files only. A private file goes into the page when `--runs` names its label.
 
-`end-state` needs the setting `OPERATOR_MODULE1_COMMIT`, the file `keys-public.json` in the keys folder, and a fresh `running-images.json` in the state folder.
+`end-state` needs `OPERATOR_MODULE1_COMMIT`, the public key file of the use case, and a fresh `running-images.json` in the state folder.
+
+### First key setup and recovery
+
+Verify that the use case has no prior key setup. Keep a separate state folder for each use case. Restore the public key files of any earlier use cases before you continue.
+The key folder of this use case must be empty. The shared key folder can hold only keys that match the earlier public key files. An unrecorded entry is a reason to stop, not a reason to make new keys.
+
+1. Preview with `node --import tsx scripts/operator/cli.ts keys run --initialize`. A dry run needs no `GO.json`. You can preview the first wallet with no key files.
+2. Get an approval for `keys` only. Set `capUnits` to `0`. Include no irreversible tags or external addresses. Use `unset` for `runWallet` only before the first wallet exists. For a later use case, use the address in the verified public key files.
+3. Run `node --import tsx scripts/operator/cli.ts keys run --initialize --submit`. The task writes `keys-initialized.json` in the state folder before it makes any key files.
+
+Do not use `--initialize` to repair or replace keys. If setup stops after it writes the marker, keep the marker and all key files. Restore the original public key file and any missing original key files from verified backups. Then run `keys run --submit` without `--initialize`. If no valid backup exists or you cannot verify custody, stop and reconcile custody outside this task. Do not remove the marker or start again in a new state folder.
+
+For a use case with a valid `keys-public.json`, run `keys run --submit` without `--initialize`. The task checks the keys and writes `keys-public.<use case>.json`. It keeps the original file.
 
 ## The order of the work
 
@@ -86,7 +99,7 @@ The work of a use case goes in this order. A task that has a dry run shows its s
 The keys folder is the setting `OPERATOR_KEYS_DIR`.
 
 - `<keys>/shared/<name>.seed` is a key that several use cases share. `<keys>/<use case>/<name>.seed` is a key of one use case. A file holds 64 lower-case hex characters and one newline. The folders have mode 700 and the files mode 600. No task replaces a key file.
-- `<keys>/keys-public.json` lists the public part of each key: its name, its scope, what it is for, its public key, its key hash and its address. It holds no secret.
+- `<keys>/keys-public.<use case>.json` lists the public part of each key: its name, scope, purpose, public key, key hash and address. It holds no secret. The task also checks the earlier `keys-public.json` if it exists.
 
 The state folder is the setting `OPERATOR_STATE_DIR`. It has mode 700.
 
@@ -95,6 +108,7 @@ The state folder is the setting `OPERATOR_STATE_DIR`. It has mode 700.
 - `exposure.<session>.json` keeps what the session has reserved against the cap. The pack reserves the outflow of a transaction when it writes the transaction as in flight, before the submit. It gives the reserve back for a transaction that can no longer land.
 - `<task>.state.json` is the state of a task: its confirmed steps, the one transaction in flight, and notes. `<task>.evidence.json` is its evidence: confirmed, verified, info, refused and tool refused entries. A task that takes `--run` uses `<task>.<label>.state.json` and `<task>.<label>.evidence.json`. Both files have mode 600, and the pack writes each whole through a temporary file.
 - `facts.json` keeps what one task found out and a later task needs: `records`, `organisations`, `stakes`, `adverts`, `manifests`, `attestations`, `claims`, `tenants`, `holds` and `deploy`. It holds public values only. A fact is set once, and another value is an error unless the call replaces the fact.
+- `keys-initialized.json` records that key setup started for this use case and network. It holds no keys. Keep it with the state when you restore files.
 - `run.lock` is the run lock file.
 - `seen-services.json` and `running-images.json` come from the script that starts the container. It writes both before every run, from the running containers, and the pack refuses a file that is more than 10 minutes old. `seen-services.json` holds `generated_at` and, for each service, its name, its kind, its container, its start time and the value of `FAULT_MODE`. `running-images.json` holds `generated_at` and `images`: for each running container, its image pinned by the digest of the image index. An empty `images` object means that no container runs.
 - `attestation-documents/` holds the documents of `attest` with `--record`. `trial/` holds the documents of `claim` with `--trial`. `evidence/` holds the evidence files of `evidence`, and `evidence/private/` its private files. `results/` holds the page of `results`.

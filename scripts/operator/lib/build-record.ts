@@ -86,8 +86,8 @@ export const IMAGE_REPOSITORY = 'ghcr.io/apex-fusion/vector-service-agents';
 const REPOSITORY_PATH = 'apex-fusion/vector-service-agents';
 const REPOSITORY_PATTERN = /^ghcr\.io\/apex-fusion\/vector-service-agents\/([a-z0-9][a-z0-9-]{0,62})$/;
 
-/** The service container of each kind of agent, and the image of its service. The compose files of the deploy pack hold the same names (a test holds them to each other). */
-const SERVICES: Readonly<Record<AgentSpec['kind'], { readonly container: string; readonly image: string }>> = {
+/** The service container of each kind of agent that a use case has so far, and the image of its service. The compose files of the deploy pack hold the same names (a test holds them to each other). */
+const SERVICES: Readonly<Partial<Record<AgentSpec['kind'], { readonly container: string; readonly image: string }>>> = {
   'reorder-agent': { container: 'reorder-service', image: 'reorder-agent' },
   'order-desk': { container: 'orders-service', image: 'order-desk' },
 };
@@ -103,6 +103,7 @@ export interface ImageNames {
 /** The service container of an agent kind, the repository of its image, and the repository of the image that its runtimes run. */
 export function imageNamesOf(kind: AgentSpec['kind']): ImageNames {
   const service = SERVICES[kind];
+  if (service === undefined) throw new PreconditionError(`the pack names no service container for the kind ${kind}`);
   return { serviceContainer: service.container, serviceRepository: `${IMAGE_REPOSITORY}/${service.image}`, runtimeRepository: `${IMAGE_REPOSITORY}/${RUNTIME_IMAGE}` };
 }
 

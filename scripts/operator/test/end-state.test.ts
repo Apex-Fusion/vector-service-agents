@@ -13,7 +13,7 @@ import { HostedError } from '../../checks/lib/hosted.ts';
 import { iso } from '../../checks/lib/format.ts';
 import type { ChainAccess } from '../../checks/lib/session.ts';
 import { FactsFile } from '../lib/facts.ts';
-import { writePublicManifest } from '../lib/registry.ts';
+import { LEGACY_PUBLIC_MANIFEST, publicManifestFile, writePublicManifest } from '../lib/registry.ts';
 import { runTask } from '../lib/runner.ts';
 import endState from '../tasks/end-state.ts';
 import data from '../usecases/inventory-reorder.ts';
@@ -95,7 +95,7 @@ async function makeRig(options: { env?: Record<string, string | undefined>; skip
   });
   mkdirSync(world.stateDir, { recursive: true, mode: 0o700 });
   chmodSync(world.stateDir, 0o700);
-  writePublicManifest(join(world.keys.root, 'keys-public.json'), world.keys.registry, { network: 'vector-mainnet', useCase: USE_CASE });
+  writePublicManifest(join(world.keys.root, publicManifestFile(USE_CASE)), world.keys.registry, { network: 'vector-mainnet', useCase: USE_CASE });
   const ledger = ledgerWorld([], [ACTIVE_REORDER, ACTIVE_ORDER]);
   const facts = FactsFile.open(join(world.stateDir, 'facts.json'), { useCase: USE_CASE, network: 'vector-mainnet' });
   const statuses = new Map<string, string | number>(STATUS_URLS.map((url) => [url, 'free']));
@@ -549,18 +549,31 @@ describe('the task end-state', () => {
 
     it('a wallet that the public key file does not list, and a public key file that is not there, are a fail', async () => {
       const rig = await makeRig();
-      rmSync(join(rig.world.keys.root, 'keys-public.json'));
+      rmSync(join(rig.world.keys.root, publicManifestFile(USE_CASE)));
       expect(await rig.run()).toBe(1);
       expect(rig.checks().get('wallets')!.result).toBe('fail');
-      expect(rig.checks().get('wallets')!.text).toContain('cannot tell: the public key file keys-public.json cannot be read (ENOENT)');
+      expect(rig.checks().get('wallets')!.text).toContain(`cannot tell: the public key file ${publicManifestFile(USE_CASE)} cannot be read (ENOENT)`);
       const other = await makeRig();
-      writeFileSync(join(other.world.keys.root, 'keys-public.json'), JSON.stringify({ use_case: USE_CASE, network: 'vector-mainnet', keys: { fee: { address: other.world.keys.registry.addressOf('fee') } } }));
+      writeFileSync(join(other.world.keys.root, publicManifestFile(USE_CASE)), JSON.stringify({ use_case: USE_CASE, network: 'vector-mainnet', keys: { fee: { address: other.world.keys.registry.addressOf('fee') } } }));
       expect(await other.run()).toBe(1);
       expect(other.checks().get('wallets')!.text).toContain('the public key file lists no wallet for');
       const foreign = await makeRig();
-      writeFileSync(join(foreign.world.keys.root, 'keys-public.json'), JSON.stringify({ use_case: 'another', network: 'vector-mainnet', keys: {} }));
+      writeFileSync(join(foreign.world.keys.root, publicManifestFile(USE_CASE)), JSON.stringify({ use_case: 'another', network: 'vector-mainnet', keys: {} }));
       expect(await foreign.run()).toBe(1);
       expect(foreign.checks().get('wallets')!.text).toContain('is for another use case or another network');
+    }, SLOW);
+
+    it('reads the public key file of the earlier name when the file of the use case is not there, and not an earlier file that names another use case', async () => {
+      const rig = await makeRig();
+      rmSync(join(rig.world.keys.root, publicManifestFile(USE_CASE)));
+      writePublicManifest(join(rig.world.keys.root, LEGACY_PUBLIC_MANIFEST), rig.world.keys.registry, { network: 'vector-mainnet', useCase: USE_CASE });
+      expect(await rig.run()).toBe(0);
+      expect(rig.checks().get('wallets')!.result).toBe('ok');
+      const foreign = await makeRig();
+      rmSync(join(foreign.world.keys.root, publicManifestFile(USE_CASE)));
+      writeFileSync(join(foreign.world.keys.root, LEGACY_PUBLIC_MANIFEST), JSON.stringify({ use_case: 'another', network: 'vector-mainnet', keys: {} }));
+      expect(await foreign.run()).toBe(1);
+      expect(foreign.checks().get('wallets')!.text).toContain(`cannot tell: the public key file ${publicManifestFile(USE_CASE)} cannot be read (ENOENT)`);
     }, SLOW);
 
     it('the dates of the deposits are the end of the validity and 90 days, and an attestation that is not listed is a fail unless it expired', async () => {

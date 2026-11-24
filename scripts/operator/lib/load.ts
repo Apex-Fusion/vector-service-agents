@@ -45,8 +45,24 @@ function taskProblem(value: unknown): string | null {
   return null;
 }
 
-const USE_CASE_LISTS = ['keys', 'organisations', 'agents', 'subagents', 'funding', 'attestations', 'runs', 'evidenceSteps'] as const satisfies readonly (keyof UseCase)[];
+const USE_CASE_LISTS = ['keys', 'organisations', 'agents', 'subagents', 'funding', 'attestations', 'runs', 'evidenceSteps', 'records'] as const satisfies readonly (keyof UseCase)[];
 const USE_CASE_TEXTS = ['moduleManifestPath', 'runtimeCommit'] as const satisfies readonly (keyof UseCase)[];
+const USE_CASE_OBJECTS_OR_NULL = ['compliance', 'lifecycle', 'tenantSeed'] as const satisfies readonly (keyof UseCase)[];
+const USE_CASE_OBJECTS = ['tenantOrganisations'] as const satisfies readonly (keyof UseCase)[];
+const MAX_SENTENCE = 200;
+const MAX_NOT_COVERED_ITEMS = 8;
+
+const isSentence = (value: unknown): boolean => typeof value === 'string' && value.length >= 1 && value.length <= MAX_SENTENCE;
+
+/** The first rule that a value breaks as the section "Not covered" of a use case, or null: an object with a lead and 1 to 8 items, each a text of 1 to 200 characters. A rule names a member and never a value. */
+function notCoveredProblem(value: unknown): string | null {
+  if (!isObject(value)) return 'notCovered is not an object';
+  if (!isSentence(value.lead)) return `notCovered has no lead of 1 to ${MAX_SENTENCE} characters`;
+  const items = value.items;
+  if (!Array.isArray(items) || items.length < 1 || items.length > MAX_NOT_COVERED_ITEMS) return `notCovered has no list of 1 to ${MAX_NOT_COVERED_ITEMS} items`;
+  if (!items.every(isSentence)) return `an item of notCovered is not a text of 1 to ${MAX_SENTENCE} characters`;
+  return null;
+}
 
 /** The first rule that a value breaks as the data of a use case (the members of `UseCase`), or null. A rule names a member and never a value. */
 function useCaseProblem(value: unknown): string | null {
@@ -55,6 +71,10 @@ function useCaseProblem(value: unknown): string | null {
   if (typeof value.title !== 'string') return 'title is not a text';
   for (const member of USE_CASE_LISTS) if (!Array.isArray(value[member])) return `${member} is not a list`;
   for (const member of USE_CASE_TEXTS) if (typeof value[member] !== 'string') return `${member} is not a text`;
+  const notCovered = notCoveredProblem(value.notCovered);
+  if (notCovered !== null) return notCovered;
+  for (const member of USE_CASE_OBJECTS_OR_NULL) if (value[member] !== null && !isObject(value[member])) return `${member} is neither an object nor null`;
+  for (const member of USE_CASE_OBJECTS) if (!isObject(value[member])) return `${member} is not an object`;
   return null;
 }
 

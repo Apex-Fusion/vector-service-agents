@@ -118,7 +118,7 @@ function tenantName(session: TaskSession<Extra>): { name: string; sku: string | 
   const date = new Date(session.clock.now()).toISOString().slice(0, 10).replace(/-/g, '');
   const name = given ?? `${spec!.tenantPrefix}-${date}`;
   if (!TENANT_NAME.test(name)) throw new FlagError('the name of a tenant has 1 to 48 lower-case letters, digits or hyphens, and its first character is no hyphen');
-  return { name, sku: spec === undefined ? null : spec.sku };
+  return { name, sku: spec === undefined ? null : spec.subject };
 }
 
 /** The tenant that the facts hold for a run, or undefined. */

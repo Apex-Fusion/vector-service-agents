@@ -161,13 +161,15 @@ export function fakeUseCase(keys: TestKeys, over: Partial<UseCase> = {}): UseCas
   return {
     name: USE_CASE, title: 'A use case of the tests', keys: keys.specs, organisations: [], agents: [], subagents: [],
     funding: ['run', 'fee'].filter((name) => keys.specs.some((spec) => spec.name === name)).map((wallet) => ({ wallet, collateralLovelace: 5_000_000n, floatLovelace: 0n, items: [] })),
-    attestations: [], runs: [], evidenceSteps: [], moduleManifestPath: 'Module-1/deploy/manifest.json', runtimeCommit: 'main', ...over,
+    attestations: [], runs: [], evidenceSteps: [], moduleManifestPath: 'Module-1/deploy/manifest.json', runtimeCommit: 'main',
+    records: [], compliance: null, lifecycle: null, tenantSeed: null, tenantOrganisations: { supplier: 'supplier.example', insurer: 'insurer.example' },
+    notCovered: { lead: 'No run covers this item:', items: ['A sentence of a test.'] }, ...over,
   };
 }
 
 export async function taskWorld(options: TaskWorldOptions = {}): Promise<TaskWorld> {
   const names = options.keys ?? ['run', 'fee', 'service'];
-  const keys = makeTestKeys(names, { useCase: USE_CASE, shared: options.shared ?? ['run', 'fee'].filter((name) => names.includes(name)) });
+  const keys = makeTestKeys(names, { useCase: options.use?.name ?? USE_CASE, shared: options.shared ?? ['run', 'fee'].filter((name) => names.includes(name)) });
   const use = fakeUseCase(keys, options.use);
   const dir = mkdtempSync(join(tmpdir(), 'operator-world-'));
   roots.push(dir);
@@ -182,7 +184,7 @@ export async function taskWorld(options: TaskWorldOptions = {}): Promise<TaskWor
   const screen = new MemoryOutput();
   const stateDir = join(dir, 'state');
   const goPath = join(stateDir, 'GO.json');
-  const env: Record<string, string | undefined> = { OPERATOR_KEYS_DIR: keys.root, OPERATOR_STATE_DIR: stateDir, OPERATOR_USE_CASE: USE_CASE, ...options.env };
+  const env: Record<string, string | undefined> = { OPERATOR_KEYS_DIR: keys.root, OPERATOR_STATE_DIR: stateDir, OPERATOR_USE_CASE: use.name, ...options.env };
   const fetchImpl = options.fetchImpl ?? REFUSING_FETCH;
   const chain: ChainAccess = {
     provider: world.chain, deployment: DEPLOYMENT, koiosUrl: 'https://koios.test', fetchImpl,
@@ -203,7 +205,7 @@ export async function taskWorld(options: TaskWorldOptions = {}): Promise<TaskWor
       const document: { entries: Array<Record<string, unknown>> } = JSON.parse(readFileSync(`${base(task, run)}.evidence.json`, 'utf8'));
       return document.entries;
     },
-    facts: () => FactsFile.open(join(stateDir, 'facts.json'), { useCase: USE_CASE, network: 'vector-mainnet' }).read(),
+    facts: () => FactsFile.open(join(stateDir, 'facts.json'), { useCase: use.name, network: 'vector-mainnet' }).read(),
     lockPath: join(stateDir, 'run.lock'),
     exposure: (session = 's1') => {
       const path = join(stateDir, `exposure.${session}.json`);

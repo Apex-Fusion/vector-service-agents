@@ -5,7 +5,7 @@ import { inspect } from 'node:util';
 import { afterAll, describe, expect, it } from 'vitest';
 import { parseKeyText } from '../../checks/lib/keys.ts';
 import { enterpriseAddressOf } from '../../checks/lib/platform.ts';
-import { KeyStoreError, Registry, checkPublicManifest, loadRegistry, makeMissingKeys, writePublicManifest } from '../lib/registry.ts';
+import { KeyStoreError, LEGACY_PUBLIC_MANIFEST, Registry, checkPublicManifest, findPublicManifest, loadRegistry, makeMissingKeys, publicManifestFile, writePublicManifest } from '../lib/registry.ts';
 import type { KeySpec, KeyStoreIo } from '../lib/registry.ts';
 import { counterSeed, makeKeyRoot, makeTestKeys, removeTestKeys, writeSeed } from './support/keys.ts';
 
@@ -668,5 +668,72 @@ describe('the public key file', () => {
     expect(read(path).network).toBe('another-network');
     expect(modeOf(path)).toBe(0o600);
     expect(modeOf(root)).toBe(0o700);
+  });
+});
+
+describe('publicManifestFile', () => {
+  it('gives keys-public.<use case>.json for the name of a use case, a file of its own for each use case, and never the earlier name', () => {
+    expect(publicManifestFile('inventory-reorder')).toBe('keys-public.inventory-reorder.json');
+    expect(publicManifestFile('a')).toBe('keys-public.a.json');
+    const names = ['inventory-reorder', 'prior-authorization', 'bid-evaluation', 'use-case-4', 'a1', 'a-1'];
+    const files = names.map((name) => publicManifestFile(name));
+    expect(new Set(files).size).toBe(names.length);
+    expect(files).not.toContain(LEGACY_PUBLIC_MANIFEST);
+    expect(LEGACY_PUBLIC_MANIFEST).toBe('keys-public.json');
+  });
+  it('refuses a name that is not the name of a use case, and takes a name of 48 characters', () => {
+    for (const bad of ['', 'Inventory', 'a.b', '../x', 'a/b', 'a b', 'shared', 'a'.repeat(49), '-a', '1a', 'a_b', 'keys.json', undefined, null, 5, ['a']]) {
+      expect(refusal(() => publicManifestFile(bad as unknown as string)).reason, String(bad)).toBe('shape');
+    }
+    expect(publicManifestFile('a'.repeat(48))).toBe(`keys-public.${'a'.repeat(48)}.json`);
+  });
+});
+
+describe('findPublicManifest', () => {
+  /** The text of a public key file as the pack writes it, for a use case. */
+  const manifestFor = (useCase: string): string => `${JSON.stringify({ note: 'A test.', network: 'test-network', use_case: useCase, keys: {} }, null, 2)}\n`;
+  const put = (root: string, name: string, text: string): void => writeFileSync(join(root, name), text, { mode: 0o600 });
+  const own = (root: string): string => join(root, publicManifestFile(USE_CASE));
+  const earlier = (root: string): string => join(root, LEGACY_PUBLIC_MANIFEST);
+
+  it('gives the file of the use case when it is there, also when the file of the earlier name is there too', () => {
+    const root = makeKeyRoot();
+    put(root, publicManifestFile(USE_CASE), manifestFor(USE_CASE));
+    expect(findPublicManifest(root, USE_CASE)).toBe(own(root));
+    put(root, LEGACY_PUBLIC_MANIFEST, manifestFor(USE_CASE));
+    expect(findPublicManifest(root, USE_CASE)).toBe(own(root));
+  });
+  it('gives the file of the earlier name when the file of the use case is not there and the earlier file names this use case, names no use case, or cannot be read as JSON', () => {
+    for (const text of [manifestFor(USE_CASE), '{}', JSON.stringify({ keys: {} }), 'this is not JSON', '[]', '']) {
+      const root = makeKeyRoot();
+      put(root, LEGACY_PUBLIC_MANIFEST, text);
+      expect(findPublicManifest(root, USE_CASE), text).toBe(earlier(root));
+    }
+  });
+  it('gives the file of the use case when the earlier file names another use case, is a link or is a folder', () => {
+    const named = makeKeyRoot();
+    put(named, LEGACY_PUBLIC_MANIFEST, manifestFor('other-case'));
+    expect(findPublicManifest(named, USE_CASE)).toBe(own(named));
+    expect(findPublicManifest(named, 'other-case')).toBe(earlier(named));
+    const link = makeKeyRoot();
+    put(link, 'elsewhere.json', manifestFor(USE_CASE));
+    symlinkSync(join(link, 'elsewhere.json'), earlier(link));
+    expect(findPublicManifest(link, USE_CASE)).toBe(own(link));
+    const folder = makeKeyRoot();
+    mkdirSync(earlier(folder));
+    expect(findPublicManifest(folder, USE_CASE)).toBe(own(folder));
+  });
+  it('gives the file of the use case when no file is there, and writes nothing', () => {
+    const root = makeKeyRoot();
+    expect(findPublicManifest(root, USE_CASE)).toBe(own(root));
+    expect(readdirSync(root)).toEqual([]);
+  });
+  it('refuses a name that is not the name of a use case, and a folder that cannot be looked at', () => {
+    expect(refusal(() => findPublicManifest(makeKeyRoot(), '../x')).reason).toBe('shape');
+    const io: Partial<KeyStoreIo> = { stat: () => { throw fsError('EACCES', 'a path of the test'); } };
+    const err = refusal(() => findPublicManifest(makeKeyRoot(), USE_CASE, io));
+    expect(err.reason).toBe('manifest');
+    expect(err.message).toContain('EACCES');
+    expect(err.message).not.toContain('a path of the test');
   });
 });

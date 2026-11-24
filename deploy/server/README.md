@@ -4,7 +4,7 @@ This folder has the files of the agents and the mock systems that `deploy/host` 
 In both ways, the agents of this folder share no container, no folder and no port with the agents of `deploy/host`.
 The snippet of the mock service is for Caddy on the host: its upstream is `127.0.0.1:9120`. On a host whose proxy runs in a container, the block of the mock service uses `mock-systems:9120` (section "A host whose proxy runs in a container").
 
-The plan for the host is 19 containers: 8 services, 10 runtimes and 1 mock service. One agent has three runtimes in front of one service, so there are 10 runtimes. The memory of the host holds the mock service and the six containers of use case 1 at the planning sizes. The four containers of use case 2 do not all pass the gate at the planning sizes. The other 8 containers wait for a new count (section "The host").
+The plan for the host is 19 containers: 8 services, 10 runtimes and 1 mock service. One agent has three runtimes in front of one service, so there are 10 runtimes. The memory of the host holds the mock service and the six containers of use case 1 at the planning sizes. The four containers of use case 2 do not all pass the gate at the planning sizes. The eight containers of use case 3 do not all pass it either (section "The host").
 The agents of this folder build no image on the host. CI publishes the images. A compose file names the image by its digest.
 
 The operator's steps are in [RUNBOOK.md](RUNBOOK.md). This note gives the facts.
@@ -37,6 +37,16 @@ The operator's steps are in [RUNBOOK.md](RUNBOOK.md). This note gives the facts.
 | `.env.insurer-intake-agent.example` | The settings of the Insurer Intake Agent: its service and its runtime read the same file. Names, placeholders and published values only. |
 | `Caddyfile.insurer-intake-agent.snippet` | The host block of the Insurer Intake Agent: `/agent.json` goes to the service, the rest to the runtime. |
 | `RUNBOOK-insurer-intake-agent.md` | The operator's steps for the Insurer Intake Agent, its checks and its failure table. |
+| `docker-compose.sourcing-agent.yml` | The compose file of the Sourcing Agent: one runtime in front of one service, each image by digest, each port on `127.0.0.1`. The runtime gets none of the nine keys of the service. |
+| `.env.sourcing-agent.example` | The settings of the Sourcing Agent: its service and its runtime read the same file. Names, placeholders and published values only. |
+| `Caddyfile.sourcing-agent.snippet` | The host block of the Sourcing Agent: `/agent.json` and the co-sign route go to the service, the rest to the runtime. |
+| `RUNBOOK-sourcing-agent.md` | The operator's steps for the Sourcing Agent, its checks and its failure table. |
+| `docker-compose.bid-desk-alfa.yml` | The compose file of Bid Desk alfa: one runtime in front of one service, each image by digest, each port on `127.0.0.1`. The runtime does not get the key of the service. |
+| `docker-compose.bid-desk-bravo.yml` | The compose file of Bid Desk bravo. It is the file of alfa with the name of the instance, the two host ports, the host name and the organisation changed. |
+| `docker-compose.bid-desk-charlie.yml` | The compose file of Bid Desk charlie. It is the file of alfa with the name of the instance, the two host ports, the host name and the organisation changed. |
+| `.env.bid-desk.example` | The settings of one Bid Desk: its service and its runtime read the same file. The operator makes one copy for each of the three Bid Desks. Names, placeholders and published values only. |
+| `Caddyfile.bid-desk.snippet` | The three host blocks of the Bid Desks, each between its own pair of markers: `/agent.json` and `/price-list.json` go to the service, the rest to the runtime. |
+| `RUNBOOK-bid-desk.md` | The operator's steps for the three Bid Desks, their checks and their failure table. |
 
 Each agent adds one snippet file, one compose file and one env example later. They go in this folder, with the deploy pack of the agent.
 
@@ -96,7 +106,19 @@ A start needs 1,024 MiB of `MemAvailable` before it. With the six containers of 
 
 At the planning sizes, the fourth start fails the gate in the typical case (814 MiB before it), and the second start fails it in the lowest case (817 MiB before it). Let S be the size of one service in MiB, with the runtimes at 190 MiB. In the typical case, the fourth start passes only when `2S + 190 <= 904` (1,928 less 1,024), so S is at most 357 MiB. In the lowest case, it needs `2S + 190 <= 255` (1,279 less 1,024), so S is at most 32 MiB: no real service size passes. A start that would fail the gate stops, and the owner of the host decides.
 
-The containers of later agents come after these ten. Add them to the table, and check the gate again. So the other 8 containers need more memory, or a real size below the planning size, before they start. Measure the real size of each container at its first start.
+The eight containers of use case 3 (supplier bid evaluation) have these planning sizes. They are estimates until the first start of a service is measured.
+
+| Container | MiB |
+|---|---|
+| Sourcing Agent runtime | 190 |
+| Sourcing Agent service | 462 |
+| Bid Desk runtimes (3) | 570 |
+| Bid Desk services (3) | 1,386 |
+| The eight containers | 2,608 |
+
+The eight containers need 2,608 MiB, and a start needs 1,024 MiB of `MemAvailable` before it. With the six containers of use case 1 running, and none of use case 2, `MemAvailable` is about 1,928 MiB in the typical case and 1,279 MiB in the lowest case. So the eight containers need 680 MiB more than the typical case holds, and 1,329 MiB more than the lowest case holds. The service starts first, then the runtime, for the Sourcing Agent and then for each Bid Desk. At the planning sizes, the fourth start fails the gate in the typical case (814 MiB before it), and the second start fails it in the lowest case (817 MiB before it). So three of the eight containers start in the typical case, and one in the lowest case. A start that the gate refuses is not made.
+
+The plan holds no container after these eighteen, and the mock service with them makes the 19. So the containers of use case 2 and of use case 3 need more memory, or a real size below the planning size, before all of them start. Measure the real size of each container at its first start.
 
 ## The runtime image
 
@@ -203,12 +225,14 @@ Caddy runs on the host (the set-up of this folder), or in a container (section "
 | Order Desk runtimes (3) | 8102 to 8104 |
 | Prior Authorization Agent runtime (1) | 8105 |
 | Insurer Intake Agent runtime (1) | 8106 |
-| Runtimes of later agents (4) | 8107 to 8110 |
+| Sourcing Agent runtime (1) | 8107 |
+| Bid Desk runtimes (3) | 8108 to 8110 |
 | Reorder Agent service (1) | 9101 |
 | Order Desk service (1) | 9102 |
 | Prior Authorization Agent service (1) | 9103 |
 | Insurer Intake Agent service (1) | 9104 |
-| Services of later agents (4) | 9105 to 9108 |
+| Sourcing Agent service (1) | 9105 |
+| Bid Desk services (3) | 9106 to 9108 |
 | Mock service (1) | 9120 |
 
 Caddy on the host reaches a container by its port on `127.0.0.1`. Caddy in a container reaches it by its container name and its container port, on the network of the compose project. The port on `127.0.0.1` then serves the checks of the operator.
@@ -239,6 +263,7 @@ This shape is for Caddy on the host. A host whose proxy runs in a container uses
 
 On some hosts the proxy is a Caddy container, and no Caddy package is installed on the host. The packs of use case 1 (the Reorder Agent and the Order Desk) are written for such a host, and they fit no other: their upstreams are container names, and Caddy on the host cannot resolve them. The script, the main `Caddyfile` of this folder and the folder `/etc/caddy/agents` are not used there.
 The packs of use case 2 (the Prior Authorization Agent and the Insurer Intake Agent) are written for such a host in the same way.
+The packs of use case 3 (the Sourcing Agent and the three Bid Desks) are written for such a host in the same way.
 In this section, `<caddy container>` is the name of the Caddy container. `<caddyfile>` is the one file on the host that the container mounts as `/etc/caddy/Caddyfile`.
 
 | Item | Rule |
@@ -247,7 +272,7 @@ In this section, `<caddy container>` is the name of the Caddy container. `<caddy
 | The block of an agent | The lines of the snippet of the pack, from `# <agent> vhosts (BEGIN)` to `# <agent> vhosts (END)`. The two markers are exact lines. A command finds them to replace the block or to remove it. |
 | The upstreams | Container names and container ports, for example `reorder-service:9101` and `reorder-runtime:8080`. They are not ports on `127.0.0.1`. |
 | The network | Compose makes the default network of the project, `<project>_default`, when it starts the service. A pack has no `networks` key. Only the Caddy container joins it. |
-| The join | `docker network connect <project>_default <caddy container>`. Do it once for each project. Do it again after each new Caddy container, because a new container has none of the joins of the old one. |
+| The join | `docker network connect <project>_default <caddy container>`. Do it once for each project. The three Bid Desks are three projects, so the Caddy container joins one network for each of them: `bid-desk-alfa_default`, `bid-desk-bravo_default` and `bid-desk-charlie_default`. Do it again after each new Caddy container, because a new container has none of the joins of the old one. |
 | The write | Append the block to the end of `<caddyfile>`, in place. A mounted file does not follow a new file that replaces it. |
 | The check | `docker exec <caddy container> caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile`. The answer must say `Valid configuration`. |
 | The reload | `docker exec <caddy container> caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile`. Never restart Caddy. |
@@ -272,6 +297,7 @@ The shape of the block:
 Keep a copy of the Caddyfile before each change. Write it back, in place, when `caddy validate` fails. A new Caddy container reads the file when it starts, and it does not start with a file that fails.
 The runbooks of the two packs give the commands with the names of their projects and their markers: `RUNBOOK-reorder-agent.md` and `RUNBOOK-order-desk.md`, in the section "The Caddy block".
 The runbooks of the two packs of use case 2 give them in the same way: `RUNBOOK-prior-authorization-agent.md` and `RUNBOOK-insurer-intake-agent.md`.
+The runbooks of the packs of use case 3 give them in the same way: `RUNBOOK-sourcing-agent.md` and `RUNBOOK-bid-desk.md`. The second one has one block and one join for each of the three Bid Desks.
 
 ## DNS
 

@@ -10,6 +10,8 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { parse as parseYaml } from 'yaml';
 import { MAX_CLAIM_TYPE_BYTES } from '../../../packages/usecase-kit/src/dispute/index.ts';
 import { INVENTORY_CAPABILITIES, ORDER_DESK_CLAIM, REORDER_CLAIM } from '../../../packages/usecase-kit/src/inventory/index.ts';
+import { BID_CAPABILITIES, BID_DESK_CLAIM, SOURCING_CLAIM } from '../../../packages/usecase-kit/src/bids/index.ts';
+import { INTAKE_CLAIM, PRIORAUTH_CAPABILITIES, PRIORAUTH_CLAIM } from '../../../packages/usecase-kit/src/priorauth/index.ts';
 import type { AdvertSpec, AgentSpec, KeyLine, KeyUse, PartySpec, UseCase } from '../lib/contract.ts';
 import { loadRegistry, makeMissingKeys } from '../lib/registry.ts';
 import data from '../usecases/inventory-reorder.ts';
@@ -238,6 +240,10 @@ const mapHandle = (files: AgentFiles, path: string | null, change: (handle: Cadd
 const KIT_OF_KIND: Readonly<Record<AgentSpec['kind'], { capability: string; claim: typeof REORDER_CLAIM }>> = {
   'reorder-agent': { capability: INVENTORY_CAPABILITIES.reorder, claim: REORDER_CLAIM },
   'order-desk': { capability: INVENTORY_CAPABILITIES.order, claim: ORDER_DESK_CLAIM },
+  'prior-authorization-agent': { capability: PRIORAUTH_CAPABILITIES.draft, claim: PRIORAUTH_CLAIM },
+  'insurer-intake-agent': { capability: PRIORAUTH_CAPABILITIES.intake, claim: INTAKE_CLAIM },
+  'sourcing-agent': { capability: BID_CAPABILITIES.evaluate, claim: SOURCING_CLAIM },
+  'bid-desk': { capability: BID_CAPABILITIES.quote, claim: BID_DESK_CLAIM },
 };
 
 /** The capability of each agent is the capability that the kit gives to its kind, the template names it, and the claim of the template is the claim that the kit holds for that capability. */
@@ -586,6 +592,8 @@ function hostProblems(use: UseCase, table = AGENT_FILES): string[] {
     }
     for (const url of agent.statusUrls) if (parseUrl(url)?.pathname !== status) problems.push(`${agent.id}: the status URL ${url} does not end in ${status}`);
     const serviceName = SERVICE_CONTAINER[agent.id];
+    if (!files.compose.some((candidate) => candidate.container === agent.serviceContainer)) problems.push(`${agent.id}: the compose file has no container ${agent.serviceContainer}, the service container of the data`);
+    if (agent.adverts.some((advert) => advert.runtimeContainer === agent.serviceContainer)) problems.push(`${agent.id}: the service container ${agent.serviceContainer} of the data is the container of an advert`);
     const servicePort = EXPECTED_PORTS[serviceName];
     const serviceUrl = `http://${serviceName}:${servicePort}`;
     const containers = new Set<string>();
@@ -634,18 +642,42 @@ function hostProblems(use: UseCase, table = AGENT_FILES): string[] {
   return problems;
 }
 
+/** The example env file of an agent is the file that the data names, or the service env file with `.example`. It holds the lines of the mock origins and the line of the Module-1 manifest exactly when the data says so. */
+function managedProblems(use: UseCase): string[] {
+  const problems: string[] = [];
+  for (const agent of use.agents) {
+    const name = agent.exampleEnvFile ?? `${agent.serviceEnvFile}.example`;
+    const lines = (EXAMPLES as Partial<Record<string, ReadonlyMap<string, string>>>)[name];
+    if (lines === undefined) {
+      problems.push(`${agent.id}: the example env file ${name} is not one of the examples that this test reads`);
+      continue;
+    }
+    const mock = lines.has('MOCK_PUBLIC_BASE') && lines.has('MOCK_MTLS_BASE');
+    if (mock !== agent.envManaged.mock) problems.push(`${agent.id}: the data says mock ${String(agent.envManaged.mock)} and the example ${name} ${mock ? 'has' : 'lacks'} the lines of the mock origins`);
+    const manifest = lines.has('VECTOR_MODULE1_MANIFEST');
+    if (manifest !== agent.envManaged.module1) problems.push(`${agent.id}: the data says module1 ${String(agent.envManaged.module1)} and the example ${name} ${manifest ? 'has' : 'lacks'} the line of the Module-1 manifest`);
+  }
+  return problems;
+}
+
+/** The section "Not covered" of the data is the section of the golden results page of use case 1, word for word. */
+function notCoveredProblems(use: UseCase, page: string): string[] {
+  const section = `## Not covered\n\n${use.notCovered.lead}\n\n${use.notCovered.items.map((item) => `- ${item}`).join('\n')}\n`;
+  return page.includes(section) ? [] : ['the golden results page does not hold the section "Not covered" of the data'];
+}
+
 // ---- the lots and the runs ----
 
 function lotProblems(use: UseCase): string[] {
   const problems: string[] = [];
   const models = use.agents.find((agent) => agent.id === 'order-desk')?.adverts.map((advert) => advert.model) ?? [];
   for (const run of use.runs) {
-    const item = LOTS.items.find((candidate) => candidate.sku === run.sku);
-    if (item === undefined) problems.push(`run ${run.id}: the SKU ${run.sku} is not in the lots file`);
-    else for (const model of models) if (item.lots[model] === undefined) problems.push(`run ${run.id}: the SKU ${run.sku} has no size for the lot ${model}`);
+    const item = LOTS.items.find((candidate) => candidate.sku === run.subject);
+    if (item === undefined) problems.push(`run ${run.id}: the SKU ${run.subject} is not in the lots file`);
+    else for (const model of models) if (item.lots[model] === undefined) problems.push(`run ${run.id}: the SKU ${run.subject} has no size for the lot ${model}`);
   }
   if (!isDeepStrictEqual(use.runs.map((run) => run.id), ['clean', 'failure'])) problems.push('the runs are not clean and failure, in this order');
-  if (new Set(use.runs.map((run) => run.sku)).size !== use.runs.length) problems.push('two runs have the same SKU');
+  if (new Set(use.runs.map((run) => run.subject)).size !== use.runs.length) problems.push('two runs have the same SKU');
   return problems;
 }
 
@@ -1019,6 +1051,32 @@ describe('the data of use case 1 (inventory reorder)', () => {
     });
   });
 
+  describe('the members that more than one use case has', () => {
+    const PAGE = readFileSync(new URL('./golden/results-page.md', import.meta.url), 'utf8');
+    it('hold the values of use case 1: the service containers, no example file of its own, the managed lines, no line of a key that the record lacks, the end of each agent, and no record, compliance, lifecycle or seed', () => {
+      expect(data.agents.map((agent) => [agent.id, agent.serviceContainer, agent.exampleEnvFile, agent.envManaged, agent.publicKeyLines, agent.end])).toEqual([
+        ['reorder-agent', 'reorder-service', null, { mock: true, module1: true }, [], { record: 'active', advert: 'listed', subagents: 'live', successor: null }],
+        ['order-desk', 'orders-service', null, { mock: true, module1: true }, [], { record: 'active', advert: 'listed', subagents: 'live', successor: null }],
+      ]);
+      expect([data.records, data.compliance, data.lifecycle, data.tenantSeed]).toEqual([[], null, null, null]);
+    });
+    it('hold the example env file of each agent to the managed lines that the data names', () => {
+      expect(managedProblems(data)).toEqual([]);
+    });
+    it.each<[string, UseCase, string]>([
+      ['mock origins that the example has and the data does not manage', mapAgent(data, 'reorder-agent', (agent) => ({ ...agent, envManaged: { mock: false, module1: true } })), 'reorder-agent: the data says mock false and the example .env.reorder-agent.example has the lines of the mock origins'],
+      ['a manifest line that the example has and the data does not manage', mapAgent(data, 'order-desk', (agent) => ({ ...agent, envManaged: { mock: true, module1: false } })), 'order-desk: the data says module1 false and the example .env.order-desk.example has the line of the Module-1 manifest'],
+      ['an example file that the test does not read', mapAgent(data, 'order-desk', (agent) => ({ ...agent, exampleEnvFile: '.env.nothing.example' })), 'order-desk: the example env file .env.nothing.example is not one of the examples that this test reads'],
+    ])('refuse %s', (_name, broken, problem) => {
+      expect(managedProblems(broken)).toContain(problem);
+    });
+    it('copy the section "Not covered" of the golden results page, and refuse a copy that differs by one word', () => {
+      expect(notCoveredProblems(data, PAGE)).toEqual([]);
+      const changed = { ...data, notCovered: { ...data.notCovered, items: data.notCovered.items.map((item, index) => (index === 1 ? `${item.slice(0, -1)} again.` : item)) } };
+      expect(notCoveredProblems(changed, PAGE)).toEqual(['the golden results page does not hold the section "Not covered" of the data']);
+    });
+  });
+
   describe('the hosts, the ports and the containers', () => {
     it('are the hosts of the Caddy snippet and the compose file of each agent, with the ports 8101 to 8104, 9101 and 9102', () => {
       expect(hostProblems(data)).toEqual([]);
@@ -1032,6 +1090,8 @@ describe('the data of use case 1 (inventory reorder)', () => {
       ['a status list that misses a host', mapAgent(data, 'order-desk', (agent) => ({ ...agent, statusUrls: agent.statusUrls.slice(0, 2) })), 'order-desk: statusUrls is not the list of the /status of its adverts'],
       ['a status URL with another path', mapAgent(data, 'reorder-agent', (agent) => ({ ...agent, statusUrls: ['https://mp-suppliers-reorder.vector.apexfusion.org/health'] })), 'reorder-agent: the status URL https://mp-suppliers-reorder.vector.apexfusion.org/health does not end in /status'],
       ['an env file of the runtime that the compose file does not read', mapAdvert(data, 'order-desk', 'lot-small', { runtimeEnvFile: '.env.order-desk-medium' }), 'order-desk lot-small: the env files of orders-small-runtime are ./.env.order-desk, ./.env.order-desk-small and the data has ./.env.order-desk, ./.env.order-desk-medium'],
+      ['a service container that the compose file does not have', mapAgent(data, 'order-desk', (agent) => ({ ...agent, serviceContainer: 'orders-tiny-service' })), 'order-desk: the compose file has no container orders-tiny-service, the service container of the data'],
+      ['a service container that is the container of an advert', mapAgent(data, 'reorder-agent', (agent) => ({ ...agent, serviceContainer: 'reorder-runtime' })), 'reorder-agent: the service container reorder-runtime of the data is the container of an advert'],
     ])('refuse %s', (_name, broken, problem) => {
       expect(hostProblems(broken)).toContain(problem);
     });
@@ -1058,12 +1118,12 @@ describe('the data of use case 1 (inventory reorder)', () => {
   describe('the lots', () => {
     it('hold the SKU of each run, with a size for each lot of the Order Desk', () => {
       expect(lotProblems(data)).toEqual([]);
-      expect(data.runs.map((run) => run.sku)).toEqual(['GLV-NIT-M', 'MSK-N95']);
+      expect(data.runs.map((run) => run.subject)).toEqual(['GLV-NIT-M', 'MSK-N95']);
     });
     it.each<[string, UseCase, string]>([
-      ['a SKU that the lots file does not hold', { ...data, runs: data.runs.map((run) => (run.id === 'failure' ? { ...run, sku: 'MSK-N99' } : run)) }, 'run failure: the SKU MSK-N99 is not in the lots file'],
+      ['a SKU that the lots file does not hold', { ...data, runs: data.runs.map((run) => (run.id === 'failure' ? { ...run, subject: 'MSK-N99' } : run)) }, 'run failure: the SKU MSK-N99 is not in the lots file'],
       ['a lot that the SKU has no size for', mapAdvert(data, 'order-desk', 'lot-large', { model: 'lot-jumbo' }), 'run clean: the SKU GLV-NIT-M has no size for the lot lot-jumbo'],
-      ['two runs with one SKU', { ...data, runs: data.runs.map((run) => ({ ...run, sku: 'GLV-NIT-M' })) }, 'two runs have the same SKU'],
+      ['two runs with one SKU', { ...data, runs: data.runs.map((run) => ({ ...run, subject: 'GLV-NIT-M' })) }, 'two runs have the same SKU'],
     ])('refuse %s', (_name, broken, problem) => {
       expect(lotProblems(broken)).toContain(problem);
     });

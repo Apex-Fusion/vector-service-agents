@@ -9,14 +9,14 @@
 // its own line: it is never a pass. The check never says done while a claim is open, a delegation is live, a hold is on, a record is not Active or an organisation is not verified. The task signs
 // nothing: the claims are read through the read methods of a chain port whose signature throws.
 import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { collateralAdvice, isCollateralOutput } from '../../checks/lib/collateral.ts';
 import { duration, iso, units } from '../../checks/lib/format.ts';
 import type { AgentSpec, Facts, StepOutcome, TaskDefinition, TaskSession } from '../lib/contract.ts';
 import { readRunning, readRuntimeStatus, runtimesOf } from '../lib/free.ts';
 import { createModule1Port, effectiveStatus, findRecord, liveDelegations, module1FromManifest, readManifest, withdrawableFrom } from '../lib/platform.ts';
 import type { RecordUtxo } from '../lib/platform.ts';
-import { codeOf } from '../lib/registry.ts';
+import { codeOf, findPublicManifest } from '../lib/registry.ts';
 import { holdsSecret } from '../lib/secrets.ts';
 // `lib/platform.ts` does not give these names, and this task is their only caller in the pack: the types of the chain port of the kit and the Module-1 deployment type.
 import type { Module1Deployment } from '../../../packages/buyer-core/src/index.ts';
@@ -41,7 +41,6 @@ interface EndStateExtra {
 }
 
 const MANIFEST_BASE = 'https://raw.githubusercontent.com/Apex-Fusion/vector-agent-modules';
-const KEYS_PUBLIC = 'keys-public.json';
 const RUNNING_IMAGES = 'running-images.json';
 /** A deposit of an attestation returns this long after the end of its validity. */
 const DEPOSIT_DELAY_MS = 90 * 86_400_000;
@@ -107,14 +106,16 @@ async function readResolution(session: TaskSession<EndStateExtra>, facts: Readon
   return { kind: 'read', metadata };
 }
 
-/** The addresses of the wallets, from the public key file that the task keys wrote. The file holds no secret. */
+/** The addresses of the wallets, from the public key file of the use case that the task keys wrote (or the file of the earlier name, when the use case has none yet). The file holds no secret. */
 function readAddresses(session: TaskSession<EndStateExtra>): ReadonlyMap<string, string> {
+  const path = findPublicManifest(session.settings.keysDir, session.use.name);
+  const file = basename(path);
   let parsed: unknown;
-  try { parsed = JSON.parse(readFileSync(join(session.settings.keysDir, KEYS_PUBLIC), 'utf8')); } catch (err) {
-    throw new Error(`the public key file ${KEYS_PUBLIC} cannot be read (${err instanceof SyntaxError ? 'it is not JSON' : codeOf(err)}): the task keys writes it`);
+  try { parsed = JSON.parse(readFileSync(path, 'utf8')); } catch (err) {
+    throw new Error(`the public key file ${file} cannot be read (${err instanceof SyntaxError ? 'it is not JSON' : codeOf(err)}): the task keys writes it`);
   }
-  if (!isObject(parsed) || !isObject(parsed.keys)) throw new Error(`the public key file ${KEYS_PUBLIC} has no keys`);
-  if (parsed.use_case !== session.use.name || parsed.network !== session.settings.network.name) throw new Error(`the public key file ${KEYS_PUBLIC} is for another use case or another network`);
+  if (!isObject(parsed) || !isObject(parsed.keys)) throw new Error(`the public key file ${file} has no keys`);
+  if (parsed.use_case !== session.use.name || parsed.network !== session.settings.network.name) throw new Error(`the public key file ${file} is for another use case or another network`);
   const addresses = new Map<string, string>();
   for (const [name, entry] of Object.entries(parsed.keys)) if (isObject(entry) && typeof entry.address === 'string' && entry.address.startsWith('addr')) addresses.set(name, entry.address);
   return addresses;
