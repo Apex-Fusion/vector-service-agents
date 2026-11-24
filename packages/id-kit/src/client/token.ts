@@ -92,6 +92,7 @@ function detailsOf(delegation: DelegationRequest): string {
 function parseGrant(status: number, body: string, now: number): GatewayResult<IssuedToken> {
   const json = jsonObject(body);
   if (json === null) return badBody(status, 'the answer to a token request is not a JSON object');
+  if ('error' in json || 'error_description' in json || 'error_uri' in json) return badBody(status, 'the HTTP 200 token response contains OAuth error fields');
   const { access_token: accessToken, token_type: tokenType, issued_token_type: issuedTokenType, expires_in: expiresIn, authorization_details: details } = json;
   if (typeof accessToken !== 'string' || accessToken.split('.').length !== 3) return badBody(status, 'the answer has no access token in the form of a JWS');
   if (tokenType !== 'DPoP') return badBody(status, 'the token type of the answer is not DPoP');

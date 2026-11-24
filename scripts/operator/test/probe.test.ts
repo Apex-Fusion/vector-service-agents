@@ -433,6 +433,12 @@ describe('a token for the subagent itself', () => {
     p.gateway.fault('/token', { status: 400, body: JSON.stringify({ ...body, error: 'invalid_request' }) });
     expect(await p.run(...p.args(), '--submit')).toBe(1);
     expect(p.w.machine().result).toMatchObject({ observed: 'refused', status: 400, ok: false });
+    const diagnostic = 'untrusted response text';
+    p.gateway.fault('/token', { status: 200, body: JSON.stringify({ ...body, error: 'invalid_request', error_description: diagnostic }) });
+    expect(await p.run(...p.args(), '--submit')).toBe(1);
+    expect(p.w.machine().result).toMatchObject({ observed: 'unreadable', status: 200, ok: false });
+    expect(p.entries()[1]).toMatchObject({ shows: { observation: { kind: 'unreadable', status: 200 }, verdict: { ok: false } } });
+    expect(p.everything()).not.toContain(diagnostic);
     p.gateway.fault('/token', { status: 200, body: JSON.stringify({ ...body, authorization_details: [{ identifier: 'f0'.repeat(32) }] }) });
     expect(await p.run(...p.args(), '--submit')).toBe(1);
     expect(p.w.machine().result).toMatchObject({ observed: 'unreadable', status: 200, ok: false });
