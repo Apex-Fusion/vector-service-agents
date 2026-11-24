@@ -738,7 +738,8 @@ async function readCase(session: TaskSession<Extra>, loaded: Loaded, facts: Read
   const fromTool = listed !== null && listed.state === 'Settling' ? listed.outcome : null;
   const fromIndexer = indexed === null ? null : indexed.finalized_result;
   if (fromTool !== null && fromIndexer !== null && fromTool !== fromIndexer) throw new PreconditionError(`the hosted tool shows the result ${fromTool} and the marketplace indexer shows the result ${fromIndexer} for the case of the challenge`);
-  const verdict = fromIndexer ?? fromTool ?? (hold !== null ? 'AuditorWins' : null);
+  // The verdict is the result of this case and of nothing else. A hold with the reason 64 can belong to another dispute of the same agent, so it never gives a verdict: it is read to wait until the verdict AuditorWins has its hold.
+  const verdict = fromIndexer ?? fromTool;
   let waiting: string | null = null;
   if (verdict === null || (verdict === 'AuditorWins' && hold === null)) {
     let expected = 'about 4 h 44 min after the challenge';
@@ -746,7 +747,8 @@ async function readCase(session: TaskSession<Extra>, loaded: Loaded, facts: Read
       const at = (await blockTime()) + CASE_DURATION_MS;
       expected = at > nowMs ? `expected at ${iso(at)}, in ${duration(at - nowMs)}` : `expected at ${iso(at)}, and that time has passed`;
     } catch { /* the block time of the challenge is not known: the text says the length */ }
-    const lead = verdict === null ? 'the case of the challenge has no verdict' : 'the jury decided AuditorWins, and the hold is not yet on the record of the Order Desk';
+    const lead = verdict !== null ? 'the jury decided AuditorWins, and the hold is not yet on the record of the Order Desk'
+      : hold === null ? 'the case of the challenge has no verdict' : 'the case of the challenge has no verdict, and the hold on the record of the Order Desk is no proof of one';
     waiting = `${lead}. The relay opens a case about 30 minutes after the challenge, the jurors commit for 2 hours and reveal for 2 hours, and then the relay finalises and resolves it: the hold comes ${expected}`;
   }
   return { listed, indexed, hold, verdict: waiting === null ? verdict : null, waiting };

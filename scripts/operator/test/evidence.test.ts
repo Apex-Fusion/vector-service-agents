@@ -961,18 +961,24 @@ describe('check 7: the claims, the challenge and the case', () => {
     expect(r.exit).toBe(4);
     expect(r.out).toContain('the hold comes about 4 h 44 min after the challenge');
   });
-  it('takes the hold alone as the verdict AuditorWins when the case is closed and no longer listed, and shows the hold from the node', async () => {
-    const s = scenario('failure');
-    s.deskHold = 'held';
-    const r = await go(s);
-    expect(r.exit).toBe(0);
-    const doc = JSON.parse(r.read(publicFile())!) as { case: Obj; steps: Array<{ id: string; status: string; refs: Array<{ kind: string }> }> };
-    expect(doc.case.verdict).toBe('AuditorWins');
-    expect(doc.case.live).toBeNull();
-    expect(doc.case.indexed).toBeNull();
-    expect((doc.case.hold as Obj).reason).toBe(64);
-    expect((doc.case.hold as Obj).gateway_status).toBe('Suspended');
-    expect(doc.steps.find((step) => step.id === 'r2-d')!.refs.map((one) => one.kind)).toEqual(['hold']);
+  it('waits when a hold with the reason 64 is on the record and no case of this challenge is final, whatever the sources show of the case', async () => {
+    const alone = scenario('failure');
+    alone.deskHold = 'held';
+    const first = await go(alone);
+    expect(first.exit).toBe(4);
+    expect(first.read(publicFile())).toBeNull();
+    expect(first.out).toContain('the hold on the record of the Order Desk is no proof of one');
+    const openInIndexer = closedCase('AuditorWins', 'held', { state: 'open', finalized: null, closed: null, ref: ref('case output') });
+    const inIndexer = await go(openInIndexer);
+    expect(inIndexer.exit).toBe(4);
+    expect(inIndexer.read(publicFile())).toBeNull();
+    const openInTool = scenario('failure');
+    openInTool.cases = [caseRow({ phase: 'reveal', state: 'Open', outcome: 'Inconclusive', tally: { claimer: 0, auditor: 0, inconclusive: 0 }, revealed: 0 })];
+    openInTool.deskHold = 'held';
+    const inTool = await go(openInTool);
+    expect(inTool.exit).toBe(4);
+    expect(inTool.read(publicFile())).toBeNull();
+    expect(inTool.out).toContain('WAIT: the case of the challenge has no verdict');
   });
   it('writes a file with the verdict ClaimerWins, and shows step d as not run with the reason', async () => {
     const s = decided({ outcome: 'ClaimerWins', tally: { claimer: 3, auditor: 0, inconclusive: 0 } }, 'none');
@@ -1031,12 +1037,10 @@ describe('check 7: the claims, the challenge and the case', () => {
     const alone = await go(bare);
     expect(alone.exit).toBe(4);
     expect(alone.read(publicFile())).toBeNull();
-    const before = scenario('failure');
-    before.deskHold = 'held';
+    const before = closedCase();
     before.holdSince = challengeMs - 1;
     expect((await go(before)).exit).toBe(4);
-    const at = scenario('failure');
-    at.deskHold = 'held';
+    const at = closedCase();
     at.holdSince = challengeMs;
     expect((await go(at)).exit).toBe(0);
   });
