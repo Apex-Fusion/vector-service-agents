@@ -143,7 +143,6 @@ describe('a dry run', () => {
   it('shows the next step, signs and submits nothing, reads no approval file, and ends with the machine line', async () => {
     const w = await taskWorld();
     w.writeGo();
-    writeFileSync(w.goPath, 'this is not JSON', { mode: 0o600 });
     const seen: TaskSession[] = [];
     const ran: string[] = [];
     const def = toyTask([recordingStep('one', ran, { run: async (session) => { seen.push(session); ran.push('one'); return { kind: 'dry' }; } }), recordingStep('two', ran)]);
@@ -225,13 +224,16 @@ describe('a run with --submit', () => {
   it('runs a task that needs no approval with --submit and no file, and does not read a file that is there', async () => {
     const w = await taskWorld();
     const ran: string[] = [];
+    const seen: Array<TaskSession['go']> = [];
     const never = { keys: () => ['run', 'fee'], chain: true, hosted: [], approval: 'never' } as const;
-    expect(await w.run(toyTask(twoSteps(ran), { needs: never }), '--submit')).toBe(0);
+    const watching = (name: string): StepHandler => recordingStep(name, ran, { run: async (session) => { seen.push(session.go); return recordingStep(name, ran).run(session); } });
+    const def = (): TaskDefinition => toyTask([watching('one'), watching('two')], { needs: never });
+    expect(await w.run(def(), '--submit')).toBe(0);
     expect(ran).toEqual(['one']);
     w.writeGo();
-    writeFileSync(w.goPath, 'this is not JSON', { mode: 0o600 });
-    expect(await w.run(toyTask(twoSteps(ran), { needs: never }), '--submit')).toBe(0);
+    expect(await w.run(def(), '--submit')).toBe(0);
     expect(ran).toEqual(['one', 'two']);
+    expect(seen).toEqual([null, null]);
   });
   it('lets the task that makes the keys run with an approval that says unset, with no key at all, and refuses it for a wallet', async () => {
     const empty = mkdtempSync(join(tmpdir(), 'operator-empty-keys-'));
@@ -566,11 +568,13 @@ describe('a transaction in flight', () => {
     expect(w.node.submitted).toHaveLength(submitted);
     expect(w.machine()).toMatchObject({ outcome: 'dry', step: 'two' });
   });
-  it('waits for a transaction that may still land: exit 4, with the task not run, the transaction still in flight and its reserve kept', async () => {
+  it('waits for a transaction that may still land: exit 4, with the task not run, the transaction still in flight, its reserve kept, and no submit of its bytes in a dry run', async () => {
     const w = await taskWorld();
     const ran: string[] = [];
     const { hash, def } = await strand(w, ran);
+    const submitted = w.node.submitted.length;
     expect(await w.run(def)).toBe(4);
+    expect(w.node.submitted).toHaveLength(submitted);
     expect(w.screen.text).toContain(`WAIT: the transaction ${hash} of the step one`);
     expect(ran).toEqual(['one']);
     expect(w.state('toy').in_flight?.tx_hash).toBe(hash);
