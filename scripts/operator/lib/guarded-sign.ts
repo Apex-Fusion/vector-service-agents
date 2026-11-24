@@ -44,6 +44,8 @@ export interface KitLanding {
 const MAX_STEP = 200;
 /** The slot length of Vector: one second. The slot clock of the buyer code sets the same length. */
 const SLOT_MS = 1000;
+/** A transaction ends after now and at most one hour after now, as the landing of the pack holds a build to. The builders of the kit make a window of at most 59 minutes. */
+const MAX_VALID_AHEAD_MS = 3_600_000;
 /** A read of outputs: `getUtxos`, `getUtxosByOutRef`, `getUtxosWithUnit` and `getUtxoByUnit` of Lucid, and any read of the same family. */
 const OUTPUT_READ = /^getUtxo/;
 
@@ -97,12 +99,19 @@ export function recordingProvider<P extends { getUtxos(...a: never[]): Promise<U
 
 // ---- the summary ----
 
-/** The end of the validity of a transaction in POSIX ms, from its `ttl` slot and the start of the chain, or the reason that it cannot be placed in time. */
-function validityOf(facts: TxFacts, systemStartMs: number | null): { readonly validTo: number } | { readonly problem: string } {
+/**
+ * The end of the validity of a transaction in POSIX ms, from its `ttl` slot and the start of the chain, or the reason that it cannot be accepted: no end, no start of the chain, an end that is
+ * not after now (the transaction cannot land), or an end more than one hour after now (a transaction that is lost would hold its reserve far too long, or the slot clock of the builder is wrong).
+ */
+function validityOf(facts: TxFacts, systemStartMs: number | null, nowMs: number): { readonly validTo: number } | { readonly problem: string; readonly validTo?: number } {
   if (facts.validityEndSlot === null) return { problem: 'the transaction has no end of validity (no ttl), so it could land at any time, and the cap could not count it' };
   if (systemStartMs === null) return { problem: 'the network settings give no start time of the chain, so the end of the validity cannot be placed in time' };
+  if (!Number.isFinite(nowMs)) return { problem: 'the clock gave no valid time, so the end of the validity cannot be checked' };
   const validTo = systemStartMs + Number(facts.validityEndSlot) * SLOT_MS;
-  return Number.isSafeInteger(validTo) ? { validTo } : { problem: 'the end of the validity of the transaction is not a time that can be read' };
+  if (!Number.isSafeInteger(validTo)) return { problem: 'the end of the validity of the transaction is not a time that can be read' };
+  if (validTo <= nowMs) return { problem: `the transaction is valid until ${iso(validTo)}, which is not after now, so it cannot land`, validTo };
+  if (validTo > nowMs + MAX_VALID_AHEAD_MS) return { problem: `the transaction is valid until ${iso(validTo)}, more than one hour after now: a lost transaction would hold its reserve far too long, or the slot clock of the builder is wrong`, validTo };
+  return { validTo };
 }
 
 function ownerOf(address: string, plan: StepPlan | null, ring: RingView): string {
@@ -175,7 +184,7 @@ function stepOf(request: GuardedSignRequest, facts: TxFacts): string {
  * The `sign` that `createModule1Port` takes. Each call judges one transaction, in this order:
  *   1. The facts of the bytes. The spent outputs and the collateral inputs come from `recorder`: an input that no read returned is a GuardRefusal, and nothing is signed.
  *   2. The guards of `runGuards` with the plan (`request.plan`, or its answer for these facts: the plan of THIS transaction only), and the network result that the runner keeps. A result that is
- *      missing or not ok is a refusal, and so is a transaction with no end of validity. A failed guard is a GuardRefusal.
+ *      missing or not ok is a refusal, and so is a transaction with no end of validity, an end that is not after now, and an end more than one hour after now. A failed guard is a GuardRefusal.
  *   3. In the dry mode: the summary is printed and a DryStop is thrown. Nothing is signed, reserved or written.
  *   4. In the submit mode: (a) the approval for this task, run wallet and tag; (b) the net outflow of the registry and the cap; (c) the signers that the bytes need are exactly the one signer of the
  *      plan; (d) a transaction in flight must be an earlier transaction of this call that the provider saw confirmed, and its step must have a colon: it is recorded as a part and let go,
@@ -216,12 +225,12 @@ export function guardedSign(host: LandHost, request: GuardedSignRequest, recorde
     const utxos = [...read.values()];
     const needed = neededSigners(facts, utxos);
     const net = netRegistryOutflow(facts, new Map(utxos.map((utxo) => [refOf(utxo.txHash, utxo.outputIndex), { address: utxo.address, lovelace: utxo.assets.lovelace ?? 0n }])), ring);
-    const validity = validityOf(facts, host.settings.network.systemStartMs);
+    const validity = validityOf(facts, host.settings.network.systemStartMs, host.clock.now());
     const results: GuardResult[] = [
       networkResult, ...runGuards({ facts, claims: { txHash: facts.txHash, feeLovelace: facts.feeLovelace }, inputs: utxos, plan, ring }),
       'problem' in validity ? { guard: 'body', ok: false, message: validity.problem } : { guard: 'body', ok: true, message: `the transaction is valid until ${iso(validity.validTo)}` },
     ];
-    const validTo = 'validTo' in validity ? validity.validTo : null;
+    const validTo = validity.validTo ?? null;
     for (const line of summaryLines({ mode: host.mode, step, facts, read, needed, results, plan, validTo, net, ring, notes })) host.out.out(line);
     if (failed(results).length > 0) throw new GuardRefusal(step, results);
 

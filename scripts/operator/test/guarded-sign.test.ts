@@ -449,6 +449,52 @@ describe('guardedSign: what is refused before a signature', () => {
     const again = await pay(ready, 3_000_000n);
     expect(guardedSign(ready.host, moveRequest(ready.registry), ready.recorded)(again.cbor).txHashHex).toBe(again.hash);
   });
+  const HOUR_MS = 60 * MINUTE;
+  const BAD_ENDS: ReadonlyArray<readonly [string, number, RegExp]> = [
+    ['an end in the past', NOW - MINUTE, /not after now/],
+    ['an end that is the time now', NOW, /not after now/],
+    ['an end a month ago', NOW - 30 * 24 * HOUR_MS, /not after now/],
+    ['an end one second more than one hour away', NOW + HOUR_MS + 1000, /more than one hour after now/],
+    ['an end three years away', NOW + 3 * 365 * 24 * HOUR_MS, /more than one hour after now/],
+  ];
+  for (const [what, validTo, message] of BAD_ENDS) {
+    it(`refuses a transaction with ${what}, in both modes, before any reserve or signature, and shows the end`, async () => {
+      for (const mode of ['submit', 'dry'] as const) {
+        const rig = makeRig({ mode });
+        const built = await pay(rig, 3_000_000n, { validTo });
+        expect(built.facts.validityEndSlot).not.toBeNull();
+        const error = refusal(() => guardedSign(rig.host, moveRequest(rig.registry), rig.recorded)(built.cbor));
+        expect(error.failures.map((failure) => failure.guard), mode).toEqual(['body']);
+        expect(error.message).toMatch(message);
+        expect(error.message).toContain(new Date(validTo).toISOString());
+        expect(rig.out.text).toContain(`valid until: ${new Date(validTo).toISOString()}`);
+        expectNothingSigned(rig);
+        expect(existsSync(join(rig.dir, 'exposure.test-session.json'))).toBe(false);
+      }
+    });
+  }
+  it('signs a transaction that ends one second from now, in 30 minutes, and in exactly one hour, and keeps that end in the transaction in flight', async () => {
+    for (const validTo of [NOW + 1000, NOW + 30 * MINUTE, NOW + HOUR_MS]) {
+      const rig = makeRig();
+      const built = await pay(rig, 3_000_000n, { validTo });
+      expect(guardedSign(rig.host, moveRequest(rig.registry), rig.recorded)(built.cbor).txHashHex).toBe(built.hash);
+      expect(rig.state.snapshot().in_flight?.valid_to).toBe(validTo);
+    }
+  });
+  it('refuses every end of validity when the clock gives no time, in both modes, and signs when it does', async () => {
+    for (const mode of ['submit', 'dry'] as const) {
+      const rig = makeRig({ mode });
+      rig.clock.t = Number.NaN;
+      const built = await pay(rig, 3_000_000n);
+      const error = refusal(() => guardedSign(rig.host, moveRequest(rig.registry), rig.recorded)(built.cbor));
+      expect(error.failures.map((failure) => failure.guard), mode).toEqual(['body']);
+      expect(error.message).toMatch(/clock gave no valid time/);
+      expectNothingSigned(rig);
+    }
+    const ready = makeRig();
+    const again = await pay(ready, 3_000_000n);
+    expect(guardedSign(ready.host, moveRequest(ready.registry), ready.recorded)(again.cbor).txHashHex).toBe(again.hash);
+  });
   it('refuses a step name that is empty, too long or not text, and signs with a name that is right', async () => {
     const rig = makeRig();
     const built = await pay(rig, 3_000_000n);
