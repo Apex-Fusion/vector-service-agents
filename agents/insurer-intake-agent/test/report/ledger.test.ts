@@ -230,6 +230,11 @@ describe('the report over the real readers', () => {
     expect(await reportOn(goodWorld({ provenance: null, software: null, binding: null }))).toEqual({ provenance: 'absent', software: 'absent', principal_binding: 'absent' });
   });
 
+  it('reports valid for a solicited attestation of the Provider, as the Provider attestations are, and invalid for one whose envelope signature does not verify', async () => {
+    expect(await reportOn(goodWorld({ provenance: attestationAbout(1, PROVIDER_KEY, { solicited: true }).utxo }))).toEqual(ALL_VALID);
+    expect(await reportOn(goodWorld({ provenance: attestationAbout(1, PROVIDER_KEY, { envelopeSig: 'ab'.repeat(64) }).utxo }))).toEqual({ ...ALL_VALID, provenance: 'invalid' });
+  });
+
   describe('the decoys', () => {
     const member = memberRecord(MEMBER_ID, ROOT_KEY, MEMBER_KEY);
 
