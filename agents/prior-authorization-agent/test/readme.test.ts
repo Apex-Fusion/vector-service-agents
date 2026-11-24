@@ -43,7 +43,8 @@ const readme = textOf('../README.md');
 const template = textOf('../agent.json.template');
 const manifest = manifestFromEnv(TEMPLATE_ENV);
 const sourceDir = new URL('../src/', import.meta.url);
-const sources = (readdirSync(sourceDir, { recursive: true }) as string[]).filter((file) => file.endsWith('.ts')).map((file) => readFileSync(new URL(file, sourceDir), 'utf8'));
+const sourceFiles: string[] = readdirSync(sourceDir, { recursive: true, encoding: 'utf8' });
+const sources = sourceFiles.filter((file) => file.endsWith('.ts')).map((file) => readFileSync(new URL(file, sourceDir), 'utf8'));
 const section = (heading: string): string => (readme.split(`\n## ${heading}\n`)[1] ?? '').split('\n## ')[0];
 const ticks = (text: string): string[] => [...text.matchAll(/`([^`]+)`/g)].map((match) => match[1]);
 const cellsOf = (line: string): string[] => line.split('|').slice(1, -1).map((cell) => cell.trim());
@@ -262,6 +263,7 @@ describe('agents/prior-authorization-agent/README.md: Run it', () => {
     const none = ledgerWorld();
     none.getSystemStartMs = async () => { throw new Error('the node does not answer'); };
     const other = (async () => new Response(module1ManifestText('ab'.repeat(28)), { status: 200 })) as typeof fetch;
+    const down = (async () => { throw new Error('the network is down'); }) as typeof fetch;
     const refused = async (says: string, env: NodeJS.ProcessEnv, options: StartOptions, error: RegExp, hidden: string[] = []): Promise<void> => {
       expect(run, says).toContain(says);
       const lines: string[] = [];
@@ -270,6 +272,7 @@ describe('agents/prior-authorization-agent/README.md: Run it', () => {
       for (const value of hidden) expect(errorText(failed), `${says}: shows no value`).not.toContain(value);
       expect(lines.some((line) => line.startsWith('listening on ')), `${says}: no listening line`).toBe(false);
     };
+    await refused('when the Module-1 manifest cannot be fetched', {}, { fetchImpl: down }, /^The Module-1 manifest \(VECTOR_MODULE1_MANIFEST\) .* cannot be fetched/);
     await refused('when the Module-1 manifest names another identity registry', {}, { fetchImpl: other }, /^the Module-1 manifest \(VECTOR_MODULE1_MANIFEST\) names another identity registry than IDENTITY_POLICY_ID/, ['ab'.repeat(28)]);
     await refused('when the node gives no start time of the chain', {}, { provider: none }, /^the node gave no start time of the chain/);
     await refused('when the state directory cannot be written', { PRIORAUTH_STATE_DIR: join(dir, 'a-file') }, {}, /^environment variable PRIORAUTH_STATE_DIR names .* which cannot be written/);
@@ -371,6 +374,9 @@ describe('agents/prior-authorization-agent/README.md: the routes and the errors'
     // A check with no context header, and a job with some of the six, are refused as a bad context.
     const noContext = await fetch(`${origin}/precheck`, { method: 'POST', body, headers: { authorization: TOKEN } });
     expect([noContext.status, (await bodyOf(noContext)).error]).toStrictEqual([SERVER_OWN.bad_context, 'bad_context']);
+    // The body is read as a job first: a request that breaks a rule of the intake gets no go and reserves nothing.
+    const notARequest = await fetch(`${origin}/precheck`, { method: 'POST', body: JSON.stringify([{ content: JSON.stringify({ ...PROPOSE, op: 'cancel' }), role: 'user' }]), headers: headers('dd') });
+    expect([notARequest.status, (await bodyOf(notARequest)).error]).toStrictEqual([STATUS.bad_shape, 'bad_shape']);
     const partial = await fetch(`${origin}/`, { method: 'POST', body, headers: { authorization: TOKEN, [CONTEXT_HEADERS.escrowRef]: `${'cc'.repeat(32)}#0` } });
     expect([partial.status, (await bodyOf(partial)).error]).toStrictEqual([SERVER_OWN.bad_context, 'bad_context']);
     // The co-sign route needs no token: its own answer for a body that is not JSON text is 415. It takes POST only.
