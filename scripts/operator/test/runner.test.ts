@@ -14,6 +14,7 @@ import { TxNotConfirmedError } from '../../checks/lib/platform.ts';
 import { PreconditionError } from '../../checks/lib/session.ts';
 import { SettingsError } from '../../checks/lib/settings.ts';
 import { StateError } from '../../checks/lib/state.ts';
+import { factsOf } from '../../checks/lib/txfacts.ts';
 import { ApprovalError } from '../lib/approval.ts';
 import type { GoFile } from '../lib/approval.ts';
 import type { TaskDefinition, TaskSession } from '../lib/contract.ts';
@@ -21,7 +22,8 @@ import { FactsConflict, FactsError, FactsFile } from '../lib/facts.ts';
 import { ToolRefused } from '../lib/land-hosted.ts';
 import { LoadError } from '../lib/load.ts';
 import { KeyStoreError, loadRegistry } from '../lib/registry.ts';
-import { FlagError, RunLockError, parseArguments, reportError, runCli, runSteps, runTask, usageLines, waitFor } from '../lib/runner.ts';
+import type { Clock, NodeAccess } from '../../checks/lib/ports.ts';
+import { FlagError, RunLockError, checkEndOfValidity, checkInputs, inputsToCheck, judgeInputs, parseArguments, reportError, runCli, runSteps, runTask, usageLines, waitFor } from '../lib/runner.ts';
 import type { StepHandler } from '../lib/runner.ts';
 import { TASK_NAMES } from '../tasks/names.ts';
 import { MemoryOutput } from './support/fakes.ts';
@@ -88,6 +90,13 @@ describe('the arguments', () => {
     expect(parsed().flags.has('label')).toBe(false);
     expect(parsed().flags.value('label')).toBeUndefined();
   });
+  it('take the hash of a transaction with --release for the command cleanup, in both spellings, and give it to the run', () => {
+    const hash = 'ab'.repeat(32);
+    expect(parsed('cleanup', '--release', hash)).toMatchObject({ command: 'cleanup', release: hash, mode: 'dry' });
+    expect(parsed(`--release=${hash}`, 'cleanup', '--submit')).toMatchObject({ command: 'cleanup', release: hash, mode: 'submit' });
+    expect(parsed('cleanup').release).toBeNull();
+    expect(parsed().release).toBeNull();
+  });
   it('refuse a name that the task does not list when the task asks for it', () => {
     const flags = parsed().flags;
     expect(() => flags.has('typo')).toThrow('does not list');
@@ -118,6 +127,15 @@ describe('the arguments', () => {
     [['--run', ''], 'the flag --run needs a value'],
     [['--use-case='], 'the flag --use-case needs a value'],
     [['--use-case', ''], 'the flag --use-case needs a value'],
+    [['--release', 'a'.repeat(64)], '--release goes with the command cleanup only'],
+    [['run', '--release', 'a'.repeat(64)], '--release goes with the command cleanup only'],
+    [['status', `--release=${'a'.repeat(64)}`], 'takes only --run and --use-case'],
+    [['cleanup', '--release', 'abc'], '--release is the hash of a transaction'],
+    [['cleanup', `--release=${'A'.repeat(64)}`], '--release is the hash of a transaction'],
+    [['cleanup', '--release='], 'the flag --release needs a value'],
+    [['cleanup', '--release', ''], 'the flag --release needs a value'],
+    [['cleanup', '--release', '--submit'], 'the flag --release needs a value'],
+    [['cleanup', `--release=${'a'.repeat(64)}`, `--release=${'b'.repeat(64)}`], 'the flag --release is given twice'],
     [['--extra=1'], 'the flag --extra takes no value'],
     [['--submit=1'], 'the flag --submit takes no value'],
     [['--all=1'], 'the flag --all takes no value'],
@@ -603,21 +621,30 @@ describe('runSteps', () => {
 });
 
 describe('a transaction in flight', () => {
-  /** A run with --submit that signs and submits a real payment and does not see it confirmed: the transaction stays in flight, and its reserve is in the cap file of the session. */
-  async function strand(w: TaskWorld, ran: string[]): Promise<{ hash: string; def: TaskDefinition }> {
+  /**
+   * A run with --submit that signs a real payment and does not see it confirmed: the transaction stays in flight, and its reserve is in the cap file of the session. By default the submit works, so the
+   * world applies the transaction and its inputs are spent, as for a transaction that landed and that the indexer does not show yet. With `applied: false` the submit fails, the world does not apply the
+   * transaction, and its inputs stay unspent, as for a transaction that was lost.
+   */
+  async function strand(w: TaskWorld, ran: string[], options: { applied?: boolean } = {}): Promise<{ hash: string; def: TaskDefinition; inputs: string[]; end: bigint }> {
     w.writeGo();
     w.node.neverConfirm = true;
+    if (options.applied === false) w.node.submitError = new Error('the submit API did not answer');
     const def = toyTask(landing(ran));
     expect(await w.run(def, '--submit')).toBe(1);
+    w.node.submitError = null;
     const flight = w.state('toy').in_flight;
     expect(flight?.step).toBe('one');
     expect(w.exposure()).toHaveLength(1);
     expect(w.exposure()[0]!.tx_hash).toBe(flight!.tx_hash);
     expect(w.machine()).toMatchObject({ outcome: 'failed', exit: 1, step: 'one' });
     expect(w.screen.errorText).toContain('The signed transaction is kept in the state file');
+    expect(w.world.chain.applied).toHaveLength(options.applied === false ? 0 : 1);
     w.node.reads.length = 0;
+    w.node.inputReads.length = 0;
     reset(w);
-    return { hash: flight!.tx_hash, def };
+    const facts = factsOf(flight!.signed_cbor);
+    return { hash: flight!.tx_hash, def, inputs: inputsToCheck(facts), end: facts.validityEndSlot! };
   }
   /** The time after which a transaction of `strand` cannot land any more, and the run may let it go. */
   const AFTER_VALIDITY = NOW + 30 * 60_000 + 61_000;
@@ -703,12 +730,13 @@ describe('a transaction in flight', () => {
     it('is given back when the validity ended, and a second read that works does not know the hash: the step is built again with its own reserve', async () => {
       const w = await taskWorld();
       const ran: string[] = [];
-      const { hash, def } = await strand(w, ran);
+      const { hash, def, inputs } = await strand(w, ran, { applied: false });
       w.node.neverConfirm = false;
       w.clock.t = AFTER_VALIDITY;
       w.node.script.push({ confirmations: null }, { confirmations: null });
       expect(await w.run(def, '--submit')).toBe(0);
       expect(w.node.reads.filter((read) => read === hash)).toHaveLength(2);
+      expect(w.node.inputReads[0]).toEqual(inputs);
       expect(w.screen.text).toContain(`the transaction ${hash} of the step one is not on the chain, and its validity ended at ${iso(NOW + 30 * 60_000)}: it cannot land any more. Its reserve of the cap is released.`);
       expect(w.screen.text).not.toContain('the step can be built again');
       expect(ran).toEqual(['one', 'one']);
@@ -718,7 +746,7 @@ describe('a transaction in flight', () => {
     it('is kept by a dry run, and the dry run goes on: the record and the reserve stay, nothing is submitted, the summary shows the step as it would be built again, and a run with --submit then lets it go and builds the step', async () => {
       const w = await taskWorld();
       const ran: string[] = [];
-      const { hash, def } = await strand(w, ran);
+      const { hash, def } = await strand(w, ran, { applied: false });
       w.clock.t = AFTER_VALIDITY;
       w.node.neverConfirm = false;
       const submitted = w.node.submitted.length;
@@ -741,12 +769,356 @@ describe('a transaction in flight', () => {
     });
     it('is given back when the first read failed and the second read works and does not know the hash: only the second read counts', async () => {
       const w = await taskWorld();
-      const { hash, def } = await strand(w, []);
+      const { hash, def } = await strand(w, [], { applied: false });
       w.clock.t = AFTER_VALIDITY;
       w.node.neverConfirm = false;
       w.node.script.push(new Error('the indexer is down'), { confirmations: null });
       expect(await w.run(def, '--submit')).toBe(0);
       expect(w.exposure().map((entry) => entry.tx_hash)).not.toContain(hash);
+    });
+    it('keeps a transaction whose inputs are spent, in a dry run and in a run with --submit: the indexer can be behind the node, so the transaction may have landed', async () => {
+      for (const argv of [[], ['--submit']]) {
+        const w = await taskWorld();
+        const ran: string[] = [];
+        const { hash, def, inputs } = await strand(w, ran);
+        w.clock.t = AFTER_VALIDITY;
+        w.node.neverConfirm = false;
+        const submitted = w.node.submitted.length;
+        const applied = w.world.chain.applied.length;
+        w.node.script.push({ confirmations: null }, { confirmations: null });
+        expect(await w.run(def, ...argv), argv.join(' ')).toBe(2);
+        expect(w.screen.errorText).toContain(`the transaction ${hash} of the step one is not known to the indexer, and its validity ended at ${iso(NOW + 30 * 60_000)}, but all ${inputs.length} of its inputs are spent, and a transaction that landed spends all of them. It may have landed.`);
+        expect(w.screen.errorText).toContain(`the operator lets it go with the command cleanup and the flags --release=${hash} and --submit.`);
+        expect(w.node.inputReads[0], argv.join(' ')).toEqual(inputs);
+        expect(w.screen.text).not.toContain('is released');
+        expect(w.state('toy').in_flight?.tx_hash).toBe(hash);
+        expect(w.state('toy').steps).toEqual({});
+        expect(w.exposure().map((entry) => entry.tx_hash)).toEqual([hash]);
+        expect(w.node.submitted).toHaveLength(submitted);
+        expect(w.world.chain.applied).toHaveLength(applied);
+        expect(ran).toEqual(['one']);
+        expect(w.machine()).toMatchObject({ outcome: 'stopped', exit: 2, step: 'one' });
+        reset(w);
+        expect(await w.run(def, ...argv), argv.join(' ')).toBe(0);
+        expect(w.state('toy').steps.one!.tx_hash).toBe(hash);
+        expect(w.state('toy').in_flight).toBeNull();
+      }
+    });
+    describe('a lost transaction whose inputs other transactions spent', () => {
+      /** A world whose run wallet holds eight outputs of 2 units: the payment of 3 units of the toy task needs two or three of them, so that a lost transaction has more than one input, and the wallet can pay again after other transactions spent those inputs. */
+      const manySmall = (): Promise<TaskWorld> => taskWorld({ wallets: { run: Array.from({ length: 8 }, () => 2_000_000n), fee: [1_000_000_000n, 5_000_000n] } });
+      /** Takes the outputs at these references from the world, as if other transactions had spent them. */
+      const spendByOthers = (w: TaskWorld, refs: readonly string[]): void => {
+        w.world.chain.held = w.world.chain.held.filter((utxo) => !refs.includes(`${utxo.txHash}#${utxo.outputIndex}`));
+      };
+      it('lets the transaction go when another transaction spent one of its inputs and the others are unspent: a transaction that landed spends all of its inputs', async () => {
+        const w = await manySmall();
+        const ran: string[] = [];
+        const { hash, def, inputs } = await strand(w, ran, { applied: false });
+        expect(inputs.length).toBeGreaterThanOrEqual(2);
+        spendByOthers(w, [inputs[0]!]);
+        w.clock.t = AFTER_VALIDITY;
+        w.node.neverConfirm = false;
+        w.node.script.push({ confirmations: null }, { confirmations: null });
+        expect(await w.run(def, '--submit')).toBe(0);
+        expect(w.screen.text).toContain('Its reserve of the cap is released.');
+        expect(w.exposure().map((entry) => entry.tx_hash)).not.toContain(hash);
+        expect(ran).toEqual(['one', 'one']);
+        expect(w.state('toy').steps.one!.tx_hash).not.toBe(hash);
+      });
+      it('keeps the transaction when other transactions spent all of its inputs, and lets it go at the word of the operator: cleanup --release with its hash, after a check of the chain', async () => {
+        const w = await manySmall();
+        const ran: string[] = [];
+        const { hash, def, inputs } = await strand(w, ran, { applied: false });
+        spendByOthers(w, inputs);
+        w.clock.t = AFTER_VALIDITY;
+        w.node.neverConfirm = false;
+        w.node.script.push({ confirmations: null }, { confirmations: null });
+        expect(await w.run(def, '--submit')).toBe(2);
+        expect(w.screen.errorText).toContain(`but all ${inputs.length} of its inputs are spent, and a transaction that landed spends all of them. It may have landed.`);
+        expect(w.screen.errorText).toContain(`--release=${hash} and --submit`);
+        expect(w.state('toy').in_flight?.tx_hash).toBe(hash);
+        expect(ran).toEqual(['one']);
+        const reads = w.node.reads.length;
+        const tips = w.node.tipReads;
+        const networks = w.node.networkReads;
+        const inputReads = w.node.inputReads.length;
+        reset(w);
+        expect(await w.run(def, 'cleanup', '--release', hash)).toBe(0);
+        expect(w.screen.text).toContain(`the transaction ${hash} of the step one would be let go, and its reserve of the cap would be given back. A dry run lets nothing go.`);
+        expect(w.state('toy').in_flight?.tx_hash).toBe(hash);
+        expect(w.exposure().map((entry) => entry.tx_hash)).toEqual([hash]);
+        expect(w.evidence('toy')).toEqual([]);
+        expect(w.machine()).toMatchObject({ command: 'cleanup', mode: 'dry', outcome: 'dry', exit: 0, step: 'one' });
+        reset(w);
+        expect(await w.run(def, 'cleanup', `--release=${hash}`, '--submit')).toBe(0);
+        expect(w.screen.text).toContain(`the operator says that the chain was checked and that the transaction ${hash} of the step one is not there: it is let go.`);
+        expect(w.screen.text).toContain('Its reserve of the cap is released.');
+        expect(w.screen.text).not.toContain('there is nothing to take back');
+        expect(w.state('toy').in_flight).toBeNull();
+        expect(w.state('toy').steps).toEqual({});
+        expect(w.exposure()).toEqual([]);
+        expect(w.evidence('toy')).toEqual([expect.objectContaining({ step: 'one', status: 'info', shows: { note: 'the operator lets the transaction go, and says that the chain was checked', transaction: hash, session: 's1' } })]);
+        expect(w.machine()).toMatchObject({ command: 'cleanup', mode: 'submit', outcome: 'done', exit: 0, step: 'one' });
+        // The release reads no status and no inputs. It asks the network guard and the tip of the node once in each of its two runs.
+        expect(w.node.reads).toHaveLength(reads);
+        expect(w.node.inputReads).toHaveLength(inputReads);
+        expect(w.node.tipReads).toBe(tips + 2);
+        expect(w.node.networkReads).toBe(networks + 2);
+        reset(w);
+        const rebuilt = await w.run(def, '--submit');
+        expect(rebuilt, w.screen.errorText).toBe(0);
+        expect(ran).toEqual(['one', 'one']);
+        expect(w.state('toy').steps.one!.tx_hash).not.toBe(hash);
+      });
+      it('refuses --release for a hash that is not the transaction in flight, and when nothing is in flight: nothing changes', async () => {
+        const w = await taskWorld();
+        const { hash, def } = await strand(w, [], { applied: false });
+        for (const argv of [[], ['--submit']]) {
+          reset(w);
+          expect(await w.run(def, 'cleanup', `--release=${'cd'.repeat(32)}`, ...argv), argv.join(' ')).toBe(2);
+          expect(w.screen.errorText).toContain(`the transaction in flight is ${hash} of the step one, and --release names another transaction: nothing is let go`);
+          expect(w.state('toy').in_flight?.tx_hash).toBe(hash);
+          expect(w.exposure().map((entry) => entry.tx_hash)).toEqual([hash]);
+          expect(w.evidence('toy')).toEqual([]);
+          expect(w.machine()).toMatchObject({ command: 'cleanup', outcome: 'stopped', exit: 2 });
+        }
+        const idle = await taskWorld();
+        idle.writeGo();
+        expect(await idle.run(toyTask(twoSteps([])), 'cleanup', `--release=${hash}`, '--submit')).toBe(2);
+        expect(idle.screen.errorText).toContain('no transaction is in flight, so --release has nothing to let go');
+      });
+      it('refuses --release under an approval that does not allow the task, and leaves the transaction in flight', async () => {
+        const w = await taskWorld();
+        const { hash, def } = await strand(w, [], { applied: false });
+        w.writeGo({ tasks: ['other'] });
+        expect(await w.run(def, 'cleanup', `--release=${hash}`, '--submit')).toBe(2);
+        expect(w.screen.errorText).toContain('does not list the task toy');
+        expect(w.state('toy').in_flight?.tx_hash).toBe(hash);
+        expect(w.exposure().map((entry) => entry.tx_hash)).toEqual([hash]);
+        expect(w.evidence('toy')).toEqual([]);
+      });
+      it('lets the transaction go for a task that needs no approval, and says that its reserve stays when no approval file is loaded', async () => {
+        const w = await taskWorld();
+        const { hash } = await strand(w, [], { applied: false });
+        w.clock.t = AFTER_VALIDITY;
+        rmSync(w.goPath);
+        expect(await w.run(unapproved([]), 'cleanup', '--release', hash, '--submit')).toBe(0);
+        expect(w.screen.text).toContain('No approval file is loaded, so its reserve stays in the cap file of its session.');
+        expect(w.state('toy').in_flight).toBeNull();
+        expect(w.exposure().map((entry) => entry.tx_hash)).toEqual([hash]);
+        expect(w.evidence('toy')).toEqual([expect.objectContaining({ status: 'info', shows: expect.objectContaining({ transaction: hash, session: null }) })]);
+      });
+    });
+    describe('the release of a transaction that may still land', () => {
+      /** The end of the validity of a transaction of `strand`, and the time after which the checks let it go: a minute later. */
+      const LAST_MS = NOW + 30 * 60_000;
+      const RELEASE_AT = LAST_MS + 60_000;
+      /** Runs `cleanup --release` for the hash. */
+      const release = (w: TaskWorld, def: TaskDefinition, hash: string, ...argv: string[]): Promise<number> => w.run(def, 'cleanup', `--release=${hash}`, ...argv);
+      /** What a release that was refused leaves: the transaction in flight, its reserve, and no entry of the evidence. */
+      const untouched = (w: TaskWorld, hash: string): void => {
+        expect(w.state('toy').in_flight?.tx_hash).toBe(hash);
+        expect(w.exposure().map((entry) => entry.tx_hash)).toEqual([hash]);
+        expect(w.evidence('toy')).toEqual([]);
+      };
+      it('refuses until the clock is past the end of the validity and the grace time of a minute, in a dry run and in a run with --submit, and lets the transaction go one millisecond after', async () => {
+        const w = await taskWorld();
+        const { hash, def } = await strand(w, [], { applied: false });
+        for (const now of [NOW, LAST_MS - 1, LAST_MS, RELEASE_AT]) {
+          for (const argv of [[], ['--submit']]) {
+            w.clock.t = now;
+            reset(w);
+            expect(await release(w, def, hash, ...argv), `${now} ${argv.join(' ')}`).toBe(2);
+            expect(w.screen.errorText).toContain(`the transaction ${hash} of the step one may still land, so nothing is let go: its validity ends at ${iso(LAST_MS)}, and a transaction is let go only after ${iso(RELEASE_AT)}, 1 min later`);
+            expect(w.machine()).toMatchObject({ command: 'cleanup', outcome: 'stopped', exit: 2, step: 'one' });
+            untouched(w, hash);
+          }
+        }
+        w.clock.t = RELEASE_AT + 1;
+        reset(w);
+        expect(await release(w, def, hash, '--submit')).toBe(0);
+        expect(w.state('toy').in_flight).toBeNull();
+        expect(w.exposure()).toEqual([]);
+      });
+      it('refuses when the clock says that the validity is over and the tip of the node does not: the tip must be past the end of the validity by 20 slots', async () => {
+        const w = await taskWorld();
+        const { hash, def, end } = await strand(w, [], { applied: false });
+        w.clock.t = AFTER_VALIDITY;
+        for (const tip of [end - 1n, end, end + 20n]) {
+          for (const argv of [[], ['--submit']]) {
+            w.node.tipSlot = Number(tip);
+            reset(w);
+            expect(await release(w, def, hash, ...argv), `${tip} ${argv.join(' ')}`).toBe(2);
+            expect(w.screen.errorText).toContain(`the clock says that the validity is over, but the tip of the node is at slot ${tip}, and it must be past slot ${end + 20n} (the end of the validity at slot ${end}, and 20 slots more)`);
+            untouched(w, hash);
+          }
+        }
+        w.node.tipSlot = Number(end + 21n);
+        reset(w);
+        expect(await release(w, def, hash, '--submit')).toBe(0);
+        expect(w.screen.text).toContain(`the clock is past the end of the validity by more than 1 min, and the tip of the node (slot ${end + 21n}) is past the end of the validity (slot ${end}) by more than 20 slots`);
+        expect(w.state('toy').in_flight).toBeNull();
+      });
+      it('lets the transaction go on the clock alone when the node gives no tip or is not on the network of the run, and says so', async () => {
+        const down = await taskWorld();
+        const first = await strand(down, [], { applied: false });
+        down.clock.t = AFTER_VALIDITY;
+        down.node.tipError = new Error('the node is down');
+        reset(down);
+        expect(await release(down, first.def, first.hash, '--submit')).toBe(0);
+        expect(down.screen.text).toContain('and the node was not used (it did not give its tip: the node is down)');
+        expect(down.state('toy').in_flight).toBeNull();
+        const other = await taskWorld();
+        const second = await strand(other, [], { applied: false });
+        other.clock.t = AFTER_VALIDITY;
+        other.node.facts = { magic: 9, systemStartMs: null };
+        const tips = other.node.tipReads;
+        reset(other);
+        expect(await release(other, second.def, second.hash, '--submit')).toBe(0);
+        expect(other.screen.text).toContain('and the node was not used (the network guard failed: the node is on the network with the magic 9');
+        expect(other.node.tipReads).toBe(tips);
+        expect(other.state('toy').in_flight).toBeNull();
+      });
+      it('refuses a transaction whose bytes cannot be read, and asks the node for nothing', async () => {
+        const w = await taskWorld();
+        const { hash, def } = await strand(w, [], { applied: false });
+        const path = join(w.stateDir, 'toy.state.json');
+        const state = JSON.parse(readFileSync(path, 'utf8'));
+        state.in_flight.signed_cbor = '84';
+        writeFileSync(path, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
+        w.clock.t = AFTER_VALIDITY;
+        const tips = w.node.tipReads;
+        const networks = w.node.networkReads;
+        expect(await release(w, def, hash, '--submit')).toBe(2);
+        expect(w.screen.errorText).toContain(`the bytes of the transaction ${hash} of the step one cannot be read`);
+        expect(w.screen.errorText).toContain('nothing is let go');
+        untouched(w, hash);
+        expect(w.node.tipReads).toBe(tips);
+        expect(w.node.networkReads).toBe(networks);
+      });
+    });
+    it('keeps a transaction when the node cannot say whether its inputs are spent, and lets it go at the next run that can', async () => {
+      const w = await taskWorld();
+      const ran: string[] = [];
+      const { hash, def } = await strand(w, ran, { applied: false });
+      w.clock.t = AFTER_VALIDITY;
+      w.node.neverConfirm = false;
+      w.node.script.push({ confirmations: null }, { confirmations: null });
+      w.node.inputsError = new Error('the node is down');
+      expect(await w.run(def, '--submit')).toBe(2);
+      expect(w.screen.errorText).toContain(`the transaction ${hash} of the step one is not known to the indexer, and its validity ended at ${iso(NOW + 30 * 60_000)}, but its inputs cannot be checked (the node did not answer: the node is down). It stays in flight, its reserve stays, and nothing is built.`);
+      expect(w.state('toy').in_flight?.tx_hash).toBe(hash);
+      expect(w.exposure().map((entry) => entry.tx_hash)).toEqual([hash]);
+      expect(ran).toEqual(['one']);
+      expect(w.machine()).toMatchObject({ outcome: 'stopped', exit: 2, step: 'one' });
+      w.node.inputsError = null;
+      w.node.script.push({ confirmations: null }, { confirmations: null });
+      reset(w);
+      expect(await w.run(def, '--submit')).toBe(0);
+      expect(w.screen.text).toContain('Its reserve of the cap is released.');
+      expect(ran).toEqual(['one', 'one']);
+    });
+    it('keeps a transaction whose bytes cannot be read, and asks the node for nothing', async () => {
+      const w = await taskWorld();
+      const ran: string[] = [];
+      const { hash, def } = await strand(w, ran, { applied: false });
+      const path = join(w.stateDir, 'toy.state.json');
+      const state = JSON.parse(readFileSync(path, 'utf8'));
+      state.in_flight.signed_cbor = '84';
+      writeFileSync(path, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
+      w.clock.t = AFTER_VALIDITY;
+      w.node.neverConfirm = false;
+      w.node.script.push({ confirmations: null }, { confirmations: null });
+      expect(await w.run(def, '--submit')).toBe(2);
+      expect(w.screen.errorText).toContain('its inputs cannot be checked (the bytes of the transaction cannot be read');
+      expect(w.node.inputReads).toEqual([]);
+      expect(w.node.tipReads).toBe(0);
+      expect(w.state('toy').in_flight?.tx_hash).toBe(hash);
+      expect(w.exposure().map((entry) => entry.tx_hash)).toEqual([hash]);
+      expect(ran).toEqual(['one']);
+      expect(w.machine()).toMatchObject({ outcome: 'stopped', exit: 2 });
+    });
+    describe('the tip of the node', () => {
+      /** A transaction that was lost (the world does not apply it), after its validity, that the indexer does not know. `end` is the slot at which its validity ended. */
+      async function lost(): Promise<{ w: TaskWorld; hash: string; def: TaskDefinition; ran: string[]; end: number }> {
+        const w = await taskWorld();
+        const ran: string[] = [];
+        const { hash, def, end } = await strand(w, ran, { applied: false });
+        w.clock.t = AFTER_VALIDITY;
+        w.node.neverConfirm = false;
+        w.node.script.push({ confirmations: null }, { confirmations: null });
+        return { w, hash, def, ran, end: Number(end) };
+      }
+      it('keeps a transaction when the node is behind: its tip is before the end of the validity, so its answer that every input is unspent proves nothing', async () => {
+        for (const argv of [[], ['--submit']]) {
+          const { w, hash, def, ran, end } = await lost();
+          w.node.tipSlot = end - 5;
+          const submitted = w.node.submitted.length;
+          expect(await w.run(def, ...argv), argv.join(' ')).toBe(2);
+          expect(w.screen.errorText).toContain(`the transaction ${hash} of the step one is not known to the indexer, and its validity ended at ${iso(NOW + 30 * 60_000)}, but its inputs cannot be checked (the tip of the node is at slot ${end - 5}, and its answer about the inputs counts only past slot ${end + 20} (the validity of the transaction ended at slot ${end}): the node may not have seen the block of the transaction yet). It stays in flight, its reserve stays, and nothing is built.`);
+          expect(w.node.inputReads, argv.join(' ')).toEqual([]);
+          expect(w.node.tipReads).toBe(1);
+          expect(w.state('toy').in_flight?.tx_hash).toBe(hash);
+          expect(w.exposure().map((entry) => entry.tx_hash)).toEqual([hash]);
+          expect(w.node.submitted).toHaveLength(submitted);
+          expect(ran).toEqual(['one']);
+          expect(w.machine()).toMatchObject({ outcome: 'stopped', exit: 2, step: 'one' });
+          w.node.tipSlot = end + 21;
+          w.node.script.push({ confirmations: null }, { confirmations: null });
+          reset(w);
+          expect(await w.run(def, '--submit')).toBe(0);
+          expect(w.screen.text).toContain('Its reserve of the cap is released.');
+          expect(ran).toEqual(['one', 'one']);
+        }
+      });
+      it('counts the answer of the node only past the end of the validity and the margin of 20 slots: at that slot the transaction is kept, one slot later it is let go', async () => {
+        for (const [offset, kept] of [[-1, true], [0, true], [20, true], [21, false]] as const) {
+          const { w, hash, def, end } = await lost();
+          w.node.tipSlot = end + offset;
+          expect(await w.run(def, '--submit'), `offset ${offset}`).toBe(kept ? 2 : 0);
+          expect(w.state('toy').in_flight?.tx_hash === hash, `offset ${offset}`).toBe(kept);
+        }
+      });
+      it('reads the tip before the inputs, so that the view of the inputs is at least as new as the tip', async () => {
+        const { w, def } = await lost();
+        const order: string[] = [];
+        const tip = w.node.networkTip.bind(w.node);
+        const resolve = w.node.resolveInputs.bind(w.node);
+        w.node.networkTip = async () => { order.push('tip'); return tip(); };
+        w.node.resolveInputs = async (refs) => { order.push('inputs'); return resolve(refs); };
+        expect(await w.run(def, '--submit')).toBe(0);
+        expect(order.slice(0, 2)).toEqual(['tip', 'inputs']);
+      });
+      it('keeps a transaction when the node does not give its tip, and asks it for no inputs', async () => {
+        const { w, hash, def, ran } = await lost();
+        w.node.tipError = new Error('the node is down');
+        expect(await w.run(def, '--submit')).toBe(2);
+        expect(w.screen.errorText).toContain('its inputs cannot be checked (the node did not give its tip: the node is down)');
+        expect(w.node.inputReads).toEqual([]);
+        expect(w.state('toy').in_flight?.tx_hash).toBe(hash);
+        expect(w.exposure().map((entry) => entry.tx_hash)).toEqual([hash]);
+        expect(ran).toEqual(['one']);
+      });
+      it('keeps a transaction that has no end of validity: no tip of the node shows that it cannot land', async () => {
+        const { w, hash, def, ran } = await lost();
+        const open = await w.world.simplePayment(w.keys.registry.addressOf('run'), 2_000_000n, w.keys.registry.addressOf('fee'));
+        expect(factsOf(open.unsignedCbor).validityEndSlot).toBeNull();
+        const path = join(w.stateDir, 'toy.state.json');
+        const state = JSON.parse(readFileSync(path, 'utf8'));
+        state.in_flight.signed_cbor = open.unsignedCbor;
+        writeFileSync(path, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
+        expect(await w.run(def, '--submit')).toBe(2);
+        expect(w.screen.errorText).toContain('its inputs cannot be checked (the transaction has no end of validity, so no tip of the node shows that it cannot land)');
+        expect(w.node.tipReads).toBe(0);
+        expect(w.node.inputReads).toEqual([]);
+        expect(w.state('toy').in_flight?.tx_hash).toBe(hash);
+        expect(ran).toEqual(['one']);
+      });
+    });
+    it('asks the node for the inputs and the collateral inputs of the transaction, each once', () => {
+      expect(inputsToCheck({ inputs: ['aa#0', 'bb#1'], collateralInputs: ['cc#0', 'aa#0'] })).toEqual(['aa#0', 'bb#1', 'cc#0']);
+      expect(inputsToCheck({ inputs: [], collateralInputs: [] })).toEqual([]);
     });
     it('stops when the second read fails, in a dry run and in a run with --submit: the record and the reserve stay, nothing is built or submitted, and the next run that can read the status records the step', async () => {
       for (const argv of [[], ['--submit']]) {
@@ -828,7 +1200,7 @@ describe('a transaction in flight', () => {
     it('stays when no approval file is loaded, and a line says so: a run with --submit of a task that needs no approval lets the transaction go and goes on', async () => {
       const w = await taskWorld();
       const ran: string[] = [];
-      const { hash } = await strand(w, []);
+      const { hash } = await strand(w, [], { applied: false });
       rmSync(w.goPath);
       w.clock.t = AFTER_VALIDITY;
       w.node.neverConfirm = false;
@@ -842,7 +1214,7 @@ describe('a transaction in flight', () => {
     it('stays when the approval file does not load in a run that needs none, and the line says why', async () => {
       const w = await taskWorld();
       const ran: string[] = [];
-      const { hash } = await strand(w, []);
+      const { hash } = await strand(w, [], { applied: false });
       writeFileSync(w.goPath, 'this is not JSON', { mode: 0o600 });
       w.clock.t = AFTER_VALIDITY;
       w.node.neverConfirm = false;
@@ -886,6 +1258,109 @@ describe('a transaction in flight', () => {
   }
   it('stops a submit run with exit 2 before the settle when the approval file no longer lists the task: the bytes are not submitted again', () => stopsBeforeTheSettle(() => ({ tasks: ['other'] }), 'does not list the task toy'));
   it('stops a submit run with exit 2 before the settle when the approval file names another run wallet: the bytes are not submitted again', () => stopsBeforeTheSettle((w) => ({ runWallet: w.keys.registry.addressOf('fee') }), 'another run wallet'));
+});
+
+describe('the rule for the inputs of a lost transaction', () => {
+  const INPUTS = ['aa#0', 'bb#0'];
+  const COLLATERAL = ['cc#0', 'dd#0'];
+  const cases: Array<[string, string[], string[], string[], 'unspent' | 'spent', string]> = [
+    ['every input unspent and no collateral input', INPUTS, [], INPUTS, 'unspent', ''],
+    ['one of two inputs unspent, the other spent by another transaction, and no collateral input', INPUTS, [], ['bb#0'], 'unspent', ''],
+    ['every input spent, because a transaction that landed spends all of them', INPUTS, [], [], 'spent', 'all 2 of its inputs are spent'],
+    ['every input spent and the collateral inputs unspent', INPUTS, COLLATERAL, COLLATERAL, 'spent', 'all 2 of its inputs are spent'],
+    ['an input unspent and every collateral input spent, because a script that failed spends all of them', INPUTS, COLLATERAL, ['aa#0'], 'spent', 'all 2 of its collateral inputs are spent'],
+    ['an input and one of two collateral inputs unspent', INPUTS, COLLATERAL, ['aa#0', 'dd#0'], 'unspent', ''],
+    ['every input and every collateral input unspent', INPUTS, COLLATERAL, [...INPUTS, ...COLLATERAL], 'unspent', ''],
+    ['no input at all', [], [], [], 'spent', 'it has no input'],
+  ];
+  for (const [name, inputs, collateral, unspent, kind, why] of cases) {
+    it(`judges ${name}: ${kind}`, () => {
+      const verdict = judgeInputs(inputs, collateral, new Set(unspent));
+      expect(verdict.kind).toBe(kind);
+      if (verdict.kind === 'spent') expect(verdict.why).toContain(why);
+    });
+  }
+  /** A node that holds the references in `unspent` as outputs and has its tip at the slot `tip`, and the lists of references that it was asked for. */
+  const stub = (unspent: readonly string[], tip = 2000): { node: NodeAccess; asked: string[][] } => {
+    const asked: string[][] = [];
+    const node: NodeAccess = {
+      networkFacts: async () => { throw new Error('not asked'); },
+      networkTip: async () => ({ slot: tip }),
+      resolveInputs: async (refs) => {
+        asked.push([...refs]);
+        return refs.filter((ref) => unspent.includes(ref)).map((ref) => ({ txHash: ref.slice(0, ref.indexOf('#')), outputIndex: Number(ref.slice(ref.indexOf('#') + 1)), address: 'addr_test', assets: {} }));
+      },
+      submit: async () => { throw new Error('not asked'); },
+      txStatus: async () => { throw new Error('not asked'); },
+    };
+    return { node, asked };
+  };
+  it('asks the node for the inputs and the collateral inputs, each reference once, and judges the answer with the collateral inputs', async () => {
+    const facts = { inputs: INPUTS, collateralInputs: ['cc#0', 'aa#0'], validityEndSlot: 1000n };
+    const free = stub(['aa#0', 'cc#0']);
+    expect(await checkInputs(free.node, facts)).toEqual({ kind: 'unspent' });
+    expect(free.asked).toEqual([['aa#0', 'bb#0', 'cc#0']]);
+    const failed = stub(['bb#0']);
+    expect(await checkInputs(failed.node, facts)).toEqual({ kind: 'spent', why: 'all 2 of its collateral inputs are spent, and a script that failed spends all of them' });
+    const landed = stub(['cc#0']);
+    expect(await checkInputs(landed.node, facts)).toMatchObject({ kind: 'spent', why: expect.stringContaining('all 2 of its inputs are spent') });
+  });
+  it('counts the answer of the node only past the end of the validity and the margin, and reads nothing from the node for a transaction that has no input or no end of validity', async () => {
+    const facts = { inputs: INPUTS, collateralInputs: [], validityEndSlot: 1000n };
+    expect(await checkInputs(stub(INPUTS, 1020).node, facts)).toMatchObject({ kind: 'unreadable' });
+    expect(await checkInputs(stub(INPUTS, 1021).node, facts)).toEqual({ kind: 'unspent' });
+    expect(await checkInputs(stub(INPUTS, Number.NaN).node, facts)).toMatchObject({ kind: 'unreadable' });
+    const none = stub(INPUTS);
+    expect(await checkInputs(none.node, { ...facts, inputs: [] })).toEqual({ kind: 'unreadable', why: 'the transaction has no input' });
+    expect(await checkInputs(none.node, { ...facts, validityEndSlot: null })).toMatchObject({ kind: 'unreadable', why: expect.stringContaining('no end of validity') });
+    expect(none.asked).toEqual([]);
+  });
+});
+
+describe('the end of the validity of a transaction in flight', () => {
+  const FLIGHT = { valid_to: 1_000_000 };
+  const RELEASE_AT = FLIGHT.valid_to + 60_000;
+  const clockAt = (now: number): Clock => ({ now: () => now, sleep: async () => undefined });
+  /** A node that has its tip at the slot `tip`, or fails with it, and the count of the reads of its tip. */
+  const nodeAt = (tip: number | Error): { node: NodeAccess; reads: () => number } => {
+    let reads = 0;
+    const node: NodeAccess = {
+      networkFacts: async () => { throw new Error('not asked'); },
+      networkTip: async () => {
+        reads += 1;
+        if (tip instanceof Error) throw tip;
+        return { slot: tip };
+      },
+      resolveInputs: async () => { throw new Error('not asked'); },
+      submit: async () => { throw new Error('not asked'); },
+      txStatus: async () => { throw new Error('not asked'); },
+    };
+    return { node, reads: () => reads };
+  };
+  /** A network guard that gives its answer, and the count of its calls. */
+  const gate = (ok: boolean) => {
+    let calls = 0;
+    return { calls: () => calls, guard: async () => { calls += 1; return { guard: 'network' as const, ok, message: ok ? 'the node is on the network of the run' : 'the node is on the network with the magic 9' }; } };
+  };
+  it('says that a transaction with no end of validity may land at any time, whatever the clock and the node say, and asks neither the guard nor the node', async () => {
+    const node = nodeAt(1_000_000_000);
+    const network = gate(true);
+    expect(await checkEndOfValidity(FLIGHT, null, { node: node.node, network, clock: clockAt(RELEASE_AT + 1_000_000_000) })).toEqual({ kind: 'may', why: 'its bytes have no end of validity, so it can land at any time' });
+    expect([node.reads(), network.calls()]).toEqual([0, 0]);
+  });
+  it('counts the clock only after the grace time, and asks the guard and the node only then', async () => {
+    const early = { node: nodeAt(10_000), network: gate(true) };
+    expect((await checkEndOfValidity(FLIGHT, 100n, { node: early.node.node, network: early.network, clock: clockAt(RELEASE_AT) })).kind).toBe('may');
+    expect([early.node.reads(), early.network.calls()]).toEqual([0, 0]);
+    const late = { node: nodeAt(10_000), network: gate(true) };
+    expect((await checkEndOfValidity(FLIGHT, 100n, { node: late.node.node, network: late.network, clock: clockAt(RELEASE_AT + 1) })).kind).toBe('over');
+    expect([late.node.reads(), late.network.calls()]).toEqual([1, 1]);
+  });
+  it('counts the tip only past the end of the validity and the margin, and takes a tip that is not a whole number for a tip that is not past', async () => {
+    const verdict = async (tip: number): Promise<string> => (await checkEndOfValidity(FLIGHT, 100n, { node: nodeAt(tip).node, network: gate(true), clock: clockAt(RELEASE_AT + 1) })).kind;
+    expect([await verdict(99), await verdict(100), await verdict(120), await verdict(121)]).toEqual(['may', 'may', 'may', 'over']);
+    expect([await verdict(Number.NaN), await verdict(120.5), await verdict(Number.POSITIVE_INFINITY)]).toEqual(['may', 'may', 'may']);
+  });
 });
 
 describe('the status', () => {

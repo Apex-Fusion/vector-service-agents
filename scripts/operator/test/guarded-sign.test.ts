@@ -930,7 +930,7 @@ describe('recordKitLanding', () => {
     const { sign, first, second } = await afterFirst(rig, pairRequest(rig, { refs: { moved: 'the plan has no reference of the output' } }));
     sign(second.cbor);
     const node: NodeAccess = {
-      networkFacts: async () => { throw new Error('the settle reads no network facts'); }, resolveInputs: async () => [], submit: async () => '', txStatus: async () => ({ confirmations: 1 }),
+      networkFacts: async () => { throw new Error('the settle reads no network facts'); }, networkTip: async () => { throw new Error('the settle reads no tip'); }, resolveInputs: async () => [], submit: async () => '', txStatus: async () => ({ confirmations: 1 }),
     };
     const settled = await settleInFlight({ state: rig.state, node, clock: rig.clock, out: () => undefined, mode: 'submit', awaitMs: 1000, pollMs: 100 });
     expect(settled).toEqual({ kind: 'recorded', step: 'move', txHash: second.hash });

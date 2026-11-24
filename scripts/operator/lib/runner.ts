@@ -7,6 +7,10 @@
 //                      session. Without --all a run does one step. With --all a run goes on after each step that is done, and stops at the first step that is only shown, that must wait, or that fails.
 //   status             Shows the state, the transaction in flight, the next step and the wallets, with no build. It takes no flag but --run and --use-case.
 //   cleanup            Takes back what can come back. The task says what.
+//   cleanup --release=<hash>
+//                      Lets the transaction in flight with this hash go, after the operator checked the chain. It is the way out for a transaction that a run keeps because its inputs are spent.
+//                      It refuses while the transaction may still land, in a dry run too: the clock must be past the end of its validity by a minute, and the tip of the node, when the node answers, must be past it too.
+//                      It changes something only with --submit, and the cleanup of the task does not run then.
 //
 // A transaction that was signed and not seen confirmed is settled before anything is built. The network guard runs before the settle: a node of another network cannot say that a transaction is lost.
 // One run lock file in the state folder keeps two runs from writing the state, the facts and the cap file at the same time.
@@ -16,14 +20,15 @@ import { closeSync, existsSync, openSync, unlinkSync, writeSync } from 'node:fs'
 import { join } from 'node:path';
 import { collateralAdvice, isCollateralOutput } from '../../checks/lib/collateral.ts';
 import { EvidenceError, EvidenceFile } from '../../checks/lib/evidence.ts';
-import { iso, units } from '../../checks/lib/format.ts';
+import { duration, iso, units } from '../../checks/lib/format.ts';
 import type { GuardResult } from '../../checks/lib/guards.ts';
 import { DryStop } from '../../checks/lib/hire-types.ts';
 import { HostedError } from '../../checks/lib/hosted.ts';
-import { recordLanded, settleInFlight } from '../../checks/lib/inflight.ts';
+import { GRACE_MS, recordLanded, settleInFlight } from '../../checks/lib/inflight.ts';
 import { KeyFileError } from '../../checks/lib/keys.ts';
 import { GuardRefusal, LandRefused } from '../../checks/lib/land.ts';
 import { TxNotConfirmedError } from '../../checks/lib/platform.ts';
+import type { Utxo } from '../../checks/lib/platform.ts';
 import type { Clock, NodeAccess, Output } from '../../checks/lib/ports.ts';
 import { PreconditionError } from '../../checks/lib/session.ts';
 import type { ChainAccess, Mode, StepOutcome } from '../../checks/lib/session.ts';
@@ -31,6 +36,8 @@ import { SettingsError } from '../../checks/lib/settings.ts';
 import type { Env } from '../../checks/lib/settings.ts';
 import { StateError, StateFile } from '../../checks/lib/state.ts';
 import type { CheckState, InFlight, StepRecord } from '../../checks/lib/state.ts';
+import { factsOf } from '../../checks/lib/txfacts.ts';
+import type { TxFacts } from '../../checks/lib/txfacts.ts';
 import type { HostedTools } from '../../checks/lib/hosted.ts';
 import { TASK_NAMES } from '../tasks/names.ts';
 import { ApprovalError, Exposure, loadGo, requireGo } from './approval.ts';
@@ -76,7 +83,10 @@ const USE_CASE_NAME = /^[a-z][a-z0-9-]{0,47}$/;
 const FLAG_NAME = /^[a-z][a-z0-9-]{0,31}$/;
 /** The flags that every task has. A task cannot list one of them. */
 const GLOBAL_BOOLEANS: readonly string[] = ['submit', 'all'];
-const GLOBAL_VALUES: readonly string[] = ['run', 'use-case'];
+const GLOBAL_VALUES: readonly string[] = ['run', 'use-case', 'release'];
+/** The flags with a value that `status` takes. */
+const STATUS_VALUES: readonly string[] = ['run', 'use-case'];
+const TX_HASH = /^[0-9a-f]{64}$/;
 /** A word that is short and made of letters, digits and hyphens: a message can show it. Any other word can hold a secret, and a message does not show it. */
 const SHOWABLE_WORD = /^-{0,2}[A-Za-z0-9][A-Za-z0-9-]{0,31}$/;
 
@@ -87,6 +97,8 @@ export interface Arguments {
   readonly flags: TaskFlags;
   readonly useCase: string | null;
   readonly run: string | null;
+  /** The hash of the transaction that `cleanup --release` lets go, or null. */
+  readonly release: string | null;
 }
 
 const SYNOPSIS = '[status | run | cleanup] [--submit] [--all] [--use-case <name>] [--run <label>]';
@@ -134,7 +146,7 @@ function flagNames(def: Pick<TaskDefinition, 'flags' | 'valued'>): { booleans: R
     const taken = new Set<string>();
     for (const name of names) {
       if (typeof name !== 'string' || !FLAG_NAME.test(name) || seen.has(name)) {
-        throw new LoadError('shape', 'the task lists a flag name that is not allowed: a name has lower-case letters, digits and hyphens, is listed once, and is not submit, all, run or use-case');
+        throw new LoadError('shape', 'the task lists a flag name that is not allowed: a name has lower-case letters, digits and hyphens, is listed once, and is not submit, all, run, use-case or release');
       }
       seen.add(name);
       taken.add(name);
@@ -147,7 +159,8 @@ function flagNames(def: Pick<TaskDefinition, 'flags' | 'valued'>): { booleans: R
 /**
  * Reads the command line of a task (the words after the name of the task). A word that is not known is refused: nothing is guessed, and a message never shows a value. A flag is given once. A
  * valued flag takes the next word or `--name=value`. A flag of the task takes an empty value too, but only as `--name=`: an empty word is never taken for a value, because a shell can drop a quote or an
- * empty variable, and then the next word would become the value. `--run` and `--use-case` take no empty value. `status` takes no flag but --run and --use-case.
+ * empty variable, and then the next word would become the value. `--run`, `--use-case` and `--release` take no empty value. `--release` names a transaction by its hash and goes with the command
+ * cleanup only. `status` takes no flag but --run and --use-case.
  */
 export function parseArguments(def: Pick<TaskDefinition, 'flags' | 'valued'>, argv: readonly string[]): Arguments {
   const names = flagNames(def);
@@ -181,14 +194,17 @@ export function parseArguments(def: Pick<TaskDefinition, 'flags' | 'valued'>, ar
       values.set(name, next);
     }
   }
-  if (command === 'status' && ([...on].length > 0 || [...values.keys()].some((name) => !GLOBAL_VALUES.includes(name)))) {
+  if (command === 'status' && ([...on].length > 0 || [...values.keys()].some((name) => !STATUS_VALUES.includes(name)))) {
     throw new FlagError('status shows the state and the wallets and takes only --run and --use-case');
   }
   const run = values.get('run') ?? null;
   if (run !== null && !LABEL.test(run)) throw new FlagError('--run is a label of 1 to 32 lower-case letters, digits and hyphens, and it starts with a letter or a digit');
   const useCase = values.get('use-case') ?? null;
   if (useCase !== null && !USE_CASE_NAME.test(useCase)) throw new FlagError('--use-case is the name of a use case: lower-case letters, digits and hyphens, and it starts with a letter');
-  return { command: command ?? 'run', mode: on.has('submit') ? 'submit' : 'dry', all: on.has('all'), flags: new Flags(known, on, values), useCase, run };
+  const release = values.get('release') ?? null;
+  if (release !== null && !TX_HASH.test(release)) throw new FlagError('--release is the hash of a transaction: 64 lower-case hex characters');
+  if (release !== null && command !== 'cleanup') throw new FlagError('--release goes with the command cleanup only');
+  return { command: command ?? 'run', mode: on.has('submit') ? 'submit' : 'dry', all: on.has('all'), flags: new Flags(known, on, values), useCase, run, release };
 }
 
 // ---- the steps of a task ----
@@ -477,15 +493,114 @@ function firstOpenStep<Extra>(def: TaskDefinition<Extra>, session: TaskSession<E
   try { return def.steps(session.use, session.flags).find((step) => recordOf(session.state, step) === undefined) ?? null; } catch { return null; }
 }
 
+/** The references of the inputs that a transaction needs on the chain: its inputs, and its collateral inputs. A transaction that landed has spent the first. A script that failed spends the second. Each is named once. */
+export function inputsToCheck(facts: { readonly inputs: readonly string[]; readonly collateralInputs: readonly string[] }): string[] {
+  return [...new Set([...facts.inputs, ...facts.collateralInputs])];
+}
+
+/** The slots by which the tip of the node must be past the end of the validity of a transaction before the answer of the node about its inputs counts: a small rollback must not undo that answer. */
+export const TIP_MARGIN_SLOTS = 20;
+
+/** The slot past which the tip of a node counts, for a transaction whose validity ends at slot `end`: the end and the margin. */
+const countsFrom = (end: bigint): bigint => end + BigInt(TIP_MARGIN_SLOTS);
+
+/** Whether the tip of a node is past that slot: the node has then seen every block in which the transaction could have landed. A tip that is not a whole number is not past. */
+const tipIsPast = (tip: number, end: bigint): boolean => Number.isSafeInteger(tip) && BigInt(tip) > countsFrom(end);
+
+/** What the unspent inputs say about a transaction that the indexer does not know: it did not land (`unspent`), or it may have landed (`spent`, with the reason). */
+export type InputsVerdict = { readonly kind: 'unspent' } | { readonly kind: 'spent'; readonly why: string };
+
+/** What the node says of the inputs of a signed transaction: a verdict, or nothing that can be trusted (`unreadable`, with the reason). */
+type InputsCheck = InputsVerdict | { readonly kind: 'unreadable'; readonly why: string };
+
+const unreadable = (why: string): InputsCheck => ({ kind: 'unreadable', why });
+
+/**
+ * Judges the inputs of a transaction that the indexer does not know, from the set of references that the node still holds unspent. A transaction that landed with its scripts passed (or with no script)
+ * spends ALL of its inputs. A transaction that landed with a script that failed spends ALL of its collateral inputs and none of its inputs. Another transaction can spend some of the inputs of a lost
+ * transaction, so one unspent input is enough to show that the first form did not happen. The transaction did not land when at least one input is unspent AND (it has no collateral input OR at least
+ * one collateral input is unspent). When every input is spent, or every collateral input is spent, it may have landed.
+ */
+export function judgeInputs(inputs: readonly string[], collateral: readonly string[], unspent: ReadonlySet<string>): InputsVerdict {
+  const free = (refs: readonly string[]): number => refs.filter((ref) => unspent.has(ref)).length;
+  if (inputs.length === 0) return { kind: 'spent', why: 'it has no input that could show that it did not land' };
+  if (free(inputs) === 0) return { kind: 'spent', why: `all ${inputs.length} of its inputs are spent, and a transaction that landed spends all of them` };
+  if (collateral.length > 0 && free(collateral) === 0) return { kind: 'spent', why: `all ${collateral.length} of its collateral inputs are spent, and a script that failed spends all of them` };
+  return { kind: 'unspent' };
+}
+
+/** What a signed transaction shows on the chain: its inputs, its collateral inputs, and the slot at which its validity ends. The facts of its bytes (`TxFacts`) have these. */
+export interface InputFacts { readonly inputs: readonly string[]; readonly collateralInputs: readonly string[]; readonly validityEndSlot: bigint | null }
+
+/**
+ * Asks the node, and not the indexer, which inputs of a signed transaction are still unspent, and judges them (`judgeInputs`). A transaction that landed has spent its inputs, so when they are unspent it
+ * did not land, but only when the node has seen every block in which it could have landed. A node that is behind answers from a ledger before the landing, and says that every input is unspent. So the
+ * node gives its tip first, and the slot of the tip must be past the end of the validity of the transaction by `TIP_MARGIN_SLOTS`: a node whose newest block is past that slot has all the blocks before
+ * it. The tip is read before the inputs, so that the view of the inputs is at least as new as the tip. This holds only when the tip and the inputs come from ONE node: the Ogmios URL of the settings
+ * must name one node and never a load balancer, because two reads can go to two nodes, and the node that is behind can answer the second read. A node that does not answer, a tip that is not past the
+ * end, a transaction with no input and a transaction with no end of validity tell nothing: they are `unreadable`, never `unspent`.
+ */
+export async function checkInputs(node: NodeAccess, facts: InputFacts): Promise<InputsCheck> {
+  if (facts.inputs.length === 0) return unreadable('the transaction has no input');
+  const end = facts.validityEndSlot;
+  if (end === null) return unreadable('the transaction has no end of validity, so no tip of the node shows that it cannot land');
+  let tip: number;
+  try { tip = (await node.networkTip()).slot; } catch (err) { return unreadable(`the node did not give its tip: ${errorText(err)}`); }
+  if (!tipIsPast(tip, end)) {
+    return unreadable(`the tip of the node is at slot ${String(tip)}, and its answer about the inputs counts only past slot ${countsFrom(end)} (the validity of the transaction ended at slot ${end}): the node may not have seen the block of the transaction yet`);
+  }
+  let held: Utxo[];
+  try { held = await node.resolveInputs(inputsToCheck(facts)); } catch (err) { return unreadable(`the node did not answer: ${errorText(err)}`); }
+  return judgeInputs(facts.inputs, facts.collateralInputs, new Set(held.map((utxo) => `${utxo.txHash}#${utxo.outputIndex}`)));
+}
+
+/** Reads the bytes of a signed transaction, and checks its inputs. Bytes that cannot be read tell nothing. */
+async function checkSigned(node: NodeAccess, signedCbor: string): Promise<InputsCheck> {
+  let facts: TxFacts;
+  try { facts = factsOf(signedCbor); } catch (err) { return unreadable(`the bytes of the transaction cannot be read: ${errorText(err)}`); }
+  return checkInputs(node, facts);
+}
+
+/** What the clock and the node say about the end of the validity of a transaction in flight: it is over (`over`, with the words that show it), or the transaction may still land (`may`, with the reason). */
+export type EndOfValidity = { readonly kind: 'over'; readonly shown: string } | { readonly kind: 'may'; readonly why: string };
+
+/**
+ * Says whether a transaction in flight cannot land any more, for `cleanup --release`. A release while the transaction can still land pays twice: the step is built again, and both transactions pay.
+ * Two reads must show that its validity is over. The clock must be past the end of the validity by `GRACE_MS`, the rule of `settleInFlight`. And when the node answers and passes the network guard, its tip
+ * must be past the end of the validity (`end`, the slot of the signed bytes) by `TIP_MARGIN_SLOTS`, as `checkInputs` asks: a clock that is wrong, or a node that is behind, shows an end that has not come.
+ * A node that does not answer, or that is not on the network of the run, adds no check: the operator checked the chain, and the clock still holds. A transaction with no end of validity can land at
+ * any time, so it is never over. The guard and the node are not asked while the clock says that the transaction may still land.
+ */
+export async function checkEndOfValidity(flight: Pick<InFlight, 'valid_to'>, end: bigint | null, parts: { node: NodeAccess; network: { guard(): Promise<GuardResult> }; clock: Clock }): Promise<EndOfValidity> {
+  const { node, network, clock } = parts;
+  const releaseAt = flight.valid_to + GRACE_MS;
+  if (clock.now() <= releaseAt) {
+    return { kind: 'may', why: `its validity ends at ${iso(flight.valid_to)}, and a transaction is let go only after ${iso(releaseAt)}, ${duration(GRACE_MS)} later, because a node that is behind can still hold it` };
+  }
+  if (end === null) return { kind: 'may', why: 'its bytes have no end of validity, so it can land at any time' };
+  const clockSays = `the clock is past the end of the validity by more than ${duration(GRACE_MS)}`;
+  const gate = await network.guard();
+  if (!gate.ok) return { kind: 'over', shown: `${clockSays}, and the node was not used (the network guard failed: ${gate.message})` };
+  let tip: number;
+  try { tip = (await node.networkTip()).slot; } catch (err) { return { kind: 'over', shown: `${clockSays}, and the node was not used (it did not give its tip: ${errorText(err)})` }; }
+  if (!tipIsPast(tip, end)) {
+    return { kind: 'may', why: `the clock says that the validity is over, but the tip of the node is at slot ${String(tip)}, and it must be past slot ${countsFrom(end)} (the end of the validity at slot ${end}, and ${TIP_MARGIN_SLOTS} slots more). The node may be behind, or the clock may be wrong` };
+  }
+  return { kind: 'over', shown: `${clockSays}, and the tip of the node (slot ${tip}) is past the end of the validity (slot ${end}) by more than ${TIP_MARGIN_SLOTS} slots` };
+}
+
 /**
  * Reads the status of the transaction of a flight that `settleInFlight` let go, a second time (a read that failed makes `settleInFlight` let a transaction go too), and says what to do. The record goes
  * back into the state file first, before the read: while the read waits for the indexer, the file holds the transaction, so a run that is stopped in that time loses nothing. Then:
  *   - a number of confirmations, 0 included (the indexer counts the blocks on top of the block of the transaction, so 0 is the newest block): the transaction is on the chain. The step is recorded
  *     and its reserve of the cap stays.
  *   - a read that fails: nobody knows. The transaction stays in flight and the run stops, so that no step is built that may have landed.
- *   - a read that works and does not know the transaction: it cannot land any more, because its validity ended. A dry run leaves it in flight and goes on, so that the summary shows the step as it would
- *     be built again. A run with --submit gives its reserve back
- *     (when the approval is loaded) and lets it go, and the run goes on.
+ *   - a read that works and does not know the transaction: the indexer can be behind the node, so the transaction may have landed after its validity ended. The runner asks the node for the inputs of the
+ *     signed bytes (`checkInputs`), but only when the tip of the node is past the end of the validity: a node that is behind answers from a ledger before the landing. `judgeInputs` says that the transaction
+ *     did not land when one input is unspent and, if it has collateral inputs, one of them is unspent too. When the node cannot tell, or the inputs say that it may have landed, the transaction stays in
+ *     flight with its reserve and the run stops: the operator checks the chain, and lets it go with `cleanup --release=<hash>` when it is not there. When it did not land, it cannot land any more because its
+ *     validity ended. A dry run then leaves it in flight and goes on, so that the summary shows the step as it would be built again. A run with --submit gives its reserve back (when the approval is loaded)
+ *     and lets it go, and the run goes on.
  * It gives the reason to stop, or null when the run goes on.
  */
 async function reconcile(flight: InFlight, parts: { node: NodeAccess; state: StateFile; clock: Clock; exposure: Exposure; go: GoFile | null; mode: Mode; out: Output }): Promise<string | null> {
@@ -500,6 +615,15 @@ async function reconcile(flight: InFlight, parts: { node: NodeAccess; state: Sta
     recordLanded(state, { step: flight.step, tx_hash: flight.tx_hash, refs: flight.refs, facts: flight.facts }, clock.now());
     out.out(`${where} ${confirmations >= 1 ? 'is confirmed' : 'is in the newest block'}: the step is recorded, and its reserve of the cap stays`);
     return null;
+  }
+  const unknown = `${where} is not known to the indexer, and its validity ended at ${iso(flight.valid_to)}`;
+  const inputs = await checkSigned(node, flight.signed_cbor);
+  if (inputs.kind === 'spent') {
+    return `${unknown}, but ${inputs.why}. It may have landed. It stays in flight, its reserve stays, and nothing is built. The operator must check the chain for the transaction and for its inputs. `
+      + `When the chain shows that the transaction is not there, the operator lets it go with the command cleanup and the flags --release=${flight.tx_hash} and --submit.`;
+  }
+  if (inputs.kind === 'unreadable') {
+    return `${unknown}, but its inputs cannot be checked (${inputs.why}). It stays in flight, its reserve stays, and nothing is built. Run again when the inputs can be checked.`;
   }
   const lost = `${where} is not on the chain, and its validity ended at ${iso(flight.valid_to)}: it cannot land any more`;
   if (mode === 'dry') {
@@ -550,6 +674,38 @@ function loadKeys(read: NonNullable<RunDeps['readRegistry']>, where: { dir: stri
   }
 }
 
+/**
+ * Lets the transaction in flight go at the word of the operator: `cleanup --release=<hash>`. It is the way out for a transaction that a run keeps because its inputs are spent, when the operator has
+ * checked the chain and the transaction is not there. It lets go the transaction that is in flight and no other: the hash must be its hash. It refuses while the transaction may still land, in a dry
+ * run too (`checkEndOfValidity`): a release before the end of its validity lets the step be built again while the first transaction can still land, and then both pay. A dry run that passes says what it
+ * would do and changes nothing. With --submit it writes an entry of the evidence first, so that an override of the check leaves its trace before it changes anything, then gives the reserve back (when
+ * the approval is loaded), and lets the transaction go. The cleanup of the task does not run.
+ */
+async function letGo(hash: string, flight: InFlight | null, parts: { node: NodeAccess; network: { guard(): Promise<GuardResult> }; clock: Clock; state: StateFile; evidence: EvidenceFile; exposure: Exposure; go: GoFile | null; mode: Mode; out: Output; progress: { step: string | null } }): Promise<Ended> {
+  const { node, network, clock, state, evidence, exposure, go, mode, out, progress } = parts;
+  if (flight === null) throw new PreconditionError('no transaction is in flight, so --release has nothing to let go');
+  if (flight.tx_hash !== hash) throw new PreconditionError(`the transaction in flight is ${flight.tx_hash} of the step ${flight.step}, and --release names another transaction: nothing is let go`);
+  const where = `the transaction ${flight.tx_hash} of the step ${flight.step}`;
+  progress.step = flight.step;
+  let end: bigint | null;
+  try { end = factsOf(flight.signed_cbor).validityEndSlot; } catch (err) {
+    throw new PreconditionError(`the bytes of ${where} cannot be read (${errorText(err)}), so nothing shows when it cannot land any more: nothing is let go`);
+  }
+  const over = await checkEndOfValidity(flight, end, { node, network, clock });
+  if (over.kind === 'may') throw new PreconditionError(`${where} may still land, so nothing is let go: ${over.why}. A release now can pay twice. Run again when its validity is over.`);
+  out.out(`the validity of ${where} ended at ${iso(flight.valid_to)}: ${over.shown}.`);
+  if (mode === 'dry') {
+    out.out(`${where} would be let go, and its reserve of the cap would be given back. A dry run lets nothing go. Check the chain for the transaction and for its inputs first, and run again with --submit.`);
+    return { exit: 0, outcome: 'dry' };
+  }
+  out.out(`the operator says that the chain was checked and that ${where} is not there: it is let go.`);
+  evidence.add({ step: flight.step, status: 'info', shows: { note: 'the operator lets the transaction go, and says that the chain was checked', transaction: flight.tx_hash, session: go === null ? null : go.session } });
+  const released = go === null ? null : exposure.release(flight.tx_hash);
+  state.clearInFlight();
+  out.out(go === null ? 'No approval file is loaded, so its reserve stays in the cap file of its session.' : released ? 'Its reserve of the cap is released.' : `The cap file of the session ${go.session} holds no reserve for it.`);
+  return { exit: 0, outcome: 'done' };
+}
+
 /** Opens the files and the connections of a run, settles a transaction in flight, checks the network and the approval, and runs the task. It fills `ctx` as it goes. */
 async function execute<Extra>(def: TaskDefinition<Extra>, argv: readonly string[], deps: RunDeps, ctx: Context<Extra>): Promise<Ended> {
   const { out, clock } = deps;
@@ -595,7 +751,7 @@ async function execute<Extra>(def: TaskDefinition<Extra>, argv: readonly string[
   // when the guard failed, and the state stays as it is. A run with none goes on, and the landing refuses to sign on a failed guard.
   const flight = state.snapshot().in_flight;
   ctx.flightAtStart = flight === null ? null : flight.tx_hash;
-  if (def.needs.chain || flight !== null) {
+  if (args.release === null && (def.needs.chain || flight !== null)) {
     const guard = await connections.network.guard();
     networkResult = Object.freeze({ ...guard });
     if (!guard.ok) out.err(`network guard: FAIL, ${guard.message}`);
@@ -617,6 +773,9 @@ async function execute<Extra>(def: TaskDefinition<Extra>, argv: readonly string[
     }
   }
   const exposure = new Exposure(join(settings.stateDir, `exposure.${go === null ? 'none' : go.session}.json`), go);
+  // `cleanup --release=<hash>`: the operator lets the transaction in flight go. The network guard above and the settle below are skipped: the release asks the guard and the tip of the node itself, and only
+  // after the clock says that the validity is over.
+  if (args.release !== null) return letGo(args.release, flight, { node: connections.node, network: connections.network, clock, state, evidence, exposure, go, mode: args.mode, out, progress: ctx.progress });
   // The lines of `settleInFlight` are kept: for a transaction that it lets go, the second read below can show that the transaction is on the chain, and its line says the opposite.
   const settleLines: string[] = [];
   const settled = await settleInFlight({ state, node: connections.node, clock, out: (line) => { settleLines.push(line); }, mode: args.mode, awaitMs, pollMs });

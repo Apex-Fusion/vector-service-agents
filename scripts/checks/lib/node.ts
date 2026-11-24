@@ -1,8 +1,8 @@
-// scripts/checks/lib/node.ts - the node of Vector for the checks: Ogmios for the outputs and the submit, Koios for the genesis and the status of a transaction.
+// scripts/checks/lib/node.ts - the node of Vector for the checks: Ogmios for the outputs, the tip and the submit, Koios for the genesis and the status of a transaction.
 // The network is read from two places that must agree: the indexer says the magic and the start of the genesis (a GET), and the node says the start of its chain.
 import { parseOutRef } from './platform.ts';
 import type { Utxo } from './platform.ts';
-import type { NetworkFacts, NodeAccess, TxStatus } from './ports.ts';
+import type { NetworkFacts, NodeAccess, NodeTip, TxStatus } from './ports.ts';
 
 /** The calls of the vendored provider that the checks use. The OgmiosProvider has them all. */
 export interface NodeProvider {
@@ -10,6 +10,7 @@ export interface NodeProvider {
   submitTx(signedCborHex: string): Promise<string>;
   getKoiosTxStatus(txHash: string): Promise<unknown>;
   getSystemStartMs(): Promise<number>;
+  getNetworkTip(): Promise<{ slot: number }>;
 }
 
 const isObject = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -38,6 +39,13 @@ export class VectorNode implements NodeAccess {
     const nodeStart = await this.#provider.getSystemStartMs();
     if (nodeStart !== start) throw new Error('the node and the indexer do not agree on the start of the chain, so they are not on the same chain');
     return { magic, systemStartMs: start };
+  }
+
+  async networkTip(): Promise<NodeTip> {
+    const tip: unknown = await this.#provider.getNetworkTip();
+    const slot = isObject(tip) ? tip.slot : undefined;
+    if (typeof slot !== 'number' || !Number.isSafeInteger(slot) || slot < 0) throw new Error('the node gave no usable tip: its answer has no slot');
+    return { slot };
   }
 
   resolveInputs(refs: readonly string[]): Promise<Utxo[]> {
