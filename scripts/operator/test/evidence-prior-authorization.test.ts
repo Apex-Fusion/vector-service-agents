@@ -182,6 +182,9 @@ describe('failure run proof', () => {
     [{ case: 'wrong_kind' }, 'the evidence document does not bind the fault hire, exact approval, digests and both parties'],
     [{ case: 'wrong_wire' }, 'the evidence document does not bind the fault hire, exact approval, digests and both parties'],
     [{ case: 'early_hold' }, 'the application output does not show the Module-1 hold'],
+    [{ holdLength: 'short_verdict' }, 'the ledger verdict does not prescribe seven days for this subject'],
+    [{ holdLength: 'retained_longer' }, 'the actual Module-1 hold is not exactly seven days from its lower validity bound'],
+    [{ holdLength: 'wrong_window' }, 'the actual Module-1 hold is not exactly seven days from its lower validity bound'],
     [{ case: 'missing_application' }, 'the current hold alone does not prove it'],
     [{ case: 'wrong_application' }, 'the application does not spend this verdict and create the subject record'],
     [{ case: 'wrong_resolution' }, 'the committed resolution document names a different jury, case or challenge'],
@@ -192,6 +195,11 @@ describe('failure run proof', () => {
     expect(outcome.exit).toBe(2);
     expect(outcome.errors).toContain(detail);
     expect(outcome.text).toBeNull();
+  });
+  it('proves the seven-day hold from the lower bound when the previous hold ends sooner', async () => {
+    const outcome = await writePriorEvidence({ kind: 'failure', holdLength: 'retained_shorter' });
+    expect(outcome.exit).toBe(0);
+    expect(asDoc(outcome).steps.find(({ id }) => id === 'r2-b-hold')).toMatchObject({ status: 'shown' });
   });
   it.each(['pending', 'no_jury'] as const)('waits for the actual verdict for %s', async (item) => {
     const outcome = await writePriorEvidence({ kind: 'failure', case: item });

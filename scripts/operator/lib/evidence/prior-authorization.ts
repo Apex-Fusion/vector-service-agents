@@ -8,7 +8,8 @@ import { requestText } from '../../../../packages/usecase-kit/src/buyer/message.
 import { evidenceDocument, evidenceReferences } from '../../../../packages/usecase-kit/src/dispute/index.ts';
 import type { EvidenceReferences } from '../../../../packages/usecase-kit/src/dispute/index.ts';
 import { canonicalize, decodeIdentityEscrowDatum, promptHashForPayload } from '../../../../packages/vector-read/src/index.ts';
-import { decodeDelegationDatum, decodeIdentityDatum, encodeIdentityDatum } from '../../../../packages/vector-read/src/identity-codec.ts';
+import { bytesOf, constrFields, decodeDelegationDatum, decodeIdentityDatum, encodeIdentityDatum, intOf } from '../../../../packages/vector-read/src/identity-codec.ts';
+import { decodePlutusData } from '../../../../packages/vector-read/src/guarded-decode.ts';
 import { decodeChallengeDatum, decodeClaimDatum, documentUri, readDocument, txHashOfUri } from '../../../../packages/buyer-core/src/index.ts';
 import { decodeJuryDatum } from '../../../../packages/buyer-core/src/vendored/mcp/jury-codec.ts';
 import { findConfigRecord } from '../../../../packages/buyer-core/src/vendored/mcp/identity-deployment.ts';
@@ -31,6 +32,7 @@ const REF = /^[0-9a-f]{64}#(?:0|[1-9][0-9]{0,5})$/;
 const CHALLENGE_TOKEN = /^63686c5f[0-9a-f]{56}$/;
 const DID = /^did:vector:[0-9a-f]{64}$/;
 const DISPUTE_HOLD = 64;
+const HOLD_DURATION_MS = 7 * 86_400_000;
 const READ_BYTES = 2 * 1024 * 1024;
 const FAULT = 'alter_after_approval';
 const ORDER_READ = 'GET /records/orders/{order_id}';
@@ -350,15 +352,37 @@ async function readAppliedHold(session: EvidenceReadSession, subject: string, po
   }
   const applied = await tx(session, applyTx);
   const { identity } = session.chain.deployment;
+  const inputs = applied.inputs.filter(({ credential }) => credential === identity.hash);
   const record = await tokenOutput(session, applied.outputs.filter(({ credential }) => credential === identity.hash).map(({ ref }) => ref),
     identity.hash, subject, identity.address);
-  if (record === null || !applied.inputs.some(({ ref, credential }) => ref === verdict && credential === policy)) {
+  if (inputs.length !== 1 || record === null || !applied.inputs.some(({ ref, credential }) => ref === verdict && credential === policy)) {
     throw new PreconditionError('hold: the application does not spend this verdict and create the subject record');
+  }
+  const rows = await outputsFor(session, [verdict]);
+  const output = rows.length === 1 ? rows[0] : undefined;
+  if (output === undefined || outRef(output) !== verdict || output.payment_cred !== policy || output.is_spent !== true) {
+    throw new PreconditionError('hold: the spent Module-1 verdict output is unproven');
+  }
+  const [agent, action, duration] = constrFields(decodePlutusData(output.inline_datum?.bytes ?? ''), 'verdict', 0, 6);
+  constrFields(action!, 'verdict.action', 0, 0);
+  if (bytesOf(agent!, 'verdict.subject', 32) !== subject || intOf(duration!, 'verdict.duration') !== HOLD_DURATION_MS) {
+    throw new PreconditionError('hold: the ledger verdict does not prescribe seven days for this subject');
   }
   const status = decodeIdentityDatum(record.inline_datum!.bytes).status;
   const hold = status.type === 'Suspended' ? status.holds.find((entry) => entry.by.type === 'Script' && entry.by.hash === policy && entry.reason === DISPUTE_HOLD
     && challengeAt <= entry.since && entry.since <= applied.timeMs && entry.since < entry.until) : undefined;
   if (hold === undefined) throw new PreconditionError('hold: the application output does not show the Module-1 hold of this dispute');
+  const prior = await tokenOutput(session, [inputs[0]!.ref], identity.hash, subject, identity.address);
+  if (prior?.is_spent !== true) throw new PreconditionError('hold: the preceding identity output is unproven');
+  const before = decodeIdentityDatum(prior.inline_datum!.bytes).status;
+  // The validated Suspend uses the exact lower validity bound as `since`, not the block time.
+  // Module-1 ignores interval inclusivity and keeps a longer hold already in force.
+  const sevenDayEnd = hold.since + HOLD_DURATION_MS;
+  const keptUntil = before.type === 'Suspended' ? before.holds.find(({ by, until }) => by.type === 'Script' && by.hash === policy && until > hold.since)?.until : undefined;
+  const expectedEnd = Math.max(sevenDayEnd, keptUntil ?? sevenDayEnd);
+  if (!Number.isSafeInteger(sevenDayEnd) || hold.until !== expectedEnd || expectedEnd !== sevenDayEnd) {
+    throw new PreconditionError('hold: the actual Module-1 hold is not exactly seven days from its lower validity bound');
+  }
   return { verdict_output: verdict, record_output: outRef(record), reason: hold.reason, since: hold.since, until: hold.until, gateway_status: null };
 }
 

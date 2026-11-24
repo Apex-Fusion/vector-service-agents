@@ -109,6 +109,7 @@ export interface PriorFixture {
   readonly vault?: 'wallet' | 'different_vault' | 'wrong_refund_owner';
   readonly case?: 'no_jury' | 'pending' | 'ClaimerWins' | 'wrong_auditor' | 'wrong_key' | 'controller_only' | 'wrong_claimer' | 'wrong_document'
     | 'wrong_approval' | 'wrong_digest' | 'wrong_kind' | 'wrong_wire' | 'early_hold' | 'missing_application' | 'unapplied' | 'wrong_application' | 'wrong_resolution' | 'expired_hold';
+  readonly holdLength?: 'short_verdict' | 'retained_longer' | 'retained_shorter' | 'wrong_window';
   readonly end?: 'wrong_redeemer' | 'wrong_epoch' | 'resolver_active' | 'probe_before' | 'wrong_probe_subject' | 'wrong_resource' | 'wrong_action'
     | 'generic_refusal' | 'generic_grant' | 'noncanonical_time';
   readonly listing?: 'listed' | 'no_refusal';
@@ -182,11 +183,16 @@ export async function writePriorEvidence(s: PriorFixture, privateFile = false): 
 
   const hold = !clean && s.case !== 'pending' && s.case !== 'no_jury' && s.case !== 'ClaimerWins' && s.case !== 'unapplied';
   const holdSince = at(s.case === 'early_hold' ? 144 : 363);
+  const verdictDuration = s.holdLength === 'short_verdict' ? 6 * DAY : 7 * DAY;
+  const oldHoldEnd = s.holdLength === 'short_verdict' ? holdSince + 7 * DAY
+    : s.holdLength === 'retained_longer' ? holdSince + 8 * DAY : s.holdLength === 'retained_shorter' ? holdSince + 5 * DAY : null;
+  const holdUntil = s.holdLength === 'wrong_window' ? at(364) + 7 * DAY
+    : Math.max(holdSince + verdictDuration, oldHoldEnd ?? 0);
   const active = liveRecord({}, [DRAFT_KEY.publicKeyHex]);
   const parent = { ...active, parties: [...active.parties, { ...active.parties[0]!, role: 'Responsible' as const,
     signer: { type: 'Script' as const, hash: PARTY }, rights: ROLE_MAX_RIGHTS.Responsible }] };
   const earlier = hold ? { ...parent, status: { type: 'Suspended' as const, holds: [{ by: { type: 'Script' as const, hash: PARTY },
-    reason: 64, since: holdSince, until: holdSince + 7 * DAY }] } } : parent;
+    reason: 64, since: holdSince, until: holdUntil }] } } : parent;
   const lastRecord = { ...earlier, subagentEpoch: clean ? 0 : (s.end === 'wrong_epoch' ? 2 : 1) };
   const epochTx = h('epoch bump');
   const head = { ...recordUtxo(DRAFT, lastRecord), txHash: clean ? h('clean drafting record') : epochTx };
@@ -465,6 +471,10 @@ export async function writePriorEvidence(s: PriorFixture, privateFile = false): 
     }
     known.add(evidenceTx);
     const registered = { ...recordUtxo(DRAFT, parent), txHash: h('draft identity register') };
+    const earlierHold = oldHoldEnd === null ? null : { ...recordUtxo(DRAFT, { ...parent, status: { type: 'Suspended', holds: [
+      { by: { type: 'Script', hash: PARTY }, reason: 64, since: at(355), until: oldHoldEnd },
+    ] } }), txHash: h('earlier hold of this agent') };
+    const affected = earlierHold ?? registered;
     const applyTx = h('apply verdict');
     const pre = { ...recordUtxo(DRAFT, earlier), txHash: hold ? applyTx : h('parent before epoch'), outputIndex: hold ? 2 : 0 };
     const prev = `${pre.txHash}#${pre.outputIndex}`;
@@ -476,7 +486,7 @@ export async function writePriorEvidence(s: PriorFixture, privateFile = false): 
     let verdictToken: string | null = null;
     if (hasVerdict) {
       const until = at(363) + DAY;
-      const datum = encodePlutusDataHex(constr(0, [bytesOf(DRAFT), constr(0, []), integerOf(7 * DAY),
+      const datum = encodePlutusDataHex(constr(0, [bytesOf(DRAFT), constr(0, []), integerOf(verdictDuration),
         constr(0, [bytesOf(challenge.txHash), integerOf(0)]), plutusAddressToData(refundTo), integerOf(until)]));
       verdictToken = blake2b256Hex(Buffer.from(datum, 'hex'));
       const verdict = asset('resolve challenge', PARTY, verdictToken, datum, 1);
@@ -488,8 +498,8 @@ export async function writePriorEvidence(s: PriorFixture, privateFile = false): 
       tx(verdict.txHash, 360, [toIo(challenge)], { outputs: [toIo(verdict)], assets_minted: [minted(PARTY, verdictToken, '1')],
         plutus_contracts: [spend(challengeRef, CHALLENGE, 2, [constructor(1), { bytes: documentHash(resolved) }])] });
       if (hold) {
-        tx(applyTx, 364, [toIo(registered), toIo(verdict)], { outputs: [toIo(pre)], assets_minted: [minted(PARTY, verdictToken, '-1')],
-          plutus_contracts: [spend(rf('draft identity register'), MAINNET.identity.hash, 2, [constructor(1, { int: 1 })])] });
+        tx(applyTx, 364, [toIo(affected), toIo(verdict)], { outputs: [toIo(pre)], assets_minted: [minted(PARTY, verdictToken, '-1')],
+          plutus_contracts: [spend(`${affected.txHash}#${affected.outputIndex}`, MAINNET.identity.hash, 2, [constructor(1, { int: 1 })])] });
         application = verdict;
       }
       if (s.case !== 'missing_application') verdictLocation = { ref: `${verdict.txHash}#${verdict.outputIndex}`, action: 'suspend', duration_ms: 7 * DAY,
@@ -497,6 +507,7 @@ export async function writePriorEvidence(s: PriorFixture, privateFile = false): 
         applied_time: hold ? iso(364) : null };
     }
     receiptHistory.record(DRAFT, [{ output: registered, seconds: at(-180) / 1000 },
+      ...(earlierHold === null ? [] : [{ output: earlierHold, seconds: at(355) / 1000, redeemer: 2 }]),
       { output: pre, seconds: at(364) / 1000 }, { output: head, seconds: at(420) / 1000 }]);
     if (application !== null && verdictToken !== null) {
       // The history fixture re-encodes the identity token transition. Keep the other input and its burn.
