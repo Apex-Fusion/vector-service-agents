@@ -12,6 +12,7 @@ import { units } from '../../checks/lib/format.ts';
 import type { RingView } from '../../checks/lib/guards.ts';
 import type { TxFacts } from '../../checks/lib/txfacts.ts';
 import { codeOf } from './registry.ts';
+import { repeatedMember } from './strict-json.ts';
 
 /** The steps that cannot be undone: a record, a stake, an attestation (its deposit stays locked), the end of the subagents of a record, the revoke of an attestation, the revoke of a record, a change of the controller, the completion of a recovery, a retire and a successor. A session names the ones that it may take. */
 export type IrreversibleTag = 'record' | 'stake' | 'attestation' | 'end-subagents' | 'attestation-revoke' | 'record-revoke' | 'controller-change' | 'recovery-complete' | 'retire' | 'successor';
@@ -98,34 +99,6 @@ const hasMembers = (value: Record<string, unknown>, members: readonly string[]):
 
 /** A member name for a message: the name when it looks like a name, else a phrase that holds nothing of it. */
 const named = (member: string): string => (/^[A-Za-z0-9_]{1,32}$/.test(member) ? member : 'a name that is no member name');
-
-/**
- * The name of the first member that an object of the JSON text holds twice, or null. `JSON.parse` keeps the last of two equal members and says nothing, and an approval must not be read two
- * ways. The text must be valid JSON already: the scan follows strings and brackets only.
- */
-function repeatedMember(json: string): string | null {
-  const open: (Set<string> | null)[] = [];
-  for (let i = 0; i < json.length; i++) {
-    const char = json[i];
-    if (char === '{') open.push(new Set());
-    else if (char === '[') open.push(null);
-    else if (char === '}' || char === ']') open.pop();
-    else if (char === '"') {
-      let end = i + 1;
-      while (end < json.length && json[end] !== '"') end += json[end] === '\\' ? 2 : 1;
-      let next = end + 1;
-      while (next < json.length && ' \t\n\r'.includes(json[next]!)) next++;
-      const members = open[open.length - 1];
-      if (members !== undefined && members !== null && json[next] === ':') {
-        const name = JSON.parse(json.slice(i, end + 1)) as string;
-        if (members.has(name)) return name;
-        members.add(name);
-      }
-      i = end;
-    }
-  }
-  return null;
-}
 
 /** What `loadGo` needs from the file system. */
 export interface GoIo {

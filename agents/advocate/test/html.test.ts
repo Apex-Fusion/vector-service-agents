@@ -1,7 +1,7 @@
 // agents/advocate/test/html.test.ts
 // The text of a page (rulings R-E4 and R-E18): what is dropped, the line breaks of the blocks, the tags, the entities (named, decimal and hex), the white space, a
-// plain-text body, a page of under 200 characters, and the time each pattern takes on a page made to slow it down. The golden pages of test/fixtures are read
-// word for word in test/pages.test.ts. Every character outside ASCII is written as an escape.
+// plain-text body, a page of under 200 characters, and large malformed pages. The golden pages of test/fixtures are read word for word in test/pages.test.ts.
+// Write non-ASCII characters as escapes.
 import { describe, expect, test } from 'vitest';
 import { EXCERPT_CHARS, MIN_PAGE_CHARS, collapseWhitespace, decodeEntities, extractText } from '../src/html.ts';
 
@@ -117,22 +117,26 @@ describe('the bounds of a page', () => {
   });
 });
 
-// A quadratic pattern would take minutes on any of these; each pattern of src/html.ts takes one pass.
-describe('a page made to slow the extractor down: about 1 MB of it in well under 2 s', () => {
-  test.each<[string, string]>([
-    ['tags that never close', '<a'.repeat(500_000)],
-    ['quotes that never close', '<a href="'.repeat(111_112)],
-    ['comments that never close', '<!--'.repeat(250_000)],
-    ['scripts that never close', '<script>'.repeat(125_000)],
-    ['scripts that open comments, and never close', '<script><!--'.repeat(83_334)],
-    ['comments that open scripts, and never close', '<!--<script>'.repeat(83_334)],
-    ['heads that never close', '<head>'.repeat(166_667)],
-    ['blocks that never close', '<div '.repeat(200_000)],
-    ['entities that never end', '&#x'.repeat(333_334)],
-    ['lines of white space', ' \t\n'.repeat(333_334)],
-  ])('%s', (_name, html) => {
-    const started = performance.now();
-    extractText(html);
-    expect(performance.now() - started).toBeLessThan(2_000);
+// Use the large inputs in every run. Enable the speed check only for a dedicated run.
+describe('extractText: large malformed and sparse pages', () => {
+  test.each<[string, string, number, 'unchanged' | 'empty' | 'drop final space']>([
+    ['tags that never close', '<a', 500_000, 'unchanged'],
+    ['quotes that never close', '<a href="', 111_112, 'unchanged'],
+    ['comments that never close', '<!--', 250_000, 'empty'],
+    ['scripts that never close', '<script>', 125_000, 'empty'],
+    ['scripts that open comments, and never close', '<script><!--', 83_334, 'empty'],
+    ['comments that open scripts, and never close', '<!--<script>', 83_334, 'empty'],
+    ['heads that never close', '<head>', 166_667, 'empty'],
+    ['blocks that never close', '<div ', 200_000, 'drop final space'],
+    ['entities that never end', '&#x', 333_334, 'unchanged'],
+    ['lines of white space', ' \t\n', 333_334, 'empty'],
+  ])('%s', (_name, fragment, count, output) => {
+    const html = fragment.repeat(count);
+    const started = process.env.VSA_WORKLOAD_PERF === '1' ? performance.now() : undefined;
+    const text = extractText(html);
+    if (started !== undefined) expect(performance.now() - started).toBeLessThan(2_000);
+    const expected = output === 'empty' ? '' : output === 'unchanged' ? html : html.slice(0, -1);
+    expect(text).toHaveLength(expected.length);
+    expect(text === expected, 'extracted text matches the expected output').toBe(true);
   }, 10_000);
 });

@@ -99,7 +99,7 @@ docker build -f agents/advocate/Dockerfile -t ghcr.io/apex-fusion/vector-service
 cd deploy/host
 ```
 
-The build installs the workspace from the lockfile and `tini` from Debian, on `node:22-bookworm-slim`. It installs no other language and fetches no model: the image holds Node and the code of the service. CI publishes the same image under `:latest` and `:<full git commit sha>` on every merge to `main`; the host still builds its own.
+The build installs the workspace from the lockfile and `tini` from Debian, on `node:22-bookworm-slim`. It installs no other language and fetches no model: the image holds Node and the code of the service. CI publishes the same image under `:latest` and `:<full git commit sha>` after tests pass on `main`. The host still builds its own.
 
 Then check the image before anything depends on it. There is no model in it to check, only the Node that runs the service:
 

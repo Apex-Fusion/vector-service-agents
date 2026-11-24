@@ -6,7 +6,7 @@ Four rules hold for every step:
 
 - A runtime keeps its jobs in memory, and a service keeps the record of the checks of a job in memory. Never restart a container of a Bid Desk while a job runs (section "The restart rule").
 - No command in this runbook prints a key or a token. Never add one that does.
-- The host builds no image. CI builds the images, and each compose file names each image by its digest.
+- The host builds no image. CI publishes the images. Each compose file names each image by its digest.
 - Each Bid Desk is a compose project of its own. A step for one Bid Desk never touches the containers, the env file, the volume or the Caddy block of another.
 
 ## What it is
@@ -189,7 +189,7 @@ sed -n 's/^\(SUPPLIER_PKH\|BID_DESK_SERVICE_PKH\)=\(..*\)$/\2/p' /srv/agents/bid
 
 ## The images
 
-The compose files name two images. CI builds both, and it pushes each one under `:latest` and under `:<full git commit sha>`. Use the tag of the commit that was reviewed. The service image is `ghcr.io/apex-fusion/vector-service-agents/bid-desk`. The runtime image is `ghcr.io/apex-fusion/vector-service-agents/agent-runtime`. The three Bid Desks run one image of each, so each image gets one digest in the three files.
+CI builds the service image and reuses [the pinned runtime image](README.md#the-runtime-image). CI publishes both under `:latest` and `:<full git commit sha>`. Use the tag of a reviewed commit with a successful `publish` job. The service image is `ghcr.io/apex-fusion/vector-service-agents/bid-desk`. The runtime image is `ghcr.io/apex-fusion/vector-service-agents/agent-runtime`. The three Bid Desks run one image of each, so each image gets one digest in the three files.
 
 The pull needs no login when the package is public. If the answer says `denied`, the package is private: make it public in the settings of the package, or log in to `ghcr.io` with a token that has the scope `read:packages`. RUNBOOK.md (section "Run the mock service") does the same for the mock service.
 
@@ -283,7 +283,7 @@ Start the Bid Desks one after the other, `alfa` first, then `bravo`, then `charl
 
 3. Join the Caddy container to the network of this Bid Desk, and add its block (section "The Caddy block"). Its DNS record must resolve to the host first.
 4. Check the public names of this Bid Desk, and take the hash of its manifest (section "The checks"). It is the `detail_hash` of its advert.
-5. Post the advert of this Bid Desk (section "The adverts"). Write its reference into `ADVERT_REF` of its env file.
+5. Post the advert of this Bid Desk (section "The adverts"). Keep the Post transaction hash in the deployment record. Verify its output on the ledger. If confirmation is unknown, check the same hash and stop; do not post again. Write its confirmed reference into the existing `ADVERT_REF` entry of this desk's env file. Do not append a second entry or print the file.
 6. Start the runtime. Pass the memory gate first. After the start, wait 30 seconds, and check that the runtime is up and says `free`. Write the port of its runtime in place of `<runtime port>`:
 
    ```sh
@@ -293,6 +293,7 @@ Start the Bid Desks one after the other, `alfa` first, then `bravo`, then `charl
    ```
 
    The option `--no-deps` keeps compose from touching the service: a start of the runtime never creates the service again.
+   Read `GET /capability` on the runtime port of this desk. Require HTTP 200 and an `advert_ref` equal to the confirmed output reference from step 5. A reference for another desk is not ready for a hire.
 7. Run the other checks of section "The checks" for this Bid Desk.
 
 ## The checks
@@ -532,18 +533,23 @@ A Bid Desk is the hired side. A job that fails answers with its HTTP status and 
 
 ## Back out
 
-To take one Bid Desk out of service. The order matters: the advert goes first, so that nobody can post an escrow against an agent that goes away. The other two Bid Desks, their containers and their blocks stay. To take all three out, run the steps for each Bid Desk in turn.
+To take one Bid Desk out of service, retire its listing first. An escrow that already exists can still need work. The other two Bid Desks, their containers and their blocks stay. To take all three out, run the steps for each Bid Desk in turn.
 
-1. Retire the advert of that Bid Desk. The operator does it with the hosted tools, signed with the supplier key of its runtime. Skip this step when `ADVERT_REF` is empty in its env file: nothing was posted.
-2. Wait 2 minutes after the last job. Then check that its runtime says `free`, and stop its containers at once. Never check first and then wait. The command does the three steps without a gap. A job that was claimed before the retire still runs: when the runtime says `working`, nothing is stopped. Let the job end, and run the command again. Compose waits up to 330 seconds for the service. Run the command of the Bid Desk in its folder:
+1. Check each recorded Post and the current advert outputs for this desk's agent ID, supplier and model. An empty `ADVERT_REF` does not prove that no Post landed. If a Post may still land, or the ledger read fails, stop here. Retire every matching active advert with `vector_build_marketplace_advert_retire` and the supplier key of this desk's runtime. Confirm each Retire with `vector_await_transaction`. Skip retirement only when no matching advert is active and no Post can still land.
+2. If the runtime started, let its last job end and then wait 2 minutes. If the runtime never started, verify that fact with this desk's deployment record and container history. A missing container or a failed `/status` request is not proof.
+
+   For either path, complete [the ledger check](RUNBOOK.md#check-the-ledger-before-a-use-case-3-stop) before you stop anything. Leave the runtime, service and its Caddy block in place if work is outstanding or proof is unavailable.
+
+   If the runtime started, require `free` and zero active sessions at the stop. Run the command for this desk in its folder. Replace `<name>` and `<runtime port>` with the values in the table in "What it is". Compose waits up to 330 seconds for the service:
 
    ```sh
-   sleep 120; if curl -s --max-time 5 http://127.0.0.1:8108/status | grep -q '"status":"free"'; then docker compose -f docker-compose.bid-desk-alfa.yml stop; else echo 'the runtime does not say free: nothing was stopped'; fi
-   sleep 120; if curl -s --max-time 5 http://127.0.0.1:8109/status | grep -q '"status":"free"'; then docker compose -f docker-compose.bid-desk-bravo.yml stop; else echo 'the runtime does not say free: nothing was stopped'; fi
-   sleep 120; if curl -s --max-time 5 http://127.0.0.1:8110/status | grep -q '"status":"free"'; then docker compose -f docker-compose.bid-desk-charlie.yml stop; else echo 'the runtime does not say free: nothing was stopped'; fi
+   status=$(curl -fsS --max-time 5 http://127.0.0.1:<runtime port>/status) &&
+     printf '%s\n' "$status" | grep -q '"status":"free"' &&
+     printf '%s\n' "$status" | grep -Eq '"active_sessions":0[,}]' &&
+     docker compose -f docker-compose.bid-desk-<name>.yml stop
    ```
 
-   Run one of the three lines. Each line is the whole command of one Bid Desk: its port and its compose file.
+   If the runtime never started, stop the service alone with `docker compose -f docker-compose.bid-desk-<name>.yml stop service`. Continue only after the applicable stop succeeds.
 3. Remove the Caddy block of that Bid Desk, with its own pair of markers, as section "The Caddy block" says. The blocks of the other two stay. Validate and reload Caddy.
 4. Leave the network of the project before the `down` command, because the Caddy container is on it. Do not use `-v`:
 

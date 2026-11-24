@@ -1,6 +1,6 @@
-// agents/sourcing-agent/test/quotes/decide.test.ts: the decision on the delivery of a bidder. Three checks in code come before the model, and none of them asks it: a quote that is not a quote, a quote for another
-// request, a quote from another price list and a quote from another bidder are each `failed` with their own code, with no challenge and no question to the model. The twin with the right quote goes to the model,
-// and only a no of the model starts a challenge. A decision that fails stops the loop, and the later bidders are not paid. The Accept rests on the choice that the recorded decision holds. Each refusal has its twin.
+// agents/sourcing-agent/test/quotes/decide.test.ts: five checks in code come before the model. The checks refuse a result that is not a quote, a quote from another bidder, a quote for another request,
+// a quote from another price list, or a receipt with no supplier key hash. Each refusal has its own failure code. None starts a challenge or asks the model. A quote that passes all five goes to the model.
+// Only a no of the model starts a challenge. A decision that fails stops the loop, so the agent pays no later bidders. The Accept rests on the choice that the recorded decision holds.
 import { afterEach, describe, expect, it } from 'vitest';
 import type { VerifiedDelivery } from '@vsa/usecase-kit/buyer';
 import { RECEIPT_CHECKS } from '@vsa/usecase-kit/protocol';

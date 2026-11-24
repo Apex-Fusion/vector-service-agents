@@ -5,7 +5,7 @@
 name: mock-systems
 services:
   mock-systems:
-    # Pinned by digest, not by tag. CI pushes the image under :latest and under :<full git commit sha>, and :latest moves with every merge to main, so a later pull could change the bytes that run here.
+    # Pinned by digest, not by tag. A later pull of :latest can change the bytes that run here.
     # The placeholder below is replaced on the host with the digest of the image (RUNBOOK.md, step 6); compose refuses to start the service until it is (invalid reference format).
     image: ghcr.io/apex-fusion/vector-service-agents/mock-systems@sha256:<digest>
     container_name: mock-systems
