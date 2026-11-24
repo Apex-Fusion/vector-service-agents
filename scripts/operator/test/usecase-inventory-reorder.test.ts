@@ -841,7 +841,7 @@ describe('the data of use case 1 (inventory reorder)', () => {
       ['a window below 30 minutes', mapAgent(data, 'reorder-agent', (agent) => ({ ...agent, claim: { ...agent.claim, windowMs: 1_799_999 } })), 'reorder-agent: the claim window 1799999 ms is outside 1800000 to 86400000 ms'],
       ['a window above 24 hours', mapAgent(data, 'order-desk', (agent) => ({ ...agent, claim: { ...agent.claim, windowMs: 86_400_001 } })), 'order-desk: the claim window 86400001 ms is outside 1800000 to 86400000 ms'],
       ['a claim type that is not the capability', mapAgent(data, 'order-desk', (agent) => ({ ...agent, claim: { ...agent.claim, claimType: INVENTORY_CAPABILITIES.reorder } })), `order-desk: the claim type ${INVENTORY_CAPABILITIES.reorder} is not the capability ${INVENTORY_CAPABILITIES.order}`],
-    ])('refuse %s', (_name, broken, problem) => {
+    ])('refuses %s', (_name, broken, problem) => {
       expect(claimProblems(broken)).toContain(problem);
     });
     it('refuses a claim type of more than the bytes that the kit takes', () => {
@@ -1097,14 +1097,14 @@ describe('the data of use case 1 (inventory reorder)', () => {
         'funding: the floats add to 463660001 and they must add to 460000000',
         'funding: the lines add to 508660001 and they must add to 505000000',
       ]],
-    ])('refuse %s', (_name, broken, problems) => {
+    ])('refuses %s', (_name, broken, problems) => {
       expect(fundingProblems(broken)).toEqual(problems);
     });
-    it('refuse a wallet that has two lines', () => {
+    it('refuses a wallet that has two lines', () => {
       const broken = { ...data, funding: [...data.funding, data.funding[0]] };
       expect(fundingProblems(broken)).toContain('funding: the wallet fee has more than one line');
     });
-    it('follow the stake, the two claims in flight, the challenge stake and the supplier bonds of the data', () => {
+    it('follows the stake, the two claims in flight, the challenge stake and the supplier bonds of the data', () => {
       expect(fundingTieProblems(data)).toEqual([]);
     });
     it.each<[string, UseCase, string]>([
@@ -1112,7 +1112,7 @@ describe('the data of use case 1 (inventory reorder)', () => {
       ['a claim stake that two claims in flight do not follow', mapAgent(data, 'reorder-agent', (agent) => ({ ...agent, claim: { ...agent.claim, stakeLovelace: 40_000_000n } })), 'funding reorder-service: no item is two claims in flight, 80000000'],
       ['a supplier bond that no item holds', mapAdvert(data, 'order-desk', 'lot-large', { supplierBondLovelace: 2_000_000n }), 'funding order-large-supplier: no item is the supplier bond, 2000000'],
       ['a challenge stake that no item holds', mapFunding(data, 'reorder-service', { items: data.funding.find((line) => line.wallet === 'reorder-service')?.items.filter((item) => item.what !== 'One challenge') ?? [] }), 'funding reorder-service: no item is one challenge stake, 50000000'],
-    ])('refuse %s', (_name, broken, problem) => {
+    ])('refuses %s', (_name, broken, problem) => {
       expect(fundingTieProblems(broken)).toContain(problem);
     });
   });
@@ -1169,7 +1169,7 @@ describe('the data of use case 1 (inventory reorder)', () => {
       ['a step id that stands twice', { ...data, evidenceSteps: [...data.evidenceSteps, data.evidenceSteps[0]] }, 'the evidence step r1-01 is in the list twice'],
       ['a step with an unknown actor', { ...data, evidenceSteps: data.evidenceSteps.map((step) => (step.id === 'r2-d' ? { ...step, actor: 'jury' as unknown as 'relay' } : step)) }, 'the evidence step r2-d has the actor jury'],
       ['a step of a run that does not exist', { ...data, evidenceSteps: data.evidenceSteps.map((step) => (step.id === 'r2-a' ? { ...step, run: 'dry' as unknown as 'failure' } : step)) }, 'the evidence step r2-a names the run dry, which is no run'],
-    ])('refuse %s', (_name, broken, problem) => {
+    ])('refuses %s', (_name, broken, problem) => {
       expect(shapeProblems(broken)).toContain(problem);
     });
   });
