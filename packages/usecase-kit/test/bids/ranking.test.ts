@@ -105,6 +105,11 @@ describe('the golden ranking', () => {
     expect(objectAt(golden(), ['excluded', 0]).code).toBe('duplicate_rfq');
   });
 
+  it('names the bidders that the tables of this file call A, B, C and D: the three ranked bidders in their order, and the excluded bidder', () => {
+    expect([0, 1, 2].map((index) => objectAt(golden(), ['ranked', index]).desk_did)).toStrictEqual([DID_A, DID_B, DID_C]);
+    expect(objectAt(golden(), ['excluded', 0]).desk_did).toBe(DID_D);
+  });
+
   it('passes the parser, and the copy holds the same members in the same order at each level', () => {
     const result = parseRanking(golden());
     expect(result).toStrictEqual({ ok: true, value: golden() });
@@ -804,10 +809,10 @@ describe('buildRanking', () => {
   });
 
   it('never changes a score or a component, and never drops an entry: 20 entries in, 20 entries out, each member as it was', () => {
-    const input = rankingOf(20);
-    const entries = must(parseRanking(input)).ranked.map(({ rank: _rank, ...entry }) => entry);
-    // Scores in the reverse order of the list: the list is 20 entries long, and its first entry has the lowest score.
-    const given = entries.map((entry, index) => ({ ...entry, score: index * 5 + 0.25, components: { price: index, lead_time: 100 - index, reliability: 33.3, compliance: 0 } }));
+    const entries = unranked(must(parseRanking(rankingOf(20))));
+    // The scores rise along the list, from 0 to 100: the first entry has the lowest score, so a sort by score would reverse the list. A score keeps all its decimals, and a score of 0 is an entry.
+    const scoreOf = (index: number): number => (index === 0 ? 0 : index === 19 ? 100 : index * 5 + 0.1234567);
+    const given = entries.map((entry, index) => ({ ...entry, score: scoreOf(index), components: { price: index, lead_time: 100 - index, reliability: 33.3, compliance: 0 } }));
     const built = must(buildRanking(buildInput({ entries: given, excluded: [] })));
     expect(built.ranked).toHaveLength(20);
     given.forEach((entry, index) => {
