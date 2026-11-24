@@ -6,15 +6,17 @@
 //
 // `manifestFromEnv` takes the environment as a parameter and reads the settings that it publishes and no other, so the template (`renderTemplate`) and the served manifest are made by the same code. It reads no
 // key, no token and no setting of another part of the service.
-import { given, requiredEnv, statusChip, statusSince } from '@vsa/service-kit';
+import { given, hexOf, requiredEnv, statusChip, statusSince } from '@vsa/service-kit';
 import type { StatusChip } from '@vsa/service-kit';
 import { MANIFEST_SCHEMA, MAX_URI_CHARS, buildBehaviour, renderManifest } from '@vsa/usecase-kit/manifest';
 import { INTAKE_CLAIM, MAX_JUSTIFICATION_CHARS, PRIORAUTH_CAPABILITIES, PRIORAUTH_MODELS, PRIORAUTH_REQUEST_SCHEMA } from '@vsa/usecase-kit/priorauth';
 import { HANDOFF_SCHEMA, MAX_REQUEST_BYTES } from '@vsa/usecase-kit/protocol';
 import type { BehaviourAdditions } from '@vsa/usecase-kit/protocol';
-import { identityRegistryOf, manifestDid, manifestIdentity } from '@vsa/vector-read';
+import { identityRegistryOf, manifestIdentity } from '@vsa/vector-read';
 import { gapsFor } from './gaps.ts';
-import { BUYER_BOND_LOVELACE, SUPPLIER_BOND_LOVELACE, modelOf, priceOf, processingWindowOf } from './settings.ts';
+import { keyClashOf } from './keys.ts';
+import { BUYER_BOND_LOVELACE, SUPPLIER_BOND_LOVELACE, agentDidOf, modelOf, priceOf, processingWindowOf, supplierKeyOf } from './settings.ts';
+import type { SupplierKey } from './settings.ts';
 
 export const SPEC_URL = 'https://github.com/Apex-Fusion/vector-service-agents/blob/main/specs/insurer-intake-agent.md';
 export const SOURCE_URL = 'https://github.com/Apex-Fusion/vector-service-agents/tree/main/agents/insurer-intake-agent';
@@ -138,15 +140,37 @@ function hidden(text: string, values: readonly string[]): string {
   return out;
 }
 
+/** A value that stands for itself in the template: the whole text is a name in angle brackets. A key is never one: it has no angle bracket. */
+const PLACEHOLDER = /^<[A-Z][A-Z0-9_]*>$/;
+const stands = (value: string | undefined): boolean => PLACEHOLDER.test(given(value));
+
 /**
- * The identity block of the manifest, which vector-read builds the same way for every agent of this repository: the DID of AGENT_DID in its canonical form, the address of the identity registry of
- * IDENTITY_POLICY_ID and IDENTITY_ADDRESS, and the listed supplier key, `<DID>#<key hash>`. A value that breaks a rule stops the start, and the error names the setting and never repeats the value.
+ * The DID, the supplier key and the key hash of the service key, as the manifest publishes them. A value that stands for itself in the template is kept as it is. Any other value must be of the form that its reader
+ * takes: `agentDidOf` for the DID, `supplierKeyOf` for the supplier key (the public key must hash to the key hash), and 56 hex characters for the key hash of the service. So a key in the wrong line of the
+ * environment is refused here and never published, whoever calls this function. The key hash of the service is not the key hash of the supplier: the supplier key is the key of the runtime.
  */
-function identityFromEnv(env: NodeJS.ProcessEnv, supplierPkh: string): { readonly did: string; readonly registry_address: string; readonly supplier_key: string } {
-  const did = requiredEnv('AGENT_DID', env.AGENT_DID, 'the DID of the agent, published in the manifest');
-  const values = [did, given(env.IDENTITY_POLICY_ID), given(env.IDENTITY_ADDRESS)];
+function publishedKeysOf(env: NodeJS.ProcessEnv): { readonly did: string; readonly supplier: SupplierKey; readonly servicePkh: string } {
+  const did = stands(env.AGENT_DID) ? given(env.AGENT_DID) : agentDidOf(env);
+  const supplier = stands(env.SUPPLIER_PKH) && stands(env.SUPPLIER_PUB_KEY_HEX)
+    ? { pkh: given(env.SUPPLIER_PKH), pubKeyHex: given(env.SUPPLIER_PUB_KEY_HEX) }
+    : supplierKeyOf(env);
+  const servicePkh = stands(env.INTAKE_SERVICE_PKH)
+    ? given(env.INTAKE_SERVICE_PKH)
+    : hexOf('INTAKE_SERVICE_PKH', requiredEnv('INTAKE_SERVICE_PKH', env.INTAKE_SERVICE_PKH, 'the key hash of the service key, published in the manifest'), 28);
+  if (keyClashOf({ service: { pkh: servicePkh } }, supplier.pkh) !== null) {
+    throw new Error("environment variable INTAKE_SERVICE_PKH names the supplier key: the supplier key is the runtime's, and the service key must be a key of its own");
+  }
+  return { did, supplier, servicePkh };
+}
+
+/**
+ * The identity block of the manifest, which vector-read builds the same way for every agent of this repository: the DID, the address of the identity registry of IDENTITY_POLICY_ID and IDENTITY_ADDRESS, and the
+ * listed supplier key, `<DID>#<key hash>`. A value that breaks a rule stops the start, and the error names the setting and never repeats the value.
+ */
+function identityFromEnv(env: NodeJS.ProcessEnv, did: string, supplierPkh: string): { readonly did: string; readonly registry_address: string; readonly supplier_key: string } {
+  const values = [given(env.IDENTITY_POLICY_ID), given(env.IDENTITY_ADDRESS)];
   try {
-    return manifestIdentity(manifestDid(did), supplierPkh, identityRegistryOf(env.IDENTITY_POLICY_ID, env.IDENTITY_ADDRESS));
+    return manifestIdentity(did, supplierPkh, identityRegistryOf(env.IDENTITY_POLICY_ID, env.IDENTITY_ADDRESS));
   } catch (error) {
     const text = hidden((error as Error).message, values);
     throw new Error(text.startsWith('environment variable ') ? text : `environment variable ${text}`);
@@ -253,13 +277,11 @@ export interface IntakeManifest {
 /**
  * The manifest of the agent. The values come from `env`: the operator contact, the DID, the identity registry, the supplier key and the key hash of the service key, the models and the price ceiling, the price
  * and the window of the advert, the version, the status and the link to the advert. A setting that breaks a rule throws an Error that names the setting. A value that stands for itself in the template is a name
- * in angle brackets (`TEMPLATE_ENV`); `renderManifest` refuses a served manifest that has one.
+ * in angle brackets (`TEMPLATE_ENV`); `renderManifest` refuses a served manifest that has one. The DID and the keys are checked here, as `publishedKeysOf` says, so a key never reaches a published line.
  */
 export function manifestFromEnv(env: NodeJS.ProcessEnv = process.env): IntakeManifest {
   const model = modelOf(env);
-  const supplierPkh = requiredEnv('SUPPLIER_PKH', env.SUPPLIER_PKH, 'the key hash of the supplier key, published in the manifest');
-  const pubKeyHex = requiredEnv('SUPPLIER_PUB_KEY_HEX', env.SUPPLIER_PUB_KEY_HEX, 'the public key of the supplier key, published in the manifest');
-  const servicePkh = requiredEnv('INTAKE_SERVICE_PKH', env.INTAKE_SERVICE_PKH, 'the key hash of the service key, published in the manifest');
+  const { did, supplier, servicePkh } = publishedKeysOf(env);
   const [first, second, third] = INTAKE_CLAIM.statements;
   const additions = buildBehaviour('insurer-intake-agent', {
     claim: [first.text, second.text, third.text],
@@ -274,8 +296,8 @@ export function manifestFromEnv(env: NodeJS.ProcessEnv = process.env): IntakeMan
     version: versionOf(env),
     description: DESCRIPTION,
     operator: { name: 'Apex Fusion Foundation', contact: contactOf(env) },
-    identity: identityFromEnv(env, supplierPkh),
-    keys: { supplier_pkh: supplierPkh, pub_key_hex: pubKeyHex, buyer_pkh: servicePkh },
+    identity: identityFromEnv(env, did, supplier.pkh),
+    keys: { supplier_pkh: supplier.pkh, pub_key_hex: supplier.pubKeyHex, buyer_pkh: servicePkh },
     interface: {
       request_schema: REQUEST_SCHEMA,
       response_schema: { $ref: `${SPEC_URL}#response` },

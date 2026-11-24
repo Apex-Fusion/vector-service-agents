@@ -68,9 +68,9 @@ export interface KeyClash {
 
 /**
  * The first key that is the supplier key, or null when each key is a key of its own. The supplier key is the key of the runtime, and a service that held it could sign as the runtime. A key is known by its key
- * hash, in any case.
+ * hash, in any case, so a caller that has the key hash and not the key (the manifest builder) gives `{ pkh }` alone.
  */
-export function keyClashOf(keys: Readonly<Record<KeyRole, KeyMaterial>>, supplierPkh: string): KeyClash | null {
+export function keyClashOf(keys: Readonly<Record<KeyRole, Pick<KeyMaterial, 'pkh'>>>, supplierPkh: string): KeyClash | null {
   const supplier = supplierPkh.toLowerCase();
   const role = KEY_ROLES.find((name) => keys[name].pkh.toLowerCase() === supplier);
   return role === undefined ? null : { kind: 'supplier', role };

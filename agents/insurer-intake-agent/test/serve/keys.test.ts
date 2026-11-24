@@ -74,4 +74,10 @@ describe('keyClashOf', () => {
     // A key hash in capitals is the same key hash.
     expect(keyClashOf(keys(SERVICE.privateKeyHex), SERVICE.pkh.toUpperCase())).toStrictEqual({ kind: 'supplier', role: 'service' });
   });
+
+  test('takes the key hash alone, as the manifest builder gives it: a key hash is a key hash, with the key or without it', () => {
+    expect(keyClashOf({ service: { pkh: SUPPLIER.pkh } }, SUPPLIER.pkh)).toStrictEqual({ kind: 'supplier', role: 'service' });
+    expect(keyClashOf({ service: { pkh: SUPPLIER.pkh.toUpperCase() } }, SUPPLIER.pkh)).toStrictEqual({ kind: 'supplier', role: 'service' });
+    expect(keyClashOf({ service: { pkh: SERVICE.pkh } }, SUPPLIER.pkh)).toBeNull();
+  });
 });

@@ -206,12 +206,14 @@ describe('every refusal of a setting that the manifest publishes, with its accep
   const ANOTHER_DID = `did:vector:${'ab'.repeat(32)}`;
   const required = (name: string): RegExp => new RegExp(`^environment variable ${name} is required \\(.+\\) and is not set$`);
   const CONTACT_RULE = /^environment variable OPERATOR_CONTACT must be one line of at most 200 characters with no control character, and it has \d+ characters$/;
-  const DID_RULE = /^environment variable AGENT_DID must be did:vector:<64 lowercase hex> or its legacy form under the registry policy [0-9a-f]{56}, got \d+ characters$/;
+  const DID_RULE = /^environment variable AGENT_DID must be did:vector: and 64 lowercase hex characters, and it has \d+ characters$/;
   const VERSION_RULE = /^environment variable AGENT_VERSION must be 1 to 32 letters, digits, dots, hyphens and plus signs, and it has \d+ characters$/;
   const SINCE_FORM = /^environment variable AGENT_STATUS_SINCE must be a date as YYYY-MM-DD, and it has \d+ characters$/;
   const SINCE_DAY = /^environment variable AGENT_STATUS_SINCE must be a date that exists, and it has \d+ characters$/;
   const LINK_RULE = /^environment variable ADVERT_EXPLORER_URL must be an https address with no user and no password, and it has \d+ characters$/;
   const DERIVED = identityRegistryOf(POLICY, undefined)?.address ?? '';
+  const NOT_THE_KEY = /^environment variable SUPPLIER_PUB_KEY_HEX is not the public key of SUPPLIER_PKH: the key hash of the one is not the other\./;
+  const SERVICE_IS_SUPPLIER = /^environment variable INTAKE_SERVICE_PKH names the supplier key: the supplier key is the runtime's, and the service key must be a key of its own$/;
 
   /** The setting, the value that is refused (undefined: not set), the start of the message, the same setting with a value that is accepted (the twin), and a value that breaks the same rule and that no message could repeat by chance. */
   type Row = readonly [setting: string, bad: string | undefined, refusal: RegExp, good: string | undefined, probe?: string];
@@ -225,9 +227,16 @@ describe('every refusal of a setting that the manifest publishes, with its accep
     ['IDENTITY_POLICY_ID', 'abc', /^environment variable IDENTITY_POLICY_ID must be 56 lowercase hex characters, got 3 characters$/, POLICY],
     ['IDENTITY_POLICY_ID', 'zz'.repeat(28), /^environment variable IDENTITY_POLICY_ID must be 56 lowercase hex characters, got 56 characters$/, POLICY],
     ['IDENTITY_ADDRESS', 'addr1xyzxyzxyzxyz', /^environment variable IDENTITY_ADDRESS \(17 characters\) is not the address of IDENTITY_POLICY_ID \(addr1[0-9a-z]+\)$/, DERIVED],
-    ['SUPPLIER_PKH', undefined, required('SUPPLIER_PKH'), OTHER.pkh],
-    ['SUPPLIER_PUB_KEY_HEX', undefined, required('SUPPLIER_PUB_KEY_HEX'), OTHER.pubKeyHex],
+    ['SUPPLIER_PKH', undefined, required('SUPPLIER_PKH'), SUPPLIER.pkh],
+    ['SUPPLIER_PKH', 'ab', /^environment variable SUPPLIER_PKH must be 56 hex characters, and it has 2 characters$/, SUPPLIER.pkh],
+    ['SUPPLIER_PKH', 'ab'.repeat(28), NOT_THE_KEY, SUPPLIER.pkh],
+    ['SUPPLIER_PUB_KEY_HEX', undefined, required('SUPPLIER_PUB_KEY_HEX'), SUPPLIER.pubKeyHex],
+    ['SUPPLIER_PUB_KEY_HEX', 'ab', /^environment variable SUPPLIER_PUB_KEY_HEX must be 64 hex characters, and it has 2 characters$/, SUPPLIER.pubKeyHex],
+    ['SUPPLIER_PUB_KEY_HEX', OTHER.pubKeyHex, NOT_THE_KEY, SUPPLIER.pubKeyHex],
     ['INTAKE_SERVICE_PKH', undefined, required('INTAKE_SERVICE_PKH'), OTHER.pkh],
+    ['INTAKE_SERVICE_PKH', 'ab', /^environment variable INTAKE_SERVICE_PKH must be 56 hex characters, and it has 2 characters$/, OTHER.pkh],
+    ['INTAKE_SERVICE_PKH', SUPPLIER.pkh, SERVICE_IS_SUPPLIER, OTHER.pkh],
+    ['INTAKE_SERVICE_PKH', SUPPLIER.pkh.toUpperCase(), SERVICE_IS_SUPPLIER, OTHER.pkh],
     ['LLM_MODEL_ALLOWLIST', undefined, required('LLM_MODEL_ALLOWLIST'), 'a/one'],
     ['LLM_MAX_PRICE_LOVELACE', undefined, required('LLM_MAX_PRICE_LOVELACE'), '250000'],
     ['LLM_MAX_PRICE_LOVELACE', '0', /^environment variable LLM_MAX_PRICE_LOVELACE must be a whole number of lovelace of more than 0$/, '1'],
@@ -262,6 +271,34 @@ describe('every refusal of a setting that the manifest publishes, with its accep
   test('a setting that is published and not set stops the render by its name, whether it is missing, empty or blank: there is no default for a contact, a DID or a key', () => {
     for (const name of ['OPERATOR_CONTACT', 'AGENT_DID', 'SUPPLIER_PKH', 'SUPPLIER_PUB_KEY_HEX', 'INTAKE_SERVICE_PKH', 'LLM_MODEL_ALLOWLIST', 'LLM_MAX_PRICE_LOVELACE']) {
       for (const empty of [undefined, '', '  ']) expect(message(() => manifestFromEnv(envWith({ [name]: empty }))), `${name} = ${JSON.stringify(empty)}`).toMatch(required(name));
+    }
+  });
+
+  test('a private key in a line that the manifest publishes is refused by the name of that line, in hex and in bech32, the key of the service and the key of the runtime: it never reaches the manifest', () => {
+    const keys = [SERVICE, SUPPLIER].flatMap((key) => [key.privateKeyHex, rawHexToBech32(key.privateKeyHex)]);
+    for (const line of ['AGENT_DID', 'SUPPLIER_PKH', 'SUPPLIER_PUB_KEY_HEX', 'INTAKE_SERVICE_PKH']) {
+      for (const secret of keys) {
+        const text = message(() => manifestFromEnv(envWith({ [line]: secret })));
+        expect(text, `${line} = ${secret.slice(0, 6)}`).toContain(line);
+        expect(shows(text, secret), `${line} repeats a key`).toBe(false);
+      }
+    }
+  });
+
+  test('the key hash of the service is not the key hash of the supplier: the same hash in both lines is refused, in any case, and two hashes are accepted', () => {
+    for (const same of [SUPPLIER.pkh, SUPPLIER.pkh.toUpperCase()]) expect(message(() => manifestFromEnv(envWith({ INTAKE_SERVICE_PKH: same })))).toMatch(SERVICE_IS_SUPPLIER);
+    // The supplier lines hold the service key, with its own public key: the two hashes are one hash.
+    expect(message(() => manifestFromEnv(envWith({ SUPPLIER_PKH: SERVICE.pkh, SUPPLIER_PUB_KEY_HEX: SERVICE.pubKeyHex })))).toMatch(SERVICE_IS_SUPPLIER);
+    expect(manifestFromEnv(envWith({ INTAKE_SERVICE_PKH: OTHER.pkh })).keys).toStrictEqual({ supplier_pkh: SUPPLIER.pkh, pub_key_hex: SUPPLIER.pubKeyHex, buyer_pkh: OTHER.pkh });
+  });
+
+  test('a name in angle brackets stands for itself in the template only: beside a real value it is refused, and a served manifest that holds one is refused by the kit', () => {
+    expect(message(() => manifestFromEnv(envWith({ SUPPLIER_PKH: '<SUPPLIER_PKH>' })))).toMatch(/^environment variable SUPPLIER_PKH must be 56 hex characters/);
+    expect(message(() => manifestFromEnv(envWith({ SUPPLIER_PUB_KEY_HEX: '<SUPPLIER_PUB_KEY_HEX>' })))).toMatch(/^environment variable SUPPLIER_PUB_KEY_HEX must be 64 hex characters/);
+    for (const over of [{ AGENT_DID: '<AGENT_DID>' }, { INTAKE_SERVICE_PKH: '<INTAKE_SERVICE_PKH>' }, { SUPPLIER_PKH: '<SUPPLIER_PKH>', SUPPLIER_PUB_KEY_HEX: '<SUPPLIER_PUB_KEY_HEX>' }]) {
+      const served = renderManifest('insurer-intake-agent', () => manifestFromEnv(envWith(over)));
+      expect(served.ok, JSON.stringify(Object.keys(over))).toBe(false);
+      if (!served.ok) expect(served.code).toBe('manifest_has_placeholder');
     }
   });
 });
