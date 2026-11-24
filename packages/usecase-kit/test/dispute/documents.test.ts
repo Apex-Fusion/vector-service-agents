@@ -602,7 +602,7 @@ describe('the evidence document of a challenge', () => {
       return document.value.text;
     };
     const CHANGES: Array<[string, (text: string) => string | Uint8Array]> = [
-      ['another first row', (value) => value.replace('Evidence about statement S1', 'Evidence about statement S2')],
+      ['a first row for a statement that no kind is about', (value) => value.replace('Evidence about statement S1', 'Evidence about statement S3')],
       ['no row References', (value) => value.replace('\nReferences\n', '\nReference\n')],
       ['two rows References', (value) => value.replace('Escrow of the job:', 'References\nEscrow of the job:')],
       ['a label that is missing', (value) => value.replace('Claimer: ', 'The claimer is ')],

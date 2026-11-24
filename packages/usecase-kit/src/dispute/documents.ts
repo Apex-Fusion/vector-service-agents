@@ -13,7 +13,8 @@
 // would block each challenge against itself. U+0000 is shown as `<U+0000>`. A backslash that stands before the text `u0000` is shown as `\u005c`. The text `<U+0000>` of a value is shown with its first
 // character as `\u003c`. So a reader can tell the character from the text, and two different values never give the same text.
 //
-// A document is plain text. Its bytes are the same for the same input: it has no time and no random part. The evidence of an approval has the two digests and the references, and no text of the request.
+// A document is plain text. Its bytes are the same for the same input: it has no time and no random part. The evidence of an approval has the two digests and the references, and no text of the request. The
+// evidence of an intake record has the request number, the two hashes and the references, and no other text of the request.
 //
 // An evidence document is about one statement of the claim. The kind of the evidence decides which one (`EVIDENCE_STATEMENTS`), so the header and the statement row of the document name that id, and the code
 // that chooses the claim to challenge reads the same table. A caller never names the id.
@@ -41,7 +42,7 @@ const STATEMENT_IDS: readonly StatementId[] = ['S1', 'S2', 'S3'];
  * row and the choice of the claim that a challenge names all read the id from this table, and the table is frozen. No caller names an id.
  */
 export const EVIDENCE_STATEMENTS = Object.freeze({
-  order_confirmation: 'S1', quote_price: 'S1', approval_digest: 'S1',
+  order_confirmation: 'S1', quote_price: 'S1', approval_digest: 'S1', intake_record: 'S2',
 } as const satisfies Record<EvidenceFacts['kind'], StatementId>);
 
 /** A kind of evidence: the `kind` member of its facts. */
@@ -54,7 +55,7 @@ const MAX_SHOWN_CHARS = 80;
 /** A statement of a claim is shown longer than another value: it is the sentence that the evidence is about. It is still cut at this size, with a note, so the references stay in the document. */
 const MAX_STATEMENT_SHOWN_CHARS = 300;
 
-export type DocumentCode = 'bad_shape' | 'document_too_large' | 'no_contradiction' | 'confirmation_not_for_order';
+export type DocumentCode = 'bad_shape' | 'document_too_large' | 'no_contradiction' | 'confirmation_not_for_order' | 'record_not_for_request';
 
 /** A document for a juror: its text, its bytes and the hash that a claim or a challenge holds. */
 export interface JurorDocument {
@@ -133,7 +134,22 @@ export interface ApprovalDigestFacts {
   readonly mismatch: ApprovalDigestMismatch;
 }
 
-export type EvidenceFacts = OrderConfirmationFacts | QuotePriceFacts | ApprovalDigestFacts;
+/**
+ * Use case 2 (prior authorization), a buyer-side agent: the intake record that the insurer intake agent returned does not name the hash of the request that this agent sent. It is the evidence about the statement S2
+ * of the claim of the insurer intake agent ("An intake record names the hash of the request this agent received"), and the only kind that is about S2. The document computes the hash of the request itself. It holds the
+ * request number, the two hashes and the references, and no other text of the request.
+ */
+export interface IntakeRecordFacts {
+  readonly kind: 'intake_record';
+  /** The request that the agent sent: the document of its hand-off. Its canonical SHA-256 is computed here, and only its `request_number` goes into the evidence document. */
+  readonly request: Document;
+  /** The intake record that the insurer intake agent returned. Only its `request_number` and its `request_sha256` are read. */
+  readonly intake_record: JsonObject;
+  /** The hash that the signed receipt commits to for the intake record (the `response_hash`). */
+  readonly intake_record_sha256: Digest;
+}
+
+export type EvidenceFacts = OrderConfirmationFacts | QuotePriceFacts | ApprovalDigestFacts | IntakeRecordFacts;
 export type EvidenceDocumentInput = EvidenceParties & EvidenceFacts;
 
 const PLAIN_WORD = '[\\p{L}\\p{M}\\p{N}\\p{P}\\p{S}]';
@@ -461,12 +477,55 @@ function approvalEvidence(parties: EvidenceParties, root: JsonObject): ProtocolR
   ]);
 }
 
+const INTAKE_MEMBERS = ['claim', 'claim_token', 'against_did', 'by_did', 'escrow_ref', 'statement_text', 'kind', 'request', 'intake_record', 'intake_record_sha256'];
+
+function intakeEvidence(parties: EvidenceParties, root: JsonObject): ProtocolResult<readonly string[], 'bad_shape' | 'no_contradiction' | 'record_not_for_request'> {
+  const members = checkMembers(root, 'evidence', INTAKE_MEMBERS);
+  if (members !== null) return members;
+  const request = root.request;
+  const record = root.intake_record;
+  if (!isObject(request)) return refused('bad_shape', 'evidence.request must be a JSON object');
+  if (!isObject(record)) return refused('bad_shape', 'evidence.intake_record must be a JSON object');
+  const requestNumber = member(request, 'request_number');
+  if (typeof requestNumber !== 'string' || requestNumber.length === 0) return refused('bad_shape', 'evidence.request must have a member "request_number" that is a text');
+  const recordSha = parseDigest(root.intake_record_sha256, 'evidence.intake_record_sha256');
+  if (!recordSha.ok) return recordSha;
+  // The hash of the request is computed here, from the request itself. No member that the caller gives stands for it.
+  const sentSha = canonicalSha256(request, 'evidence.request');
+  if (!sentSha.ok) return sentSha;
+  const named = member(record, 'request_sha256');
+  if (named === sentSha.value) return refused('no_contradiction', 'the intake record names the SHA-256 of the request that was sent');
+  // The text below says that the insurer intake agent signed the record for this request. It says so only when the record names the number of this request.
+  if (member(record, 'request_number') !== requestNumber) return refused('record_not_for_request', 'the request_number of the intake record is not the request_number of the request that was sent');
+  const shownNumber = show(requestNumber);
+  const digest = parseDigest(named, 'request_sha256');
+  const signed = `The insurer intake agent signed an intake record for the request number ${shownNumber}.`;
+  const recordRows = digest.ok
+    ? [
+      `${signed} The intake record names the SHA-256 ${digest.value} for the request that it received.`,
+      'The two SHA-256 hashes differ. So the intake record does not name the hash of the request that the challenger sent.',
+    ]
+    : [
+      `${signed} The intake record names no SHA-256 for the request that it received: its member request_sha256 is ${show(named)}.`,
+      'So the intake record does not name the hash of the request that the challenger sent.',
+    ];
+  return accepted([
+    'The claimer is an insurer intake agent. The challenger is the agent that sent the insurer intake agent a request.',
+    `The request has the request number ${shownNumber}.`,
+    `The SHA-256 of the request that the challenger sent is ${sentSha.value}.`,
+    ...recordRows,
+    'The challenger did not accept the intake record.',
+    'This evidence has no text of the request.',
+    ...references(parties, [`SHA-256 of the intake record: ${recordSha.value}`]),
+  ]);
+}
+
 /** The rows of an evidence document after its statement row: the facts, and then the references. */
 type EvidenceRows = ProtocolResult<readonly string[], DocumentCode>;
 
 /** The rows for each kind. The compiler checks that the table has an entry for each kind of `EVIDENCE_STATEMENTS`. */
 const EVIDENCE_ROWS = {
-  order_confirmation: orderEvidence, quote_price: quoteEvidence, approval_digest: approvalEvidence,
+  order_confirmation: orderEvidence, quote_price: quoteEvidence, approval_digest: approvalEvidence, intake_record: intakeEvidence,
 } as const satisfies Record<EvidenceKind, (parties: EvidenceParties, root: JsonObject) => EvidenceRows>;
 
 const isEvidenceKind = (value: unknown): value is EvidenceKind => typeof value === 'string' && Object.hasOwn(EVIDENCE_STATEMENTS, value);

@@ -4,8 +4,8 @@ export {
   EVIDENCE_STATEMENTS, JUROR_MEDIA_TYPE, JUROR_RECORD_LIMIT_BYTES, MAX_JUROR_DOCUMENT_BYTES, claimDocument, evidenceDocument, evidenceReferences, jurorRecordSize, parseClaimToken, readClaimDocument,
 } from './documents.ts';
 export type {
-  ApprovalDigestFacts, ClaimDocumentInput, DocumentCode, EvidenceDocumentInput, EvidenceFacts, EvidenceKind, EvidenceParties, EvidenceReferences, JurorDocument, OrderConfirmationFacts, QuotePriceFacts,
-  StatementId,
+  ApprovalDigestFacts, ClaimDocumentInput, DocumentCode, EvidenceDocumentInput, EvidenceFacts, EvidenceKind, EvidenceParties, EvidenceReferences, IntakeRecordFacts, JurorDocument, OrderConfirmationFacts,
+  QuotePriceFacts, StatementId,
 } from './documents.ts';
 export { MAX_CLAIM_TYPE_BYTES, challengeDeadlineOf, withdrawableFrom } from './ports.ts';
 export type {

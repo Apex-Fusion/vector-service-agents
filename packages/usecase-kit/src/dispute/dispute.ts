@@ -38,7 +38,7 @@ import { documentHash, txHashOfUri } from '@vsa/buyer-core';
 import { NO_OPEN_CLAIM, accepted, checkMembers, didOfAgentId, isKeyHash, parseDid, parseJsonValue, parseKeyHash, parseOutputRef, refused } from '../protocol/index.ts';
 import type { Did, Digest, JsonObject, JsonValue, KeyHash, ManifestClaim, OutputRef, ProtocolResult, Refused, SerialQueue } from '../protocol/index.ts';
 import { EVIDENCE_STATEMENTS, JUROR_MEDIA_TYPE, claimDocument, evidenceDocument, evidenceReferences, parseCapabilityId, parseClaimToken, parseStatementId, parseStatementText, readClaimDocument } from './documents.ts';
-import type { ApprovalDigestFacts, EvidenceDocumentInput, EvidenceKind, OrderConfirmationFacts, QuotePriceFacts, StatementId } from './documents.ts';
+import type { ApprovalDigestFacts, EvidenceDocumentInput, EvidenceKind, IntakeRecordFacts, OrderConfirmationFacts, QuotePriceFacts, StatementId } from './documents.ts';
 import { MemoryJournal, parseJobRecord } from './journal.ts';
 import type { DisputeJournal, FiledRecord, JobRecord } from './journal.ts';
 import { MAX_CLAIM_TYPE_BYTES, challengeDeadlineOf, withdrawableFrom } from './ports.ts';
@@ -142,13 +142,13 @@ export interface ClaimScope {
   readonly statement_text: string;
 }
 
-/** A buyer-side agent whose model did not accept a delivery. */
+/** A buyer-side agent whose model did not accept a delivery. The evidence is about the statement that its kind names (`EVIDENCE_STATEMENTS`): S1 for a confirmation or a quote, and S2 for an intake record. */
 export interface DeliveryChallengeInput extends Omit<ClaimScope, 'buyer_pkhs' | 'claim_capability_id' | 'statement_id'> {
   /** The agent that made the delivery. Its claim that covers the job is challenged. */
   readonly counterparty: Did;
   /** The key hashes that the datum of the escrow may name as its buyer: one to eight different keys. They are the delegation keys of this agent, which paid for the job. */
   readonly buyer_pkhs: readonly string[];
-  readonly evidence: OrderConfirmationFacts | QuotePriceFacts;
+  readonly evidence: OrderConfirmationFacts | QuotePriceFacts | IntakeRecordFacts;
 }
 
 /** A counterparty that refused a request because the digest of the approval is not the digest of the request. */
@@ -788,9 +788,9 @@ export class Dispute {
 
   // --- The challenge --------------------------------------------------------------------------------------------------------------------------------------------------
 
-  /** The challenge of a buyer-side agent whose model did not accept the delivery of the counterparty. */
+  /** The challenge of a buyer-side agent whose model did not accept the delivery of the counterparty: a confirmation, a quote or an intake record. The kind of the evidence decides the statement that the claim must state. */
   async challengeDelivery(input: DeliveryChallengeInput): Promise<ChallengeResult> {
-    const target = parseChallengeInput(input, 'counterparty', ['order_confirmation', 'quote_price']);
+    const target = parseChallengeInput(input, 'counterparty', ['order_confirmation', 'quote_price', 'intake_record']);
     return target.ok ? this.#file(target.value) : notFiled(target.code, target.detail);
   }
 

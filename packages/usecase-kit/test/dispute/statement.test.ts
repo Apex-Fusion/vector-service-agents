@@ -7,8 +7,8 @@ import { NO_OPEN_CLAIM } from '@vsa/usecase-kit/protocol';
 import { EVIDENCE_STATEMENTS, claimDocument, evidenceDocument, evidenceReferences } from '@vsa/usecase-kit/dispute';
 import type { ApprovalChallengeInput, ChallengeResult, ClaimView, ClaimScope, DeliveryChallengeInput, EvidenceDocumentInput, EvidenceKind } from '@vsa/usecase-kit/dispute';
 import {
-  APPROVAL_JOB, CLAIM_CAPABILITY, DELIVERY_JOB, DIGEST_FACTS, ESCROW, HOUR, MANIFEST_SHA, ME_ID, NOW, ORDER_DESK_CLAIM, ORDER_FACTS, OTHER, PARTIES, QUOTE_FACTS, REF_A, REF_B, REORDER_AGENT_CLAIM, SCOPE,
-  STATEMENT_S1, TOKEN_B, claimView, escrowJob, kitClaimDocument, rig, senderClaimView,
+  APPROVAL_JOB, CLAIM_CAPABILITY, DELIVERY_JOB, DIGEST_FACTS, ESCROW, HOUR, INTAKE_FACTS, INTAKE_PARTIES, MANIFEST_SHA, ME_ID, NOW, ORDER_DESK_CLAIM, ORDER_FACTS, OTHER, PARTIES, QUOTE_FACTS, REF_A, REF_B,
+  REORDER_AGENT_CLAIM, SCOPE, STATEMENT_S1, TOKEN_B, claimView, escrowJob, kitClaimDocument, rig, senderClaimView,
 } from './support.ts';
 import type { ScriptedPort } from './support.ts';
 
@@ -58,6 +58,7 @@ const INPUTS: Record<EvidenceKind, EvidenceDocumentInput> = {
   order_confirmation: { ...PARTIES, ...ORDER_FACTS } as unknown as EvidenceDocumentInput,
   quote_price: { ...PARTIES, ...QUOTE_FACTS } as unknown as EvidenceDocumentInput,
   approval_digest: { ...PARTIES, ...DIGEST_FACTS } as unknown as EvidenceDocumentInput,
+  intake_record: { ...INTAKE_PARTIES, ...INTAKE_FACTS } as unknown as EvidenceDocumentInput,
 };
 const KINDS = Object.keys(EVIDENCE_STATEMENTS) as EvidenceKind[];
 
@@ -68,8 +69,8 @@ const documentOf = (kind: EvidenceKind) => {
 };
 
 describe('the statement of a kind of evidence', () => {
-  it('names one statement for each kind: the three kinds of use cases 1 to 3 are about S1', () => {
-    expect(EVIDENCE_STATEMENTS).toEqual({ order_confirmation: 'S1', quote_price: 'S1', approval_digest: 'S1' });
+  it('names one statement for each kind: the three old kinds are about S1, and the intake record is about S2', () => {
+    expect(EVIDENCE_STATEMENTS).toEqual({ order_confirmation: 'S1', quote_price: 'S1', approval_digest: 'S1', intake_record: 'S2' });
   });
 
   it('is a table that no caller can change', () => {
@@ -87,7 +88,7 @@ describe('the statement of a kind of evidence', () => {
     const rows = documentOf(kind).text.split('\n');
     const id = EVIDENCE_STATEMENTS[kind];
     expect(rows[0]).toBe(`Evidence about statement ${id} of a claim on the Vector marketplace.`);
-    expect(rows[1]).toBe(`Statement ${id} of the claim reads: "${STATEMENT_S1}"`);
+    expect(rows[1]).toBe(`Statement ${id} of the claim reads: "${INPUTS[kind].statement_text}"`);
   });
 
   it('writes the two rows of the three old kinds as they were: the statement S1, byte for byte', () => {
