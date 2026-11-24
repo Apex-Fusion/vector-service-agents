@@ -34,8 +34,10 @@ import type {
   ApprovalRead, Assembly, CaseRead, CaseView, Challenge, CommittedApproval, CommittedExecute, EvidenceModule, EvidenceOptions, EvidenceSession, FaultEntry, HireView, Hold, HoldCandidate,
   IndexedCase, Loaded, MockRead, Obj, Reads, ReceiptAttribution, Ref, ReportedHire, Shown, TerminalSpend, VaultPayment,
 } from '../lib/evidence/types.ts';
+import { vaultLineageReader } from '../lib/evidence/vault-lineage.ts';
+import type { VaultLineageReader } from '../lib/evidence/vault-lineage.ts';
 import { MOCK_PUBLIC_BASE } from '../lib/mock-hosts.ts';
-import { checkAttestation, escrowPaidFromVault, findRecord, koiosUtxoInfo, readDelegation, readVaults, resolveEscrowLineage, verifyReceipt } from '../lib/platform.ts';
+import { checkAttestation, escrowPaidFromVault, findRecord, koiosUtxoInfo, readDelegation, resolveEscrowLineage, verifyReceipt } from '../lib/platform.ts';
 import type { LedgerEnv } from '../lib/platform.ts';
 import { FlagError } from '../lib/runner.ts';
 import { hireRoleOf, parseReport, parseRunRecord, readJsonFile, scriptTxInfoOf, UnknownTransactionError, txInfoOf, txTimeOf } from '../lib/run-record.ts';
@@ -56,10 +58,6 @@ export const MARKETPLACE_INDEXER = 'https://mp-indexer.vector.apexfusion.org';
 const INDEXER_TIMEOUT_MS = 30_000;
 const MOST_INDEXER_CHARS = 16 * 1024 * 1024;
 const VERDICTS: readonly string[] = ['ClaimerWins', 'AuditorWins', 'Inconclusive'];
-// A run can use one vault for ten quote payments. Bound both the length and the work of a walk from a close with several inputs.
-const MAX_VAULT_DEPTH = 32;
-const MAX_VAULT_TRANSACTIONS = 32;
-const MAX_VAULT_INPUTS = 8;
 const NUMBER = /^[1-9][0-9]?$/;
 const REF = /^[0-9a-f]{64}#(?:0|[1-9][0-9]{0,5})$/;
 const HASH = /^[0-9a-f]{64}$/;
@@ -685,59 +683,7 @@ async function movesDelegation(session: EvidenceSession, tx: string, id: string,
   return info.minted.some((one) => one.policy === policy && one.name === id && one.quantity === quantity);
 }
 
-async function vaultInputs(session: EvidenceSession, tx: string): Promise<string[]> {
-  const credential = session.chain.deployment.vault.hash;
-  const refs: string[] = [];
-  for (const input of (await txInfoOf(session.fetchImpl, session.settings.urls.koios, tx)).inputs) {
-    if (input.credential !== credential) continue;
-    if (refs.length === MAX_VAULT_INPUTS) throw new PreconditionError('a vault transaction has more than eight vault inputs');
-    if (txOf(input.ref) === tx) throw new PreconditionError('the vault lineage contains a cycle');
-    refs.push(input.ref);
-  }
-  return refs;
-}
-
-/** Check for the exact output in the ancestry of a close. A failed branch is read only once. */
-async function vaultInputsReach(session: EvidenceSession, startTx: string, wanted: string): Promise<boolean> {
-  const seen = new Set<string>();
-  const path = new Set<string>();
-  async function visit(tx: string, depth: number): Promise<boolean> {
-    if (path.has(tx)) throw new PreconditionError('the vault lineage contains a cycle');
-    if (seen.has(tx)) return false;
-    if (depth === MAX_VAULT_DEPTH) throw new PreconditionError('the vault lineage exceeds its depth limit of 32 transactions');
-    if (seen.size === MAX_VAULT_TRANSACTIONS) throw new PreconditionError('the vault lineage exceeds its read limit of 32 distinct transactions');
-    seen.add(tx);
-    path.add(tx);
-    const inputs = await vaultInputs(session, tx);
-    for (const input of inputs) {
-      if (path.has(txOf(input))) throw new PreconditionError('the vault lineage contains a cycle');
-    }
-    if (inputs.includes(wanted)) return true;
-    for (const input of inputs) {
-      if (await visit(txOf(input), depth + 1)) return true;
-    }
-    path.delete(tx);
-    return false;
-  }
-  return visit(startTx, 0);
-}
-
-/** The transaction that opened the vault lineage that holds `vaultRef`: the first transaction of the chain of vault outputs behind it, which is the one that spends no vault output. A payment spends one. */
-async function openingOf(session: EvidenceSession, vaultRef: string): Promise<string | null> {
-  const seen = new Set<string>();
-  let tx = txOf(vaultRef);
-  for (let depth = 0; depth < MAX_VAULT_DEPTH; depth += 1) {
-    if (seen.has(tx)) throw new PreconditionError('the vault lineage contains a cycle');
-    seen.add(tx);
-    const spent = await vaultInputs(session, tx);
-    if (spent.length === 0) return tx;
-    if (spent.length > 1) return null;
-    tx = txOf(spent[0]!);
-  }
-  throw new PreconditionError('the vault lineage exceeds its depth limit of 32 transactions');
-}
-
-async function checkLedger(session: EvidenceSession, record: RunRecord, problems: Problems): Promise<Reads> {
+async function checkLedger(session: EvidenceSession, record: RunRecord, vaultProof: VaultLineageReader, problems: Problems): Promise<Reads> {
   const env = envOf(session);
   const delegations: Array<Reads['delegations'][number]> = [];
   const vaults: Array<Reads['vaults'][number]> = [];
@@ -760,21 +706,29 @@ async function checkLedger(session: EvidenceSession, record: RunRecord, problems
     } catch (err) { problems.add(`sub_delegations[${i}].id`, `the sub-delegation cannot be read (${shown(err)})`); }
     subDelegations.push(entry);
   }
+  const roots = new Set<string>();
   for (const [i, entry] of record.vaults.entries()) {
-    await mustHold(problems, `vaults[${i}].open_tx`, 'is not the transaction that opened the vault lineage of ref: the chain of vault outputs behind ref does not start with it', async () => (await openingOf(session, entry.ref)) === entry.open_tx);
-    const closeTx = entry.close_tx;
-    if (closeTx !== null) {
-      await mustHold(problems, `vaults[${i}].close_tx`, 'does not spend the vault lineage of ref: no vault input of the transaction is ref, and none descends from it', () => vaultInputsReach(session, closeTx, entry.ref));
-      await mustHold(problems, `vaults[${i}].close_tx`, 'makes an output at the vault script: a close leaves no vault output, so the vault is still Live', async () => !(await txInfoOf(session.fetchImpl, session.settings.urls.koios, closeTx)).outputs.some((output) => output.credential === session.chain.deployment.vault.hash));
-      vaults.push({ ...entry, state: 'closed' });
+    const member = `vaults[${i}]`;
+    let lineage;
+    try {
+      lineage = await vaultProof.read(entry.ref);
+      if (lineage.openTx !== entry.open_tx) throw new PreconditionError('the chain of Live vault outputs does not start with this transaction');
+      if (roots.has(lineage.rootRef)) throw new PreconditionError('the run lists the same vault branch more than once');
+    } catch (error) {
+      problems.add(`${member}.open_tx`, `is not the transaction that opened the vault lineage of ref (${shown(error)})`);
+      if (entry.close_tx !== null) problems.add(`${member}.close_tx`, 'does not spend a proven vault lineage of ref');
+      else problems.add(`${member}.ref`, 'the run does not prove this Live vault output');
       continue;
     }
     try {
-      const page = await readVaults(env, { vaultRef: entry.ref }, session.clock.now());
-      const found = page.items[0];
-      if (page.items.length !== 1 || found === undefined || found.output.vault.type !== 'Live' || !found.onNode) problems.add(`vaults[${i}].ref`, 'the node holds no Live vault output at this reference, and close_tx is not set');
-    } catch (err) { problems.add(`vaults[${i}].ref`, `the vault cannot be read (${shown(err)})`); }
-    vaults.push({ ...entry, state: 'live' });
+      if (entry.close_tx === null) await vaultProof.current(entry.ref);
+      else lineage = await vaultProof.close(entry.close_tx, lineage);
+    } catch (error) {
+      problems.add(`${member}.${entry.close_tx === null ? 'ref' : 'close_tx'}`, shown(error));
+      continue;
+    }
+    roots.add(lineage.rootRef);
+    vaults.push({ ...entry, state: entry.close_tx === null ? 'live' : 'closed', lineage });
   }
   return { delegations, vaults, subDelegations };
 }
@@ -1472,7 +1426,8 @@ function documentOf(session: Session, a: Assembly, steps: readonly StepEntry[], 
         ...(signer?.revocation == null ? {} : { receipt_attribution: signer }),
       };
     }),
-    delegation: a.reads.delegations, vault: a.reads.vaults, ...(approval === undefined ? {} : { approval }), sub_delegations: sub_delegations ?? a.reads.subDelegations,
+    delegation: a.reads.delegations, vault: a.reads.vaults.map(({ ref, open_tx, close_tx, state }) => ({ ref, open_tx, close_tx, state })),
+    ...(approval === undefined ? {} : { approval }), sub_delegations: sub_delegations ?? a.reads.subDelegations,
     mock: { tenant: record.tenant, log: projected === null ? a.mock?.lines ?? [] : publicLog(a), unattributed_lines: a.mock?.unattributed ?? 0, state: a.mock?.counts ?? null },
     decisions: projected?.decisions ?? hires.filter((hire) => hire.decisions.length > 0).map((hire) => ({ step: hire.entry.step, decisions: hire.decisions })),
     ...(claims === undefined ? {} : { claims }),
@@ -1504,7 +1459,8 @@ async function readPaidFromVault(session: EvidenceSession, loaded: Loaded, hire:
   return { paid: false, why };
 }
 
-function baseAssembly(session: Session, loaded: Loaded, purpose: Assembly['purpose'], discover = escrowDiscovery(session)): Assembly {
+function baseAssembly(session: Session, loaded: Loaded, purpose: Assembly['purpose'], discover = escrowDiscovery(session),
+    vaultProof = vaultLineageReader(envOf(session), session.node, loaded.record.delegations)): Assembly {
   return {
     purpose, use: session.use, loaded, facts: session.facts.read(), reads: EMPTY_READS, mock: null, terminals: new Map(), times: new Map(), faults: [], extra: {},
     challenge: null, caseRead: null, approvalStates: [], committedApprovals: new Map(), committedExecutes: new Map(), receiptAttributions: new Map(), lifecycleTransactions: new Set(),
@@ -1512,6 +1468,7 @@ function baseAssembly(session: Session, loaded: Loaded, purpose: Assembly['purpo
       if (!loaded.hires.some((one) => one.entry === hire)) throw new PreconditionError('the hire is not in the run');
       return readPaidFromVault(session, loaded, hire);
     },
+    readVaultLineage: vaultProof.read,
     readRelease(hire) {
       if (!loaded.hires.some((one) => one.entry === hire)) throw new PreconditionError('the hire is not in the run');
       return readRelease(session, hire, discover);
@@ -1549,7 +1506,8 @@ async function assemble(session: Session): Promise<{ kind: 'wait'; message: stri
   const { record } = loaded;
   const module = session.extra.module;
   const discover = escrowDiscovery(session);
-  let a = baseAssembly(session, loaded, 'run', discover);
+  const vaultProof = vaultLineageReader(envOf(session), session.node, record.delegations);
+  let a = baseAssembly(session, loaded, 'run', discover, vaultProof);
   if (record.kind === 'lifecycle') {
     const txs = transactionsOf(a, module, problems);
     await confirmAll(session, txs, problems);
@@ -1569,7 +1527,7 @@ async function assemble(session: Session): Promise<{ kind: 'wait'; message: stri
   }
   const checkedHires = await checkHires(session, loaded, a.facts, discover, problems);
   problems.stop();
-  const reads = await checkLedger(session, record, problems);
+  const reads = await checkLedger(session, record, vaultProof, problems);
   const mock = await readMock(session, loaded, a.facts, problems);
   const faults = checkFaults(session, loaded, times, problems);
   a = await prepare(session, { ...a, ...checkedHires, times, reads, mock, faults });

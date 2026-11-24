@@ -1,3 +1,4 @@
+import type { Delegator } from '../../../../packages/vector-read/src/identity-codec.ts';
 import type { Facts, TaskSession, UseCase } from '../contract.ts';
 import type { checkAttestation } from '../platform.ts';
 import type { ApprovalEntry, DelegationEntry, HireEntry, Report, RunKind, RunRecord, RunRecordPolicy, SubDelegationEntry, VaultEntry } from '../run-record.ts';
@@ -38,6 +39,17 @@ export interface TerminalSpend {
 export type VaultPayment =
   | { readonly paid: true; readonly why: ''; readonly vault_ref: string; readonly delegation: string }
   | { readonly paid: false; readonly why: string };
+
+/** The exact ancestry of a vault with a Live datum. It can include outputs already spent by Pay or Close. */
+export interface VaultLineage {
+  readonly ref: string;
+  readonly rootRef: string;
+  readonly openTx: string;
+  readonly owner: Delegator;
+  readonly delegation: string;
+  /** Output references, from the opening through the requested Live output. */
+  readonly path: readonly string[];
+}
 
 /** The approval identity in request text that matches the hash of an escrow on the chain. */
 export interface CommittedApproval {
@@ -101,7 +113,7 @@ export interface ApprovalExpectations {
 }
 export interface Reads {
   readonly delegations: readonly (DelegationEntry & { readonly state: 'live' | 'ended' })[];
-  readonly vaults: readonly (VaultEntry & { readonly state: 'live' | 'closed' })[];
+  readonly vaults: readonly (VaultEntry & { readonly state: 'live' | 'closed'; readonly lineage: VaultLineage })[];
   readonly subDelegations: readonly SubDelegationEntry[];
 }
 export interface MockRead {
@@ -151,6 +163,8 @@ export interface Assembly {
   readonly lifecycleTransactions: ReadonlySet<string>;
   /** Tests the payment of this hire against the delegations of the record. This read does not submit a transaction. */
   paidFromVault(hire: HireEntry): Promise<VaultPayment>;
+  /** Proves an exact historical or current Live output. Missing or ambiguous proof is an error. */
+  readVaultLineage(vaultRef: string): Promise<VaultLineage>;
   /** Discovers a candidate via the indexer. Only a verified escrow Release is returned. This does not identify the submitting process. */
   readRelease(hire: HireEntry): Promise<TerminalSpend | null>;
 }
