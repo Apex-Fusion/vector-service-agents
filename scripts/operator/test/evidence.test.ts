@@ -1142,6 +1142,12 @@ describe('modules of the evidence task', () => {
     expect(wrongInput.err).toContain('does not spend the output of this attestation');
     expect(wrongInput.read(publicFile())).toBeNull();
     delete s.approval.revokeIndex;
+    s.approval.revokeMinute = 5;
+    const sameBlock = await go(s, undefined, opts);
+    expect(sameBlock.exit).toBe(2);
+    expect(sameBlock.err).toContain('approvals[0].revoked_tx: the order of revocation and hire in the same block is unproven');
+    expect(sameBlock.read(publicFile())).toBeNull();
+    delete s.approval.revokeMinute;
     s.approval.issueMinute = 6;
     const late = await go(s, undefined, opts);
     expect(late.exit).toBe(2);

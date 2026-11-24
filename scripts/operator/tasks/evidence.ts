@@ -880,6 +880,10 @@ async function checkApprovals(session: Session, a: Assembly, problems: Problems)
         const tx = txOf(view.ref);
         if (entry.revoked_tx !== null && tx !== entry.revoked_tx) throw new PreconditionError('the revoked output is not from the named revocation');
         const blockTime = await verifiedRevoke(session, tx, entry.tx, entry.attestation);
+        if (blockTime === atMs) {
+          problems.add(`${member}.revoked_tx`, 'the order of revocation and hire in the same block is unproven');
+          continue;
+        }
         revoked = Math.max(datum.status.at, blockTime) <= atMs;
       } else if (txOf(view.ref) !== entry.tx) problems.add(`${member}.tx`, 'is not the transaction of the output that holds the approval on the chain');
       const actual = revoked ? 'revoked' : atMs > end ? 'expired' : 'active';
