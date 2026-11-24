@@ -3,6 +3,7 @@
 // refusal has an accepted twin.
 import { describe, expect, it } from 'vitest';
 import { SCORE_COMPONENTS, WEIGHT_NAMES, parseComponents, parseScoreValue } from '@vsa/usecase-kit/bids';
+import { FAULT_EFFECTS, faultGap } from '@vsa/usecase-kit/manifest';
 import { MARKER, change, expectRefused, must, objectAt, withPrototype } from './support.ts';
 import type { Json } from './support.ts';
 
@@ -210,5 +211,16 @@ describe('a prototype that was changed', () => {
     const components = must(PLAIN);
     for (const name of NAMES) expect(Object.hasOwn(components, name)).toBe(true);
     expect(Object.keys(objectAt(sample(), []))).toStrictEqual([...NAMES]);
+  });
+});
+
+describe('the fault that inverts the scores', () => {
+  it('is named in the gap sentence of the Sourcing Agent, with what the code does: one scorer returns its component scores and its score reversed, as 100 minus each', () => {
+    const sentence = faultGap('sourcing-agent') ?? '';
+    expect(sentence).toContain('invert_scores');
+    expect(sentence).toContain('component scores');
+    expect(sentence).toContain('its score');
+    expect(sentence).toContain('100 minus each');
+    expect(FAULT_EFFECTS.invert_scores).toBe('one scorer returns its component scores and its score reversed, as 100 minus each');
   });
 });

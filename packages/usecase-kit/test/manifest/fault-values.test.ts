@@ -240,11 +240,12 @@ describe('a text with every escape that JSON.stringify makes', () => {
 
 describe('the bytes of a manifest that is in the written form', () => {
   // The hashes of the served text and of the template text of the sample manifest of each kind, as they were before the check of the written form. The three buyer-side kinds hold the co-sign rule of
-  // the protocol, which is the text of the cosign folder: their hashes changed when the manifest took that text.
+  // the protocol, which is the text of the cosign folder: their hashes changed when the manifest took that text. The hashes of the sourcing agent changed again when the sentence of the fault
+  // `invert_scores` named the score as well as the component scores: the text of the sentence is the only change in its bytes.
   const BEFORE: Record<AgentKind, readonly [string, string]> = {
     'reorder-agent': ['50412dc22240e71c27ee270c185200d21b4534e1ff837dc504430eabf9dba6d4', '5515e2e5aef6aa3daef8c018703eb76bc64599a6728a22051aebc09bb4c972ba'],
     'prior-authorization-agent': ['775a40c3030da02df81f7d815a6f56f4e4fb93f69d5b396d82eded5f4e28fdd0', '118d4c7c1f7040c5a35e044ffdd20fef6de30783efa5f55addbc7ca4c52cda79'],
-    'sourcing-agent': ['0dd2a3a54cabdc06cc06c2bf0dbbc40726d2b38112e8410f56438b8f9e3fd926', '380d3072116dc04ab5b3ef2661ca6d5c423601b45ab725283186925549a7f9fb'],
+    'sourcing-agent': ['d0d530a1309712e8589ff6da0849417558e6f336756de0395e4ca9f85d3c6fc5', '2a1493900cab4285bb49c6dcf91b7d22fee3a450c30c648a88106fba1b3c0cdb'],
     'order-desk': ['19dd2112bdf5bbaf208fb4c95e6b2b3e64baf6248948cb4f95438043e8943407', '7e40a3d214255d15460e7e10b797ae6dea30ffa2fe048d66949f231916ec19d3'],
     'insurer-intake-agent': ['3e73274e87226859803a2d8dfa3949423a469ad536c7928e006bc6669c2d35bf', 'ca60abefd3b9328c94d9c9580a82ca6c853ed4b57e7c0b6f2346c6c5230ab9f6'],
     'bid-desk': ['10ad5430b6a93005afc694d2f9d9cf850aac8a1f2b757801b575abed65330976', '9c5f38960883fd2cd758b51c67cf99a9aed220ab981f0fa6533b6c72a495a02e'],

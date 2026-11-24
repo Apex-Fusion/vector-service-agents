@@ -42,7 +42,7 @@ export const FAULT_EFFECTS = {
   confirm_wrong_lot: 'the confirmation names another lot and quantity than the purchase order, and the order that it places has the wrong lot',
   alter_after_approval: 'in execute, one sentence of the justification changes before the handoff, so its digest differs from the approved digest',
   quote_off_price_list: 'one quote line has a unit price that is not the published price for that item and quantity',
-  invert_scores: 'one scorer returns its component scores reversed, as 100 minus each',
+  invert_scores: 'one scorer returns its component scores and its score reversed, as 100 minus each',
 } as const satisfies Record<FaultMode, string>;
 
 /**
