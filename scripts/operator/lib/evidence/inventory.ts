@@ -38,7 +38,7 @@ function deskIn(loaded: Loaded): ReportedHire | undefined {
 const deskOf = (a: Assembly): ReportedHire | undefined => deskIn(a.loaded);
 const named = (a: Assembly, step: string): ReportedHire | undefined => a.loaded.hires.find((hire): hire is ReportedHire => hire.report !== null && hire.entry.step === step);
 
-function paidOf(a: Assembly): VaultPayment {
+function paidOf(a: Assembly): Pick<VaultPayment, 'paid' | 'why'> {
   const paid = a.extra.paid;
   if (!isObject(paid) || typeof paid.paid !== 'boolean' || typeof paid.why !== 'string') throw new PreconditionError('the vault payment was not read');
   return { paid: paid.paid, why: paid.why };
@@ -131,8 +131,8 @@ const RULES: Readonly<Record<string, (a: Assembly) => Shown>> = {
   'r2-e': (a) => {
     const d = deskOf(a);
     if (d === undefined) return 'the record has no hire of the Order Desk for the carried hire of execute';
-    const ended = a.lineages.get(d.entry.escrow_ref)?.finished === true && d.entry.accept_tx === null && d.entry.reclaim_tx === null;
-    return ended ? [ref('escrow', d.entry.escrow_ref)] : 'the escrow of the Order Desk hire is not finished on the chain without an accept and without a reclaim';
+    return isObject(a.extra.release) && a.extra.release.action === 'Release'
+      ? [ref('escrow', d.entry.escrow_ref)] : 'the terminal release of the Order Desk escrow is unproven';
   },
   'r2-f': (a) => { const p = named(a, 'propose-f'); return p === undefined || p.result.outcome !== 'failed' ? 'the record has no failed hire named propose-f' : hireRefs(p); },
   'r2-g': (a) => {
@@ -170,6 +170,9 @@ export const inventory: EvidenceModule = {
   challengeOf,
   holdOf: (_a, source) => source.readRecordHold(),
   hireOfApproval: (a) => a.loaded.carried?.entry.step ?? null,
+  approvalCounterparty: (a) => deskOf(a)?.entry.step ?? null,
+  // The original inventory output shows the matching attestation state, not an assertion about the exact request bytes.
+  allowApprovalStateOnly: true,
   approvalExpectations(a) {
     const digest = a.loaded.carried?.result.proposal_digest;
     if (typeof digest !== 'string' || !HASH.test(digest) || !a.loaded.hires.some((hire) => hire.role === 'propose' && hire.result?.proposal_digest === digest)) {
@@ -193,8 +196,12 @@ export const inventory: EvidenceModule = {
   },
   hosted: [],
   async prepare(_session, a) {
-    if (a.purpose !== 'run' || !a.use.evidenceSteps.some((step) => step.id === 'r1-08' && (step.run === a.loaded.record.kind || step.run === 'both'))) return {};
+    if (a.purpose !== 'run') return {};
     const desk = deskOf(a);
+    if (a.loaded.record.kind === 'failure' && a.use.evidenceSteps.some((step) => step.id === 'r2-e')) {
+      return { release: desk === undefined ? null : await a.readRelease(desk.entry) };
+    }
+    if (!a.use.evidenceSteps.some((step) => step.id === 'r1-08' && (step.run === a.loaded.record.kind || step.run === 'both'))) return {};
     return { paid: desk === undefined ? { paid: false, why: 'the record has no hire of the Order Desk for the carried hire of execute' } : await a.paidFromVault(desk.entry) };
   },
   mockRoutes: ['GET /erp/stock/{sku}', 'POST /supplier/orders', 'POST /po'],

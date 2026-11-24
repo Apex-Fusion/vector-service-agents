@@ -8,27 +8,36 @@
 // It signs and submits nothing. The final text is scanned for the marks of a secret.
 // The runner ends `status` with exit 0 for any task, so a status with no verdict prints its lines and then ends with exit 1, as the status of end-state does: it never looks done.
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
+import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readFileSync, readSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { writeFileAtomically } from '../../checks/lib/files.ts';
 import { duration, iso } from '../../checks/lib/format.ts';
 import { HostedError } from '../../checks/lib/hosted.ts';
 import { PreconditionError } from '../../checks/lib/session.ts';
 import { EnvReader } from '../../checks/lib/settings.ts';
-import { BUYER_SIDE_KINDS } from '../../../packages/usecase-kit/src/protocol/index.ts';
+import { BUYER_SIDE_KINDS, MAX_REQUEST_BYTES, parseRequest } from '../../../packages/usecase-kit/src/protocol/index.ts';
+import { decodeIdentityEscrowDatum, promptHashForPayload } from '../../../packages/vector-read/src/index.ts';
+import type { IdentityEscrowDatum } from '../../../packages/vector-read/src/index.ts';
+import { bytesOf, constrFields, decodeIdentityDatum, decodeVaultDatum, outRefOf, sameDelegator } from '../../../packages/vector-read/src/identity-codec.ts';
+import { ACCEPT_WINDOW_MS, dataOfKoiosJson, documentUri, readDocument } from '../../../packages/buyer-core/src/index.ts';
+import { findConfigRecord } from '../../../packages/buyer-core/src/vendored/mcp/identity-deployment.ts';
+import { decodePlutusData } from '../../../packages/vector-read/src/guarded-decode.ts';
+import { decodeJuryDatum } from '../../../packages/buyer-core/src/vendored/mcp/jury-codec.ts';
+import { REDEEMER } from '../../../packages/buyer-core/src/vendored/mcp/marketplace-constants.ts';
+import type { KoiosUtxo } from '../../../packages/buyer-core/src/vendored/mcp/marketplace-indexer.ts';
 import type { ClaimFact, Facts, RecordFact, StepOutcome, TaskDefinition } from '../lib/contract.ts';
 import { EVIDENCE_MODULES, evidenceModuleOf } from '../lib/evidence/index.ts';
 import { isObject, lastHire, txOf } from '../lib/evidence/types.ts';
 import type {
-  ApprovalRead, Assembly, CaseRead, CaseView, Challenge, EvidenceModule, EvidenceOptions, EvidenceSession, FaultEntry, HireView, Hold, IndexedCase, LineageView,
-  Loaded, MockRead, Obj, Reads, Ref, ReportedHire, Shown, VaultPayment,
+  ApprovalRead, Assembly, CaseRead, CaseView, Challenge, CommittedApproval, EvidenceModule, EvidenceOptions, EvidenceSession, FaultEntry, HireView, Hold, HoldCandidate,
+  IndexedCase, Loaded, MockRead, Obj, Reads, Ref, ReportedHire, Shown, TerminalSpend, VaultPayment,
 } from '../lib/evidence/types.ts';
 import { MOCK_PUBLIC_BASE } from '../lib/mock-hosts.ts';
 import { checkAttestation, escrowPaidFromVault, findRecord, keyHashOf, koiosUtxoInfo, readDelegation, readVaults, resolveEscrowLineage, verifyReceipt } from '../lib/platform.ts';
 import type { LedgerEnv } from '../lib/platform.ts';
 import { FlagError } from '../lib/runner.ts';
-import { hireRoleOf, parseReport, parseRunRecord, readJsonFile, UnknownTransactionError, txInfoOf, txTimeOf } from '../lib/run-record.ts';
-import type { HireEntry, Report, RunRecord, TxInfo } from '../lib/run-record.ts';
+import { hireRoleOf, parseReport, parseRunRecord, readJsonFile, scriptTxInfoOf, UnknownTransactionError, txInfoOf, txTimeOf } from '../lib/run-record.ts';
+import type { HireEntry, Report, RunRecord, ScriptTxInfo, TxInfo } from '../lib/run-record.ts';
 import { holdsSecret } from '../lib/secrets.ts';
 
 /** A transaction on the explorer of the network: this text and the hash. */
@@ -45,12 +54,12 @@ export const MARKETPLACE_INDEXER = 'https://mp-indexer.vector.apexfusion.org';
 const INDEXER_TIMEOUT_MS = 30_000;
 const MOST_INDEXER_CHARS = 16 * 1024 * 1024;
 const VERDICTS: readonly string[] = ['ClaimerWins', 'AuditorWins', 'Inconclusive'];
-const DEPTH_OF_SPEND_CHAIN = 4;
 /** A vault lineage is one output after the other: the open, then one output for each payment. A run has a few payments, so the walk back along it stops after this many transactions. */
 const DEPTH_OF_VAULT_CHAIN = 8;
 const NUMBER = /^[1-9][0-9]?$/;
 const REF = /^[0-9a-f]{64}#(?:0|[1-9][0-9]{0,5})$/;
 const HASH = /^[0-9a-f]{64}$/;
+const SCRIPT_HASH = /^[0-9a-f]{56}$/;
 const MOST_MOCK_CHARS = 8 * 1024 * 1024;
 const MOCK_TIMEOUT_MS = 30_000;
 /**
@@ -172,8 +181,9 @@ function transactionsOf(a: Assembly, module: EvidenceModule, problems: Problems)
   const { record } = loaded;
   if (record.kind === 'lifecycle') {
     for (const name of record.lifecycle) {
-      const step = facts.lifecycle[name];
-      if (step === undefined || !HASH.test(step.tx)) problems.add(`lifecycle.${name}`, 'the facts hold no transaction for this step');
+      const step = Object.hasOwn(facts.lifecycle, name) ? facts.lifecycle[name] : undefined;
+      if (step === undefined || typeof step.tx !== 'string' || !HASH.test(step.tx)) problems.add(`lifecycle.${name}`, 'the facts hold no transaction for this step');
+      else if (txs.has(step.tx)) problems.add(`lifecycle.${name}`, 'the same transaction cannot prove two lifecycle steps');
       else add(`lifecycle.${name}.tx`, step.tx);
     }
     return txs;
@@ -217,17 +227,168 @@ async function confirmAll(session: EvidenceSession, txs: ReadonlyMap<string, str
 
 // ---- 3. the hires: the escrow, the advert and the spend of the escrow ----
 
-/** True when the transaction `endTx` spends the escrow: it spends an output of the escrow script, and that output descends from `escrowRef` by the spend chain (Accept, Submit, Claim, Post). */
-async function spendsEscrow(session: EvidenceSession, endTx: string, escrowRef: string): Promise<boolean> {
-  const credential = session.chain.deployment.escrow.hash;
-  let tx = endTx;
-  for (let hop = 0; hop < DEPTH_OF_SPEND_CHAIN; hop += 1) {
-    const own = (await txInfoOf(session.fetchImpl, session.settings.urls.koios, tx)).inputs.filter((input) => input.credential === credential);
-    if (own.length !== 1) return false;
-    if (own[0]!.ref === escrowRef) return true;
-    tx = txOf(own[0]!.ref);
+const scriptInfo = (session: EvidenceSession, tx: string): Promise<ScriptTxInfo> =>
+  scriptTxInfoOf(session.fetchImpl, session.settings.urls.koios, tx);
+
+function checkedSpend(info: ScriptTxInfo, script: string, input: string, action: number, fields: number): boolean {
+  const sameScript = info.spends.filter((run) => run.script === script);
+  const exact = sameScript.filter((run) => run.input === input
+    || (run.input === null && sameScript.length === 1 && info.inputs.filter((row) => row.credential === script).length === 1));
+  return exact.length === 1 && exact[0]!.valid && exact[0]!.action === action && exact[0]!.fields.length === fields
+    && info.inputs.some((row) => row.ref === input && row.credential === script);
+}
+
+async function confirmed(session: EvidenceSession, hash: string): Promise<void> {
+  if (((await session.node.txStatus(hash)).confirmations ?? 0) < 1) throw new PreconditionError('the transaction has no confirmation on the node');
+}
+
+const HISTORICAL_OUTPUT_MAX = 512 * 1024;
+const fromOutput = (row: KoiosUtxo): string => `${row.tx_hash}#${row.tx_index}`;
+async function outputOf(session: EvidenceSession, ref: string): Promise<KoiosUtxo> {
+  const found = await koiosUtxoInfo(session.settings.urls.koios, [ref], session.fetchImpl, HISTORICAL_OUTPUT_MAX);
+  if (found.length !== 1 || fromOutput(found[0]!) !== ref) throw new PreconditionError('the exact output cannot be read');
+  return found[0]!;
+}
+
+const unitsOf = (amount: unknown): bigint => {
+  if (typeof amount === 'string' && /^\d{1,30}$/.test(amount)) return BigInt(amount);
+  if (typeof amount === 'number' && Number.isSafeInteger(amount) && amount >= 0) return BigInt(amount);
+  throw new PreconditionError('the amount of an output cannot be read');
+};
+
+async function vaultRefund(session: EvidenceSession, payment: Extract<VaultPayment, { paid: true }>, spent: KoiosUtxo,
+    escrow: IdentityEscrowDatum, info: ScriptTxInfo): Promise<string> {
+  const { vault } = session.chain.deployment;
+  const funded = await outputOf(session, payment.vault_ref);
+  const before = decodeVaultDatum(funded.inline_datum?.bytes ?? '');
+  const refund = escrow.refund;
+  const returned = decodeVaultDatum(refund?.datum ?? '');
+  if (funded.address !== vault.address || funded.is_spent !== true || before.type !== 'Live' || before.delegation !== payment.delegation
+    || refund === null || refund.address.paymentCredential.type !== 'Script' || refund.address.paymentCredential.hash !== vault.hash
+    || refund.address.stakeCredential !== null || returned.type !== 'Returned'
+    || !sameDelegator(returned.owner, before.owner)) throw new PreconditionError('the committed refund is not for the vault owner that paid');
+  const refs = info.outputs.filter((out) => out.credential === vault.hash).map((out) => out.ref);
+  if (refs.length === 0) throw new PreconditionError('the reclaim does not return the full escrow value to the correct vault owner');
+  const rows = await koiosUtxoInfo(session.settings.urls.koios, refs, session.fetchImpl, HISTORICAL_OUTPUT_MAX);
+  const spentAssets = assetsOf(spent);
+  const match = rows.filter((row) => refs.includes(fromOutput(row)) && row.address === vault.address
+    && typeof row.inline_datum?.bytes === 'string' && unitsOf(row.value) >= unitsOf(spent.value)
+    && hasAllAssets(row, spentAssets)
+    && (() => { const datum = decodeVaultDatum(row.inline_datum!.bytes); return datum.type === 'Returned' && sameDelegator(datum.owner, before.owner); })());
+  if (match.length !== 1) throw new PreconditionError('the reclaim does not return the full escrow value to the correct vault owner');
+  return fromOutput(match[0]!);
+}
+
+interface OutputAsset { readonly policy: string; readonly name: string; readonly quantity: bigint }
+function assetsOf(row: KoiosUtxo): OutputAsset[] {
+  if (!Array.isArray(row.asset_list)) throw new PreconditionError('the assets of an output cannot be read');
+  return row.asset_list.map((one) => {
+    if (!isObject(one) || typeof one.policy_id !== 'string' || !SCRIPT_HASH.test(one.policy_id)
+      || typeof one.asset_name !== 'string' || !/^(?:[0-9a-f]{2}){0,32}$/.test(one.asset_name)) throw new PreconditionError('an output asset is not well formed');
+    return { policy: one.policy_id, name: one.asset_name, quantity: unitsOf(one.quantity) };
+  });
+}
+
+function hasAllAssets(row: KoiosUtxo, spent: readonly OutputAsset[]): boolean {
+  const assets = assetsOf(row);
+  return spent.every((one) => assets.some((asset) => asset.policy === one.policy && asset.name === one.name && asset.quantity >= one.quantity));
+}
+
+/** Verify the ledger's successful terminal redeemer and the exact sequence of escrow inputs. */
+async function terminalSpend(session: EvidenceSession, hire: HireEntry, tx: string, action: TerminalSpend['action'],
+    payment?: Extract<VaultPayment, { paid: true }>): Promise<TerminalSpend> {
+  const { escrow } = session.chain.deployment;
+  const info = await scriptInfo(session, tx);
+  const inputs = info.inputs.filter((row) => row.credential === escrow.hash);
+  const spent = inputs.length === 1 ? inputs[0]!.ref : undefined;
+  if (spent === undefined || !checkedSpend(info, escrow.hash, spent, REDEEMER[action], 0)) {
+    throw new PreconditionError(`the named transaction does not spend the escrow with a successful ${action}`);
   }
-  return false;
+  const row = await outputOf(session, spent);
+  const datum = decodeIdentityEscrowDatum(row.inline_datum?.bytes ?? '');
+  if (row.address !== escrow.address || row.is_spent !== true) throw new PreconditionError('the exact escrow input is not spent');
+  const lineage = datum.state === 'Submitted' && action !== 'Reclaim' ? [REDEEMER.Submit, REDEEMER.Claim]
+    : datum.state === 'Claimed' && action === 'Reclaim' ? [REDEEMER.Claim]
+    : datum.state === 'Open' && action === 'Reclaim' ? [] : null;
+  if (lineage === null || (payment !== undefined && (datum.state !== 'Open' || spent !== hire.escrow_ref))) {
+    throw new PreconditionError('the terminal spend has the wrong escrow state');
+  }
+  let preceding = spent;
+  for (const stage of lineage) {
+    if (preceding === hire.escrow_ref) throw new PreconditionError('the terminal spend has the wrong escrow lineage');
+    const child = await scriptInfo(session, txOf(preceding));
+    const outputs = child.outputs.filter((out) => out.credential === escrow.hash);
+    const parents = child.inputs.filter((input) => input.credential === escrow.hash);
+    if (outputs.length !== 1 || outputs[0]!.ref !== preceding || parents.length !== 1
+        || !checkedSpend(child, escrow.hash, parents[0]!.ref, stage, stage === REDEEMER.Submit ? 1 : 0)) {
+      throw new PreconditionError('no input of the transaction descends from escrow_ref by the verified spend chain');
+    }
+    preceding = parents[0]!.ref;
+  }
+  if (preceding !== hire.escrow_ref) throw new PreconditionError('no input of the transaction descends from escrow_ref by the verified spend chain');
+  if (action === 'Release' && (datum.submitted_at === null || info.timeMs < datum.submitted_at + ACCEPT_WINDOW_MS)) {
+    throw new PreconditionError('the release is before the end of the accept window');
+  }
+  const refund = payment === undefined ? null : await vaultRefund(session, payment, row, datum, info);
+  await confirmed(session, tx);
+  return { action, tx, spent_output: spent, at: info.timeMs, refund_output: refund };
+}
+
+/** This indexer route locates the spend. Only the ledger proves that it is a Release. */
+async function readRelease(session: Session, hire: HireEntry): Promise<TerminalSpend | null> {
+  if (hire.accept_tx !== null || hire.reclaim_tx !== null) return null;
+  const response = await session.fetchImpl(`${session.extra.indexer}/escrows/${encodeURIComponent(hire.escrow_ref)}/lineage`, {
+    method: 'GET', headers: { accept: 'application/json' }, redirect: 'error', signal: AbortSignal.timeout(INDEXER_TIMEOUT_MS),
+  });
+  if (response.status === 404) return null;
+  if (response.status !== 200) throw new PreconditionError(`escrow lineage lookup returned HTTP ${response.status}`);
+  const text = await response.text();
+  if (text.length > HISTORICAL_OUTPUT_MAX) throw new PreconditionError('escrow lineage lookup exceeds its size limit');
+  const body: unknown = JSON.parse(text);
+  if (!isObject(body) || body.original_ref !== hire.escrow_ref || !Object.hasOwn(body, 'terminal')) throw new PreconditionError('escrow lineage lookup did not identify this escrow');
+  const terminal = body.terminal;
+  if (terminal === null) return null;
+  if (!isObject(terminal) || typeof terminal.tx_hash !== 'string' || !HASH.test(terminal.tx_hash) || typeof terminal.type !== 'string') {
+    throw new PreconditionError('escrow lineage lookup did not identify a terminal transaction');
+  }
+  return terminal.type === 'ReleaseEscrow' ? terminalSpend(session, hire, terminal.tx_hash, 'Release') : null;
+}
+
+/** The file holds the exact text passed as payload, not a reconstruction from a result or a receipt. */
+function committedApproval(session: EvidenceSession, record: RunRecord, step: string, promptHash: string): CommittedApproval | null | undefined {
+  const state = realpathSync(session.settings.stateDir);
+  const dir = join(state, 'runs', record.label);
+  const path = join(dir, `${step}.request.json`);
+  let fd: number;
+  try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
+  catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    throw new PreconditionError('the exact request file cannot be opened');
+  }
+  try {
+    if (realpathSync(dir) !== dir || (lstatSync(dir).mode & 0o777) !== 0o700) throw new PreconditionError('the request folder must be private and not a link');
+    const file = fstatSync(fd);
+    if (!file.isFile() || file.nlink !== 1 || (file.mode & 0o777) !== 0o600 || file.size < 1 || file.size > MAX_REQUEST_BYTES
+        || (process.getuid !== undefined && file.uid !== process.getuid())) throw new PreconditionError('the request must be a bounded private file with mode 600');
+    const bytes = Buffer.allocUnsafe(file.size + 1);
+    let length = 0;
+    for (let n; length < bytes.length && (n = readSync(fd, bytes, length, bytes.length - length, null)) > 0;) length += n;
+    if (length !== file.size) throw new PreconditionError('the request file changed during the read');
+    let payload: string;
+    let json: unknown;
+    try {
+      payload = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes.subarray(0, length));
+      json = JSON.parse(payload) as unknown;
+    } catch { throw new PreconditionError('the request is not UTF-8 JSON text'); }
+    // The wire helper applies NFC to strings. Do not accept an input with bytes that it would normalize.
+    if (payload.normalize('NFC') !== payload || promptHashForPayload(payload) !== promptHash) throw new PreconditionError('the request text does not match the escrow prompt hash');
+    const request = parseRequest(json);
+    if (!request.ok || request.value.op !== 'execute' || request.value.tenant !== record.tenant) {
+      throw new PreconditionError('the committed text is not an execute request for this tenant');
+    }
+    const { approval, proposal } = request.value;
+    return approval === null ? null : { attestation: approval.attestation, issuer_did: approval.issuer_did, digest: proposal.proposal_digest };
+  } finally { closeSync(fd); }
 }
 
 /** The public keys of the record of an agent on the node: its controller and each Ed25519 key that it lists. The record lists the supplier keys of the agent. */
@@ -265,33 +426,39 @@ async function checkReceipt(session: EvidenceSession, view: ReportedHire, posted
     receipt: view.report.receipt, signature: view.report.receipt_signature, escrowRef: view.entry.escrow_ref, result: view.report.result, supplierPubKeyHex: key, escrowSupplierPkh: supplier,
     escrowPromptHash: String(posted.prompt_hash), escrowAgentId: typeof posted.agent_id === 'string' ? posted.agent_id : null, resultReceiptHashOnChain: null,
   });
-  for (const name of ['supplier_key_matches', 'signature_valid'] as const) {
+  for (const name of ['supplier_key_matches', 'signature_valid', 'prompt_hash_matches'] as const) {
     if (checks[name].state !== 'pass') problems.add(member, `the check ${name} of the receipt fails: ${shown(checks[name].note)}`);
   }
 }
 
-async function checkHires(session: EvidenceSession, loaded: Loaded, facts: Readonly<Facts>, problems: Problems): Promise<Map<string, LineageView>> {
-  const lineages = new Map<string, LineageView>();
+async function checkHires(session: EvidenceSession, loaded: Loaded, facts: Readonly<Facts>, problems: Problems): Promise<{
+  terminals: ReadonlyMap<string, TerminalSpend>; committedApprovals: ReadonlyMap<string, CommittedApproval | null>;
+}> {
+  const terminals = new Map<string, TerminalSpend>();
+  const committedApprovals = new Map<string, CommittedApproval | null>();
   const keys = new Map<string, Promise<readonly string[]>>();
   for (const view of loaded.hires) {
     const { entry, index } = view;
     const where = `hires[${index}]`;
     const agent = entry.agent;
     const adverts = facts.adverts[agent] ?? {};
+    let payment: Extract<VaultPayment, { paid: true }> | undefined;
     if (view.report === null) {
       if (!Object.values(adverts).some((item) => item.ref === entry.advert_ref)) problems.add(`${where}.advert_ref`, `is not an advert of ${agent} in the facts`);
       const paid = await readPaidFromVault(session, loaded, entry);
       if (!paid.paid) problems.add(`${where}.post_tx`, `the chain does not show the hire as paid from the vault: ${paid.why}`);
+      else payment = paid;
     } else {
       const model = String(view.report.receipt.model);
       if (adverts[model]?.ref !== entry.advert_ref) problems.add(`${where}.advert_ref`, `is not the advert in the facts for the agent ${agent} and the model ${model} of the receipt`);
     }
     let posted: Obj | null = null;
+    let hasLive = false;
     try {
       const lineage = await resolveEscrowLineage(session.chain.provider, session.chain.koiosUrl, entry.escrow_ref, session.chain.fetchImpl, session.chain.deployment);
       // The escrow datum has a layout of its own (identity or legacy): its members are read by name, and the identity layout is the one that holds an agent id.
       posted = lineage.posted as unknown as Obj;
-      lineages.set(entry.escrow_ref, { finished: lineage.spent && lineage.current === null });
+      hasLive = lineage.current !== null || !lineage.spent;
     } catch (err) { problems.add(`${where}.escrow_ref`, `the escrow cannot be read from the chain (${shown(err)})`); }
     if (posted !== null) {
       const advertRef = isObject(posted.advert_ref) ? `${String(posted.advert_ref.txHash)}#${String(posted.advert_ref.index)}` : null;
@@ -299,25 +466,25 @@ async function checkHires(session: EvidenceSession, loaded: Loaded, facts: Reado
       const record = facts.records[agent];
       if (record === undefined || posted.agent_id !== record.id) problems.add(`${where}.escrow_ref`, `the escrow on the chain is not for the agent ${agent}`);
       if (view.report !== null) await checkReceipt(session, view, posted, record, keys, problems);
-    }
-    if (view.report === null && entry.reclaim_tx !== null) {
-      const reclaim = entry.reclaim_tx;
-      await mustHold(problems, `${where}.reclaim_tx`, 'does not reclaim the unclaimed escrow to the vault', async () => {
-        const info = await txInfoOf(session.fetchImpl, session.settings.urls.koios, reclaim);
-        return info.inputs.some((input) => input.ref === entry.escrow_ref && input.credential === session.chain.deployment.escrow.hash)
-          && info.outputs.some((output) => output.credential === session.chain.deployment.vault.hash);
-      });
+      if (view.role === 'execute' && loaded.record.approvals.length !== 0 && typeof posted.prompt_hash === 'string') {
+        try {
+          const request = committedApproval(session, loaded.record, entry.step, posted.prompt_hash);
+          if (request !== undefined) committedApprovals.set(entry.step, request);
+        } catch (err) { problems.add(`${where}.request`, `read_failed: ${shown(err)}`); }
+      }
     }
     for (const member of ['accept_tx', 'reclaim_tx'] as const) {
       const end = entry[member];
       if (end === null) continue;
-      if (lineages.get(entry.escrow_ref)?.finished === false) problems.add(`${where}.${member}`, 'the escrow is not finished on the chain: it is not spent, or it has a live continuation');
+      if (hasLive) { problems.add(`${where}.${member}`, 'the escrow is not finished on the chain: it is not spent, or it has a live continuation'); continue; }
+      if (view.report === null && payment === undefined) continue;
       try {
-        if (!(await spendsEscrow(session, end, entry.escrow_ref))) problems.add(`${where}.${member}`, 'does not spend the escrow: no input of the transaction descends from escrow_ref by the spend chain');
-      } catch (err) { problems.add(`${where}.${member}`, `the spend of the escrow cannot be read (${shown(err)})`); }
+        const terminal = await terminalSpend(session, entry, end, member === 'accept_tx' ? 'Accept' : 'Reclaim', payment);
+        terminals.set(entry.escrow_ref, terminal);
+      } catch (err) { problems.add(`${where}.${member}`, `the spend of the escrow cannot be proved (${shown(err)})`); }
     }
   }
-  return lineages;
+  return { terminals, committedApprovals };
 }
 
 // ---- 4. the delegations, the vaults and the approval ----
@@ -436,11 +603,15 @@ async function checkApprovals(session: Session, a: Assembly, problems: Problems)
     const member = record.legacy ? 'approval' : `approvals[${i}]`;
     let expectations;
     let hire;
+    let counterpartyStep;
     try {
-      const step = session.extra.module.hireOfApproval(a, i);
+      const module = session.extra.module;
+      const step = module.hireOfApproval(a, i);
       hire = hires.find((one) => one.entry.step === step);
-      expectations = session.extra.module.approvalExpectations?.(a, i);
-    } catch (err) { problems.add(`${member}.digest`, `read_failed: ${shown(err)}`); continue; }
+      counterpartyStep = module.approvalCounterparty?.(a, i);
+    } catch (err) { problems.add(`${member}.hire`, `read_failed: ${shown(err)}`); continue; }
+    try { expectations = session.extra.module.approvalExpectations?.(a, i); }
+    catch (err) { problems.add(`${member}.digest`, `read_failed: ${shown(err)}`); continue; }
     const atMs = hire === undefined ? undefined : a.times.get(hire.entry.post_tx);
     const subject = hire === undefined ? undefined : a.facts.records[hire.entry.agent]?.did;
     if (hire === undefined || subject === undefined || atMs === undefined) {
@@ -449,20 +620,55 @@ async function checkApprovals(session: Session, a: Assembly, problems: Problems)
     }
     const before = problems.lines.length;
     try {
+      let link: ApprovalRead['link'] = entry.role === 'approval' ? 'unproven' : 'not_applicable';
+      const request = a.committedApprovals.get(hire.entry.step);
+      let requestIssuer: string | undefined;
+      let digest = expectations?.digest;
+      if (entry.role === 'approval') {
+        if (request !== undefined) {
+          if (request === null || request.attestation !== entry.attestation) problems.add(`${member}.hire`, 'the committed request names no approval or a different approval');
+          else {
+            link = 'request';
+            requestIssuer = request.issuer_did;
+            if (digest !== undefined && digest !== request.digest) problems.add(`${member}.digest`, 'the expected digest differs from the committed request');
+            digest = request.digest;
+          }
+        }
+        if (counterpartyStep !== undefined && counterpartyStep !== null) {
+          const counterparty = hires.find((one) => one.entry.step === counterpartyStep);
+          const handoff = hire.result?.handoff;
+          const named = counterparty?.result?.approval;
+          if (isObject(named) && isObject(handoff) && counterparty?.report !== null && handoff.escrow_ref === counterparty?.entry.escrow_ref) {
+            if (named.attestation !== entry.attestation || (requestIssuer !== undefined && named.issuer_did !== requestIssuer)) {
+              problems.add(`${member}.hire`, 'the linked signed confirmation names a different approval or issuer');
+            } else if (typeof named.issuer_did === 'string' && /^did:vector:[0-9a-f]{64}$/.test(named.issuer_did)) {
+              requestIssuer = named.issuer_did;
+              if (link === 'unproven') link = 'counterparty_receipt';
+            }
+          }
+        }
+        if (link === 'unproven' && !session.extra.module.allowApprovalStateOnly) {
+          problems.add(`${member}.hire`, 'approval use is unproven: there is no authenticated request that names this approval for this hire');
+        }
+      }
       const check = await checkAttestation(envOf(session), { id: entry.attestation, atMs, expect: {
-        attType: entry.role === 'approval' ? 5 : 4, subject, ...(expectations?.digest === undefined ? {} : { digest: expectations.digest }),
+        attType: entry.role === 'approval' ? 5 : 4, subject, ...(digest === undefined ? {} : { digest }),
         ...(expectations?.issuer === undefined ? {} : { issuer: expectations.issuer }),
       } });
       const view = check.attestation;
       if (view === null) { problems.add(`${member}.attestation`, 'no output of the attestation address holds the token of the approval'); continue; }
       const datum = view.attestation;
+      if (requestIssuer !== undefined && requestIssuer !== `did:vector:${datum.issuerId ?? ''}`) {
+        problems.add(`${member}.issuer`, 'the on-chain issuer differs from the issuer named for the hire');
+      }
       const end = datum.validUntil;
       if (end === null) { problems.add(`${member}.validity`, 'the approval has no end of validity'); continue; }
-      // The datum uses the upper bound of the issuance window, not the block time of issuance.
-      // The current record names that transaction explicitly. Do not infer its time from the datum.
-      if (!record.legacy && await txTimeOf(session.fetchImpl, session.settings.urls.koios, entry.tx) > atMs) {
+      // The datum names the upper end of the issuance window. Read the actual issuance block in both input formats.
+      const issuedBlock = await txTimeOf(session.fetchImpl, session.settings.urls.koios, entry.tx);
+      if (issuedBlock > atMs) {
         problems.add(`${member}.tx`, 'the attestation is issued after the hire');
       }
+      if (issuedBlock === atMs) problems.add(`${member}.tx`, 'the order of issuance and hire in the same block is unproven');
       const validity = end - (datum.validFrom ?? datum.issuedAt);
       const cap = expectations?.maxValidityMs;
       const slack = expectations?.clockSlackMs ?? 0;
@@ -489,7 +695,8 @@ async function checkApprovals(session: Session, a: Assembly, problems: Problems)
         problems.add(`${member}.attestation`, `${line.label}: ${line.detail}`);
       }
       if (problems.lines.length === before) {
-        checked[i] = { entry, hire: hire.entry.step, state: actual, type: datum.attType, subject, digest: datum.digest, issued_at: datum.issuedAt, valid_until: end, validity_ms: validity, checked_at: atMs };
+        checked[i] = { entry, hire: hire.entry.step, state: actual, type: datum.attType, subject, digest: datum.digest, issued_at: datum.issuedAt,
+          valid_until: end, validity_ms: validity, checked_at: atMs, issued_block_at: issuedBlock, link };
       }
     } catch (err) { problems.add(`${member}.attestation`, `read_failed: ${shown(err)}`); }
   }
@@ -640,7 +847,7 @@ function caseViewOf(row: Obj): CaseView | null {
   const claimer = count(tally.claimer); const auditor = count(tally.auditor); const inconclusive = count(tally.inconclusive); const revealed = count(row.revealed);
   const [jury, token, output, claimOut, challengeOut, phase, state, outcome] = [row.jury, row.case_token, row.utxo, row.claim_out, row.challenge_out, row.phase, row.state, row.outcome].map(text);
   if (claimer === null || auditor === null || inconclusive === null || revealed === null || [jury, token, output, claimOut, challengeOut, phase, state, outcome].includes(null)) return null;
-  if (!VERDICTS.includes(outcome!)) return null;
+  if (!VERDICTS.includes(outcome!) || !SCRIPT_HASH.test(jury!) || !HASH.test(token!) || ![output, claimOut, challengeOut].every((ref) => REF.test(ref!))) return null;
   return {
     jury: jury!, case_token: token!, case_output: output!, claim_out: claimOut!, challenge_out: challengeOut!, canonical: typeof row.canonical === 'boolean' ? row.canonical : null,
     phase: phase!, state: state!, tally: { claimer, auditor, inconclusive }, revealed, outcome: outcome!,
@@ -660,7 +867,7 @@ function indexedCaseOf(row: Obj): IndexedRow | null {
   const result = row.result === null ? null : verdictOrNull(row.result);
   const final = finalized === null ? null : isObject(finalized) && hashOrNull(finalized.tx) !== null && verdictOrNull(finalized.result) !== null ? finalized : undefined;
   const burned = closed === null ? null : isObject(closed) && hashOrNull(closed.tx) !== null ? closed : undefined;
-  if (claimer === null || auditor === null || inconclusive === null || revealed === null || jury === null || window === null || token === null || openedTx === null || state === null
+  if (claimer === null || auditor === null || inconclusive === null || revealed === null || jury === null || !SCRIPT_HASH.test(jury) || window === null || token === null || openedTx === null || state === null
     || (row.result !== null && result === null) || final === undefined || burned === undefined) return null;
   return {
     canonical: row.canonical,
@@ -739,10 +946,111 @@ export async function readHold(session: EvidenceSession, facts: Readonly<Facts>,
 const CHALLENGE_TOKEN = /^63686c5f[0-9a-f]{56}$/;
 
 /** The token of a challenge: the one asset with the quantity 1 and a name that starts with chl_ (63686c5f in hex) that the transaction of the challenge minted. */
-function challengeToken(minted: TxInfo['minted']): string {
+function challengeAsset(minted: TxInfo['minted']): TxInfo['minted'][number] {
   const found = minted.filter((one) => one.quantity === 1n && CHALLENGE_TOKEN.test(one.name));
   if (found.length !== 1) throw new PreconditionError(`challenge.challenge: the transaction of the challenge minted ${found.length} tokens of the challenge, and it must mint exactly one (the quantity 1, a name that starts with 63686c5f)`);
-  return found[0]!.name;
+  return found[0]!;
+}
+
+/** Authenticate the case used by a historical hold. The indexer locates the opening and the Finalize. */
+async function historicalCase(session: EvidenceSession, indexed: IndexedCase | null, claim: ClaimFact,
+    challenge: Challenge, token: string, subject: string): Promise<number> {
+  if (indexed?.finalized_tx == null) throw new PreconditionError('the historical case has no identifiable Finalize transaction');
+  const { jury, case_token: caseToken } = indexed;
+  const finalize = await scriptInfo(session, indexed.finalized_tx);
+  const input = finalize.inputs.filter((one) => one.credential === jury);
+  if (input.length !== 1 || !checkedSpend(finalize, jury, input[0]!.ref, 1, 1)) throw new PreconditionError('the case did not end with a successful jury spend');
+  const redeemer = finalize.spends.find((run) => run.script === jury && (run.input === input[0]!.ref || run.input === null))!;
+  const vote = constrFields(dataOfKoiosJson(redeemer.fields[0]), 'Finalize', 2, 1)[0];
+  constrFields(vote, 'AuditorWins', 1, 0);
+  const open = await scriptInfo(session, indexed.opened_tx);
+  if (!open.minted.some((asset) => asset.policy === jury && asset.name === caseToken && asset.quantity === 1n)) {
+    throw new PreconditionError('the opening did not mint the case token');
+  }
+  const outputs = open.outputs.filter((one) => one.credential === jury).map((one) => one.ref);
+  const rows = await koiosUtxoInfo(session.settings.urls.koios, outputs, session.fetchImpl, HISTORICAL_OUTPUT_MAX);
+  const opening = rows.filter((row) => outputs.includes(fromOutput(row)) && hasToken(row, jury, caseToken));
+  if (opening.length !== 1) throw new PreconditionError('the exact case opening output is unproven');
+  for (const row of [opening[0]!, await outputOf(session, input[0]!.ref)]) {
+    const datum = decodeJuryDatum(row.inline_datum?.bytes ?? '');
+    if (row.payment_cred !== jury || !hasToken(row, jury, caseToken) || datum.type !== 'Case' || datum.case.challenge !== token
+      || datum.case.claim !== claim.claimToken || `${datum.case.challengeOut.txHash}#${datum.case.challengeOut.outputIndex}` !== challenge.challenge
+      || datum.case.claimer !== subject) throw new PreconditionError('the ledger case, jury or challenge identity differs');
+  }
+  await confirmed(session, indexed.opened_tx);
+  await confirmed(session, indexed.finalized_tx);
+  return finalize.timeMs;
+}
+
+function hasToken(row: KoiosUtxo, policy: string, name: string): boolean {
+  const assets = assetsOf(row).filter((asset) => asset.policy === policy);
+  return assets.length === 1 && assets[0]!.name === name && assets[0]!.quantity === 1n;
+}
+
+/** Confirm the application of the verdict of this dispute to the exact identity record output. */
+async function verifyHistoricalHold(session: EvidenceSession, a: Assembly, candidate: Hold & { readonly verdict_output: string },
+    challenge: Challenge, claim: ClaimFact, asset: TxInfo['minted'][number], indexed: IndexedCase | null): Promise<Hold> {
+  const subject = a.facts.records[challenge.agent]?.id;
+  if (subject === undefined || indexed?.finalized_tx == null || !REF.test(candidate.verdict_output)) {
+    throw new PreconditionError('the historical hold has no exact verdict output or Finalize');
+  }
+  const finalizeAt = await historicalCase(session, indexed, claim, challenge, asset.name, subject);
+  const verdict = await outputOf(session, candidate.verdict_output);
+  const [owner, action, , linked] = constrFields(decodePlutusData(verdict.inline_datum?.bytes ?? ''), 'verdict', 0, 6);
+  constrFields(action, 'Suspend', 0, 0);
+  const linkedRef = outRefOf(linked, 'verdict.challenge');
+  const policy = verdict.payment_cred;
+  const token = assetsOf(verdict).find((one) => one.policy === policy)?.name;
+  const configured = await findConfigRecord(session.chain.provider, session.chain.deployment);
+  if (configured === null || policy !== configured.m1) throw new PreconditionError('the verdict does not use the configured Module-1 policy');
+  if (bytesOf(owner, 'verdict.subject', 32) !== subject || `${linkedRef.txHash}#${linkedRef.outputIndex}` !== challenge.challenge
+    || verdict.is_spent !== true || typeof policy !== 'string' || typeof token !== 'string' || !HASH.test(token) || !hasToken(verdict, policy, token)) {
+    throw new PreconditionError('the verdict output does not authorize a hold of this challenge and record');
+  }
+  const resolveTx = txOf(candidate.verdict_output);
+  const resolved = await scriptInfo(session, resolveTx);
+  const challengeOutput = await outputOf(session, challenge.challenge);
+  if (challengeOutput.payment_cred !== asset.policy || challengeOutput.is_spent !== true || !hasToken(challengeOutput, asset.policy, asset.name)
+    || !checkedSpend(resolved, asset.policy, challenge.challenge, 2, 2)
+    || !resolved.outputs.some((one) => one.ref === candidate.verdict_output && one.credential === policy)
+    || !resolved.minted.some((one) => one.policy === policy && one.name === token && one.quantity === 1n)
+    || resolved.timeMs < finalizeAt) throw new PreconditionError('the verdict is not from the resolution of the matched challenge');
+  const oracle = resolved.spends.find((one) => one.script === asset.policy && (one.input === challenge.challenge || one.input === null))!;
+  constrFields(dataOfKoiosJson(oracle.fields[0]), 'AuditorWins', 1, 0);
+  const reasoning = bytesOf(dataOfKoiosJson(oracle.fields[1]), 'OracleResolve.reasoning_hash', 32);
+  const doc = await readDocument(documentUri(resolveTx), { koiosUrl: session.settings.urls.koios, fetchImpl: session.fetchImpl });
+  if (doc.type !== 'resolution' || doc.hash !== reasoning || doc.bytes.length > 15_000) {
+    throw new PreconditionError('the committed resolution document is unproven');
+  }
+  let body: unknown;
+  try { body = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(doc.bytes)); }
+  catch { throw new PreconditionError('the committed resolution document is not UTF-8 JSON'); }
+  if (!isObject(body) || body.type !== 'vector-jury-resolution/1' || body.basis !== 'jury' || body.verdict !== 'AuditorWins'
+    || body.challenge_out !== challenge.challenge || body.challenge !== asset.name || body.claim !== claim.claimToken || !isObject(body.jury)
+    || body.jury.deployment !== indexed.jury || body.jury.case !== indexed.case_token
+    || body.jury.opened_in !== indexed.opened_tx || body.jury.finalized_in !== indexed.finalized_tx) {
+    throw new PreconditionError('the committed resolution document names a different jury, case or challenge');
+  }
+
+  const { identity } = session.chain.deployment;
+  const record = await outputOf(session, candidate.record_output);
+  const datum = decodeIdentityDatum(record.inline_datum?.bytes ?? '');
+  const applyTx = txOf(candidate.record_output);
+  const applied = await scriptInfo(session, applyTx);
+  const records = applied.inputs.filter((one) => one.credential === identity.hash);
+  if (record.address !== identity.address || !hasToken(record, identity.hash, subject)
+    || !applied.outputs.some((one) => one.ref === candidate.record_output && one.credential === identity.hash)
+    || records.length !== 1 || !checkedSpend(applied, identity.hash, records[0]!.ref, 2, 1)
+    || !applied.inputs.some((one) => one.ref === candidate.verdict_output && one.credential === policy)
+    || !applied.minted.some((one) => one.policy === policy && one.name === token && one.quantity === -1n)
+    || applied.timeMs < resolved.timeMs || candidate.since > applied.timeMs || datum.status.type !== 'Suspended'
+    || !datum.status.holds.some((hold) => hold.by.type === 'Script' && hold.by.hash === policy && hold.reason === JURY_HOLD_REASON
+      && hold.since === candidate.since && hold.until === candidate.until)) {
+    throw new PreconditionError('the confirmed verdict application does not show this exact record hold');
+  }
+  await confirmed(session, resolveTx);
+  await confirmed(session, applyTx);
+  return { reason: JURY_HOLD_REASON, since: candidate.since, until: candidate.until, record_output: candidate.record_output, gateway_status: null };
 }
 
 async function readCase(session: Session, a: Assembly, challenge: Challenge): Promise<CaseRead> {
@@ -754,7 +1062,8 @@ async function readCase(session: Session, a: Assembly, challenge: Challenge): Pr
   const rows = lastJsonBlock(answer.text);
   if (!Array.isArray(rows)) throw new HostedError('protocol', 'the answer of vector_get_jury_cases holds no list of cases');
   // The tool filters by the claim token. The claim_out of a case is the Challenged claim output that the opening read, and the challenge spent the Open one: the two never match. The challenge output names the case.
-  const views = rows.filter((row: unknown): row is Obj => isObject(row) && row.challenge_out === challenge.challenge && row.claim === claim.claimToken).map(caseViewOf);
+  const matching = rows.filter((row: unknown): row is Obj => isObject(row) && row.challenge_out === challenge.challenge && row.claim === claim.claimToken);
+  const views = matching.map(caseViewOf);
   if (views.includes(null)) throw new HostedError('protocol', 'a case in the answer of vector_get_jury_cases has not the form that the tool documents');
   // A case that is not the canonical case of its dispute is no case of this run: the relay resolves the dispute with its canonical case only.
   const eligible = (views as CaseView[]).filter((view) => view.canonical !== false);
@@ -768,21 +1077,37 @@ async function readCase(session: Session, a: Assembly, challenge: Challenge): Pr
       throw new PreconditionError(`challenge.challenge: the block time of the challenge cannot be read (${shown(err)})`);
     }
   };
-  let token: string | null = null;
-  try { token = challengeToken((await challengeInfo()).minted); } catch (err) { if (!(err instanceof UnknownTransactionError)) throw err; }
-  const indexed = token === null ? null : await readIndexed(session, claim, challenge, token);
-  let hold;
-  try {
-    hold = await session.extra.module.holdOf(a, { challenge, listed, indexed, blockTime, readRecordHold: () => readHold(session, a.facts, agent.id, blockTime) });
-  } catch (err) { throw new PreconditionError(`hold.read_failed: ${shown(err)}`); }
-  if (hold !== null && (!REF.test(hold.record_output) || hold.reason !== JURY_HOLD_REASON || !Number.isSafeInteger(hold.since) || !Number.isSafeInteger(hold.until)
-     || hold.since < await blockTime() || hold.until <= hold.since)) throw new PreconditionError('hold: no matching jury hold for this challenge');
-  // The result of a case that is final: the Finalize transaction of the indexer, or a live case that is Settling (the Finalize left it so). The two are one datum of the chain and must agree.
-  const fromTool = token !== null && listed !== null && listed.state === 'Settling' ? listed.outcome : null;
-  const fromIndexer = indexed === null ? null : indexed.finalized_result;
+  let asset: TxInfo['minted'][number] | null = null;
+  try { asset = challengeAsset((await challengeInfo()).minted); } catch (err) { if (!(err instanceof UnknownTransactionError)) throw err; }
+  if (asset !== null && matching.some((row) => row.challenge !== asset!.name)) throw new PreconditionError('the hosted case names a different challenge token');
+  const indexed = asset === null ? null : await readIndexed(session, claim, challenge, asset.name);
+  if (listed !== null && indexed !== null && (listed.case_token !== indexed.case_token || listed.jury !== indexed.jury)) {
+    throw new PreconditionError('the hosted tool and the indexer name different case or jury identities for the challenge');
+  }
+  const fromTool = asset !== null && listed !== null && listed.state === 'Settling' ? listed.outcome : null;
+  const fromIndexer = indexed?.finalized_result ?? null;
   if (fromTool !== null && fromIndexer !== null && fromTool !== fromIndexer) throw new PreconditionError(`the hosted tool shows the result ${fromTool} and the marketplace indexer shows the result ${fromIndexer} for the case of the challenge`);
-  // The verdict is the result of this case and of nothing else. A hold with the reason 64 can belong to another dispute of the same agent, so it never gives a verdict: it is read to wait until the verdict AuditorWins has its hold.
   const verdict = fromIndexer ?? fromTool;
+  const observed = new Set<Hold>();
+  let candidate: HoldCandidate | null;
+  let hold: Hold | null = null;
+  try {
+    candidate = await session.extra.module.holdOf(a, { challenge, listed, indexed, blockTime, readRecordHold: async () => {
+      const current = await readHold(session, a.facts, agent.id, blockTime);
+      if (current !== null) observed.add(Object.freeze(current));
+      return current;
+    } });
+    if (candidate !== null) {
+      if (!REF.test(candidate.record_output) || candidate.reason !== JURY_HOLD_REASON || !Number.isSafeInteger(candidate.since) || !Number.isSafeInteger(candidate.until)
+        || candidate.since < await blockTime() || candidate.until <= candidate.since) throw new PreconditionError('no matching jury hold for this challenge');
+      if (observed.has(candidate)) {
+        await confirmed(session, txOf(candidate.record_output));
+        hold = candidate;
+      } else if (verdict === 'AuditorWins' && asset !== null && 'verdict_output' in candidate) {
+        hold = await verifyHistoricalHold(session, a, candidate, challenge, claim, asset, indexed);
+      } else throw new PreconditionError('the historical hold has no verified link to the case verdict');
+    }
+  } catch (err) { throw new PreconditionError(`hold.read_failed: ${shown(err)}`); }
   let waiting: string | null = null;
   if (verdict === null || (verdict === 'AuditorWins' && hold === null)) {
     let expected = 'about 4 h 44 min after the challenge';
@@ -807,6 +1132,11 @@ function stepsOf(a: Assembly, module: EvidenceModule, problems: Problems): StepE
   const { kind } = a.loaded.record;
   return a.use.evidenceSteps.filter((step) => step.run === kind || (step.run === 'both' && kind !== 'lifecycle')).map((step): StepEntry => {
     const member = `steps.${step.id}`;
+    const required = kind === 'lifecycle' ? module.lifecycleFacts?.[step.id] : undefined;
+    if (kind === 'lifecycle' && (required === undefined || required.length === 0 || required.some((name) => !Object.hasOwn(a.facts.lifecycle, name)))) {
+      problems.add(member, 'the run does not name every required lifecycle fact of the step');
+      return { id: step.id, status: 'not_run', refs: [], note: 'a required lifecycle fact is not confirmed for this run' };
+    }
     const rule = Object.hasOwn(module.rules, step.id) ? module.rules[step.id] : undefined;
     let given: Shown;
     if (rule === undefined) {
@@ -816,7 +1146,17 @@ function stepsOf(a: Assembly, module: EvidenceModule, problems: Problems): StepE
       given = hook(member, () => rule(a));
     }
     if (typeof given !== 'string' && given.length > 0) {
-      if (given.length <= 32 && given.every((entry) => REF_KIND.test(entry.kind) && REF_VALUE.test(entry.value))) return { id: step.id, status: 'shown', refs: given, note: '' };
+      const refs = given;
+      if (refs.length <= 32 && refs.every((entry) => REF_KIND.test(entry.kind) && REF_VALUE.test(entry.value))) {
+        if (required === undefined) return { id: step.id, status: 'shown', refs, note: '' };
+        const txs = new Set(required.map((name) => a.facts.lifecycle[name]!.tx));
+        if (refs.every((entry) => (entry.kind === 'transaction' && txs.has(entry.value))
+          || (entry.kind === 'record' && REF.test(entry.value) && txs.has(txOf(entry.value))))
+          && [...txs].every((tx) => refs.some((entry) => entry.kind === 'transaction' && entry.value === tx))) {
+          return { id: step.id, status: 'shown', refs, note: '' };
+        }
+        problems.add(member, 'the references do not show the named, confirmed lifecycle transactions of the step');
+      }
       problems.add(member, 'the rule gives references that are not in their required form');
       given = 'invalid references';
     }
@@ -898,7 +1238,7 @@ async function readPaidFromVault(session: EvidenceSession, loaded: Loaded, hire:
   for (const entry of loaded.record.delegations) {
     try {
       const read = await escrowPaidFromVault(env, hire.escrow_ref, entry.id);
-      if (read.paid) return { paid: true, why: '' };
+      if (read.paid) return { paid: true, why: '', vault_ref: read.vaultRef, delegation: read.delegation };
       why = shown(read.detail);
     } catch (err) { throw new PreconditionError(`vault_payment.read_failed: ${shown(err)}`); }
   }
@@ -907,14 +1247,23 @@ async function readPaidFromVault(session: EvidenceSession, loaded: Loaded, hire:
 
 function baseAssembly(session: Session, loaded: Loaded, purpose: Assembly['purpose']): Assembly {
   return {
-    purpose, use: session.use, loaded, facts: session.facts.read(), reads: EMPTY_READS, mock: null, lineages: new Map(), times: new Map(), faults: [], extra: {},
-    challenge: null, caseRead: null, approvalStates: [], paidFromVault: (hire) => readPaidFromVault(session, loaded, hire),
+    purpose, use: session.use, loaded, facts: session.facts.read(), reads: EMPTY_READS, mock: null, terminals: new Map(), times: new Map(), faults: [], extra: {},
+    challenge: null, caseRead: null, approvalStates: [], committedApprovals: new Map(), lifecycleTransactions: new Set(),
+    paidFromVault(hire) {
+      if (!loaded.hires.some((one) => one.entry === hire)) throw new PreconditionError('the hire is not in the run');
+      return readPaidFromVault(session, loaded, hire);
+    },
+    readRelease(hire) {
+      if (!loaded.hires.some((one) => one.entry === hire)) throw new PreconditionError('the hire is not in the run');
+      return readRelease(session, hire);
+    },
   };
 }
 
 async function prepare(session: Session, a: Assembly): Promise<Assembly> {
   try {
-    const extra = await session.extra.module.prepare(session, a);
+    const { chain, clock, extra: { label, priv, indexer, result }, fetchImpl, hosted, node, settings, use } = session;
+    const extra = await session.extra.module.prepare({ chain, clock, extra: { label, priv, indexer, result }, fetchImpl, hosted, node, settings, use }, a);
     if (!isObject(extra)) throw new PreconditionError('the module did not return an object');
     return { ...a, extra };
   } catch (err) { throw new PreconditionError(`prepare.read_failed: ${shown(err)}`); }
@@ -942,9 +1291,11 @@ async function assemble(session: Session): Promise<{ kind: 'wait'; message: stri
   const module = session.extra.module;
   let a = baseAssembly(session, loaded, 'run');
   if (record.kind === 'lifecycle') {
-    await confirmAll(session, transactionsOf(a, module, problems), problems);
+    const txs = transactionsOf(a, module, problems);
+    await confirmAll(session, txs, problems);
     problems.stop();
-    a = await prepare(session, a);
+    const lifecycle = Object.fromEntries(record.lifecycle.map((name) => [name, a.facts.lifecycle[name]!]));
+    a = await prepare(session, { ...a, facts: { ...a.facts, lifecycle }, lifecycleTransactions: new Set(txs.keys()) });
     const steps = stepsOf(a, module, problems);
     problems.stop();
     return { kind: 'ready', document: documentOf(session, a, steps, null), subject: subjectOf(a).id };
@@ -956,11 +1307,11 @@ async function assemble(session: Session): Promise<{ kind: 'wait'; message: stri
       try { times.set(hash, await txTimeOf(session.fetchImpl, session.settings.urls.koios, hash)); } catch (err) { problems.add(`hires[${i}]`, `the block time of a transaction cannot be read (${shown(err)})`); }
     }
   }
-  const lineages = await checkHires(session, loaded, a.facts, problems);
+  const checkedHires = await checkHires(session, loaded, a.facts, problems);
   const reads = await checkLedger(session, record, problems);
   const mock = await readMock(session, loaded, a.facts, problems);
   const faults = checkFaults(session, loaded, times, problems);
-  a = await prepare(session, { ...a, times, lineages, reads, mock, faults });
+  a = await prepare(session, { ...a, ...checkedHires, times, reads, mock, faults });
   const challenge = runChallenge(a, module);
   a = { ...a, challenge };
   await confirmAll(session, transactionsOf(a, module, problems), problems);

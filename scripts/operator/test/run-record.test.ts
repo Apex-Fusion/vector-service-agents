@@ -1,6 +1,7 @@
 // scripts/operator/test/run-record.test.ts - the run record of a run, the report file of a hire, and the reader of the block time of a transaction. The record is strict: an unknown member, a wrong
 // shape, a bad hash, a refusal without its facts and a key-shaped text are each refused with the name of the member. Each refusal has an accepted twin. No test uses the network.
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { RunRecordError, UnknownTransactionError, hireRoleOf, parseReport, parseRunRecord, txInfoOf, txTimeOf } from '../lib/run-record.ts';
 import type { RunRecordPolicy } from '../lib/run-record.ts';
@@ -61,6 +62,15 @@ function refusedAt(value: unknown, member: string, policy: RunRecordPolicy = inv
 }
 
 describe('parseRunRecord', () => {
+  it('reads the declared example of the first inventory input format', () => {
+    // The original pack asked the operator to assemble this format. There is no run record writer.
+    const example: unknown = JSON.parse(readFileSync(new URL('./fixtures/inventory-run-v1.example.json', import.meta.url), 'utf8'));
+    expect(parse(example)).toMatchObject({
+      legacy: true, label: 'r1', use_case: data.name, approvals: [{ role: 'approval', attestation: '33'.repeat(32), valid_until: null }],
+      sub_delegations: [{ subagent: null, hire: null }], hires: [{ step: 'propose', report_file: 'propose.report.json' }],
+    });
+  });
+
   it('normalizes the old record without inventing a validity end or a sub-delegation association', () => {
     const old = goodRecord();
     const before = JSON.stringify(old);
