@@ -117,6 +117,17 @@ describe('DNS response binding', () => {
     expect(seen(result)).toEqual([true, true, false]);
   });
 
+  it('accepts a TXT reply with a glue owner compressed to the nameserver in NS RDATA', async () => {
+    const headerAndAnswer = wordAt(8, 1); // One authority RR.
+    headerAndAnswer.writeUInt16BE(1, 10); // One additional RR.
+    const nsHeader = Buffer.from('c011000200010000003c0006', 'hex'); // demo.example IN NS.
+    const nsName = Buffer.from('036e7331c011', 'hex'); // ns1.demo.example.
+    const glue = Buffer.from('0000000100010000003c0004c0000201', 'hex'); // IN A 192.0.2.1.
+    glue.writeUInt16BE(0xc000 | (headerAndAnswer.length + nsHeader.length), 0);
+    const wire = Buffer.concat([headerAndAnswer, nsHeader, nsName, glue]);
+    expect((await checkTxt(fakeResolvers({ quad9: { wire } }).lookup, NAME, VALUE)).ok).toBe(true);
+  });
+
   it('compares all character strings of one record as bytes, not their presentation or separate records', async () => {
     const first = VALUE.slice(0, 20);
     const last = VALUE.slice(20);
