@@ -1,22 +1,29 @@
 // agents/sourcing-agent/test/serve/serve.ts
-// A service on a port that the system picks, and an HTTP client for it. `serve` makes the server of the agent over the deps that a test gives (the worlds of the job folders), and `closeAll` ends every server that a
-// test opened, their connections included. `gate` holds a port of a job where a test wants it, and `hangingCall` posts a job and gives back the means to hang up on it. No test uses the network.
+// A service on a port that the system picks, and an HTTP client for it. `serve` makes the server of the agent over the deps that a test gives (the worlds of the job folders), `start` starts the whole service in this
+// process over the world of the wiring, and `closeAll` ends every server and every service that a test opened, their connections included. `gate` holds a port of a job where a test wants it, and `hangingCall`
+// posts a job and gives back the means to hang up on it. No test uses the network.
 import { request as httpRequest } from 'node:http';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { INDEXER, marketplace, vaultChainWith } from '@vsa/hire-kit/testing';
 import { readFaultSwitch } from '@vsa/usecase-kit/fault';
-import { harness } from '../../../../packages/usecase-kit/test/cosign/support.ts';
+import { harness, world as ledgerWorld } from '../../../../packages/usecase-kit/test/cosign/support.ts';
+import { keyOf } from '../../src/serve/keys.ts';
 import { createServer } from '../../src/serve/server.ts';
 import type { ServerOptions } from '../../src/serve/server.ts';
-import { TOKEN } from './support.ts';
+import { startService } from '../../src/serve/start.ts';
+import type { RunningService, StartOptions } from '../../src/serve/start.ts';
+import { TOKEN, completeEnv, tempDir, withModule1 } from './support.ts';
 
 const servers: Server[] = [];
+const services: RunningService[] = [];
 
 const closed = (server: Server): Promise<void> => new Promise<void>((resolve) => { server.close(() => resolve()); server.closeAllConnections(); });
 
-/** Ends every server that a test opened. A test file calls it in `afterEach`. */
+/** Ends every server and every service that a test opened. A test file calls it in `afterEach`. */
 export async function closeAll(): Promise<void> {
   await Promise.all(servers.splice(0).map(closed));
+  await Promise.all(services.splice(0).map((service) => service.stop()));
 }
 
 export interface Running {
@@ -78,4 +85,25 @@ export function gate(): { readonly reached: () => boolean; readonly pass: () => 
   let open: () => void = () => undefined;
   const opened = new Promise<void>((resolve) => { open = resolve; });
   return { reached: () => reached, pass: async () => { reached = true; await opened; }, open: () => { open(); } };
+}
+
+export interface Started {
+  readonly service: RunningService;
+  readonly dir: string;
+  readonly log: string[];
+  readonly origin: string;
+}
+
+/** A start of the whole service in this process, with the parts of the tests: the offline node of the fixture world, a chain for each key, and no network. */
+export async function start(env: NodeJS.ProcessEnv = {}, options: StartOptions = {}): Promise<Started> {
+  const dir = tempDir();
+  const m = marketplace();
+  const log: string[] = [];
+  const service = await startService(completeEnv({ SOURCING_STATE_DIR: dir, VECTOR_MARKETPLACE_INDEXER_URL: INDEXER, ...env }), {
+    fetchImpl: withModule1(m.fetchImpl), log: (line) => { log.push(line); }, provider: ledgerWorld(), tipSlot: async () => 0, janitorIntervalMs: 3_600_000,
+    createChain: async (chainOptions) => vaultChainWith(m, { wallet: async () => ({ ...(await m.chain.wallet()), buyerPkh: keyOf(chainOptions.privateKeyHex).pkh }) }),
+    ...options,
+  });
+  services.push(service);
+  return { service, dir, log, origin: `http://127.0.0.1:${service.port}` };
 }
