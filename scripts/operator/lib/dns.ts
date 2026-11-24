@@ -30,6 +30,7 @@ const MAX_MESSAGE_BYTES = 65_535; // RFC 8484 section 6.
 const MAX_REASON_CHARS = 200;
 const QUERY_ID = 0; // HTTP matches each response to its request (RFC 8484 section 4.1).
 const HEADER_BYTES = 12;
+const NS = 2;
 const TXT = 16;
 const OPT = 41;
 const IN = 1;
@@ -180,7 +181,8 @@ function refusalOf(body: Buffer, name: Buffer, plain: Buffer, tagged: Buffer): s
       const owner = readName(body, position, name, known);
       const type = body.readUInt16BE(owner.end);
       const klass = body.readUInt16BE(owner.end + 2);
-      const end = owner.end + 10 + body.readUInt16BE(owner.end + 8);
+      const dataStart = owner.end + 10;
+      const end = dataStart + body.readUInt16BE(owner.end + 8);
       if (end > body.length) throw new Error('invalid DNS resource record length');
       if (type === OPT) {
         if (edns || i < answers + authorities || owner.end !== position + 1 || body[position] !== 0 || body[owner.end + 5] !== 0) {
@@ -189,13 +191,15 @@ function refusalOf(body: Buffer, name: Buffer, plain: Buffer, tagged: Buffer): s
         edns = true;
         const extended = body[owner.end + 4]!;
         if (extended !== 0) return `the answer has the DNS status ${extended << 4}`;
-        for (let option = owner.end + 10; option < end;) {
+        for (let option = dataStart; option < end;) {
           if (option + 4 > end) throw new Error('invalid DNS option length');
           option += 4 + body.readUInt16BE(option + 2);
           if (option > end) throw new Error('invalid DNS option length');
         }
-      }
-      if (type === TXT) {
+      } else if (type === NS) {
+        // A later glue owner can point to a label in this nameserver name (RFC 1035).
+        if (readName(body, dataStart, name, known).end !== end) throw new Error('invalid DNS NS record length');
+      } else if (type === TXT) {
         // The codec reads the length field followed by the character strings.
         const chunks = txt.decode(body.subarray(owner.end + 8, end));
         if (chunks.length === 0) throw new Error('missing DNS character string');
