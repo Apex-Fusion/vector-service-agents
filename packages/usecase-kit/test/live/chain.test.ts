@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CML, coreToTxOutput, getAddressDetails } from '@lucid-evolution/lucid';
 import type { Address, Credential, OutRef, UTxO } from '@lucid-evolution/lucid';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { OgmiosProvider } from '@vsa/buyer-core';
 import type { DelegateParams, DelegationUseCheck, LedgerEnv, LinkConfirmations } from '@vsa/buyer-core';
 import { encodeDelegationDatum } from '@vsa/vector-read/identity-codec';
@@ -610,52 +610,56 @@ describe('delegationChainOf: the builders, the submit and the slot clock', () =>
     expect(world.taken).toStrictEqual([]);
   });
 
-  it('gives the hash of the body of the transaction that it sent, and not the text of the node: capital letters from the node give the same lower-case hash', async () => {
-    const world = worldOf({ sub: null });
-    const built = await delegationChainOf(envOf(world)).buildDelegate(DELEGATE);
-    const signed = subagentSigner.sign(agentSigner.sign(built.txCbor));
-    const { provider, sent } = acknowledging(world, built.txHash.toUpperCase());
-    expect(await delegationChainOf({ ...envOf(world), provider }).submit(signed)).toBe(built.txHash);
-    expect(sent).toStrictEqual([signed]);
-  });
+  describe('the submitted bytes and the node acknowledgement', () => {
+    let signed: string;
+    let txHash: string;
+    beforeAll(async () => {
+      const built = await delegationChainOf(envOf(worldOf({ sub: null }))).buildDelegate(DELEGATE);
+      signed = subagentSigner.sign(agentSigner.sign(built.txCbor));
+      txHash = built.txHash;
+    });
 
-  const WRONG_ANSWERS: ReadonlyArray<readonly [string, (hash: string) => unknown]> = [
-    ['the hash of another transaction', () => 'ab'.repeat(32)],
-    ['the hash of the transaction with one character more', (hash) => `${hash}0`],
-    ['the hash of the transaction with one character less', (hash) => hash.slice(1)],
-    ['text that is not a hash', () => MARKER],
-    ['an empty text', () => ''],
-    ['no value', () => undefined],
-    ['a number', () => 42],
-    ['an object that holds the hash', (hash) => ({ txId: hash })],
-  ];
+    it('accepts the same hash in upper case and returns the hash of the submitted body', async () => {
+      const world = worldOf({ sub: null });
+      const { provider, sent } = acknowledging(world, txHash.toUpperCase());
+      expect(await delegationChainOf({ ...envOf(world), provider }).submit(signed)).toBe(txHash);
+      expect(sent).toStrictEqual([signed]);
+    });
 
-  it.each(WRONG_ANSWERS)('throws when the node answers %s, and the message does not repeat the answer', async (_name, answer) => {
-    const world = worldOf({ sub: null });
-    const built = await delegationChainOf(envOf(world)).buildDelegate(DELEGATE);
-    const signed = subagentSigner.sign(agentSigner.sign(built.txCbor));
-    const { provider, sent } = acknowledging(world, answer(built.txHash));
-    const error = await rejection(delegationChainOf({ ...envOf(world), provider }).submit(signed));
-    expect(error.message).toContain('not the hash of the transaction that was sent');
-    for (const shown of [MARKER, 'abababab', built.txHash.slice(1, 9)]) expect(error.message).not.toContain(shown);
-    expect(sent).toStrictEqual([signed]);
-  });
+    const WRONG_ANSWERS: ReadonlyArray<readonly [string, (hash: string) => unknown]> = [
+      ['the hash of another transaction', () => 'ab'.repeat(32)],
+      ['the hash of the transaction with one character more', (hash) => `${hash}0`],
+      ['the hash of the transaction with one character less', (hash) => hash.slice(1)],
+      ['text that is not a hash', () => MARKER],
+      ['an empty text', () => ''],
+      ['no value', () => undefined],
+      ['a number', () => 42],
+      ['an object that holds the hash', (hash) => ({ txId: hash })],
+    ];
 
-  const UNREADABLE: ReadonlyArray<readonly [string, (signed: string) => string]> = [
-    ['an empty text', () => ''],
-    ['text that is not hex', () => 'zz'],
-    ['hex of half a byte', () => 'abc'],
-    ['CBOR that is not a transaction', () => '00'],
-    ['a transaction that ends too soon', (signed) => signed.slice(0, -2)],
-  ];
+    it.each(WRONG_ANSWERS)('throws when the node answers %s, and the message does not repeat the answer', async (_name, answer) => {
+      const world = worldOf({ sub: null });
+      const { provider, sent } = acknowledging(world, answer(txHash));
+      const error = await rejection(delegationChainOf({ ...envOf(world), provider }).submit(signed));
+      expect(error.message).toContain('not the hash of the transaction that was sent');
+      for (const shown of [MARKER, 'abababab', txHash.slice(1, 9)]) expect(error.message).not.toContain(shown);
+      expect(sent).toStrictEqual([signed]);
+    });
 
-  it.each(UNREADABLE)('sends nothing for %s, and throws', async (_name, bytes) => {
-    const world = worldOf({ sub: null });
-    const built = await delegationChainOf(envOf(world)).buildDelegate(DELEGATE);
-    const signed = subagentSigner.sign(agentSigner.sign(built.txCbor));
-    const { provider, sent } = acknowledging(world, built.txHash);
-    await rejection(delegationChainOf({ ...envOf(world), provider }).submit(bytes(signed)));
-    expect(sent).toStrictEqual([]);
+    const UNREADABLE: ReadonlyArray<readonly [string, (sample: string) => string]> = [
+      ['an empty text', () => ''],
+      ['text that is not hex', () => 'zz'],
+      ['hex of half a byte', () => 'abc'],
+      ['CBOR that is not a transaction', () => '00'],
+      ['a transaction that ends too soon', (sample) => sample.slice(0, -2)],
+    ];
+
+    it.each(UNREADABLE)('sends nothing for %s, and throws', async (_name, bytes) => {
+      const world = worldOf({ sub: null });
+      const { provider, sent } = acknowledging(world, txHash);
+      await rejection(delegationChainOf({ ...envOf(world), provider }).submit(bytes(signed)));
+      expect(sent).toStrictEqual([]);
+    });
   });
 
   it('throws when the node does not take a transaction that is not signed by every required signer, and the node is the one that checks', async () => {

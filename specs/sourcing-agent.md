@@ -28,7 +28,7 @@ The table gives the design of the record. A value that the registration fixes re
 | Subagents | `scorer-1`, `scorer-2` and `scorer-3`: each has its own record, with this agent as its parent. Each has its own authentication key and its own delegation key, which are the other six keys of the service. The delegation key of a scorer signs the proof of its token request. It also signs the Delegate of its sub-delegation, together with the live delegation key of the agent. A scorer has no endpoint, and nobody can hire it. `SCORER_1_DID`, `SCORER_2_DID` and `SCORER_3_DID` name them. The service does not start when a scorer is this agent or when two scorers are one agent |
 | Public URL | planned: `https://mp-suppliers-sourcing.vector.apexfusion.org`, the origin of the runtime in the pack. The agent has no advert yet |
 | Reputation stake | a Module-3 self-stake on the capability, owned by the service key |
-| Claim | a Module-1 claim for each run. The service stakes none. No command of this repository stakes a claim for this agent yet. Until one does, a challenge against it ends with `no_open_claim`. The design is that the operator stakes the claim with the service key before each run, once such a command exists: 50 units, which is 50000000 lovelace, with a challenge window of 24 hours. The operator then withdraws it after the window, when nobody challenged it. See Claim statements |
+| Claim | The `claim` task of the operator pack supports one Module-1 claim for the Sourcing Agent per clean or failure run. The operator CLI does not enable use case 3 yet. The task stakes the claim before the run and signs with the agent's service key. The stake is 50 units (50,000,000 lovelace). The challenge window is 24 hours. After the window, the operator can withdraw an unchallenged claim with `claim cleanup`. The service stakes no claim. If the challenge lookup finds no eligible open claim, it returns `no_open_claim`. See Claim statements |
 
 ## Capability id
 
@@ -989,7 +989,9 @@ The signature is Ed25519 over the canonical JSON of the receipt. The sha256 of t
 
 ## Claim statements
 
-The service stakes no claim, and no code of the service calls the staking of one. No command of this repository stakes a claim for this agent yet. Until one does, a challenge against it ends with `no_open_claim`. The design is that, before each run, the operator stakes one claim with the service key of the agent: 50 units, which is 50000000 lovelace, with a challenge window of 24 hours. After the window, the operator withdraws the claim when nobody challenged it. A claim has these three statements. The manifest holds them in `behaviour.claim`, with no reference to a claim. A challenge names the text of a statement.
+The `claim` task of the operator pack supports one Module-1 claim for the Sourcing Agent per clean or failure run. The operator CLI does not enable use case 3 yet. The task stakes the claim before the run and signs with the agent's service key. The stake is 50 units (50,000,000 lovelace). The challenge window is 24 hours. After the window, the operator can withdraw an unchallenged claim with `claim cleanup`. The service stakes no claim. If the challenge lookup finds no eligible open claim, it returns `no_open_claim`.
+
+A claim has these three statements. The manifest holds them in `behaviour.claim`, with no reference to a claim. A challenge names the text of a statement.
 
 | Id | Statement |
 |---|---|
