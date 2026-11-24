@@ -11,6 +11,7 @@ import type { StateFile } from '../../checks/lib/state.ts';
 import type { TxFacts } from '../../checks/lib/txfacts.ts';
 import type { Exposure, GoFile, IrreversibleTag } from './approval.ts';
 import type { DohLookup } from './dns.ts';
+import type { ResultCommand } from './output.ts';
 import type { KeySpec, Registry } from './registry.ts';
 import type { AgentKind } from '../../../packages/usecase-kit/src/protocol/index.ts';
 export type { StepOutcome };
@@ -203,6 +204,19 @@ export interface OfflineTaskInput<Extra> {
   readonly extra: Extra; readonly use: UseCase; readonly facts: Readonly<Facts>; readonly stateDir: string; readonly out: Output;
 }
 export interface OfflineTaskResult { readonly message: string; readonly result: Readonly<Record<string, unknown>> }
+
+export type TaskCommand = ResultCommand;
+export type ResubmitSession<Extra> = Pick<TaskSession<Extra>, 'task' | 'use' | 'extra' | 'settings' | 'go' | 'clock' | 'chain' | 'fetchImpl' | 'registry' | 'facts' | 'out' | 'networkResult'> & {
+  readonly node: Pick<NodeAccess, 'resolveInputs' | 'txStatus'>;
+  readonly state: Pick<StateFile, 'step'>;
+};
+export interface ResubmitFlight {
+  readonly step: string;
+  readonly txHash: string;
+  readonly inputRefs: readonly string[];
+  readonly refs: Readonly<Record<string, string>>;
+  readonly facts: Readonly<Record<string, unknown>>;
+}
 export interface TaskDefinition<Extra = unknown> {
   readonly name: string; readonly title: string;
   /** The boolean flags besides --submit and --all. */
@@ -215,9 +229,11 @@ export interface TaskDefinition<Extra = unknown> {
     run(input: OfflineTaskInput<Extra>): OfflineTaskResult | Promise<OfflineTaskResult>;
   };
   steps(use: UseCase, flags: TaskFlags): readonly string[];
-  parse(env: Readonly<Record<string, string | undefined>>, settings: OperatorSettings, use: UseCase, flags: TaskFlags): Extra;
+  parse(env: Readonly<Record<string, string | undefined>>, settings: OperatorSettings, use: UseCase, flags: TaskFlags, command?: TaskCommand): Extra;
   next(session: TaskSession<Extra>): Promise<StepOutcome>;
   cleanup(session: TaskSession<Extra>): Promise<StepOutcome>;
+  /** Runs only before a resend. It reads the current flight, but never receives its signed bytes. */
+  beforeResubmit?(session: ResubmitSession<Extra>, command: TaskCommand, flight: ResubmitFlight): Promise<void>;
   status?(session: TaskSession<Extra>): Promise<readonly string[]>;
   /** The public `result` object of the `operator-result:` line. Public values only. */
   result?(session: TaskSession<Extra>): Readonly<Record<string, unknown>>;
