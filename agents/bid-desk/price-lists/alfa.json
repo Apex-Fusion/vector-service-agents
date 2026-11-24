@@ -1,0 +1,32 @@
+{
+  "schema": "vector.usecase.price-list.v1",
+  "items": [
+    {
+      "sku": "GLV-NIT-M",
+      "lead_time_days": 14,
+      "breaks": [
+        { "min_quantity": 1, "unit_price": 140 },
+        { "min_quantity": 100, "unit_price": 125 },
+        { "min_quantity": 500, "unit_price": 110 }
+      ]
+    },
+    {
+      "sku": "SYR-10ML",
+      "lead_time_days": 10,
+      "breaks": [
+        { "min_quantity": 1, "unit_price": 32 },
+        { "min_quantity": 100, "unit_price": 28 },
+        { "min_quantity": 500, "unit_price": 24 }
+      ]
+    },
+    {
+      "sku": "MSK-N95",
+      "lead_time_days": 21,
+      "breaks": [
+        { "min_quantity": 1, "unit_price": 60 },
+        { "min_quantity": 100, "unit_price": 52 },
+        { "min_quantity": 500, "unit_price": 46 }
+      ]
+    }
+  ]
+}

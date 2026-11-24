@@ -8,6 +8,7 @@ import * as job from '../../src/job/index.ts';
 import { faultyPriceOf } from '../../src/job/fault.ts';
 import { QUOTE_DECISION } from '../../src/job/decision.ts';
 import { QUOTE_REFUSAL_STATUS, QuoteRefusal } from '../../src/job/refusal.ts';
+import { RUNTIME_MARGIN_MS } from '../../src/job/quote.ts';
 
 const FOLDER = fileURLToPath(new URL('../../src/job/', import.meta.url));
 const files = readdirSync(FOLDER).filter((name) => name.endsWith('.ts')).sort();
@@ -15,7 +16,7 @@ const specifiersOf = (file: string): string[] => [...readFileSync(join(FOLDER, f
 
 describe('the folder of the job', () => {
   it('exports the names that the service wires, and no other value', () => {
-    expect(Object.keys(job).sort()).toEqual(['QUOTE_DECISION', 'QUOTE_REFUSAL_STATUS', 'QuoteRefusal', 'faultyPriceOf', 'quoteInput', 'runQuote']);
+    expect(Object.keys(job).sort()).toEqual(['QUOTE_DECISION', 'QUOTE_REFUSAL_STATUS', 'QuoteRefusal', 'RUNTIME_MARGIN_MS', 'faultyPriceOf', 'quoteInput', 'runQuote']);
   });
 
   it('exports the values of the files that hold them, and the decision has the name quote', () => {
@@ -23,6 +24,7 @@ describe('the folder of the job', () => {
     expect(job.QUOTE_DECISION).toBe(QUOTE_DECISION);
     expect(job.QuoteRefusal).toBe(QuoteRefusal);
     expect(job.QUOTE_REFUSAL_STATUS).toBe(QUOTE_REFUSAL_STATUS);
+    expect(job.RUNTIME_MARGIN_MS).toBe(RUNTIME_MARGIN_MS);
     expect(job.QUOTE_DECISION.name).toBe('quote');
   });
 

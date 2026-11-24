@@ -6,6 +6,6 @@ export { QUOTE_DECISION, quoteInput } from './decision.ts';
 export type { QuoteChoice } from './decision.ts';
 export { faultyPriceOf } from './fault.ts';
 export type { BookPort, QuoteDeps, TakenChecks } from './ports.ts';
-export { runQuote } from './quote.ts';
+export { RUNTIME_MARGIN_MS, runQuote } from './quote.ts';
 export { QUOTE_REFUSAL_STATUS, QuoteRefusal } from './refusal.ts';
 export type { QuoteRefusalCode } from './refusal.ts';
