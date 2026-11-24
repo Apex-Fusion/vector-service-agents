@@ -369,7 +369,7 @@ describe('VECTOR_MODULE1_MANIFEST is an https URL pinned to a commit', () => {
     ]) {
       const text = manifestAt(value);
       expect(text, value).toMatch(/^environment variable VECTOR_MODULE1_MANIFEST must be /);
-      for (const part of [secret, secret.slice(1), 'someone', 'raw.example.test', MODULE1_COMMIT]) expect(text.includes(part), `${part} in the message for ${value}`).toBe(false);
+      for (const part of [secret, secret.slice(1), 'someone', 'raw.example.test', MODULE1_COMMIT]) expect(text, `${part} in the message for ${value}`).not.toContain(part);
       expect(text).toContain(`${value.length} characters`);
     }
   });
