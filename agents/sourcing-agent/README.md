@@ -10,7 +10,7 @@ The service sits behind the template runtime. The runtime holds the supplier key
 
 `propose` takes these steps, in this order:
 
-1. It checks that the delegation of the hirer names this agent as its delegate, and it finds the delegation key that the delegation names.
+1. It checks the delegation of the hirer: a delegation that names another agent as its delegate is refused with 400 `delegation_not_mine`. It finds the delegation key that the delegation names. The job ends `failed` when the ledger shows no such delegation or when this agent holds no such key.
 2. It reads the candidates: the Bid Desks that the indexer lists and the chain shows, at most 8. For each one it reads a file of facts: its status and lineage, its place in the catalog, its stake, the challenges against it, its price list, its compliance attestation and its credential.
 3. The model chooses the bidders to invite, at most 3.
 4. The agent hires the invited bidders one after the other, and it pays each quote from the vault of the delegation. Before it pays a bidder, it reads the status of the record again, and it needs a price list that it can check. Three checks in code come before the model: the quote is from the bidder, it answers this request, and it names the price list that the agent read. Then the model decides whether to accept the quote.
@@ -53,7 +53,7 @@ One job runs at a time. A job that arrives while a job runs, or while the slot i
 
 While a job runs, the server writes an interim `102 Processing` line every 60 s to a client that speaks HTTP/1.1, ahead of the answer. The runtime then does not give up on the silence. The lines stop when the job ends.
 
-A job whose caller hangs up is stopped. `propose` reads the signal before each step, and the quote fan-out and the scoring read it before each commitment of their own: a Pay, a Delegate and a model call. So a caller that is gone starts nothing new, and what the job paid for before stays in the result. `execute` reads the signal before the token and before the call, and never gives it to the call: a call that was sent runs to its end.
+A job whose caller hangs up is stopped. `propose` reads the signal before each step. The quote fan-out reads it before each Pay, and the scoring reads it before each Delegate and each model call. So a caller that is gone starts nothing new, and what the job paid for before stays in the result. `execute` reads the signal before the token and before the call, and never gives it to the call: a call that was sent runs to its end.
 
 The log has one line for each job: the operation, the time that it took, the outcome, the reason, the exit state and the number of decisions. A proposal adds the number of bidder files and of quote records. The line names counts and codes. It never holds a request, a bidder, a quote, a price list, a ranking or a key.
 
@@ -94,7 +94,7 @@ The request JSON is one object with the member `op` set to `propose` or `execute
 
 ## The result
 
-A job that does its work answers 200 with a result. A job that fails answers 200 with a result too: see Reasons. `fault_mode` is the last member of every result: it is the setting of the fault switch, and it is empty in a clean run.
+A job that does its work answers 200 with a result. A job that runs and does not end well answers 200 with a result too: see Reasons. `fault_mode` is the last member of every result: it is the setting of the fault switch, and it is empty in a clean run.
 
 The result of `propose`, in the order of its members:
 
@@ -230,7 +230,7 @@ No key value stands in the manifest, in a log line, in an answer or in a message
 
 ## The fault switch
 
-`FAULT_MODE` is empty or `invert_scores`. Any other value stops the start. The service reads the switch one time, at start. The switch is for a failure run: a run in which the approver must catch a ranking whose first quote is scored the wrong way round.
+`FAULT_MODE` is empty or `invert_scores`. Any other value stops the start. The service reads the switch one time, at start. The switch is for a failure run, in which the agent does one wrong thing on purpose, so that the hirer and the checks can show how they answer.
 
 With `invert_scores`, the scorer of the first accepted quote returns each of its four component scores and its score as 100 minus the value. The subtraction is made on the decimal text of the number, so 80.2 gives 19.8. The other scorers are not changed. The decision that the model made stays on record as the model gave it: the reversal is made on the answer of the scorer.
 

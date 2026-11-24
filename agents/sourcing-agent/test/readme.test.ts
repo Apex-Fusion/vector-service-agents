@@ -114,6 +114,15 @@ describe('agents/sourcing-agent/README.md: what it is', () => {
     expect(w.trace.indexOf('scoring')).toBeLessThan(w.trace.indexOf('rank'));
     expect(intro).toContain('The job answers with the ranking, its salt and its digest. It writes nothing to the sourcing record.');
     expect(answered.body.document).toBeTruthy();
+    // The delegation of the hirer: a delegation that names another agent is a refusal (see Errors), and a delegation that the ledger does not show, or a key that the agent does not hold, ends the job.
+    expect(intro).toContain('a delegation that names another agent as its delegate is refused with 400 `delegation_not_mine`');
+    expect(intro).toContain('The job ends `failed` when the ledger shows no such delegation or when this agent holds no such key.');
+    const unknown = proposeWorld();
+    unknown.script.delegateKeyOf = async () => null;
+    expect((await unknown.run()).reason).toBe('delegation_not_found');
+    const keyless = proposeWorld();
+    keyless.script.findKey = () => null;
+    expect((await keyless.run()).reason).toBe('delegation_key_unknown');
   });
 
   test('execute makes one token and one call, no model call, no hire and no payment, and it never repeats the call', async () => {
