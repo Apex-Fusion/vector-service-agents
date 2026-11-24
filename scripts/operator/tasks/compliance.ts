@@ -3,6 +3,7 @@ import { isDeepStrictEqual } from 'node:util';
 // The pack platform does not export the node read of an attestation or its effective state.
 import { attestationState, readAttestation } from '../../../packages/buyer-core/src/index.ts';
 import type { AttestationView } from '../../../packages/buyer-core/src/index.ts';
+import { koiosPostList } from '../../../packages/buyer-core/src/vendored/mcp/marketplace-indexer.ts';
 // The vector-read entry has no attestation datum codec. Read the bytes before allowing a signature.
 import { decodeAttestationDatum, utf8Hex } from '../../../packages/vector-read/src/identity-codec.ts';
 import type { AttestationDatum } from '../../../packages/vector-read/src/identity-codec.ts';
@@ -33,6 +34,7 @@ const ISSUE_WINDOW_MS = 30 * 60_000;
 const WITHDRAW_LEAD_MS = 60_000;
 const URI_BYTES = 256;
 const HEX_32 = /^[0-9a-f]{64}$/;
+const OUT_REF = /^[0-9a-f]{64}#(?:0|[1-9][0-9]*)$/;
 const KEY_HASH = /^[0-9a-f]{56}$/;
 const LOCATOR_BASE = /^https:\/\/raw\.githubusercontent\.com\/Apex-Fusion\/vector-service-agents\/[0-9a-f]{40}\/docs\/attestations\/$/;
 
@@ -47,6 +49,8 @@ function validUri(uri: string): boolean {
     return url.href === uri && url.protocol === 'https:' && url.username === '' && url.password === '';
   } catch { return false; }
 }
+
+const folderOf = (uri: string): string => uri.slice(0, uri.lastIndexOf('/') + 1);
 
 function extraOf(use: UseCase, flags: TaskFlags): Extra {
   const record = flags.has('record');
@@ -71,7 +75,9 @@ function extraOf(use: UseCase, flags: TaskFlags): Extra {
       if ((reason !== undefined && !/^[0-9]+$/.test(reason)) || !Number.isSafeInteger(code)) throw new FlagError('--reason must be a non-negative safe integer');
       return { kind: 'revoke', agent, reason: code };
     }
-    if (replyUri === undefined || !validUri(replyUri)) throw new FlagError('--reply-uri must be an https URL with no credentials, query or fragment and at most 256 bytes');
+    if (replyUri === undefined || !validUri(replyUri) || !LOCATOR_BASE.test(folderOf(replyUri))) {
+      throw new FlagError('--reply-uri must name the reply in the raw docs/attestations/ folder of this repository at a commit');
+    }
     return { kind: 'contest', agent, replyUri };
   }
   return record ? { kind: 'record' } : { kind: 'attest', locatorBase };
@@ -172,9 +178,9 @@ function heldFact(session: Session, agent: string): ComplianceFact {
   return fact;
 }
 
-function matchesIssue(view: AttestationView, fact: ComplianceFact, subject: string, spec: ComplianceSpec, issuerHash: string | null): boolean {
+function matchesIssue(view: AttestationView, fact: ComplianceFact, subject: string, spec: ComplianceSpec, issuerHash: string): boolean {
   const { attestation: a } = view;
-  return view.id === fact.id && a.subject === subject && (issuerHash === null || keyHashOf(a.issuer) === issuerHash)
+  return view.id === fact.id && a.subject === subject && keyHashOf(a.issuer) === issuerHash
     && a.issuerId === null && a.attType === ATT_TYPES.identity && a.format === spec.format && a.profile === null && !a.solicited && a.envelopeSig === null
     && a.digest === fact.digest && a.locator === utf8Hex(fact.locator) && a.validFrom === null && a.links.length === 0
     && iso(a.issuedAt) === fact.issuedAt && a.validUntil === a.issuedAt + spec.validDays * DAY_MS && iso(a.validUntil) === fact.validUntil;
@@ -191,10 +197,16 @@ function issueFact(record: StepRecord): ComplianceFact {
   return { id, tx, digest, locator, validUntil, issuedAt, revokeTx: null, contestTx: null, replySha256: null, replyUri: null };
 }
 
+/** Compare the issue fields only. The revoke and reply have their own records. */
+function sameIssue(left: ComplianceFact, right: ComplianceFact): boolean {
+  return left.id === right.id && left.tx === right.tx && left.digest === right.digest && left.locator === right.locator
+    && left.issuedAt === right.issuedAt && left.validUntil === right.validUntil;
+}
+
 function keepIssue(session: Session, agent: string, fact: ComplianceFact): void {
   const earlier = session.facts.read().compliance[agent];
   if (earlier === undefined) session.facts.put('compliance', [agent], fact);
-  else if (earlier.id !== fact.id || earlier.tx !== fact.tx || earlier.digest !== fact.digest || earlier.locator !== fact.locator || earlier.issuedAt !== fact.issuedAt || earlier.validUntil !== fact.validUntil) {
+  else if (!sameIssue(earlier, fact)) {
     throw new PreconditionError(`the compliance fact of ${agent} differs from the recorded issue`);
   }
 }
@@ -248,15 +260,12 @@ function issueStep(spec: ComplianceSpec, agent: string): StepHandler<Extra> {
         facts: () => ({ agent, subject: subject.id, issuer_key_hash: issuerHash, digest, locator, issued_at: iso(issuedAt), valid_until: iso(validUntil) }),
       });
       if (landed.kind === 'dry') return { kind: 'dry' };
-      const part = session.state.note<StepRecord>(`part.${name}`);
-      if (part === undefined) throw new PreconditionError('the state does not hold the confirmed compliance issue');
-      keepIssue(session, agent, issueFact(part));
+      if (session.state.note(`part.${name}`) === undefined) throw new PreconditionError('the state does not hold the confirmed compliance issue');
       return { kind: 'done', message: `the compliance attestation of ${agent} is confirmed in ${landed.txHash}` };
     },
     async verify(session, record) {
       requireNetwork(session);
       const fact = issueFact(record);
-      keepIssue(session, agent, fact);
       const subject = subjectOf(session, agent).id;
       const issuerHash = session.registry.hashOf(spec.issuerKey);
       const output = record.refs.attestation_output;
@@ -275,6 +284,7 @@ function issueStep(spec: ComplianceSpec, agent: string): StepHandler<Extra> {
         return { done: nodeOk && hostedOk, value: nodeOk ? 'the hosted tool' : 'the node' };
       });
       if (!checked.done) throw new VerificationError(`${checked.value} does not show the compliance issue of ${agent} as built`);
+      keepIssue(session, agent, fact);
       session.evidence.add({ step: name, status: 'verified', hosted: [{ tool: READ_TOOL, arguments: args, ok: true, result: expected }], shows: { agent, attestation_id: fact.id, attestation_output: output } });
     },
   };
@@ -290,12 +300,31 @@ function revokeTime(step: string, cbor: string, facts: TxFacts, validTo: number)
   return validTo - Number(end - start) * 1_000;
 }
 
-async function requiredView(session: Session, agent: string, fact: ComplianceFact, subject: string, spec: ComplianceSpec): Promise<AttestationView> {
+/** A fact is not enough: the runner can stop between writing it and marking the step verified. */
+function verifiedPart(session: Session, step: string, id: string, tx: string | null, before?: string): StepRecord {
+  const part = session.state.note<StepRecord>(`part.${step}`);
+  const ref = part?.refs?.attestation_output;
+  if (part == null || typeof part.verified_at !== 'string' || tx === null || part.tx_hash !== tx || part.refs?.attestation_id !== id
+    || typeof ref !== 'string' || !OUT_REF.test(ref) || !ref.startsWith(`${tx}#`) || (before !== undefined && part.refs.attestation_before !== before)) {
+    throw new PreconditionError(`the step ${step} is not verified in the compliance state: run that action again first`);
+  }
+  return part;
+}
+
+function verifiedIssue(session: Session, agent: string, subject: string, fact: ComplianceFact): { ref: string; issuerHash: string } {
+  const part = verifiedPart(session, `attest:${agent}`, fact.id, fact.tx);
+  const issuerHash = part.facts?.issuer_key_hash;
+  if (!sameIssue(issueFact(part), fact) || part.facts.agent !== agent || part.facts.subject !== subject || typeof issuerHash !== 'string' || !KEY_HASH.test(issuerHash)) {
+    throw new PreconditionError(`the issue in the facts does not match the verified compliance issue of ${agent}`);
+  }
+  return { ref: part.refs.attestation_output, issuerHash };
+}
+
+async function requiredView(session: Session, agent: string, fact: ComplianceFact, subject: string, spec: ComplianceSpec, before: { ref: string; issuerHash: string }): Promise<AttestationView> {
   const view = await readAttestation(session.chain, fact.id);
-  if (view === null) throw new PreconditionError(`the node does not show the compliance attestation of ${agent}`);
-  // Contest needs only the controller. Its scope is the attestation in the facts and the subject of that attestation.
-  const issuer = session.registry.has(spec.issuerKey) ? session.registry.hashOf(spec.issuerKey) : null;
-  if (!matchesIssue(view, fact, subject, spec, issuer)) throw new PreconditionError(`the attestation of ${agent} on the node does not match its issue`);
+  if (view === null || view.ref !== before.ref || !matchesIssue(view, fact, subject, spec, before.issuerHash)) {
+    throw new PreconditionError(`the node does not show the verified compliance output of ${agent}`);
+  }
   return view;
 }
 
@@ -308,13 +337,16 @@ function spendStep(spec: ComplianceSpec, spend: Spend): StepHandler<Extra> {
       requireNetwork(session);
       const fact = heldFact(session, agent);
       const subject = subjectOf(session, agent);
-      const view = await requiredView(session, agent, fact, subject.id, spec);
+      const issue = verifiedIssue(session, agent, subject.id, fact);
+      const ref = spend.kind === 'revoke' ? issue.ref : verifiedPart(session, `revoke:${agent}`, fact.id, fact.revokeTx, issue.ref).refs.attestation_output;
+      const view = await requiredView(session, agent, fact, subject.id, spec, { ref, issuerHash: issue.issuerHash });
       const before = view.attestation;
       const fee = await feeWallet(session);
       const args = { changeAddress: fee.address, attestation: fact.id };
       let reply: { uri: string; sha256: string } | null = null;
       let subjectRef: string | null = null;
       if (spend.kind === 'revoke') {
+        if (session.registry.hashOf(spec.issuerKey) !== issue.issuerHash) throw new PreconditionError(`the issuer key does not match the verified compliance issue of ${agent}`);
         if (fact.revokeTx !== null || attestationState(before, session.clock.now()) !== 'active') {
           throw new PreconditionError(`the compliance attestation of ${agent} is not active`);
         }
@@ -325,6 +357,7 @@ function spendStep(spec: ComplianceSpec, spend: Spend): StepHandler<Extra> {
         if (onChain.record.controller !== session.registry.publicKeyOf('controller')) throw new PreconditionError(`the controller key does not control the record of ${agent} on the node`);
         subjectRef = refOf(onChain.utxo);
         const document = replyDocumentOf({ agent, did: subject.did, text: spec.reply.text });
+        if (spend.replyUri !== `${folderOf(spend.replyUri)}${document.name}`) throw new FlagError(`--reply-uri must name ${document.name}`);
         const digest = await readComplianceDocument(session.fetchImpl, spend.replyUri, document);
         reply = { uri: utf8Hex(spend.replyUri), sha256: digest };
       }
@@ -360,6 +393,8 @@ function spendStep(spec: ComplianceSpec, spend: Spend): StepHandler<Extra> {
       requireNetwork(session);
       const fact = heldFact(session, agent);
       const subject = subjectOf(session, agent).id;
+      const issue = verifiedIssue(session, agent, subject, fact);
+      const earlier = kind === 'revoke' ? issue.ref : verifiedPart(session, `revoke:${agent}`, fact.id, fact.revokeTx, issue.ref).refs.attestation_output;
       const tx = record.tx_hash;
       const ref = record.refs.attestation_output;
       const reason = record.facts.reason;
@@ -368,9 +403,19 @@ function spendStep(spec: ComplianceSpec, spend: Spend): StepHandler<Extra> {
       const issuerHash = record.facts.issuer_key_hash;
       const replySha256 = record.facts.reply_sha256;
       const replyUri = record.facts.reply_uri;
-      if (tx === null || !HEX_32.test(tx) || typeof ref !== 'string' || !ref.startsWith(`${tx}#`) || record.refs.attestation_id !== fact.id
-        || record.facts.agent !== agent || record.facts.subject !== subject || typeof issuerHash !== 'string' || !KEY_HASH.test(issuerHash) || typeof revokedAt !== 'string') {
+      if (tx === null || !HEX_32.test(tx) || typeof ref !== 'string' || !OUT_REF.test(ref) || !ref.startsWith(`${tx}#`)
+        || record.refs.attestation_id !== fact.id || record.refs.attestation_before !== earlier || record.facts.agent !== agent
+        || record.facts.subject !== subject || issuerHash !== issue.issuerHash || typeof revokedAt !== 'string') {
         throw new PreconditionError(`the state does not hold a valid compliance ${kind} of ${agent}`);
+      }
+      let replyHex: string | null = null;
+      if (kind === 'contest') {
+        const document = replyDocumentOf({ agent, did: `did:vector:${subject}`, text: spec.reply.text });
+        if (typeof replyUri !== 'string' || !validUri(replyUri) || !LOCATOR_BASE.test(folderOf(replyUri))
+          || replyUri !== `${folderOf(replyUri)}${document.name}` || replySha256 !== document.sha256) {
+          throw new PreconditionError(`the state does not hold the published compliance reply of ${agent}`);
+        }
+        replyHex = utf8Hex(replyUri);
       }
       const observed = await eventually(session.clock, VERIFY_WINDOW, async () => {
         const view = await readAttestation(session.chain, fact.id);
@@ -378,8 +423,7 @@ function spendStep(spec: ComplianceSpec, spend: Spend): StepHandler<Extra> {
         const ok = view !== null && view.ref === ref && status?.type === 'AttRevoked' && iso(status.at) === revokedAt && matchesIssue(view, fact, subject, spec, issuerHash)
           && (kind === 'revoke'
             ? issuerHash === session.registry.hashOf(spec.issuerKey) && status.reason === reason
-            : String(view.revokeReason) === revokeReason && typeof replyUri === 'string' && validUri(replyUri) && typeof replySha256 === 'string'
-              && view.attestation.contested?.sha256 === replySha256 && view.attestation.contested.uri === utf8Hex(replyUri));
+            : String(view.revokeReason) === revokeReason && view.attestation.contested?.sha256 === replySha256 && view.attestation.contested?.uri === replyHex);
         return { done: ok, value: view };
       });
       if (!observed.done) throw new VerificationError(`the node does not show the confirmed compliance ${kind} of ${agent} as built`);
@@ -397,6 +441,79 @@ function spendStep(spec: ComplianceSpec, spend: Spend): StepHandler<Extra> {
   };
 }
 
+const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
+const rowRef = (row: Record<string, unknown>): string | null => typeof row.tx_hash === 'string' && typeof row.tx_index === 'number'
+  && Number.isSafeInteger(row.tx_index) && row.tx_index >= 0 ? `${row.tx_hash}#${row.tx_index}` : null;
+
+function amountOf(value: unknown): bigint | null {
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return BigInt(value);
+  return typeof value === 'string' && /^[0-9]{1,20}$/.test(value) ? BigInt(value) : null;
+}
+
+/** Read historical inputs and outputs. A new block can spend the fee output before a retry reads it. */
+async function withdrawalShown(session: Session, tx: string, ref: string, deposit: bigint, fee: bigint, feeAddress: string): Promise<boolean> {
+  const script = session.chain.deployment.attestation;
+  const rows = await koiosPostList(session.chain.koiosUrl, 'tx_info', {
+    _tx_hashes: [tx], _inputs: true, _scripts: true, _assets: false, _metadata: false, _certs: false, _withdrawals: false, _bytecode: false,
+  }, session.fetchImpl, '', 256 * 1024);
+  const row = rows.find((item) => isObject(item) && item.tx_hash === tx);
+  if (!isObject(row) || (row.valid_contract !== undefined && row.valid_contract !== true) || amountOf(row.fee) !== fee
+    || !Array.isArray(row.inputs) || !Array.isArray(row.outputs) || !Array.isArray(row.plutus_contracts)) return false;
+  const scripts: unknown[] = row.plutus_contracts;
+  // A failed script transaction takes collateral but makes none of its normal outputs.
+  if (!scripts.every((run) => isObject(run) && run.valid_contract === true)
+    || !scripts.some((run) => isObject(run) && run.script_hash === script.hash && isObject(run.spends_input) && rowRef(run.spends_input) === ref)) return false;
+
+  const inputs = new Set<string>();
+  let fromFeeWallet = 0n;
+  for (const input of row.inputs as unknown[]) {
+    if (!isObject(input) || !isObject(input.payment_addr)) return false;
+    const at = rowRef(input);
+    const value = amountOf(input.value);
+    if (at === null || !OUT_REF.test(at) || value === null || inputs.has(at)) return false;
+    inputs.add(at);
+    if (at === ref) {
+      if (input.payment_addr.bech32 !== script.address || value !== deposit) return false;
+    } else {
+      if (input.payment_addr.bech32 !== feeAddress) return false;
+      fromFeeWallet += value;
+    }
+  }
+  let toFeeWallet = 0n;
+  for (const output of row.outputs as unknown[]) {
+    if (!isObject(output) || !isObject(output.payment_addr) || output.payment_addr.bech32 !== feeAddress) return false;
+    const value = amountOf(output.value);
+    if (value === null) return false;
+    toFeeWallet += value;
+  }
+  return inputs.has(ref) && toFeeWallet - fromFeeWallet === deposit - fee;
+}
+
+async function verifyWithdrawal(session: Session, step: string, agent: string, id: string, ref: string, part: StepRecord | undefined): Promise<string> {
+  const tx = part?.tx_hash;
+  const deposit = amountOf(part?.facts?.released_lovelace);
+  const fee = amountOf(part?.facts?.fee_lovelace);
+  if (part == null || typeof tx !== 'string' || !HEX_32.test(tx) || part.refs?.attestation_id !== id || part.refs.attestation_before !== ref
+    || part.facts?.agent !== agent || deposit === null || deposit < DEPOSIT || fee === null || fee >= deposit) {
+    throw new VerificationError(`the state does not hold a valid withdrawal of the compliance deposit of ${agent}`);
+  }
+  if (typeof part.verified_at === 'string') {
+    if (await readAttestation(session.chain, id) !== null) throw new VerificationError(`the node still shows the withdrawn compliance attestation of ${agent}`);
+    return tx;
+  }
+  const feeAddress = session.registry.addressOf('fee');
+  const verified = await eventually(session.clock, VERIFY_WINDOW, async () => ({
+    done: await readAttestation(session.chain, id) === null && await withdrawalShown(session, tx, ref, deposit, fee, feeAddress), value: null,
+  }));
+  if (!verified.done) throw new VerificationError(`the ledger does not show the withdrawal of the expected compliance deposit of ${agent} to the fee wallet, less the fee`);
+  session.evidence.add({ step, status: 'verified', hosted: [], shows: {
+    agent, tx_hash: tx, attestation_id: id, attestation_before: ref, released_lovelace: String(deposit),
+    fee_lovelace: String(fee), net_lovelace: String(deposit - fee),
+  } });
+  session.state.setNote(`part.${step}`, { ...part, verified_at: iso(session.clock.now()) });
+  return tx;
+}
+
 async function cleanup(session: Session): Promise<StepOutcome> {
   if (session.extra.kind !== 'attest' || session.extra.locatorBase !== undefined) throw new FlagError('cleanup takes no compliance flags');
   const spec = session.use.compliance;
@@ -404,17 +521,28 @@ async function cleanup(session: Session): Promise<StepOutcome> {
   requireNetwork(session);
   let count = 0;
   for (const agent of spec.subjects) {
-    if (session.facts.read().compliance[agent] === undefined) continue;
+    if (session.facts.read().compliance[agent] === undefined && session.state.note(`part.attest:${agent}`) === undefined) continue;
     const fact = heldFact(session, agent);
+    const subject = subjectOf(session, agent).id;
+    const issue = verifiedIssue(session, agent, subject, fact);
+    if (session.registry.hashOf(spec.issuerKey) !== issue.issuerHash) throw new PreconditionError(`the issuer key does not match the verified compliance issue of ${agent}`);
+    let ref = issue.ref;
+    if (fact.revokeTx !== null || session.state.note(`part.revoke:${agent}`) !== undefined) {
+      ref = verifiedPart(session, `revoke:${agent}`, fact.id, fact.revokeTx, ref).refs.attestation_output;
+    }
+    if (fact.contestTx !== null || session.state.note(`part.contest:${agent}`) !== undefined) {
+      ref = verifiedPart(session, `contest:${agent}`, fact.id, fact.contestTx, ref).refs.attestation_output;
+    }
     const step = `withdraw:${agent}`;
-    const view = await readAttestation(session.chain, fact.id);
-    if (view === null) {
-      const part = session.state.note<StepRecord>(`part.${step}`);
-      session.out.out(`${agent}: ${part?.refs.attestation_id === fact.id ? 'the deposit is back already' : 'the attestation is not on the node'}`);
+    const part = session.state.note<StepRecord>(`part.${step}`);
+    if (part !== undefined) {
+      const tx = await verifyWithdrawal(session, step, agent, fact.id, ref, part);
+      session.out.out(`${agent}: the deposit returned to the fee wallet in ${tx}`);
       continue;
     }
-    if (!matchesIssue(view, fact, subjectOf(session, agent).id, spec, session.registry.hashOf(spec.issuerKey))) throw new PreconditionError(`the attestation of ${agent} on the node does not match its issue`);
-    if (session.state.note(`part.${step}`) !== undefined) throw new PreconditionError(`the state shows a withdrawal of ${agent}, but the node still shows its attestation`);
+    const view = await readAttestation(session.chain, fact.id);
+    if (view === null) throw new VerificationError(`the node does not show the compliance attestation of ${agent} and the state has no withdrawal: check the chain before continuing`);
+    if (view.ref !== ref || !matchesIssue(view, fact, subject, spec, issue.issuerHash)) throw new PreconditionError(`the node does not show the verified compliance output of ${agent}`);
     const due = view.withdrawableFrom;
     if (due === null) throw new PreconditionError(`the node gives no withdrawal date for ${agent}`);
     const buildFrom = Math.ceil((due + WITHDRAW_LEAD_MS) / 1_000) * 1_000;
@@ -431,12 +559,14 @@ async function cleanup(session: Session): Promise<StepOutcome> {
       plan: (facts) => {
         requireFeeOutputs(step, facts, fee);
         if (!facts.inputs.includes(view.ref) || build.validFrom < due) throw bodyRefusal(step, 'the withdrawal must spend the due attestation');
+        if (facts.feeLovelace >= view.lovelace) throw bodyRefusal(step, 'the fee must be less than the compliance deposit');
         return planOf(session, { explained: [view.ref], mint: { [unit]: -1n }, outflow: { fee: session.settings.maxFeeLovelace } });
       },
       refs: () => ({ attestation_id: fact.id, attestation_before: view.ref }),
-      facts: () => ({ agent, released_lovelace: String(view.lovelace) }),
+      facts: (facts) => ({ agent, released_lovelace: String(view.lovelace), fee_lovelace: String(facts.feeLovelace) }),
     });
     if (landed.kind === 'dry') return { kind: 'dry' };
+    await verifyWithdrawal(session, step, agent, fact.id, ref, session.state.note<StepRecord>(`part.${step}`));
     count += 1;
     session.out.out(`${agent}: the deposit returned to the fee wallet in ${landed.txHash}`);
   }
@@ -482,6 +612,7 @@ const compliance: TaskDefinition<Extra> = {
     return extra.kind === 'attest' ? use.compliance.subjects.map((agent) => `attest:${agent}`) : [`${extra.kind}:${extra.agent}`];
   },
   parse(_env, _settings, use, flags) {
+    if (flags.has('run')) throw new FlagError('compliance takes no --run label: it uses one state stream for the use case');
     checkSpec(use);
     return extraOf(use, flags);
   },

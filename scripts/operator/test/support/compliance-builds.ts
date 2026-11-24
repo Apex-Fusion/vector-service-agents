@@ -10,12 +10,14 @@ import { decodeAttestationDatum, utf8Hex } from '../../../../packages/vector-rea
 import { keyHashOf } from '../../../../packages/id-kit/src/index.ts';
 import type { IdentityDatum } from '../../../../packages/vector-read/src/identity-codec.ts';
 import { iso } from '../../../checks/lib/format.ts';
+import { factsOf } from '../../../checks/lib/txfacts.ts';
 import { VECTOR_MAINNET } from '../../../checks/lib/settings.ts';
 import { DEPLOYMENT } from '../../../checks/test/support/world.ts';
 import type { GoFile } from '../../lib/approval.ts';
 import type { UseCase } from '../../lib/contract.ts';
 import { FactsFile } from '../../lib/facts.ts';
 import { loadRegistry } from '../../lib/registry.ts';
+import type { Utxo } from '../../lib/platform.ts';
 import { runTask } from '../../lib/runner.ts';
 import compliance from '../../tasks/compliance.ts';
 import data from '../../usecases/bid-evaluation.ts';
@@ -28,7 +30,6 @@ export const ISSUER = SPEC.issuerKey;
 export const [ALFA, BRAVO, CHARLIE] = SPEC.subjects;
 export const DAY_MS = 86_400_000;
 export const BASE = `https://raw.githubusercontent.com/Apex-Fusion/vector-service-agents/${'e1'.repeat(20)}/docs/attestations/`;
-export const REPLY = 'https://documents.example.test/charlie-reply.json';
 export const subjectId = (agent: string): string => hashOf(`compliance record ${agent}`);
 export const subjectDid = (agent: string): `did:vector:${string}` => `did:vector:${subjectId(agent)}`;
 export const sha256 = (text: string | Uint8Array): string => createHash('sha256').update(text).digest('hex');
@@ -37,6 +38,24 @@ export function publishedOf(agent: string, reply = false): { name: string; text:
   const text = JSON.stringify(reply ? { reply: SPEC.reply.text, subject } : { statement: SPEC.statement, subject });
   const digest = sha256(text);
   return { name: `${reply ? 'compliance-reply' : 'compliance'}-${agent}-${digest.slice(0, 7)}.json`, text, sha256: digest };
+}
+export const REPLY = `${BASE}${publishedOf(CHARLIE, true).name}`;
+
+interface LedgerOutput {
+  tx_hash: string;
+  tx_index: number;
+  payment_addr: { bech32: string };
+  value: string;
+}
+const ledgerOutput = (output: Utxo): LedgerOutput => ({
+  tx_hash: output.txHash, tx_index: output.outputIndex, payment_addr: { bech32: output.address }, value: String(output.assets.lovelace),
+});
+interface WithdrawalRow {
+  tx_hash: string;
+  fee: string;
+  inputs: LedgerOutput[];
+  outputs: LedgerOutput[];
+  plutus_contracts: { script_hash: string; valid_contract: boolean; spends_input: { tx_hash: string; tx_index: number } }[];
 }
 
 interface Options {
@@ -79,9 +98,32 @@ export async function complianceWorld(options: Options = {}) {
   }));
   routes.set(REPLY, () => new Response(publishedOf(CHARLIE, true).text));
   const requests: { url: string; init: RequestInit | undefined }[] = [];
+  const withdrawals = new Map<string, WithdrawalRow>();
+  let showWithdrawal = (row: WithdrawalRow): WithdrawalRow => row;
+  const submit = w.node.submit.bind(w.node);
+  w.node.submit = async (cbor) => {
+    const tx = factsOf(cbor);
+    if (!Object.entries(tx.mint).some(([unit, amount]) => unit.startsWith(DEPLOYMENT.attestation.hash) && amount === -1n)) return submit(cbor);
+    const inputs = tx.inputs.map((ref) => ledgerOutput(w.world.chain.find(ref)!));
+    const hash = await submit(cbor);
+    withdrawals.set(hash, {
+      tx_hash: hash, fee: String(tx.feeLovelace), inputs, outputs: w.world.chain.held.filter((out) => out.txHash === hash).map(ledgerOutput),
+      plutus_contracts: inputs.filter((input) => input.payment_addr.bech32 === DEPLOYMENT.attestation.address).map(({ tx_hash, tx_index }) => ({
+        script_hash: DEPLOYMENT.attestation.hash, valid_contract: true, spends_input: { tx_hash, tx_index },
+      })),
+    });
+    return hash;
+  };
   const fetchImpl: typeof fetch = async (url, init) => {
     const text = String(url);
     requests.push({ url: text, init });
+    if (text === `${w.chain.koiosUrl}/api/v1/tx_info` && init?.method === 'POST') {
+      const { _tx_hashes: hashes }: { _tx_hashes: string[] } = JSON.parse(String(init.body));
+      return Response.json(hashes.flatMap((hash) => {
+        const row = withdrawals.get(hash);
+        return row === undefined ? [] : [showWithdrawal(structuredClone(row))];
+      }));
+    }
     return routes.get(text)?.() ?? new Response(null, { status: 404 });
   };
   const spend = new Map<string, HandlerAnswer>();
@@ -117,6 +159,7 @@ export async function complianceWorld(options: Options = {}) {
   return {
     w, registry, fee, factsFile, hosted, routes, requests, loaded, held, go, at,
     setIssueVisible(value: boolean): void { visible = value; },
+    setWithdrawalRead(read: (row: WithdrawalRow) => WithdrawalRow): void { showWithdrawal = read; },
     travel(now: number): void {
       w.clock.t = now;
       w.world.chain.tipSlot = Math.floor((now - VECTOR_MAINNET.systemStartMs!) / 1000);
