@@ -13,7 +13,8 @@
 // A file that is there and is damaged is an error too.
 //
 // A book holds at most INTAKE_BOOK_LIMIT entries. It never drops an entry to make room, because a dropped entry reads as a new one. The record of a number that the book holds is a no-op for the same intake id,
-// and an error for another intake id: the portal never files two entries for one number.
+// and an error for another intake id: the portal never files two entries for one number. A book that is full cannot take a new entry, so `has` rejects with a RangeError for a number that the book lacks, and it
+// never answers false: a false gives a go, the agent claims the escrow, and the record of that entry fails. A number that the book holds still answers true.
 import { randomBytes } from 'node:crypto';
 import { accessSync, closeSync, constants, existsSync, fsyncSync, mkdirSync, openSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { open, readFile, rename, unlink, writeFile } from 'node:fs/promises';
@@ -23,7 +24,10 @@ import { isPlainObject } from '@vsa/usecase-kit/protocol';
 
 /** The requests that the Insurer Intake Agent filed, by request number. */
 export interface IntakeBook {
-  /** Is there an entry for the request number of this tenant? The number counts without regard to case. A book that cannot answer rejects. */
+  /**
+   * Is there an entry for the request number of this tenant? The number counts without regard to case. A book that cannot answer rejects. A book that is full and has no entry for the number rejects too
+   * (a RangeError): the job could not record a new entry, so the book must not read the number as new. A number that the book holds is true also when the book is full.
+   */
   has(tenant: string, requestNumber: string): Promise<boolean>;
   /** Records the entry that the insurer portal filed for the number. It resolves when the record is stored. */
   record(tenant: string, requestNumber: string, intakeId: string): Promise<void>;
@@ -55,6 +59,19 @@ function textOf(value: unknown, name: string): string {
 
 const keyOf = (tenant: string, requestNumber: string): string => JSON.stringify([tenant, requestNumberKey(requestNumber)]);
 
+/** The error of a book that is full. It names the book and the limit, and never a request number. */
+const full = (): RangeError => new RangeError(`the intake book holds ${INTAKE_BOOK_LIMIT} entries and is full`);
+
+/**
+ * Does the book hold the key? A book that is full and lacks the key rejects, and never answers false: the job could not record an entry for that number, so the book must not read it as new. A key that the book
+ * holds is true also when the book is full.
+ */
+function holds(entries: Entries, key: string): boolean {
+  if (entries.has(key)) return true;
+  if (entries.size >= INTAKE_BOOK_LIMIT) throw full();
+  return false;
+}
+
 /**
  * Decides what the record of an entry does. It is true when the entry is new and the caller stores it. It is false when the book holds the same entry already. It throws for another intake id of a number that the
  * book holds, and for a book that is full.
@@ -65,7 +82,7 @@ function isNew(entries: Entries, entry: IntakeEntry): boolean {
     if (held.intake_id === entry.intake_id) return false;
     throw new Error('the intake book holds another intake id for this request number');
   }
-  if (entries.size >= INTAKE_BOOK_LIMIT) throw new RangeError(`the intake book holds ${INTAKE_BOOK_LIMIT} entries and is full`);
+  if (entries.size >= INTAKE_BOOK_LIMIT) throw full();
   return true;
 }
 
@@ -74,7 +91,7 @@ export class MemoryIntakeBook implements IntakeBook {
   readonly #entries: Entries = new Map();
 
   async has(tenant: string, requestNumber: string): Promise<boolean> {
-    return this.#entries.has(keyOf(textOf(tenant, 'tenant'), textOf(requestNumber, 'requestNumber')));
+    return holds(this.#entries, keyOf(textOf(tenant, 'tenant'), textOf(requestNumber, 'requestNumber')));
   }
 
   async record(tenant: string, requestNumber: string, intakeId: string): Promise<void> {
@@ -256,7 +273,7 @@ export class FileIntakeBook implements IntakeBook {
 
   async has(tenant: string, requestNumber: string): Promise<boolean> {
     const key = keyOf(textOf(tenant, 'tenant'), textOf(requestNumber, 'requestNumber'));
-    return (await this.#read()).has(key);
+    return holds(await this.#read(), key);
   }
 
   async record(tenant: string, requestNumber: string, intakeId: string): Promise<void> {

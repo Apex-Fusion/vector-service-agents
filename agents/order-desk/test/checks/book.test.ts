@@ -24,6 +24,21 @@ const SCHEMA = 'order-desk.orders.v1';
 const entry = (n: number): { tenant: string; po_number: string; order_id: string } => ({ tenant: 'run1', po_number: `po-${n}`, order_id: `SO-${n}` });
 const fileOf = (orders: unknown, over: Record<string, unknown> = {}): string => JSON.stringify({ schema: SCHEMA, orders, ...over });
 
+/** The error that a call rejects with. A call that resolves, or that rejects with something that is no error, fails the test. */
+async function rejection(call: Promise<unknown>): Promise<Error> {
+  const outcome = await call.then(() => null, (error: unknown) => error);
+  if (!(outcome instanceof Error)) throw new Error('the call must reject with an error');
+  return outcome;
+}
+
+/** The refusal of a book that is full: a RangeError that names the book and the limit, and holds no text of the key that was asked. */
+function expectFull(failure: Error, ...keyTexts: string[]): void {
+  expect(failure).toBeInstanceOf(RangeError);
+  expect(failure.message).toContain('order book');
+  expect(failure.message).toContain(String(ORDER_BOOK_LIMIT));
+  for (const text of keyTexts) expect(failure.message).not.toContain(text);
+}
+
 const BOOKS: Array<[string, () => OrderBook]> = [
   ['MemoryOrderBook', () => new MemoryOrderBook()],
   ['FileOrderBook', () => new FileOrderBook(join(folder(), 'orders.json'))],
@@ -89,11 +104,16 @@ describe.each(BOOKS)('%s', (_name, make) => {
 });
 
 describe('MemoryOrderBook', () => {
-  it(`holds ${ORDER_BOOK_LIMIT} orders and refuses the next one, and it answers for the orders that it holds`, async () => {
+  it(`holds ${ORDER_BOOK_LIMIT} orders: it refuses the next record, has rejects for a number that it lacks, and it answers true for the orders that it holds`, async () => {
     const book = new MemoryOrderBook();
-    for (let n = 0; n < ORDER_BOOK_LIMIT; n += 1) await book.record('run1', `po-${n}`, `SO-${n}`);
-    await expect(book.record('run1', 'po-new', 'SO-new')).rejects.toBeInstanceOf(RangeError);
+    for (let n = 0; n < ORDER_BOOK_LIMIT - 1; n += 1) await book.record('run1', `po-${n}`, `SO-${n}`);
+    // The twin: a book with room for one more order reads a new number as new.
     expect(await book.has('run1', 'po-new')).toBe(false);
+    await book.record('run1', `po-${ORDER_BOOK_LIMIT - 1}`, `SO-${ORDER_BOOK_LIMIT - 1}`);
+    await expect(book.record('run1', 'po-new', 'SO-new')).rejects.toBeInstanceOf(RangeError);
+    // A full book never answers false for a number that it lacks, because the record of that order would fail. It is full for each tenant.
+    expectFull(await rejection(book.has('run1', 'po-new')), 'run1', 'po-new');
+    expectFull(await rejection(book.has('run2', 'PO-0')), 'run2', 'PO-0');
     expect(await book.has('run1', 'PO-0')).toBe(true);
     expect(await book.has('run1', `po-${ORDER_BOOK_LIMIT - 1}`)).toBe(true);
     // An order that the book holds is taken again when it is full.
@@ -193,14 +213,19 @@ describe('FileOrderBook', () => {
     await expect(book.has('run1', 'po-1')).rejects.toThrow('damaged');
   });
 
-  it('holds 10,000 orders: a file with that many answers, and a record for a new number is refused', async () => {
+  it('holds 10,000 orders: a file with that many answers true for a number that it holds, has rejects for a number that it lacks, and a record for a new number is refused', async () => {
     const file = join(folder(), 'orders.json');
     writeFileSync(file, fileOf(Array.from({ length: ORDER_BOOK_LIMIT }, (_, n) => entry(n))));
     const book = new FileOrderBook(file);
     expect(await book.has('run1', 'PO-9999')).toBe(true);
-    expect(await book.has('run1', 'po-10000')).toBe(false);
+    expectFull(await rejection(book.has('run1', 'po-10000')), 'run1', 'po-10000');
+    expectFull(await rejection(book.has('run2', 'po-3')), 'run2', 'po-3');
     await expect(book.record('run1', 'po-10000', 'SO-10000')).rejects.toBeInstanceOf(RangeError);
     await expect(book.record('run1', 'po-3', 'SO-3')).resolves.toBeUndefined();
+    // The twin: a file with room for one more order reads a new number as new.
+    const room = join(folder(), 'orders.json');
+    writeFileSync(room, fileOf(Array.from({ length: ORDER_BOOK_LIMIT - 1 }, (_, n) => entry(n))));
+    expect(await new FileOrderBook(room).has('run1', 'po-10000')).toBe(false);
   });
 
   describe('a damaged file', () => {

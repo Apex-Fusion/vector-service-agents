@@ -45,6 +45,14 @@ async function rejection(call: Promise<unknown>): Promise<Error> {
   return outcome;
 }
 
+/** The refusal of a book that is full: a RangeError that names the book and the limit, and holds no text of the key that was asked. */
+function expectFull(failure: Error, ...keyTexts: string[]): void {
+  expect(failure).toBeInstanceOf(RangeError);
+  expect(failure.message).toContain('intake book');
+  expect(failure.message).toContain(String(INTAKE_BOOK_LIMIT));
+  for (const text of keyTexts) expect(failure.message).not.toContain(text);
+}
+
 const BOOKS: Array<[string, () => IntakeBook]> = [
   ['MemoryIntakeBook', () => new MemoryIntakeBook()],
   ['FileIntakeBook', () => new FileIntakeBook(join(folder(), 'requests.json'))],
@@ -118,11 +126,16 @@ describe.each(BOOKS)('%s', (_name, make) => {
 });
 
 describe('MemoryIntakeBook', () => {
-  it(`holds ${INTAKE_BOOK_LIMIT} entries and refuses the next one, and it answers for the entries that it holds`, async () => {
+  it(`holds ${INTAKE_BOOK_LIMIT} entries: it refuses the next record, has rejects for a number that it lacks, and it answers true for the entries that it holds`, async () => {
     const book = new MemoryIntakeBook();
-    for (let n = 0; n < INTAKE_BOOK_LIMIT; n += 1) await book.record(TENANT, numberOf(n), idOf(n));
-    await expect(book.record(TENANT, 'demo-1-new', 'INT-new')).rejects.toBeInstanceOf(RangeError);
+    for (let n = 0; n < INTAKE_BOOK_LIMIT - 1; n += 1) await book.record(TENANT, numberOf(n), idOf(n));
+    // The twin: a book with room for one more entry reads a new number as new.
     expect(await book.has(TENANT, 'demo-1-new')).toBe(false);
+    await book.record(TENANT, numberOf(INTAKE_BOOK_LIMIT - 1), idOf(INTAKE_BOOK_LIMIT - 1));
+    await expect(book.record(TENANT, 'demo-1-new', 'INT-new')).rejects.toBeInstanceOf(RangeError);
+    // A full book never answers false for a number that it lacks, because the record of that entry would fail. It is full for each tenant.
+    expectFull(await rejection(book.has(TENANT, 'demo-1-new')), TENANT, 'demo-1-new');
+    expectFull(await rejection(book.has('demo-2', 'DEMO-1-0')), 'demo-2', 'DEMO-1-0');
     expect(await book.has(TENANT, 'DEMO-1-0')).toBe(true);
     expect(await book.has(TENANT, numberOf(INTAKE_BOOK_LIMIT - 1))).toBe(true);
     // An entry that the book holds is taken again when it is full.
@@ -248,12 +261,13 @@ describe('FileIntakeBook', () => {
     expect(requestsIn(file)).toEqual([entry(1), entry(3)]);
   });
 
-  it('holds 10,000 entries: a file with that many answers, and a record for a new number is refused', async () => {
+  it('holds 10,000 entries: a file with that many answers true for a number that it holds, has rejects for a number that it lacks, and a record for a new number is refused', async () => {
     const file = join(folder(), 'requests.json');
     writeFileSync(file, fileOf(Array.from({ length: INTAKE_BOOK_LIMIT }, (_, n) => entry(n))));
     const book = new FileIntakeBook(file);
     expect(await book.has(TENANT, 'DEMO-1-9999')).toBe(true);
-    expect(await book.has(TENANT, 'demo-1-10000')).toBe(false);
+    expectFull(await rejection(book.has(TENANT, 'demo-1-10000')), TENANT, 'demo-1-10000');
+    expectFull(await rejection(book.has('demo-2', 'demo-1-3')), 'demo-2', 'demo-1-3');
     await expect(book.record(TENANT, 'demo-1-10000', idOf(10000))).rejects.toBeInstanceOf(RangeError);
     await expect(book.record(TENANT, numberOf(3), idOf(3))).resolves.toBeUndefined();
   });
@@ -262,6 +276,8 @@ describe('FileIntakeBook', () => {
     const file = join(folder(), 'requests.json');
     writeFileSync(file, fileOf(Array.from({ length: INTAKE_BOOK_LIMIT - 1 }, (_, n) => entry(n))));
     const book = new FileIntakeBook(file);
+    // The twin: a file with room for one more entry reads a new number as new.
+    expect(await book.has(TENANT, 'demo-1-over')).toBe(false);
     await book.record(TENANT, 'demo-1-last', 'INT-last');
     expect(requestsIn(file)).toHaveLength(INTAKE_BOOK_LIMIT);
     const full = readFileSync(file, 'utf8');
@@ -269,7 +285,7 @@ describe('FileIntakeBook', () => {
     expect(readFileSync(file, 'utf8')).toBe(full);
     expect(await book.has(TENANT, numberOf(0))).toBe(true);
     expect(await book.has(TENANT, 'DEMO-1-LAST')).toBe(true);
-    expect(await book.has(TENANT, 'demo-1-over')).toBe(false);
+    expectFull(await rejection(book.has(TENANT, 'demo-1-over')), TENANT, 'demo-1-over');
   });
 
   describe('a damaged file', () => {

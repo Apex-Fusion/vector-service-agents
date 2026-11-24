@@ -1,7 +1,7 @@
 // agents/order-desk/test/checks/precheck.test.ts: the hook of the Order Desk, as the runtime asks it before it claims an escrow. A go is the answer only when the 16 checks passed, and then the record of the
 // checks waits for the job with the hash of the request. A refusal is the status and the code of the protocol, and the escrow stays open. A refusal for `approval_digest_mismatch` starts a challenge after the
 // answer, and the answer never holds a reference. The question: does the hook ever give a go for a wrong sender, delegation, vault payment, approval, supplier, lot, quantity or a number that exists?
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import type { Server, ServerResponse } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -15,7 +15,7 @@ import type { ApprovalChallengeInput, ChallengeResult } from '@vsa/usecase-kit/d
 import { CONFIRMATION_CHECKS, INVENTORY_CAPABILITIES, REORDER_CLAIM } from '@vsa/usecase-kit/inventory';
 import { COUNTERPARTY_REFUSALS, ERROR_STATUS, canonicalSha256, parseHandoff, parseJsonText } from '@vsa/usecase-kit/protocol';
 import type { Handoff } from '@vsa/usecase-kit/protocol';
-import { FileOrderBook, MemoryOrderBook, PassedChecks, createPrecheck, loadLots } from '../../src/checks/index.ts';
+import { FileOrderBook, MemoryOrderBook, ORDER_BOOK_LIMIT, PassedChecks, createPrecheck, loadLots } from '../../src/checks/index.ts';
 import type { OrderBook, PrecheckDeps } from '../../src/checks/index.ts';
 import { LOTS_PATH, OTHER_ADVERT_REF, OTHER_DID, SELF } from './samples.ts';
 import { ATTESTATION_ID, HOUR, ISSUER_ID, ISSUER_KEY, PLAIN_ESCROW_REF, T, failing, makeWorld, proposalOf, withLedger } from './support.ts';
@@ -301,6 +301,40 @@ describe('a source that cannot be read', () => {
       const world = makeWorld();
       unavailable(await rigOf(world, { book }).run(), 'order book');
       expect(world.faults.map(([source]) => source)).toEqual(['order book']);
+    } finally {
+      rmSync(folder, { recursive: true, force: true });
+    }
+  });
+
+  it('is 503 check_unavailable when the real book holds its limit of orders and has none for the number, in memory and in a file, and the escrow stays open', async () => {
+    const folder = mkdtempSync(join(tmpdir(), 'order-desk-hook-'));
+    try {
+      // The orders of a full book. With `holding`, the first order has the purchase order number of the world. Without it, no order has that number.
+      const orders = (holding: boolean): Array<{ tenant: string; po_number: string; order_id: string }> =>
+        Array.from({ length: ORDER_BOOK_LIMIT }, (_, n) => ({ tenant: 'run1', po_number: holding && n === 0 ? 'RUN1-0001' : `po-${n}`, order_id: `SO-${n}` }));
+      const forms: Array<[string, (holding: boolean) => Promise<OrderBook>]> = [
+        ['memory, filled through record', async (holding) => {
+          const book = new MemoryOrderBook();
+          for (const order of orders(holding)) await book.record(order.tenant, order.po_number, order.order_id);
+          return book;
+        }],
+        // One write for each order is too slow, so the file is written whole.
+        ['file, written whole', async (holding) => {
+          const file = join(folder, holding ? 'holding.json' : 'lacking.json');
+          writeFileSync(file, JSON.stringify({ schema: 'order-desk.orders.v1', orders: orders(holding) }));
+          return new FileOrderBook(file);
+        }],
+      ];
+      for (const [form, make] of forms) {
+        // The twin: a full book that holds the number refuses it with 403, and not with 503.
+        expect(refusalOf(await rigOf(makeWorld(), { book: await make(true) }).run()), form).toMatchObject({ status: 403, error: 'duplicate_po' });
+        const world = makeWorld();
+        const rig = rigOf(world, { book: await make(false) });
+        unavailable(await rig.run(), 'order book');
+        expect(world.faults, form).toEqual([['order book', expect.any(RangeError)]]);
+        expect(rig.passed.take(rig.context.escrowRef, T), form).toBeNull();
+        expect(rig.scheduled, form).toEqual([]);
+      }
     } finally {
       rmSync(folder, { recursive: true, force: true });
     }

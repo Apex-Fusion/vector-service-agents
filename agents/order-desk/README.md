@@ -108,6 +108,8 @@ The service keeps its state in `ORDER_DESK_STATE_DIR` (default `/data`, a volume
 | `dispute/` | the journal of the dispute code: one file for each escrow job, so one escrow has at most one challenge |
 | `keys/<key hash>/stranded.json` | the bookkeeping of the escrows that a model hire posted: references, times and transaction hashes, never a request or a catalogue entry |
 
+A book that holds 10000 orders cannot take a new order. For a purchase order number that the book does not hold, the hook answers 503 `check_unavailable` and the escrow stays open. For a number that the book holds, the hook still answers 403 `duplicate_po`.
+
 The job writes the order book after the supplier portal took the order. The order book reads its file at each call. A file that is missing or damaged after the start makes the hook answer 503 `check_unavailable`, and it never reads as an empty book. A stranded file that is not a list stops the start and is left as it is, because starting without it would forget escrows that still hold a lock. The janitor of the service key starts with the service. Every 60 s it looks at the stranded file and settles the escrows that a model hire left behind, when their time has come. It makes no transaction while a hire or a challenge holds the queue of the key. The record of the checks that the hook keeps for a job is in memory only. It lives 300 s, the store holds 64 of them, and a restart loses them: a job after a restart fails closed with `precheck_missing`.
 
 ## Stopping

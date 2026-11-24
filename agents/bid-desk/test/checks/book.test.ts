@@ -35,6 +35,21 @@ function quotesOf(file: string): unknown {
   return value.quotes;
 }
 
+/** The error that a call rejects with. A call that resolves, or that rejects with something that is no error, fails the test. */
+async function rejection(call: Promise<unknown>): Promise<Error> {
+  const outcome = await call.then(() => null, (error: unknown) => error);
+  if (!(outcome instanceof Error)) throw new Error('the call must reject with an error');
+  return outcome;
+}
+
+/** The refusal of a book that is full: a RangeError that names the book and the limit, and holds no text of the key that was asked. */
+function expectFull(failure: Error, ...keyTexts: string[]): void {
+  expect(failure).toBeInstanceOf(RangeError);
+  expect(failure.message).toContain('rfq book');
+  expect(failure.message).toContain(String(RFQ_BOOK_LIMIT));
+  for (const text of keyTexts) expect(failure.message).not.toContain(text);
+}
+
 const BOOKS: Array<[string, () => RfqBook]> = [
   ['MemoryRfqBook', () => new MemoryRfqBook()],
   ['FileRfqBook', () => new FileRfqBook(join(folder(), 'rfq-book.json'))],
@@ -119,13 +134,20 @@ describe.each(BOOKS)('%s', (_name, make) => {
 });
 
 describe('MemoryRfqBook', () => {
-  it(`holds ${RFQ_BOOK_LIMIT} entries and refuses the next one, and it answers for the entries that it holds`, async () => {
+  it(`holds ${RFQ_BOOK_LIMIT} entries: it refuses the next record, has rejects for a request that it lacks, and it answers true for the entries that it holds`, async () => {
     const book = new MemoryRfqBook();
-    for (let n = 0; n < RFQ_BOOK_LIMIT; n += 1) await book.record(SENDER, `rfq-${n}`, QUOTE_SHA256);
-    await expect(book.record(SENDER, 'rfq-new', QUOTE_SHA256)).rejects.toBeInstanceOf(RangeError);
+    for (let n = 0; n < RFQ_BOOK_LIMIT - 1; n += 1) await book.record(SENDER, `rfq-${n}`, QUOTE_SHA256);
+    // The twin: a book with room for one more entry reads a new request as new.
     expect(await book.has(SENDER, 'rfq-new')).toBe(false);
+    await book.record(SENDER, `rfq-${RFQ_BOOK_LIMIT - 1}`, QUOTE_SHA256);
+    await expect(book.record(SENDER, 'rfq-new', QUOTE_SHA256)).rejects.toBeInstanceOf(RangeError);
+    // A full book never answers false for a request that it lacks, because the record of that entry would fail. It is full for each sender.
+    expectFull(await rejection(book.has(SENDER, 'rfq-new')), SENDER, 'rfq-new');
+    expectFull(await rejection(book.has(OTHER_SENDER, 'rfq-0')), OTHER_SENDER, 'rfq-0');
     expect(await book.has(SENDER, 'rfq-0')).toBe(true);
     expect(await book.has(SENDER, `rfq-${RFQ_BOOK_LIMIT - 1}`)).toBe(true);
+    // The identifier counts as it was written, so a text that differs in case is another request, and a full book has no room for it.
+    expectFull(await rejection(book.has(SENDER, 'RFQ-0')), SENDER, 'RFQ-0');
     // An entry that the book holds is taken again when it is full, and nothing is dropped for the entry that was refused.
     await expect(book.record(SENDER, 'rfq-5', QUOTE_SHA256)).resolves.toBeUndefined();
     await expect(book.record(SENDER, 'rfq-5', OTHER_QUOTE_SHA256)).rejects.toThrow('another quote');
@@ -227,17 +249,22 @@ describe('FileRfqBook', () => {
     await expect(book.has(SENDER, 'rfq-1')).rejects.toThrow('damaged');
   });
 
-  it('holds 10,000 entries: a file with that many answers, and a record for a new request is refused', async () => {
+  it('holds 10,000 entries: a file with that many answers true for a request that it holds, has rejects for a request that it lacks, and a record for a new request is refused', async () => {
     const file = join(folder(), 'rfq-book.json');
     writeFileSync(file, fileOf(Array.from({ length: RFQ_BOOK_LIMIT }, (_, n) => entry(n))));
     const book = new FileRfqBook(file);
     expect(await book.has(SENDER, 'rfq-9999')).toBe(true);
-    expect(await book.has(SENDER, 'rfq-10000')).toBe(false);
+    expectFull(await rejection(book.has(SENDER, 'rfq-10000')), SENDER, 'rfq-10000');
+    expectFull(await rejection(book.has(OTHER_SENDER, 'rfq-3')), OTHER_SENDER, 'rfq-3');
     await expect(book.record(SENDER, 'rfq-10000', QUOTE_SHA256)).rejects.toBeInstanceOf(RangeError);
     await expect(book.record(OTHER_SENDER, 'rfq-3', QUOTE_SHA256)).rejects.toBeInstanceOf(RangeError);
     // An entry that the book holds is taken again, and it is the only record that a full book takes.
     await expect(book.record(SENDER, 'rfq-3', QUOTE_SHA256)).resolves.toBeUndefined();
     expect(await book.has(SENDER, 'rfq-0')).toBe(true);
+    // The twin: a file with room for one more entry reads a new request as new.
+    const room = join(folder(), 'rfq-book.json');
+    writeFileSync(room, fileOf(Array.from({ length: RFQ_BOOK_LIMIT - 1 }, (_, n) => entry(n))));
+    expect(await new FileRfqBook(room).has(SENDER, 'rfq-10000')).toBe(false);
   });
 
   it('reads a file with two identifiers that differ in case as two requests: the book never folds the case', async () => {
