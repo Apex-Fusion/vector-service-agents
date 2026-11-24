@@ -179,6 +179,7 @@ export interface FactsStore {
 // ---- landing (the landing files implement the functions over LandHost; the runner builds the TaskSession that satisfies it) ----
 export interface LandHost {
   readonly mode: 'dry' | 'submit';
+  readonly use: Pick<UseCase, 'name'>;
   readonly settings: OperatorSettings;
   readonly registry: Registry;
   readonly state: StateFile;

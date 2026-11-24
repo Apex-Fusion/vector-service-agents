@@ -295,10 +295,14 @@ function makeHost(rig: Rig, capUnits = 200): LandHost {
   const dir = mkdtempSync(join(tmpdir(), 'operator-claim-host-'));
   roots.push(dir);
   const registry = loadRegistry({ dir: rig.world.keys.root, useCase: USE_CASE, specs: rig.world.use.keys, need: ['run', 'reorder-service', 'order-desk-service'] });
-  const go: GoFile = { approvedBy: 'the test', at: iso(NOW), session: 'host', runWallet: registry.addressOf('run'), capUnits, tasks: ['claim'], irreversible: [], expiresAt: iso(NOW + 100 * HOUR) };
+  const go: GoFile = {
+    approvedBy: 'the test', at: iso(NOW), session: 'host', useCase: rig.world.use.name, runWallet: registry.addressOf('run'),
+    capUnits, tasks: ['claim'], irreversible: [], expiresAt: iso(NOW + 100 * HOUR),
+  };
   const identity = { check: 'claim', network: 'vector-mainnet', record: USE_CASE };
   return {
-    mode: 'submit', settings: HOST_SETTINGS, registry, state: StateFile.open(join(dir, 'claim.state.json'), identity), evidence: EvidenceFile.open(join(dir, 'claim.evidence.json'), identity), clock: rig.world.clock,
+    mode: 'submit', use: rig.world.use, settings: HOST_SETTINGS, registry, state: StateFile.open(join(dir, 'claim.state.json'), identity),
+    evidence: EvidenceFile.open(join(dir, 'claim.evidence.json'), identity), clock: rig.world.clock,
     out: new MemoryOutput(), node: unused('node'), network: unused('network gate'), networkResult: () => ({ guard: 'network', ok: true, message: 'the node is on vector-mainnet' }), chain: unused('chain'),
     hosted: unused('hosted tools'), go, exposure: new Exposure(join(dir, 'exposure.host.json'), go), task: 'claim', awaitMs: 30_000, pollMs: 5_000,
   };

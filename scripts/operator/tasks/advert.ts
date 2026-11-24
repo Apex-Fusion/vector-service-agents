@@ -637,7 +637,7 @@ async function beforeResubmit(session: ResubmitSession<Extra>, command: TaskComm
       if (proof.approvalSession !== session.go?.session) throw new PreconditionError('the current approval is not the approval of the recorded retirement');
     }
     await requireFree(session, isRetirement ? undefined : agent);
-    requireGo(session.go, { task: session.task, runWallet: session.registry.addressOf('run'), nowMs: session.clock.now(), irreversible: [] });
+    requireGo(session.go, { useCase: session.use.name, task: session.task, runWallet: session.registry.addressOf('run'), nowMs: session.clock.now(), irreversible: [] });
     return;
   }
   throw new PreconditionError('the run has a transaction in flight outside --agent or outside the advert data. Use the matching action of this same run');

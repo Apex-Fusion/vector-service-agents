@@ -113,9 +113,10 @@ export async function hostedBuild(host: Pick<LandHost, 'hosted' | 'clock' | 'out
 const refuse = (step: string, guard: GuardName, message: string): GuardRefusal => new GuardRefusal(step, [{ guard, ok: false, message }]);
 const refOf = (utxo: Utxo): string => `${utxo.txHash}#${utxo.outputIndex}`;
 
-/** In submit mode the approval must allow this task, the run wallet and the irreversible tag. A dry run does not read it. */
+/** In submit mode the approval must allow this use case, task, run wallet and irreversible tag. A dry run does not read it. */
 function requireApproval(host: LandHost, irreversible: IrreversibleTag | undefined): void {
-  requireGo(host.go, { task: host.task, runWallet: host.registry.addressOf('run'), nowMs: host.clock.now(), irreversible: irreversible === undefined ? [] : [irreversible] });
+  requireGo(host.go, { useCase: host.use.name, task: host.task, runWallet: host.registry.addressOf('run'),
+    nowMs: host.clock.now(), irreversible: irreversible === undefined ? [] : [irreversible] });
 }
 
 /** The longest time that a transaction may stay valid, counted from the clock of the host: the hosted tools allow 59 minutes, and the builders of the pack use 20 minutes. */

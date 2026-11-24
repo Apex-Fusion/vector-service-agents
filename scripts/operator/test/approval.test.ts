@@ -21,7 +21,8 @@ const keys = makeTestKeys(['run', 'fee', 'service'], { shared: ['run', 'fee'] })
 const RUN = keys.registry.addressOf('run');
 const NOW = Date.parse('2026-12-01T12:00:00Z');
 const GO: GoFile = {
-  approvedBy: 'a test approver', at: '2026-12-01T10:00:00Z', session: 'test-session', runWallet: RUN, capUnits: 10, tasks: ['fund', 'keys'], irreversible: ['record'], expiresAt: '2026-12-02T12:00:00Z',
+  approvedBy: 'a test approver', at: '2026-12-01T10:00:00Z', session: 'test-session', useCase: 'inventory-reorder',
+  runWallet: RUN, capUnits: 10, tasks: ['fund', 'keys'], irreversible: ['record'], expiresAt: '2026-12-02T12:00:00Z',
 };
 const fileOf = (over: Partial<GoFile> = {}): GoFile => ({ ...GO, ...over });
 const jsonOf = (over: Record<string, unknown> = {}): string => JSON.stringify({ ...GO, ...over });
@@ -161,6 +162,15 @@ describe('loadGo', () => {
       ['no session', { session: undefined }, 'session'], ['an empty session', { session: '' }, 'session'], ['a session in upper case', { session: 'Test' }, 'session'],
       ['a session that starts with a hyphen', { session: '-test' }, 'session'], ['a session that is a path', { session: '../x' }, 'session'], ['a session of 49 characters', { session: 'a'.repeat(49) }, 'session'],
       ['a session that is a number', { session: 5 }, 'session'],
+      ['no useCase', { useCase: undefined }, 'useCase'],
+      ['an empty useCase', { useCase: '' }, 'useCase'],
+      ['a useCase in upper case', { useCase: 'Other-case' }, 'useCase'],
+      ['a useCase that starts with a digit', { useCase: '2-other-case' }, 'useCase'],
+      ['a useCase that starts with a hyphen', { useCase: '-other-case' }, 'useCase'],
+      ['a useCase with a trailing newline', { useCase: 'other-case\n' }, 'useCase'],
+      ['a useCase that is a path', { useCase: 'x/other-case' }, 'useCase'],
+      ['a useCase of 49 characters', { useCase: 'a'.repeat(49) }, 'useCase'],
+      ['a useCase that is not a string', { useCase: 5 }, 'useCase'],
       ['no runWallet', { runWallet: undefined }, 'runWallet'], ['an empty runWallet', { runWallet: '' }, 'runWallet'], ['a runWallet that is no address', { runWallet: 'wallet' }, 'runWallet'],
       ['a runWallet in upper case', { runWallet: 'ADDR1QTEST' }, 'runWallet'], ['a runWallet with a space', { runWallet: 'addr1 qtest' }, 'runWallet'], ['a runWallet that is only the prefix', { runWallet: 'addr1' }, 'runWallet'],
       ['a runWallet that is a number', { runWallet: 5 }, 'runWallet'],
@@ -203,6 +213,8 @@ describe('loadGo', () => {
       ['an at with a zone offset', { at: '2026-12-01T11:00:00+01:00' }], ['an at with a fraction of a second', { at: '2026-12-01T10:00:00.5Z' }],
       ['an expiresAt one millisecond after this moment', { expiresAt: '2026-12-01T12:00:00.001Z' }], ['an expiresAt one second after this moment in another zone', { expiresAt: '2026-12-01T13:00:01+01:00' }],
       ['a session of one character', { session: 'a' }], ['a session of 48 characters', { session: 'a'.repeat(48) }], ['a session that starts with a digit', { session: '0-test' }],
+      ['a useCase of one character', { useCase: 'a' }], ['a useCase of 48 characters', { useCase: 'a'.repeat(48) }],
+      ['a useCase with hyphens and digits', { useCase: 'case-2' }],
       ['the runWallet unset', { runWallet: 'unset' }], ['a runWallet that is a short address text', { runWallet: 'addr1abc' }],
       ['a cap of 0', { capUnits: 0 }], ['a cap of one lovelace', { capUnits: 0.000001 }], ['a cap of 100.5', { capUnits: 100.5 }], ['a cap of 1000', { capUnits: 1000 }],
       ['one task', { tasks: ['fund'] }], ['a task with hyphens and digits', { tasks: ['end-state', 'stage-2'] }], ['64 tasks', { tasks: Array.from({ length: 64 }, (_, i) => `task-${i}`) }],
@@ -227,7 +239,8 @@ describe('loadGo', () => {
       expect(refusal(() => load(jsonOf({ 'a member with spaces and a secret value': 1 }))).message).not.toContain('secret');
       const MARK = 'MARKERVALUE';
       const withValue: Record<string, unknown>[] = [
-        { extra: MARK }, { session: MARK }, { runWallet: MARK }, { at: MARK }, { expiresAt: MARK }, { tasks: [MARK] }, { irreversible: [MARK] }, { approvedBy: 5, capUnits: MARK },
+        { extra: MARK }, { session: MARK }, { useCase: MARK }, { runWallet: MARK }, { at: MARK }, { expiresAt: MARK }, { tasks: [MARK] }, { irreversible: [MARK] },
+        { approvedBy: 5, capUnits: MARK },
         { external: [{ label: MARK, address: MARK, units: MARK }] },
       ];
       for (const over of withValue) expect(refusal(() => load(jsonOf(over))).message, JSON.stringify(over)).not.toContain(MARK);
@@ -236,7 +249,7 @@ describe('loadGo', () => {
 });
 
 describe('requireGo', () => {
-  const NEED: GoNeed = { task: 'fund', runWallet: RUN, nowMs: NOW, irreversible: [] };
+  const NEED: GoNeed = { useCase: GO.useCase, task: 'fund', runWallet: RUN, nowMs: NOW, irreversible: [] };
   /** Tags that the type does not allow, for a test of the check at run time. */
   const tagsOf = (...tags: string[]): readonly IrreversibleTag[] => tags as unknown as readonly IrreversibleTag[];
 
@@ -246,6 +259,19 @@ describe('requireGo', () => {
     expect(requireGo(go, { ...NEED, irreversible: [] })).toBe(go);
     expect(requireGo(go, { ...NEED, irreversible: ['record'] })).toBe(go);
     expect(requireGo(go, { ...NEED, irreversible: ['stake', 'record'] })).toBe(go);
+  });
+  it.each([
+    ['the ledger task gate', NEED, {}],
+    ['the irreversible tag check', { ...NEED, irreversible: ['record'] }, {}],
+    ['first setup', { ...NEED, task: 'keys', runWallet: null }, { runWallet: 'unset', tasks: ['keys'] }],
+  ] satisfies Array<[string, GoNeed, Partial<GoFile>]>)('checks the use case at %s', (_gate, need, fields) => {
+    const other = 'other-case-marker';
+    const wrong = load(jsonOf({ ...fields, useCase: other }));
+    const message = refusal(() => requireGo(wrong, need)).message;
+    expect(message).toContain('useCase');
+    expect(message).not.toContain(other);
+    const matching = load(jsonOf(fields));
+    expect(requireGo(matching, need)).toBe(matching);
   });
   it('refuses a missing file and names the task', () => {
     const err = refusal(() => requireGo(null, NEED));
@@ -306,7 +332,7 @@ describe('requireGo', () => {
     for (const tag of TEN_TAGS) expect(load(jsonOf({ irreversible: [tag] })).irreversible, tag).toEqual([tag]);
   });
   it('refuses a run that does not say which tags its step carries: the type forbids it, and a call that skips the type is refused too', () => {
-    const withoutTags = { task: 'fund', runWallet: RUN, nowMs: NOW };
+    const withoutTags = { useCase: GO.useCase, task: 'fund', runWallet: RUN, nowMs: NOW };
     const err = refusal(() => requireGo(fileOf(), withoutTags as GoNeed));
     expect(err.message).toContain('irreversible');
     expect(err.message).toContain('fund');
@@ -314,7 +340,7 @@ describe('requireGo', () => {
   });
 
   describe('before the run key exists', () => {
-    const FIRST: GoNeed = { task: 'keys', runWallet: null, nowMs: NOW, irreversible: [] };
+    const FIRST: GoNeed = { ...NEED, task: 'keys', runWallet: null };
     const UNSET = fileOf({ runWallet: 'unset', tasks: ['keys'] });
     it('accepts only the task keys with a file that says unset and lists keys', () => {
       expect(requireGo(UNSET, FIRST)).toBe(UNSET);

@@ -241,7 +241,8 @@ export function guardedSign(host: LandHost, request: GuardedSignRequest, recorde
     if (signedHere.has(facts.txHash)) throw new PreconditionError(`the transaction ${facts.txHash} of the step ${step} was signed already in this call`);
     if ([...signedHere.values()].includes(step)) throw new PreconditionError(`the step name ${step} was used by an earlier transaction of this call: give each transaction of a call a step name of its own`);
     //    (a) The approval.
-    requireGo(host.go, { task: host.task, runWallet: host.registry.has('run') ? host.registry.addressOf('run') : null, nowMs: host.clock.now(), irreversible: request.irreversible === undefined ? [] : [request.irreversible] });
+    requireGo(host.go, { useCase: host.use.name, task: host.task, runWallet: host.registry.has('run') ? host.registry.addressOf('run') : null,
+      nowMs: host.clock.now(), irreversible: request.irreversible === undefined ? [] : [request.irreversible] });
     //    (b) The cap.
     host.exposure.refuseOver(net);
     //    (c) The one signer of the plan.

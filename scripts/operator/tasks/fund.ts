@@ -16,7 +16,7 @@ import { eventually } from '../../checks/lib/retry.ts';
 import { PreconditionError } from '../../checks/lib/session.ts';
 import { factsOf } from '../../checks/lib/txfacts.ts';
 import type { TxFacts } from '../../checks/lib/txfacts.ts';
-import { ApprovalError, loadGo, lovelaceOfUnits } from '../lib/approval.ts';
+import { ApprovalError, loadGo, lovelaceOfUnits, requireGoUseCase } from '../lib/approval.ts';
 import type { FundingLine, StepOutcome, TaskDefinition, TaskSession } from '../lib/contract.ts';
 import { landBuilt } from '../lib/land-hosted.ts';
 import { planOf } from '../lib/plan.ts';
@@ -244,8 +244,7 @@ function refuseRecorded(session: TaskSession<FundExtra>, label: string): void {
  * or bad file stops the dry run with exit 2.
  */
 function approvalOf(session: TaskSession<FundExtra>) {
-  if (session.go !== null) return session.go;
-  try { return loadGo(session.settings.goFile, session.clock.now()); } catch (err) {
+  try { return requireGoUseCase(session.go ?? loadGo(session.settings.goFile, session.clock.now()), session.use.name); } catch (err) {
     if (err instanceof ApprovalError) throw new PreconditionError(`the member step reads the address and the amount from the approval file, also in a dry run: ${err.message}`);
     throw err;
   }

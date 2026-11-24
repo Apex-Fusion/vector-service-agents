@@ -260,8 +260,8 @@ async function buildAttestation(session: Session, type: AttType, input: Attestat
     const structure = envelopeSigStructure(fields);
     if (first.sigStructure !== structure) throw new PreconditionError('the build gives a Sig_structure that is not the one of the five fields of the envelope: nothing was signed');
     if (session.mode === 'dry') return { build: first, validUntil, envelopeSig: null };
-    // The provider key signs nothing before the approval allows this step: the task, the run wallet and the tag attestation. `landBuilt` checks the same again before it signs the transaction.
-    requireGo(session.go, { task: session.task, runWallet: session.registry.addressOf('run'), nowMs: session.clock.now(), irreversible: ['attestation'] });
+    // Check the use case, task, run wallet and tag before the provider signs the envelope. `landBuilt` checks them again before it signs the transaction.
+    requireGo(session.go, { useCase: session.use.name, task: session.task, runWallet: session.registry.addressOf('run'), nowMs: session.clock.now(), irreversible: ['attestation'] });
     const envelopeSig = session.registry.key('provider').signMessage(Buffer.from(structure, 'hex'));
     if (!envelopeVerifies(fields, envelopeSig)) throw new PreconditionError('the signature of the envelope does not verify with the public key of the provider: nothing was landed');
     const context = await session.chain.context(feeAddress);

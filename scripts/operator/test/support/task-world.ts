@@ -142,7 +142,7 @@ export interface TaskWorld {
   state(task: string, run?: string): StateView;
   evidence(task: string, run?: string): Array<Record<string, unknown>>;
   facts(): Readonly<Facts>;
-  /** Writes the approval file of the world (mode 600) and gives its path. A member of `over` replaces the member of the default, which names the task `toy`, the wallet of the key `run` and a cap of 100 units. */
+  /** Writes the approval (mode 600). The default names this use case, task `toy`, the run wallet and a cap of 100 units. */
   writeGo(over?: Partial<GoFile>): string;
   /** The path of the run lock file of the state folder. */
   readonly lockPath: string;
@@ -216,7 +216,8 @@ export async function taskWorld(options: TaskWorldOptions = {}): Promise<TaskWor
     },
     writeGo: (over = {}) => {
       const go: GoFile = {
-        approvedBy: 'the test operator', at: iso(NOW), session: 's1', runWallet: keys.registry.addressOf('run'), capUnits: 100, tasks: ['toy'], irreversible: [], expiresAt: iso(NOW + 6 * HOUR), ...over,
+        approvedBy: 'the test operator', at: iso(NOW), session: 's1', useCase: use.name, runWallet: keys.registry.addressOf('run'),
+        capUnits: 100, tasks: ['toy'], irreversible: [], expiresAt: iso(NOW + 6 * HOUR), ...over,
       };
       mkdirSync(stateDir, { recursive: true, mode: 0o700 });
       chmodSync(stateDir, 0o700);
