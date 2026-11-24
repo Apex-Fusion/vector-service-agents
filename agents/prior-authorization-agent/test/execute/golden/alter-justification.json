@@ -1,0 +1,16 @@
+[
+  { "name": "one sentence becomes the fixed sentence", "justification": "Pain persists for six weeks.", "altered": "The patient also reports a fall one week ago." },
+  { "name": "a text with no end mark is one sentence", "justification": "Pain persists for six weeks", "altered": "The patient also reports a fall one week ago." },
+  { "name": "the last of three sentences is replaced and the first two stay", "justification": "Low back pain for eight weeks. Physical therapy failed. New weakness in the left leg.", "altered": "Low back pain for eight weeks. Physical therapy failed. The patient also reports a fall one week ago." },
+  { "name": "a question mark and an exclamation mark end a sentence", "justification": "Is it better? No! It is worse.", "altered": "Is it better? No! The patient also reports a fall one week ago." },
+  { "name": "the last sentence has no end mark", "justification": "Pain began in May. It has not stopped", "altered": "Pain began in May. The patient also reports a fall one week ago." },
+  { "name": "an abbreviation before white space ends a sentence by the rule", "justification": "Pain persists. Seen by Dr. Lee today", "altered": "Pain persists. Seen by Dr. The patient also reports a fall one week ago." },
+  { "name": "an abbreviation in an earlier sentence stays", "justification": "Seen by Dr. Lee. Pain persists.", "altered": "Seen by Dr. Lee. The patient also reports a fall one week ago." },
+  { "name": "a mark that no white space follows does not end a sentence", "justification": "The score is 3.5 today. Pain persists...", "altered": "The score is 3.5 today. The patient also reports a fall one week ago." },
+  { "name": "a line break between sentences stays, and the white space after the last sentence goes", "justification": "First finding.\nSecond finding.\n", "altered": "First finding.\nThe patient also reports a fall one week ago." },
+  { "name": "a no-break space ends a sentence", "justification": "First.\u00a0Second.", "altered": "First.\u00a0The patient also reports a fall one week ago." },
+  { "name": "a text of white space only becomes the fixed sentence", "justification": " ", "altered": "The patient also reports a fall one week ago." },
+  { "name": "a last sentence that is the fixed sentence becomes the second fixed sentence", "justification": "Pain persists. The patient also reports a fall one week ago.", "altered": "Pain persists. The patient also reports two falls in the last month." },
+  { "name": "a justification that is the fixed sentence becomes the second fixed sentence", "justification": "The patient also reports a fall one week ago.", "altered": "The patient also reports two falls in the last month." },
+  { "name": "a last sentence that is the second fixed sentence becomes the fixed sentence", "justification": "Pain persists. The patient also reports two falls in the last month.", "altered": "Pain persists. The patient also reports a fall one week ago." }
+]
