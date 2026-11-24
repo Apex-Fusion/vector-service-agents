@@ -71,6 +71,14 @@ function watchSubmits(w: TaskWorld, task = 'fund'): number[] {
   return seen;
 }
 
+/** Counts the builds of a world: each build reads the parameters of the protocol once. A test that says "before any build" holds the count at 0. */
+function countBuilds(w: TaskWorld): { count: () => number } {
+  let builds = 0;
+  const parameters = w.world.chain.getProtocolParameters.bind(w.world.chain);
+  w.world.chain.getProtocolParameters = async () => { builds += 1; return parameters(); };
+  return { count: () => builds };
+}
+
 /** The payments of the submitted transaction, by wallet name and without the change. The last output is the change to the run wallet. */
 function paid(w: TaskWorld, index = 0): Array<[string, bigint]> {
   const outputs = factsOf(w.node.submitted[index]!).outputs.map((output): [string, bigint] => [nameAt(w, output.address), output.lovelace]);
@@ -124,14 +132,14 @@ describe('a payment that Lucid built with its own slot clock', () => {
 });
 
 describe('the definition', () => {
-  it('needs the run key and the key of each wallet that a line funds, the chain, no hosted tool and the approval, and has the steps collateral and float, or the step of one member', async () => {
+  it('needs every key of the use case, the chain, no hosted tool and the approval, and has the steps collateral and float, or the step of one member', async () => {
     const w = await fundWorld();
     const loaded = await loadTask('fund');
     expect(loaded.name).toBe('fund');
     const plain = parseArguments(loaded, []).flags;
     const member = parseArguments(loaded, ['--member', 'stand-in']).flags;
-    expect(loaded.needs.keys(w.use, plain)).toEqual(['run', 'fee', 'alpha', 'beta']);
-    expect(loaded.needs.keys(w.use, member)).toEqual(['run', 'fee', 'alpha', 'beta']);
+    expect(loaded.needs.keys(w.use, plain)).toEqual(['run', 'fee', 'alpha', 'beta', 'gamma']);
+    expect(loaded.needs.keys(w.use, member)).toEqual(['run', 'fee', 'alpha', 'beta', 'gamma']);
     expect(loaded.needs).toMatchObject({ chain: true, hosted: [], approval: 'submit' });
     expect(loaded.flags).toEqual([]);
     expect(loaded.valued).toEqual(['member']);
@@ -174,17 +182,18 @@ describe('a dry run of the step collateral', () => {
     expect(w.screen.lines).toContain('step collateral: dry mode, nothing is signed or submitted');
     expect(w.machine()).toMatchObject({ task: 'fund', mode: 'dry', outcome: 'dry', exit: 0, step: 'collateral' });
   });
-  it('stops with exit 2 before any build when the run wallet holds less than the outputs and one unit for the fee, after it printed the table, and goes on when it holds that', async () => {
-    const w = await fundWorld({ wallets: { run: [15n * UNIT + UNIT - 1n] } });
-    let builds = 0;
-    const parameters = w.world.chain.getProtocolParameters.bind(w.world.chain);
-    w.world.chain.getProtocolParameters = async () => { builds += 1; return parameters(); };
-    expect(await run(w)).toBe(2);
-    expect(builds).toBe(0);
-    expect(rowOf(w, 'total')).toEqual(['total', '0.000000', '15.000000', '90.000000', '105.000000']);
-    expect(w.screen.errorText).toContain('the run wallet holds 15.999999 units, and the step collateral needs 15.000000 units for its outputs and 1.000000 units for the fee');
-    untouched(w);
-    const twin = await fundWorld({ wallets: { run: [17n * UNIT] } });
+  it('stops with exit 2 before any build when the run wallet holds less than the outputs, the fee limit and one unit for the change, after it printed the table, and goes on when it holds that', async () => {
+    // 15 units go out, the fee limit is 2 units, and the change needs 1 unit. A wallet with 16.1 units passes the least that a builder needs for the fee, and a builder stops on the change: the task refuses first.
+    for (const [held, shown] of [[15n * UNIT + UNIT - 1n, '15.999999'], [16_100_000n, '16.100000'], [18n * UNIT - 1n, '17.999999']] as const) {
+      const w = await fundWorld({ wallets: { run: [held] } });
+      const builds = countBuilds(w);
+      expect(await run(w), shown).toBe(2);
+      expect(builds.count(), shown).toBe(0);
+      expect(rowOf(w, 'total')).toEqual(['total', '0.000000', '15.000000', '90.000000', '105.000000']);
+      expect(w.screen.errorText).toContain(`the run wallet holds ${shown} units, and the step collateral needs 15.000000 units for its outputs and 3.000000 units for the fee and the change`);
+      untouched(w);
+    }
+    const twin = await fundWorld({ wallets: { run: [18n * UNIT] } });
     expect(await run(twin)).toBe(0);
   });
 });
@@ -305,7 +314,7 @@ describe('the step float', () => {
     expect(await run(w, '--submit')).toBe(0);
     reset(w);
     expect(await run(w, '--submit')).toBe(2);
-    expect(w.screen.errorText).toContain('the run wallet holds 50.000000 units, and the step float needs 90.000000 units for its outputs and 1.000000 units for the fee');
+    expect(w.screen.errorText).toContain('the run wallet holds 50.000000 units, and the step float needs 90.000000 units for its outputs and 3.000000 units for the fee and the change');
     expect(w.node.submitted).toHaveLength(0);
   });
 });
@@ -405,6 +414,22 @@ describe('the guards of the plan', () => {
     expect(plan.withdrawals).toBeUndefined();
     expect([...plan.explained]).toEqual([]);
   });
+  it('refuse an output to a wallet of the registry that the step does not name, which the destinations allow, by the outflow of the run wallet, before any signature', async () => {
+    const w = await fundWorld();
+    approve(w);
+    const { signed, deps } = counting(w, true);
+    const body = probe(async (session) => {
+      const legit = wallets(w);
+      const built = await buildTransfers(session, [...legit, { address: address(w, 'gamma'), lovelace: 2n * UNIT }]);
+      await landBuilt(session, { step: 'collateral', built, expectSigners: ['run'], plan: (facts) => planOfTransfers(session, legit, facts) });
+    });
+    expect(await runTask(body, ['--submit'], deps)).toBe(2);
+    expect(w.screen.errorText).toContain('refused by outflow:');
+    expect(w.screen.errorText).toMatch(/the run wallet \S+: \d+\.\d{6} units leave it, over the limit of \d+\.\d{6} units/);
+    expect(signed).toEqual([]);
+    untouched(w);
+    expect(w.exposure()).toEqual([]);
+  });
 });
 
 describe('the step of a member', () => {
@@ -473,20 +498,22 @@ describe('the step of a member', () => {
     expect(await run(w, '--submit', '--member', 'driver')).toBe(0);
     expect(w.node.submitted).toHaveLength(2);
   });
-  it('is refused with exit 2 for an address that is a wallet of the registry, whatever form it has, and an address that is not a mainnet address, and a stranger is sent', async () => {
+  it('is refused with exit 2 for an address that is a wallet of the registry, funded or not, and an address that is not a mainnet address, and a stranger is sent', async () => {
     const w = await fundWorld();
     const flipped = (text: string): string => `${text.slice(0, -1)}${text.endsWith('q') ? 'p' : 'q'}`;
-    for (const [what, to] of [['the run wallet', address(w, 'run')], ['a funded wallet', address(w, 'alpha')], ['an address with a wrong checksum', flipped(w.world.addressOf(90))]] as const) {
+    const refused: Array<[string, string, string]> = [
+      ['the run wallet', address(w, 'run'), 'is a wallet of the registry (the key run)'],
+      ['a funded wallet', address(w, 'alpha'), 'is a wallet of the registry (the key alpha)'],
+      ['a key that no line funds', address(w, 'gamma'), 'is a wallet of the registry (the key gamma)'],
+      ['an address with a wrong checksum', flipped(w.world.addressOf(90)), 'is not a mainnet address'],
+    ];
+    for (const [what, to, said] of refused) {
       member(w, { address: to });
       reset(w);
       expect(await run(w, '--submit', '--member', 'stand-in'), what).toBe(2);
+      expect(w.screen.errorText, what).toContain(said);
       untouched(w);
     }
-    expect(w.screen.errorText).toContain('is not a mainnet address');
-    member(w, { address: address(w, 'alpha') });
-    reset(w);
-    await run(w, '--submit', '--member', 'stand-in');
-    expect(w.screen.errorText).toContain('is a wallet of the registry (the key alpha)');
     member(w, { address: w.world.addressOf(90) });
     reset(w);
     expect(await run(w, '--submit', '--member', 'stand-in')).toBe(0);
@@ -502,15 +529,23 @@ describe('the step of a member', () => {
     expect(await run(w, '--submit', '--member', 'stand-in')).toBe(0);
     expect(factsOf(w.node.submitted[0]!).outputs.find((output) => output.address === to)!.lovelace).toBe(60n * UNIT + 1n);
   });
-  it('is refused with exit 2 for a label that is not a label, and when the run wallet holds less than the amount and one unit', async () => {
+  it('is refused with exit 2 for a label that is not a label, and when the run wallet holds less than the amount, the fee limit and one unit for the change', async () => {
     const w = await fundWorld({ wallets: { run: [61n * UNIT - 1n] } });
     member(w);
     expect(await run(w, '--submit', '--member', 'Stand_In')).toBe(2);
     expect(w.screen.errorText).toContain('the label of --member is 1 to 32 lower-case letters, digits and hyphens');
     reset(w);
     expect(await run(w, '--submit', '--member', 'stand-in')).toBe(2);
-    expect(w.screen.errorText).toContain('the run wallet holds 60.999999 units, and the step member:stand-in needs 60.000000 units for its outputs and 1.000000 units for the fee');
+    expect(w.screen.errorText).toContain('the run wallet holds 60.999999 units, and the step member:stand-in needs 60.000000 units for its outputs and 3.000000 units for the fee and the change');
     untouched(w);
+    // 61.1 units pass the least that a builder needs for the fee. The builder stops on the change, and so the task refuses first, with exit 2 and no build.
+    const short = await fundWorld({ wallets: { run: [61_100_000n] } });
+    const builds = countBuilds(short);
+    member(short);
+    expect(await run(short, '--submit', '--member', 'stand-in')).toBe(2);
+    expect(short.screen.errorText).toContain('the run wallet holds 61.100000 units, and the step member:stand-in needs 60.000000 units for its outputs and 3.000000 units for the fee and the change');
+    expect(builds.count()).toBe(0);
+    untouched(short);
     const twin = await fundWorld({ wallets: { run: [63n * UNIT] } });
     member(twin);
     expect(await run(twin, '--submit', '--member', 'stand-in')).toBe(0);
@@ -629,12 +664,12 @@ describe('the status and the cleanup', () => {
 });
 
 describe('the real data of use case 1', () => {
+  const realWorld = (): Promise<TaskWorld> => taskWorld({
+    keys: realUseCase.keys.map((spec) => spec.name), shared: realUseCase.keys.filter((spec) => spec.scope === 'shared').map((spec) => spec.name), use: realUseCase,
+    wallets: { run: [2_500n * UNIT], ...Object.fromEntries(realUseCase.funding.map((funding) => [funding.wallet, []])) },
+  });
   it('shows the table of the funding of use case 1 in a dry run: 45 units of collateral and 460 units of float to the nine wallets, 505 units in all', async () => {
-    const names = realUseCase.keys.map((spec) => spec.name);
-    const w = await taskWorld({
-      keys: names, shared: realUseCase.keys.filter((spec) => spec.scope === 'shared').map((spec) => spec.name), use: realUseCase,
-      wallets: { run: [2_500n * UNIT], ...Object.fromEntries(realUseCase.funding.map((funding) => [funding.wallet, []])) },
-    });
+    const w = await realWorld();
     expect(await run(w)).toBe(0);
     expect(rowOf(w, 'total')).toEqual(['total', '0.000000', '45.000000', '460.000000', '505.000000']);
     expect(w.screen.lines).toContain('the step collateral sends 45.000000 units to 9 wallets in one transaction');
@@ -642,5 +677,21 @@ describe('the real data of use case 1', () => {
     expect(realUseCase.funding).toHaveLength(9);
     for (const funding of realUseCase.funding) expect(rowOf(w, funding.wallet)[0]).toBe(funding.wallet);
     expect(w.node.submitted).toEqual([]);
+  });
+  it('refuses the wallet of each key that no line funds as an external address, and pays a stranger', async () => {
+    const w = await realWorld();
+    const unfunded = realUseCase.keys.map((spec) => spec.name).filter((name) => name !== 'run' && !realUseCase.funding.some((funding) => funding.wallet === name));
+    expect(unfunded).toEqual(['controller', 'provider', 'accountable-echo', 'guardian-echo', 'accountable-alfa', 'guardian-alfa', 'stock-reader-auth', 'stock-reader-delegation']);
+    for (const name of unfunded) {
+      w.writeGo({ tasks: ['fund'], external: [{ label: 'stand-in', address: w.keys.registry.addressOf(name), units: 10 }] });
+      reset(w);
+      expect(await run(w, '--submit', '--member', 'stand-in'), name).toBe(2);
+      expect(w.screen.errorText, name).toContain(`is a wallet of the registry (the key ${name})`);
+    }
+    expect(w.node.submitted).toEqual([]);
+    w.writeGo({ tasks: ['fund'], external: [{ label: 'stand-in', address: w.world.addressOf(90), units: 10 }] });
+    reset(w);
+    expect(await run(w, '--submit', '--member', 'stand-in')).toBe(0);
+    expect(w.node.submitted).toHaveLength(1);
   });
 });

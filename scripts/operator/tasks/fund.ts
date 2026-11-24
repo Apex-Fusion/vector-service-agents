@@ -3,9 +3,11 @@
 //   collateral   one transaction: one pure output of exactly the collateral amount (5 units in use case 1) to each wallet that holds no such output. Alone, so that no later spend merges it.
 //   float        one transaction: to each wallet, what its balance lacks to the collateral and the float of its line, when that is at least one unit.
 //   member:<label>  with --member <label>: one transaction with one output, to the one external address that the approval names for the label, for the amount that the approval gives.
-// The run wallet can pay a wallet of the registry, and an address of the approval in a member step. No other address can get a lovelace: the plan names exactly the addresses that the step sends
-// to, and the guard `destinations` refuses any other output before a signature. The amounts of the two first steps come from the ledger (what each wallet holds now), so the steps are safe to
-// run again, and the state file keeps the transaction of each step. The step of a member is sent once for each label: the state file records it, and a recorded label is refused.
+// The run wallet can pay a wallet of the registry, and an address of the approval in a member step. No other address can get a lovelace: the guard `destinations` refuses an address that is no wallet
+// of the registry and is not named by the step, and the guard `outflow` holds the run wallet to the sum of the transfers and the fee, so a wallet of the registry that the step does not name gets
+// nothing either. The task loads every key of the use case, so that a member step refuses any address of the registry as an external address. The amounts of the two first steps come from the
+// ledger (what each wallet holds now), so the steps are safe to run again, and the state file keeps the transaction of each step. The step of a member is sent once for each label: the state
+// file records it, and a recorded label is refused.
 import { bech32Decode, keyCredentialOf } from '../../checks/lib/addresses.ts';
 import { iso, units } from '../../checks/lib/format.ts';
 import type { StepPlan } from '../../checks/lib/guards.ts';
@@ -24,8 +26,8 @@ import type { StepHandler } from '../lib/runner.ts';
 
 const UNIT = 1_000_000n;
 const RUN = 'run';
-/** The run wallet keeps this much for the fee of a step, besides the outputs of the step. */
-const FEE_RESERVE = UNIT;
+/** The least that the change output of a payment can hold, with a margin: a builder stops after the build when the change is below the least that an output can hold. */
+const CHANGE_MINIMUM = UNIT;
 /** A top-up below one unit is not sent: it is no use, and a transaction costs a fee. */
 const MIN_FLOAT = UNIT;
 /** A transaction that the task builds is valid for 20 minutes after the time of the chain. */
@@ -154,16 +156,18 @@ function tableLines(rows: readonly Row[]): string[] {
 // ---- the landing of a payment ----
 
 /**
- * Builds the payment, runs the checks of the landing, and in submit mode signs and lands it. The run wallet must hold the outputs and one unit for the fee (a refusal before any build: exit 2).
+ * Builds the payment, runs the checks of the landing, and in submit mode signs and lands it. The run wallet must hold the outputs, the fee limit of the settings and one unit for the change output
+ * (a refusal before any build: exit 2).
  * The plan is the plan of `planOfTransfers`. The step is recorded by the landing with its transaction and `record`.
  */
 async function pay(session: TaskSession<FundExtra>, step: string, transfers: readonly Transfer[], where: string, record: Record<string, unknown>): Promise<StepOutcome> {
   const total = transfers.reduce((sum, transfer) => sum + transfer.lovelace, 0n);
   const balance = lovelaceIn(await session.chain.provider.getUtxos(session.registry.addressOf(RUN)));
+  const reserve = session.settings.maxFeeLovelace + CHANGE_MINIMUM;
   session.out.out(`the step ${step} sends ${units(total)} to ${where} in one transaction`);
   session.out.out(`the run wallet holds ${units(balance)}; after this step it holds ${units(balance - total)} before the fee`);
-  if (balance < total + FEE_RESERVE) {
-    throw new PreconditionError(`the run wallet holds ${units(balance)}, and the step ${step} needs ${units(total)} for its outputs and ${units(FEE_RESERVE)} for the fee`);
+  if (balance < total + reserve) {
+    throw new PreconditionError(`the run wallet holds ${units(balance)}, and the step ${step} needs ${units(total)} for its outputs and ${units(reserve)} for the fee and the change`);
   }
   const built = await buildTransfers(session, transfers);
   const landed = await landBuilt(session, { step, built, expectSigners: [RUN], plan: (facts) => planOfTransfers(session, transfers, facts), facts: () => record });
@@ -281,7 +285,7 @@ const task: TaskDefinition<FundExtra> = {
   title: 'Fund the wallets of the use case from the run wallet',
   flags: [],
   valued: ['member'],
-  needs: { keys: (use) => [...new Set([RUN, ...use.funding.map((line) => line.wallet)])], chain: true, hosted: [], approval: 'submit' },
+  needs: { keys: (use) => [...new Set([RUN, ...use.funding.map((line) => line.wallet), ...use.keys.map((spec) => spec.name)])], chain: true, hosted: [], approval: 'submit' },
   steps: (_use, flags) => {
     const member = flags.value('member');
     return member === undefined ? ['collateral', 'float'] : [`member:${member}`];
