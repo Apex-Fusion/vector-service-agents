@@ -1,10 +1,11 @@
 // scripts/operator/usecases/inventory-reorder.ts - the data of use case 1 (inventory reorder): the keys, the organisations, the two agents and the subagent, the funding, the attestations, the runs
-// and the steps of the evidence. The operator tasks read this value and nothing else about the use case.
+// and the steps of the evidence. The operator tasks read this value and nothing else about the use case. The keys, the organisations and the helpers that every use case shares are in `shared.ts`.
 // The file holds public text and amounts in lovelace (bigint). It holds no key, no wallet address, no DID and no hash of a run, and no contact address: the contact is a setting.
 // A test (test/usecase-inventory-reorder.test.ts) holds each name and each number here to the public file of the agents that states it, so a change in one place fails a test in the other.
 import { INVENTORY_CAPABILITIES } from '../../../packages/usecase-kit/src/inventory/index.ts';
 import { CHALLENGE_RESERVE_LOVELACE } from '../lib/claim-constants.ts';
-import type { KeyLine, KeyUse, OrganisationSpec, PartySpec, UseCase } from '../lib/contract.ts';
+import type { KeyUse, UseCase } from '../lib/contract.ts';
+import { ALFA, COLLATERAL, CORE_KEYS, DELTA, DEMONSTRATION_SENTENCE, ECHO, MODULE_MANIFEST_PATH, RUNTIME_COMMIT, line, organisationKeys, partiesOf } from './shared.ts';
 
 const REORDER_ENV = '.env.reorder-agent';
 const ORDER_ENV = '.env.order-desk';
@@ -16,23 +17,6 @@ const REORDER_ORIGIN = 'https://mp-suppliers-reorder.vector.apexfusion.org';
 const ORDERS_SMALL_ORIGIN = 'https://mp-suppliers-orders-small.vector.apexfusion.org';
 const ORDERS_MEDIUM_ORIGIN = 'https://mp-suppliers-orders-medium.vector.apexfusion.org';
 const ORDERS_LARGE_ORIGIN = 'https://mp-suppliers-orders-large.vector.apexfusion.org';
-
-const ECHO: OrganisationSpec = { id: 'echo', domain: 'echo.vector.apexfusion.org', accountableKey: 'accountable-echo', guardianKey: 'guardian-echo' };
-const ALFA: OrganisationSpec = { id: 'alfa', domain: 'alfa.vector.apexfusion.org', accountableKey: 'accountable-alfa', guardianKey: 'guardian-alfa' };
-
-/** One line of an env file: the file, the variable, and what the line holds. */
-const line = (file: string, name: string, of: KeyLine['of']): KeyLine => ({ file, name, of });
-
-/** The five parties of the record of an agent: the Accountable key of its organisation, Module-1, the Provider key (no rights), the guardian key of the organisation and the controller key as guardians. */
-function partiesOf(organisation: OrganisationSpec): readonly PartySpec[] {
-  return [
-    { role: 'Accountable', signer: { kind: 'key', key: organisation.accountableKey }, organisation: organisation.domain, rights: null },
-    { role: 'Responsible', signer: { kind: 'module1' }, organisation: null, rights: null },
-    { role: 'Provider', signer: { kind: 'key', key: 'provider' }, organisation: null, rights: [] },
-    { role: 'Guardian', signer: { kind: 'key', key: organisation.guardianKey }, organisation: null, rights: null },
-    { role: 'Guardian', signer: { kind: 'key', key: 'controller' }, organisation: null, rights: null },
-  ];
-}
 
 const REORDER_KEYS: readonly KeyUse[] = [
   {
@@ -76,8 +60,7 @@ const ORDER_KEYS: readonly KeyUse[] = [
   { key: 'order-desk-service', purposes: ['authentication', 'transaction'], lines: [line(ORDER_ENV, 'ORDER_DESK_SERVICE_PRIV_KEY_HEX', 'secret'), line(ORDER_ENV, 'ORDER_DESK_SERVICE_PKH', 'pkh')] },
 ];
 
-// The funding of each wallet, in lovelace: one pure output of 5,000,000 as collateral, and a float. The float is the sum of the items, rounded up to a multiple of 10,000,000.
-const COLLATERAL = 5_000_000n;
+// The funding of each wallet, in lovelace: one pure output of `COLLATERAL` as collateral, and a float. The float is the sum of the items, rounded up to a multiple of 10,000,000.
 const ORDER_SUPPLIER_ITEMS: UseCase['funding'][number]['items'] = [
   { what: 'Deposit of the advert', lovelace: 2_500_000n },
   { what: 'Fee of the advert', lovelace: 350_000n },
@@ -95,14 +78,8 @@ const USE_CASE: UseCase = {
   name: 'inventory-reorder',
   title: 'Use case 1 (inventory reorder)',
   keys: [
-    { name: 'controller', scope: 'shared', about: 'Controller of every record that this deployment registers. It signs registrations, stakes and attestation consents.' },
-    { name: 'run', scope: 'shared', about: 'The run wallet. It funds the other wallets.' },
-    { name: 'fee', scope: 'shared', about: 'Pays the deposits and the fees of registrations, attestations and party actions.' },
-    { name: 'provider', scope: 'shared', about: 'Provider key. It issues the provenance and software attestations.' },
-    { name: 'accountable-echo', scope: 'shared', about: 'Accountable key of the organisation echo.' },
-    { name: 'guardian-echo', scope: 'shared', about: 'Guardian key of the organisation echo.' },
-    { name: 'accountable-alfa', scope: 'shared', about: 'Accountable key of the organisation alfa.' },
-    { name: 'guardian-alfa', scope: 'shared', about: 'Guardian key of the organisation alfa.' },
+    ...CORE_KEYS,
+    ...organisationKeys(ALFA),
     { name: 'reorder-supplier', scope: 'use-case', about: 'Supplier key of the Reorder Agent runtime.' },
     { name: 'reorder-service', scope: 'use-case', about: 'Service key of the Reorder Agent: model hires, claims, challenges and the stake.' },
     { name: 'reorder-delegation-1', scope: 'use-case', about: 'First delegation key of the Reorder Agent. A delegation of a hirer names one of its two delegation keys.' },
@@ -118,7 +95,7 @@ const USE_CASE: UseCase = {
   agents: [
     {
       id: 'reorder-agent', kind: 'reorder-agent', name: 'Reorder Agent',
-      description: 'Demonstration organisation run by the Apex Fusion Foundation. Agent of a buying organisation in use case 1 (inventory reorder).',
+      description: `${DEMONSTRATION_SENTENCE} Agent of a buying organisation in use case 1 (inventory reorder).`,
       capability: INVENTORY_CAPABILITIES.reorder, organisation: 'echo', endpoint: REORDER_ORIGIN, folder: 'reorder-agent', serviceEnvFile: REORDER_ENV, serviceKey: 'reorder-service',
       statusUrls: [`${REORDER_ORIGIN}/status`],
       keys: REORDER_KEYS, parties: partiesOf(ECHO), guardianThreshold: 2,
@@ -135,7 +112,7 @@ const USE_CASE: UseCase = {
     },
     {
       id: 'order-desk', kind: 'order-desk', name: 'Order Desk',
-      description: 'Demonstration organisation run by the Apex Fusion Foundation. Order desk of a supplier in use case 1 (inventory reorder).',
+      description: `${DEMONSTRATION_SENTENCE} Order desk of a supplier in use case 1 (inventory reorder).`,
       capability: INVENTORY_CAPABILITIES.order, organisation: 'alfa', endpoint: ORDERS_SMALL_ORIGIN, folder: 'order-desk', serviceEnvFile: ORDER_ENV, serviceKey: 'order-desk-service',
       statusUrls: [`${ORDERS_SMALL_ORIGIN}/status`, `${ORDERS_MEDIUM_ORIGIN}/status`, `${ORDERS_LARGE_ORIGIN}/status`],
       keys: ORDER_KEYS, parties: partiesOf(ALFA), guardianThreshold: 2,
@@ -162,7 +139,7 @@ const USE_CASE: UseCase = {
   subagents: [
     {
       id: 'stock-reader', parent: 'reorder-agent', name: 'stock-reader',
-      description: 'Demonstration organisation run by the Apex Fusion Foundation. Subagent of the Reorder Agent in use case 1 (inventory reorder). It reads the stock of one SKU.',
+      description: `${DEMONSTRATION_SENTENCE} Subagent of the Reorder Agent in use case 1 (inventory reorder). It reads the stock of one SKU.`,
       keys: STOCK_READER_KEYS,
     },
   ],
@@ -276,13 +253,13 @@ const USE_CASE: UseCase = {
       primitive: 'End of a delegation, token refusal', actor: 'hirer',
     },
   ],
-  moduleManifestPath: 'Module-1/deploy/identity/mainnet/manifest.json',
-  runtimeCommit: 'a05564cae3ca0e72a3591c8b2eb16c7909a60839',
+  moduleManifestPath: MODULE_MANIFEST_PATH,
+  runtimeCommit: RUNTIME_COMMIT,
   records: [],
   compliance: null,
   lifecycle: null,
   tenantSeed: null,
-  tenantOrganisations: { supplier: ALFA.domain, insurer: 'delta.vector.apexfusion.org' },
+  tenantOrganisations: { supplier: ALFA.domain, insurer: DELTA.domain },
   // The section "Not covered" of the results page, as the results task prints it for use case 1.
   notCovered: {
     lead: 'No run covers these three items:',
