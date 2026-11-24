@@ -3,7 +3,7 @@
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 import { EvidenceError } from '../../checks/lib/evidence.ts';
 import { iso } from '../../checks/lib/format.ts';
 import { DryStop } from '../../checks/lib/hire-types.ts';
@@ -13,7 +13,7 @@ import { GuardRefusal, LandRefused } from '../../checks/lib/land.ts';
 import { TxNotConfirmedError } from '../../checks/lib/platform.ts';
 import { PreconditionError } from '../../checks/lib/session.ts';
 import { SettingsError } from '../../checks/lib/settings.ts';
-import { StateError } from '../../checks/lib/state.ts';
+import { StateError, StateFile } from '../../checks/lib/state.ts';
 import { factsOf } from '../../checks/lib/txfacts.ts';
 import { ApprovalError } from '../lib/approval.ts';
 import type { GoFile } from '../lib/approval.ts';
@@ -1180,7 +1180,7 @@ describe('a transaction in flight', () => {
       expect(inputsToCheck({ inputs: ['aa#0', 'bb#1'], collateralInputs: ['cc#0', 'aa#0'] })).toEqual(['aa#0', 'bb#1', 'cc#0']);
       expect(inputsToCheck({ inputs: [], collateralInputs: [] })).toEqual([]);
     });
-    it('stops when the second read fails, in a dry run and in a run with --submit: the record and the reserve stay, nothing is built or submitted, and the next run that can read the status records the step', async () => {
+    it('keeps the flight on disk when the second status read fails, and records a known transaction before it clears the flight', async () => {
       for (const argv of [[], ['--submit']]) {
         const w = await taskWorld();
         const ran: string[] = [];
@@ -1189,21 +1189,36 @@ describe('a transaction in flight', () => {
         w.node.neverConfirm = false;
         const submitted = w.node.submitted.length;
         const applied = w.world.chain.applied.length;
-        w.node.script.push({ confirmations: null }, new Error('the indexer is down'));
-        expect(await w.run(def, ...argv), argv.join(' ')).toBe(2);
-        expect(w.screen.errorText).toContain(`the status of the transaction ${hash} of the step one could not be read (the indexer is down). The transaction stays in flight, and nothing is built.`);
-        expect(w.state('toy').in_flight?.tx_hash).toBe(hash);
-        expect(w.state('toy').steps).toEqual({});
-        expect(w.exposure().map((entry) => entry.tx_hash)).toEqual([hash]);
-        expect(w.node.submitted).toHaveLength(submitted);
-        expect(w.world.chain.applied).toHaveLength(applied);
-        expect(ran).toEqual(['one']);
-        expect(w.machine()).toMatchObject({ outcome: 'stopped', exit: 2, step: 'one' });
-        reset(w);
-        expect(await w.run(def, ...argv), argv.join(' ')).toBe(0);
-        expect(w.state('toy').steps.one!.tx_hash).toBe(hash);
-        expect(w.state('toy').in_flight).toBeNull();
-        expect(ran).toEqual(['one', 'two']);
+        const checkpoint = w.state('toy').in_flight;
+        const recordedBeforeClear: (string | null)[] = [];
+        const clearInFlight = StateFile.prototype.clearInFlight;
+        const watch = vi.spyOn(StateFile.prototype, 'clearInFlight').mockImplementation(function (this: StateFile) {
+          const saved = w.state('toy');
+          if (saved.in_flight?.tx_hash === hash) recordedBeforeClear.push(saved.steps.one?.tx_hash ?? null);
+          clearInFlight.call(this);
+        });
+        try {
+          w.node.script.push({ confirmations: null }, new Error('the indexer is down'));
+          expect(await w.run(def, ...argv), argv.join(' ')).toBe(2);
+          expect(w.screen.errorText).toContain(`the status of the transaction ${hash} of the step one could not be read (the indexer is down). The transaction stays in flight, and nothing is built.`);
+          expect(w.state('toy').in_flight).toEqual(checkpoint);
+          expect(recordedBeforeClear).toEqual([]);
+          expect(w.state('toy').steps).toEqual({});
+          expect(w.exposure().map((entry) => entry.tx_hash)).toEqual([hash]);
+          expect(w.node.submitted).toHaveLength(submitted);
+          expect(w.world.chain.applied).toHaveLength(applied);
+          expect(ran).toEqual(['one']);
+          expect(w.machine()).toMatchObject({ outcome: 'stopped', exit: 2, step: 'one' });
+          reset(w);
+          w.node.script.push({ confirmations: null }, { confirmations: 0 });
+          expect(await w.run(def, ...argv), argv.join(' ')).toBe(0);
+          expect(recordedBeforeClear).toEqual([hash]);
+          expect(w.state('toy').steps.one!.tx_hash).toBe(hash);
+          expect(w.state('toy').in_flight).toBeNull();
+          expect(ran).toEqual(['one', 'two']);
+        } finally {
+          watch.mockRestore();
+        }
       }
     });
     it('stops when both reads fail', async () => {
