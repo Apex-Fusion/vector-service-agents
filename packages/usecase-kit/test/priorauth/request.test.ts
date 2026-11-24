@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { DOCUMENT_SCHEMAS, canonicalSha256, makeProposal, parseHandoff, proposalDigest } from '@vsa/usecase-kit/protocol';
 import { MAX_JUSTIFICATION_CHARS, PRIORAUTH_REQUEST_SCHEMA, parsePriorAuthRequest, requestNumberKey, requestNumberOf } from '@vsa/usecase-kit/priorauth';
-import { BAD_TEXT, MARKER, change, expectRefused, golden, goldenText, must, withGetter, withPrototype, withProtoKey } from './support.ts';
+import { BAD_TEXT, ID_BAD, ID_GOOD, MARKER, NOT_TEXT, change, expectRefused, golden, goldenText, must, withGetter, withPrototype, withProtoKey } from './support.ts';
 import type { Json } from './support.ts';
 
 /** The SHA-256 of the bytes of the golden file. A change of the file shows here. */
@@ -116,9 +116,6 @@ describe('a member that is missing or is not listed', () => {
 });
 
 describe('a member of the wrong type or in the wrong form', () => {
-  const NOT_TEXT: readonly unknown[] = [1, 0, true, null, {}, [], ['a']];
-  const ID_BAD: readonly unknown[] = ['', 'a'.repeat(65), '-1', '.1', '_1', 'a b', 'a/b', 'a#b', 'a\n', 'a\u00e9', MARKER, ...NOT_TEXT];
-  const ID_GOOD: readonly unknown[] = ['a', 'run1-1', 'A.b_c-d', '9', 'a'.repeat(64)];
   const FORMS: ReadonlyArray<readonly [string, readonly unknown[], readonly unknown[]]> = [
     ['schema', ['vector.usecase.priorauth-request.v2', 'VECTOR.USECASE.PRIORAUTH-REQUEST.V1', 'vector.usecase.priorauth-request.v1 ', 'vector.usecase.priorauth-request.v1\n', '', MARKER, 'vector.usecase.po.v1', 'vector.usecase.proposal.v1', ...NOT_TEXT], [PRIORAUTH_REQUEST_SCHEMA]],
     ['request_number', ID_BAD, ID_GOOD],

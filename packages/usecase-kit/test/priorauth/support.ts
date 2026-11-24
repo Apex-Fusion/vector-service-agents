@@ -83,6 +83,23 @@ export const MARKER = 'zq9 marker/value#7f3\n';
 /** A text that no free text takes, because it ends with a control character, and that a refusal must never repeat. */
 export const BAD_TEXT = 'zq9 marker value\u0001';
 
+/** Values that are not a text. */
+export const NOT_TEXT: readonly unknown[] = [1, 0, true, null, {}, [], ['a']];
+
+/**
+ * Values that are not an identifier of a system, and identifiers that no member of a golden file holds. The bad values are the forms that the tests of the inventory folder give to the identifiers
+ * `po_number` and `sku`, and the Kelvin sign is in a test of its own.
+ */
+export const ID_BAD: readonly unknown[] = ['', 'a'.repeat(65), '-1', '.1', '_1', 'a b', 'a/b', 'a#b', 'a\n', 'a\u00e9', 'e\u0301', MARKER, ...NOT_TEXT];
+export const ID_GOOD: readonly unknown[] = ['a', 'run1-1', 'A.b_c-d', '9', 'a'.repeat(64)];
+
+/** Values that are not a date that exists, and dates. The bad values are the forms that the tests of the inventory folder give to the date `needed_by`. */
+export const DAY_BAD: readonly unknown[] = [
+  '2026-02-30', '2026-02-29', '2026-13-01', '2026-00-10', '2026-12-00', '2026-12-32', '2026-04-31', '2026-1-1', '20261201', '2026/12/01', '2026-12-01T00:00:00Z', ' 2026-12-01', '2026-12-01 ',
+  '2026-12-01\n', '0000-01-01', '0099-12-31', 'tomorrow', '', MARKER, 20261201, ...NOT_TEXT,
+];
+export const DAY_GOOD: readonly unknown[] = ['2026-12-01', '2026-02-28', '2028-02-29', '2000-02-29', '0100-01-01', '9999-12-31', '2026-04-30'];
+
 /** The value of a result that must have passed. */
 export function must<T, C extends string>(result: ProtocolResult<T, C>): T {
   if (!result.ok) throw new Error(`the sample must pass, and it was refused: ${result.detail}`);

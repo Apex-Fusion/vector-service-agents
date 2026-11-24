@@ -5,18 +5,18 @@ import { describe, expect, it } from 'vitest';
 import { accepted, refused } from '@vsa/usecase-kit/protocol';
 import type { JsonValue } from '@vsa/usecase-kit/protocol';
 import { checkUnique, isList, objectOf, parseDay, parseDiagnosisCodes, parseId, parseIds, parseList, parseText, valuesOf } from '../../src/priorauth/ids.ts';
-import { BAD_TEXT, MARKER, expectRefused, withPrototype } from './support.ts';
+import { BAD_TEXT, DAY_BAD, DAY_GOOD, ID_BAD, ID_GOOD, NOT_TEXT, expectRefused, withPrototype } from './support.ts';
 
-const NOT_TEXT: readonly unknown[] = [1, 0, true, null, undefined, {}, [], ['a']];
+/** Values that are no text, and no value at all. */
+const NOT_A_TEXT: readonly unknown[] = [...NOT_TEXT, undefined];
 
 describe('parseId', () => {
   it('takes 1 to 64 letters, digits, dots, hyphens and underscores that start with a letter or a digit, and gives the text as it is', () => {
-    for (const id of ['a', 'run1-1', 'A.b_c-d', '9', 'SYN-MRI-LS', 'REC-0001', 'C1', 'a'.repeat(64)]) expect(parseId(id, 'id'), id).toStrictEqual({ ok: true, value: id });
+    for (const id of [...ID_GOOD, 'SYN-MRI-LS', 'REC-0001', 'C1']) expect(parseId(id, 'id'), String(id)).toStrictEqual({ ok: true, value: id });
   });
 
   it('refuses a text of another form, and names the field and never repeats the text', () => {
-    const bad = ['', 'a'.repeat(65), '-1', '.1', '_1', 'a b', 'a/b', 'a#b', 'a\n', 'a\u00e9', 'e\u0301', ' a', 'a ', MARKER, ...NOT_TEXT];
-    for (const value of bad) {
+    for (const value of [...ID_BAD, ' a', 'a ', undefined]) {
       const result = parseId(value, 'the id');
       expect(result.ok, JSON.stringify(value)).toBe(false);
       expectRefused(result, 'the id');
@@ -35,15 +35,11 @@ describe('parseId', () => {
 
 describe('parseDay', () => {
   it('takes a date that exists, with a year of 0100 or later', () => {
-    for (const day of ['2026-12-01', '2026-02-28', '2028-02-29', '2000-02-29', '0100-01-01', '9999-12-31', '2026-04-30']) expect(parseDay(day, 'day'), day).toStrictEqual({ ok: true, value: day });
+    for (const day of DAY_GOOD) expect(parseDay(day, 'day'), String(day)).toStrictEqual({ ok: true, value: day });
   });
 
   it('refuses a date that does not exist, a text of another form, and a year before 0100, and names the field', () => {
-    const bad = [
-      '2026-02-30', '2026-02-29', '2026-13-01', '2026-00-10', '2026-12-00', '2026-12-32', '2026-04-31', '2026-1-1', '20261201', '2026/12/01', '2026-12-01T00:00:00Z', ' 2026-12-01', '2026-12-01 ',
-      '2026-12-01\n', '0000-01-01', '0099-12-31', 'tomorrow', '', MARKER, 20261201, ...NOT_TEXT,
-    ];
-    for (const value of bad) {
+    for (const value of [...DAY_BAD, undefined]) {
       const result = parseDay(value, 'the day');
       expect(result.ok, JSON.stringify(value)).toBe(false);
       expectRefused(result, 'the day');
@@ -140,7 +136,7 @@ describe('parseText', () => {
   });
 
   it('refuses a value that is not a text, names the field, and never repeats the text', () => {
-    for (const value of NOT_TEXT) expectRefused(parseText(value, 'the text', 16), 'the text');
+    for (const value of NOT_A_TEXT) expectRefused(parseText(value, 'the text', 16), 'the text');
     const result = parseText(BAD_TEXT, 'the text', 40);
     expectRefused(result, 'the text');
     expectRefused(parseText(`zq9 marker ${'y'.repeat(40)}`, 'the text', 16), 'the text');
