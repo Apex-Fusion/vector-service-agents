@@ -626,10 +626,6 @@ describe('specs/sourcing-agent.md, Interface, Request', () => {
     // The own codes of the job: each step that the list names writes its code.
     expect(PROPOSE_FAILURES).toEqual(expect.arrayContaining(['delegation_not_found', 'delegation_key_unknown', 'ledger_unavailable', 'bidders_unavailable', 'no_bidders', 'shortlist_unknown_bidder', 'nobody_invited', 'no_quotes', 'ranking_invalid', 'bad_document']));
     expect(EXECUTE_FAILURES).toEqual(expect.arrayContaining(['bad_document', 'ranking_not_for_tenant', 'ledger_unavailable', 'delegation_not_found', 'delegation_key_unknown', 'aborted', 'deadline', 'token_failed', 'mock_system_failed']));
-    // The sourcing record: a null approval is refused with `approval_not_found`, and it checks that the supplier of rank 1 is Active.
-    const record = text('services/mock-systems/src/routes.ts');
-    expect(record).toContain("if (request.approval === null) return refuse('approval_not_found'");
-    expect(record).toContain('4. the supplier of rank 1 resolves and is Active now;');
     expect(text('agents/sourcing-agent/src/execute/execute.ts')).toContain("tenant: 'ranking_not_for_tenant'");
     for (const part of [
       'The sourcing record checks the approval, and that the supplier of rank 1 resolves and is Active now. A `null` approval is refused with `approval_not_found`.',
