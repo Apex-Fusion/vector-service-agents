@@ -1,0 +1,69 @@
+# The Bid Desk charlie on the agents host: a runtime in front of a service. Two containers: bids-charlie-runtime and bids-charlie-service.
+# This file runs one Bid Desk. A second file and a third file run the other two. Each file is a project of its own, with its own keys, wallet, advert, ports, host name, folder and volume. The three files are one file: only the instance name, the two host ports and the host name change. The three run one image of the service and one image of the runtime.
+# The runtime serves the advert. It holds the supplier key, claims the escrow of a buyer and calls the service. The service does the work and holds one key, the service key. The runtime calls it.
+# The env file sits next to this file (RUNBOOK-bid-desk.md, "The env files"). The service and the runtime both read it: .env.bid-desk-charlie.
+# The operator makes it from .env.bid-desk.example, with mode 600. It holds keys and a token, and it never enters git. Each Bid Desk has an env file of its own, with its own keys and its own token.
+# A container reads its env file when it is created. After a change, create the container again: restart does not read it. Do it only when the runtime says free on /status (RUNBOOK-bid-desk.md, "The restart rule").
+# The host builds no image. CI pushes the images. Each image below is named by its digest, not by a tag: a tag moves, and a later pull could change the bytes that run here.
+# Replace each placeholder <digest> with the digest of the image of the reviewed commit (RUNBOOK-bid-desk.md, "The images"). Compose refuses to start a container while a placeholder is left (invalid reference format).
+# The file has no networks key, on purpose. Compose puts the two containers on the default network of this project, bid-desk-charlie_default. The Caddy container of the host joins that network, and no other container does (Caddyfile.bid-desk.snippet).
+# The service listens on 0.0.0.0 inside its container. A container on a network that others share could call it, so do not add a networks key here, and do not join another container to that network.
+# SERVICE_URL names the container of the service, not the alias "service". The Caddy container joins the networks of several projects, and each project can have a service with that alias.
+# The limits keep a fault in one container. A runtime of the other agents of the host uses about 190 MiB. If a container grows past its limit, the kernel stops that container only.
+name: bid-desk-charlie
+services:
+  runtime:
+    image: ghcr.io/apex-fusion/vector-service-agents/agent-runtime@sha256:<digest>
+    container_name: bids-charlie-runtime
+    restart: unless-stopped
+    env_file: [ { path: ./.env.bid-desk-charlie, required: true } ]
+    # The runtime holds the supplier key, from the env file. The service key is in the same file, so it is blanked here: an empty string overrides the value from an env file, and the runtime never holds that key.
+    # SERVICE_TIMEOUT_MS is 60 s more than the deadline of a job (300,000 ms), and 120 s inside the window of the advert (480,000 ms). The runtime refuses to boot unless it is at least 60 s inside the window.
+    # SERVICE_PRECHECK_URL is the check before the Claim, and it is required: a runtime with no check claims every escrow. The service of this Bid Desk answers it from its job slot, so it refuses a job while it works on another. No other Bid Desk shares that slot.
+    # PUBLIC_ORIGIN is the https origin of the host name of the runtime. The card of the runtime and the record of the agent name it, and it is the host of the block of this Bid Desk in Caddyfile.bid-desk.snippet.
+    # RELEASE_WATCHER releases an escrow that the buyer did not accept, after the window of 600 s. It needs LIVE_CHAIN=1, which the env file sets.
+    environment:
+      CAPABILITY_KIND: custom
+      SERVICE_URL: http://bids-charlie-service:9106/
+      SERVICE_PRECHECK_URL: http://bids-charlie-service:9106/precheck
+      SERVICE_CONTENT_TYPE: application/json
+      SERVICE_TIMEOUT_MS: "360000"
+      ADVERT_MAX_PROCESSING_MS: "480000"
+      PORT: "8080"
+      PUBLIC_ORIGIN: https://mp-suppliers-bids-charlie.vector.apexfusion.org
+      RELEASE_WATCHER: "1"
+      BID_DESK_SERVICE_PRIV_KEY_HEX: ""
+    ports: ["127.0.0.1:8110:8080"]
+    depends_on: [service]
+    mem_limit: 768m
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    logging: { driver: json-file, options: { max-size: "10m", max-file: "3" } }
+  service:
+    image: ghcr.io/apex-fusion/vector-service-agents/bid-desk@sha256:<digest>
+    container_name: bids-charlie-service
+    restart: unless-stopped
+    # The service reads the same file as the runtime. It never holds the supplier key, which is the key of the runtime. SUPPLIER_PRIV_KEY_HEX is blanked below, so that no supplier key gets in by this file.
+    env_file: [ { path: ./.env.bid-desk-charlie, required: true } ]
+    # The service listens on 0.0.0.0, on port 9106: the image sets PORT=9106 and its health check reads that port, so this file sets no PORT for the service. The mapping below publishes the port on 127.0.0.1 only, on a host port of its own. The compose values win over the env file.
+    # BID_DESK_STATE_DIR is the volume below. The three lines that follow it name this Bid Desk: its instance (it selects the price list file and the name of the desk), its organisation and its public origin (the price list is served at <origin>/price-list.json).
+    # They stand here and not in the env file, so that a copy of the wrong env file cannot change which Bid Desk this is.
+    environment:
+      HOST: "0.0.0.0"
+      SUPPLIER_PRIV_KEY_HEX: ""
+      BID_DESK_STATE_DIR: /data
+      BID_DESK_INSTANCE: charlie
+      BID_DESK_ORGANISATION: charlie.vector.apexfusion.org
+      BID_DESK_PUBLIC_ORIGIN: https://mp-suppliers-bids-charlie.vector.apexfusion.org
+    ports: ["127.0.0.1:9108:9106"]
+    # The records that must outlive the container: the book of the requests that the desk answered (rfq-book.json) and the bookkeeping of the model hires of the service key. docker compose down keeps the volume.
+    volumes: ["bid-desk-charlie-state:/data"]
+    mem_limit: 1024m
+    # On SIGTERM the service takes no new job and waits up to 300 s for the job that runs. The 30 s more are for it to log a job that it abandoned, and to exit.
+    # A grace period of 300 s or less can cut a job under escrow. Even 330 s covers that wait only: stop or recreate the service only when the runtime says free (RUNBOOK-bid-desk.md, "The restart rule").
+    stop_grace_period: 330s
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    logging: { driver: json-file, options: { max-size: "10m", max-file: "3" } }
+volumes:
+  bid-desk-charlie-state: { name: bid-desk-charlie-state }
