@@ -1105,6 +1105,14 @@ describe('the machine line', () => {
     await w.run(def, '--submit');
     expect(w.machine()).toMatchObject({ outcome: 'done', step: 'one' });
   });
+  it('leaves a result that holds a mark of a secret out of the line, and keeps the exit code', async () => {
+    const w = await taskWorld();
+    w.writeGo();
+    const def = toyTask(twoSteps([]), { result: () => ({ did: 'did:vector:abc', header: 'Bearer abcdef' }) });
+    expect(await w.run(def, '--submit')).toBe(0);
+    expect(w.machine()).toMatchObject({ outcome: 'done', exit: 0, step: null, result: {} });
+    expect(w.allText()).not.toContain('Bearer abcdef');
+  });
 });
 
 describe('the cleanup', () => {
@@ -1119,6 +1127,14 @@ describe('the cleanup', () => {
     reset(w);
     expect(await w.run(toyTask(twoSteps(ran)), 'cleanup', '--submit')).toBe(2);
     expect(w.screen.errorText).toContain('the approval file does not exist');
+  });
+  it('runs the cleanup of a submit run under a good approval, and prints the approval', async () => {
+    const w = await taskWorld();
+    w.writeGo();
+    expect(await w.run(toyTask(twoSteps([])), 'cleanup', '--submit')).toBe(0);
+    expect(w.screen.lines).toContain('approval: session s1, cap 100.000000 units, 0.000000 units reserved');
+    expect(w.screen.lines).toContain('there is nothing to take back');
+    expect(w.machine()).toMatchObject({ command: 'cleanup', mode: 'submit', outcome: 'done', exit: 0 });
   });
 });
 
