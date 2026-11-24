@@ -3,12 +3,13 @@
 // refusal has an accepted twin, the same setting with a value that the rule takes. The three DIDs are three agents. The fault switch takes the empty text and the one value of this agent. A limit has no default.
 // No test here starts a service or uses the network.
 import { describe, expect, test } from 'vitest';
-import { VECTOR_KOIOS_URL, VECTOR_OGMIOS_URL, VECTOR_SUBMIT_URL } from '@vsa/buyer-core';
+import { MAX_ESCROW_LOVELACE, VECTOR_KOIOS_URL, VECTOR_OGMIOS_URL, VECTOR_SUBMIT_URL } from '@vsa/buyer-core';
 import { LEAST_RESOLUTION_DEADLINE_MS } from '@vsa/usecase-kit/dispute';
 import { AGENT_KINDS, FAULT_MODES } from '@vsa/usecase-kit/protocol';
 import { REGISTRY_POLICY, legacyVectorDid } from '@vsa/vector-read';
 import {
-  BUYER_BOND_LOVELACE, GATEWAY_DEFAULT, HOST_DEFAULT, JOB_DEADLINE_MS, MIN_PROCESSING_WINDOW_MS, PORT_DEFAULT, PRICE_DEFAULT_LOVELACE, STATE_DIR_DEFAULT, SUPPLIER_BOND_LOVELACE, agentDidOf,
+  BUYER_BOND_LOVELACE, GATEWAY_DEFAULT, HOST_DEFAULT, JOB_DEADLINE_MS, MAX_PROCESSING_WINDOW_MS, MIN_PROCESSING_WINDOW_MS, PORT_DEFAULT, PRICE_DEFAULT_LOVELACE, STATE_DIR_DEFAULT, SUPPLIER_BOND_LOVELACE,
+  agentDidOf,
   cosignSettingsOf, disputeOf, drafterDidOf, endpointsFromEnv, faultOf, handoffLimitsOf, hostOf, httpsOriginOf, limitsOf, mockBasesOf, modelOf, module1SourceOf, portOf, priceOf, processingWindowOf,
   recordReaderDidOf, stateDirOf, supplierKeyOf,
 } from '../../src/serve/settings.ts';
@@ -41,6 +42,8 @@ const cosignRule = (detail: string): RegExp => new RegExp(`^the settings of the 
 const FAULT_REFUSAL = /^environment variable FAULT_MODE must be empty or "alter_after_approval" for prior-authorization-agent, and it has \d+ characters$/;
 const NOT_THE_KEY = /^environment variable SUPPLIER_PUB_KEY_HEX is not the public key of SUPPLIER_PKH: the key hash of the one is not the other\. Both are published, so they must come from the same key pair, and the public key line must not hold a private key$/;
 const WINDOW_RULE = /^environment variable ADVERT_MAX_PROCESSING_MS must be at least 1800000 \(the window of 30 min that the deadline of a job, 1620000 ms, assumes\)$/;
+const WINDOW_MAX_RULE = /^environment variable ADVERT_MAX_PROCESSING_MS must be at most 86400000 \(the 24 h that a Post holds the lock of a buyer for\)$/;
+const PRICE_CAP = /^environment variable ADVERT_PRICE_LOVELACE must be at most 9998000000 \(the price and both bonds must stay within the 10000000000 lovelace cap of an escrow\)$/;
 const SAME_HOST = /^environment variable MOCK_MTLS_BASE must name another host than MOCK_PUBLIC_BASE: the mock service tells the two hosts apart by the Host header$/;
 const OGMIOS_HTTPS = /^environment variable VECTOR_OGMIOS_URL must be an https address: the tip reader of the janitor takes https only, and it has \d+ characters$/;
 const MODULE1_FORM = /^environment variable VECTOR_MODULE1_MANIFEST must be an https URL with no user, query or fragment, and it has \d+ characters$/;
@@ -77,12 +80,16 @@ const ROWS: readonly Row[] = [
   ['PRIORAUTH_STATE_DIR', stateDirOf, 'relative/state', /^environment variable PRIORAUTH_STATE_DIR must be an absolute path, and it has 14 characters$/, '/var/state'],
   ['PRIORAUTH_STATE_DIR', stateDirOf, './state', /^environment variable PRIORAUTH_STATE_DIR must be an absolute path, and it has 7 characters$/, '/data'],
   ['ADVERT_MAX_PROCESSING_MS', processingWindowOf, '1799999', WINDOW_RULE, '1800000', '1799731'],
+  ['ADVERT_MAX_PROCESSING_MS', processingWindowOf, '86400001', WINDOW_MAX_RULE, '86400000', '86400731'],
   ['ADVERT_MAX_PROCESSING_MS', processingWindowOf, 'long', digitsRule('ADVERT_MAX_PROCESSING_MS'), '2400000'],
   ['ADVERT_MAX_PROCESSING_MS', processingWindowOf, '1.8e6', digitsRule('ADVERT_MAX_PROCESSING_MS'), '1800000'],
+  ['ADVERT_MAX_PROCESSING_MS', processingWindowOf, '99999999999999999999', digitsRule('ADVERT_MAX_PROCESSING_MS'), '86400000'],
   ['ADVERT_PRICE_LOVELACE', priceOf, '0', lovelaceRule('ADVERT_PRICE_LOVELACE'), '1'],
   ['ADVERT_PRICE_LOVELACE', priceOf, '1.5', lovelaceRule('ADVERT_PRICE_LOVELACE'), '3000000', '2.7731'],
   ['ADVERT_PRICE_LOVELACE', priceOf, 'free', lovelaceRule('ADVERT_PRICE_LOVELACE'), '3000000'],
-  ['ADVERT_PRICE_LOVELACE', priceOf, '9007199254740993', lovelaceRule('ADVERT_PRICE_LOVELACE'), '9007199254740991'],
+  ['ADVERT_PRICE_LOVELACE', priceOf, '9998000001', PRICE_CAP, '9998000000', '9998000731'],
+  ['ADVERT_PRICE_LOVELACE', priceOf, '10000000731', PRICE_CAP, '9998000000'],
+  ['ADVERT_PRICE_LOVELACE', priceOf, '9007199254740993', lovelaceRule('ADVERT_PRICE_LOVELACE'), '9998000000'],
   ['SUPPLIER_PKH', supplierKeyOf, undefined, required('SUPPLIER_PKH'), SUPPLIER.keyHash],
   ['SUPPLIER_PKH', supplierKeyOf, 'ab', /^environment variable SUPPLIER_PKH must be 56 hex characters, and it has 2 characters$/, SUPPLIER.keyHash],
   ['SUPPLIER_PKH', supplierKeyOf, 'ab'.repeat(27), /^environment variable SUPPLIER_PKH must be 56 hex characters, and it has 54 characters$/, SUPPLIER.keyHash],
@@ -209,6 +216,15 @@ describe('the numbers of the service', () => {
     expect([PRICE_DEFAULT_LOVELACE, SUPPLIER_BOND_LOVELACE, BUYER_BOND_LOVELACE]).toStrictEqual([3_000_000, 1_000_000, 1_000_000]);
     // The escrow locks the price and both bonds: 5 units.
     expect(PRICE_DEFAULT_LOVELACE + SUPPLIER_BOND_LOVELACE + BUYER_BOND_LOVELACE).toBe(5_000_000);
+    // A Post holds the lock of a buyer for the window of the advert, 24 hours at most, and it refuses a lock above the cap of an escrow, 10,000 units.
+    expect([MAX_PROCESSING_WINDOW_MS, MAX_ESCROW_LOVELACE]).toStrictEqual([86_400_000, 10_000_000_000n]);
+  });
+
+  test('the window takes 1,800,000 ms to 86,400,000 ms, and the price takes 1 to the cap of an escrow less the two bonds', () => {
+    for (const ms of [1_800_000, 86_400_000]) expect(processingWindowOf({ ADVERT_MAX_PROCESSING_MS: String(ms) })).toBe(ms);
+    const most = Number(MAX_ESCROW_LOVELACE) - SUPPLIER_BOND_LOVELACE - BUYER_BOND_LOVELACE;
+    for (const price of [1, most]) expect(priceOf({ ADVERT_PRICE_LOVELACE: String(price) })).toBe(price);
+    expect(most + SUPPLIER_BOND_LOVELACE + BUYER_BOND_LOVELACE).toBe(Number(MAX_ESCROW_LOVELACE));
   });
 
   test('are the defaults of the readers, and a blank setting is a setting that is not set', () => {

@@ -4,7 +4,7 @@
 //
 // The agent has no limit with a default. The three limits of a model hire (the price and each bond), the models, the three limits of the hire of the Insurer Intake Agent (the price and each bond), and the settings
 // of the dispute code are required: a limit that is not set is never "no limit".
-import { VECTOR_KOIOS_URL, VECTOR_OGMIOS_URL, VECTOR_SUBMIT_URL } from '@vsa/buyer-core';
+import { MAX_ESCROW_LOVELACE, VECTOR_KOIOS_URL, VECTOR_OGMIOS_URL, VECTOR_SUBMIT_URL } from '@vsa/buyer-core';
 import { envInt, given, hexOf, requiredEnv } from '@vsa/service-kit';
 import type { MockBases } from '@vsa/usecase-kit/access';
 import { checkLimits as checkHireLimits } from '@vsa/usecase-kit/buyer';
@@ -31,6 +31,8 @@ export const GATEWAY_DEFAULT = 'https://id.vector.apexfusion.org';
 export const JOB_DEADLINE_MS = 1_620_000;
 /** The least window of the advert (ADVERT_MAX_PROCESSING_MS) and its default: the deadline of a job and the timeout of the runtime fit inside it. */
 export const MIN_PROCESSING_WINDOW_MS = 1_800_000;
+/** The most window that the advert may give a job: 24 hours. A Post holds the lock of a buyer for the window of the advert, and it refuses an advert with a longer one. */
+export const MAX_PROCESSING_WINDOW_MS = 86_400_000;
 /** The price of the advert unless ADVERT_PRICE_LOVELACE says another: 3 units. */
 export const PRICE_DEFAULT_LOVELACE = 3_000_000;
 /** The two bonds of the advert, in lovelace. The lock of the escrow is the price and both bonds: 5 units for the default price. */
@@ -156,7 +158,7 @@ export function stateDirOf(env: NodeJS.ProcessEnv): string {
 
 // --- the numbers of the advert ---------------------------------------------------------------------------------------------------------------------------
 
-/** The window that the advert gives a job: at least MIN_PROCESSING_WINDOW_MS. The manifest publishes it. */
+/** The window that the advert gives a job: from MIN_PROCESSING_WINDOW_MS to MAX_PROCESSING_WINDOW_MS. The manifest publishes it. */
 export function processingWindowOf(env: NodeJS.ProcessEnv): number {
   const ms = wholeNumberOf('ADVERT_MAX_PROCESSING_MS', given(env.ADVERT_MAX_PROCESSING_MS), MIN_PROCESSING_WINDOW_MS);
   if (ms < MIN_PROCESSING_WINDOW_MS) {
@@ -164,13 +166,25 @@ export function processingWindowOf(env: NodeJS.ProcessEnv): number {
       `environment variable ADVERT_MAX_PROCESSING_MS must be at least ${MIN_PROCESSING_WINDOW_MS} (the window of ${MIN_PROCESSING_WINDOW_MS / 60_000} min that the deadline of a job, ${JOB_DEADLINE_MS} ms, assumes)`,
     );
   }
+  if (ms > MAX_PROCESSING_WINDOW_MS) {
+    throw new Error(`environment variable ADVERT_MAX_PROCESSING_MS must be at most ${MAX_PROCESSING_WINDOW_MS} (the ${MAX_PROCESSING_WINDOW_MS / 3_600_000} h that a Post holds the lock of a buyer for)`);
+  }
   return ms;
 }
 
-/** The price of the advert, in lovelace: a whole number of more than 0. The two bonds are fixed. */
+/**
+ * The price of the advert, in lovelace: a whole number of more than 0, and no more than the cap of an escrow less the two bonds, because the escrow locks the price and both bonds, and a Post refuses an advert whose
+ * lock is above the cap. The two bonds are fixed.
+ */
 export function priceOf(env: NodeJS.ProcessEnv): number {
   const text = given(env.ADVERT_PRICE_LOVELACE);
-  return text === '' ? PRICE_DEFAULT_LOVELACE : Number(lovelaceOf('ADVERT_PRICE_LOVELACE', text));
+  if (text === '') return PRICE_DEFAULT_LOVELACE;
+  const price = lovelaceOf('ADVERT_PRICE_LOVELACE', text);
+  const bonds = BigInt(SUPPLIER_BOND_LOVELACE + BUYER_BOND_LOVELACE);
+  if (price + bonds > MAX_ESCROW_LOVELACE) {
+    throw new Error(`environment variable ADVERT_PRICE_LOVELACE must be at most ${MAX_ESCROW_LOVELACE - bonds} (the price and both bonds must stay within the ${MAX_ESCROW_LOVELACE} lovelace cap of an escrow)`);
+  }
+  return Number(price);
 }
 
 // --- the supplier key (public values) --------------------------------------------------------------------------------------------------------------------
