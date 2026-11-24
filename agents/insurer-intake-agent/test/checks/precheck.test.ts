@@ -503,7 +503,7 @@ describe('the challenge after approval_digest_mismatch', () => {
 describe('the time of the hook', () => {
   /**
    * What one read costs in this test: the default of the setting `CHECKS_READ_BUDGET_MS`, the most that one timed read of the hook may take. The hook reads the gateway one time and the ledger five times, one
-   * after the other, and each read ends inside the budget that the caller gives it. The runtime waits 10 seconds, and the hook keeps 2 seconds of margin, so six reads share 8,000 ms.
+   * after the other, and each read ends inside the budget that the caller gives it. The runtime waits 10 seconds, and the hook keeps 1 second of margin, so the six reads must stay under 9,000 ms: 1,499 ms for each read at most.
    */
   const CHECKS_READ_BUDGET_MS = 1_200;
 
@@ -536,9 +536,9 @@ describe('the time of the hook', () => {
     const timedReads = reads.filter((name) => name !== 'book');
     expect(timedReads).toHaveLength(6);
     expect(clock.now - started).toBe(timedReads.length * CHECKS_READ_BUDGET_MS);
-    expect(clock.now - started).toBeLessThan(8_000);
-    // The largest budget for a read is the share of one read in 8,000 ms.
-    expect(Math.floor(8_000 / timedReads.length)).toBe(1_333);
+    expect(clock.now - started).toBeLessThan(9_000);
+    // The largest budget for a read is the one whose six reads stay under 9,000 ms.
+    expect(Math.floor((9_000 - 1) / timedReads.length)).toBe(1_499);
   });
 });
 
