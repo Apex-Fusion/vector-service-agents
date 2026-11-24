@@ -109,15 +109,19 @@ describe('loadTask', () => {
     expect(err.message).toContain('keys');
     expect(err.message).not.toContain(tmpdir());
   });
-  it('refuses a file that cannot be loaded: a syntax error, an error while it runs, a folder in its place', async () => {
-    const base = baseWith({ 'tasks/keys.ts': 'export default {', 'tasks/fund.ts': "throw new Error('this failed while loading');\nexport default {};\n" });
+  it('refuses a file that cannot be loaded: a syntax error, an error while it runs, an import that is missing, a folder in its place', async () => {
+    const base = baseWith({
+      'tasks/keys.ts': 'export default {', 'tasks/fund.ts': "throw new Error('this failed while loading');\nexport default {};\n", 'tasks/stake.ts': "import './missing-sibling.ts';\nexport default {};\n",
+    });
     mkdirSync(join(fileURLToPath(base), 'tasks', 'register.ts'));
-    const broken = await refusal(() => loadTask('keys', base));
-    expect(broken.reason).toBe('import');
-    expect(broken.message).toContain('keys');
-    const thrown = await refusal(() => loadTask('fund', base));
-    expect(thrown.reason).toBe('import');
-    expect(thrown.message).toContain('this failed while loading');
+    for (const name of ['keys', 'fund', 'stake']) {
+      const err = await refusal(() => loadTask(name, base));
+      expect(err.reason, name).toBe('import');
+      expect(err.message, name).toContain(name);
+      expect(err.message, name).toMatch(/\(\w*Error\)$/);
+      expect(err.message, name).not.toMatch(/this failed while loading|missing-sibling|operator-load-/);
+      expect(err.message, name).not.toContain(tmpdir());
+    }
     expect(await reasonOf(() => loadTask('register', base))).toBe('import');
   });
   describe('a default export of the wrong shape', () => {
@@ -201,11 +205,15 @@ describe('loadUseCase', () => {
     expect(err.reason).toBe('missing');
     expect(err.message).not.toContain(tmpdir());
   });
-  it('refuses a file that cannot be loaded', async () => {
+  it('refuses a file that cannot be loaded, and shows only the name of the error: no message and no path', async () => {
     expect(await reasonOf(() => loadUseCase('inventory-reorder', baseWith({ 'usecases/inventory-reorder.ts': 'export default {' })))).toBe('import');
-    const err = await refusal(() => loadUseCase('inventory-reorder', baseWith({ 'usecases/inventory-reorder.ts': "throw new Error('this failed while loading');\n" })));
-    expect(err.reason).toBe('import');
-    expect(err.message).toContain('this failed while loading');
+    for (const source of ["throw new Error('this failed while loading');\n", "import './missing-sibling.ts';\nexport default {};\n"]) {
+      const err = await refusal(() => loadUseCase('inventory-reorder', baseWith({ 'usecases/inventory-reorder.ts': source })));
+      expect(err.reason).toBe('import');
+      expect(err.message).toMatch(/\(\w*Error\)$/);
+      expect(err.message).not.toMatch(/this failed while loading|missing-sibling|operator-load-/);
+      expect(err.message).not.toContain(tmpdir());
+    }
   });
   describe('a default export of the wrong shape', () => {
     const LISTS = ['keys', 'organisations', 'agents', 'subagents', 'funding', 'attestations', 'runs', 'evidenceSteps'];

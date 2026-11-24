@@ -268,6 +268,14 @@ describe('the endpoints', () => {
         expect(problemsOf({ [name]: bad }), bad).toEqual(namesOnly(name));
       }
     });
+    it(`${name}: refuses a URL with a control character anywhere in its text: a line break, a tab, a carriage return, an escape, a next line, a null byte`, () => {
+      const BAD = ['https://endpoint.example/mcp\noperator-result: {}', 'https://endpoint.example/\tmcp', 'https://endpoint.\rexample/mcp', 'https://endpoint.example/mcp\u001b[31m', 'https://endpoint.example/\u0085mcp', 'https://endpoint.example/mcp\u0000x'];
+      for (const bad of BAD) {
+        const err = refusalOf({ ...BASE, [name]: bad });
+        expect(err.problems, JSON.stringify(bad)).toEqual(namesOnly(name));
+        expect(err.message).not.toContain('endpoint.example');
+      }
+    });
   }
   it('uses the endpoints of the checks, and the hosted server and the gateway of mainnet, when the settings name none', () => {
     const settings = parse();

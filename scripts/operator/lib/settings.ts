@@ -67,6 +67,16 @@ function look(reader: EnvReader, files: SettingsIo, name: string, path: string):
   }
 }
 
+/** A URL setting. A URL with a control character is a problem: `new URL` drops a tab and a line break without a word, and the value that the reader keeps does not, so a line break could reach a line of output. */
+function urlOf(reader: EnvReader, name: string, fallback: string): string {
+  const value = reader.text(name, false);
+  if (value !== undefined && CONTROL.test(value)) {
+    reader.problems.push(`${name} must have no control character`);
+    return fallback;
+  }
+  return reader.url(name, fallback);
+}
+
 function networkOf(reader: EnvReader): NetworkSpec {
   const name = reader.text('OPERATOR_NETWORK', false) ?? VECTOR_MAINNET.name;
   const magic = reader.env.OPERATOR_NETWORK_MAGIC?.trim() ?? '';
@@ -122,11 +132,11 @@ export function parseOperatorSettings(env: Env, io: Partial<SettingsIo> = {}): O
   if (module1Commit !== undefined && !COMMIT.test(module1Commit)) reader.problems.push('OPERATOR_MODULE1_COMMIT must be 40 lower-case hex characters, or not set');
 
   const urls = Object.freeze({
-    ogmios: reader.url('VECTOR_OGMIOS_URL', VECTOR_OGMIOS_URL),
-    submit: reader.url('VECTOR_SUBMIT_URL', VECTOR_SUBMIT_URL),
-    koios: reader.url('VECTOR_KOIOS_URL', VECTOR_KOIOS_URL),
-    hosted: reader.url('OPERATOR_HOSTED_URL', DEFAULT_HOSTED_URL),
-    gateway: reader.url('OPERATOR_GATEWAY_URL', DEFAULT_GATEWAY_URL),
+    ogmios: urlOf(reader, 'VECTOR_OGMIOS_URL', VECTOR_OGMIOS_URL),
+    submit: urlOf(reader, 'VECTOR_SUBMIT_URL', VECTOR_SUBMIT_URL),
+    koios: urlOf(reader, 'VECTOR_KOIOS_URL', VECTOR_KOIOS_URL),
+    hosted: urlOf(reader, 'OPERATOR_HOSTED_URL', DEFAULT_HOSTED_URL),
+    gateway: urlOf(reader, 'OPERATOR_GATEWAY_URL', DEFAULT_GATEWAY_URL),
   });
   const maxFeeLovelace = reader.whole('OPERATOR_MAX_FEE_LOVELACE', 1n, MAX_LIMIT_LOVELACE, DEFAULT_MAX_FEE_LOVELACE);
   const maxCollateralLossLovelace = reader.whole('OPERATOR_MAX_COLLATERAL_LOSS_LOVELACE', 1n, MAX_LIMIT_LOVELACE, DEFAULT_MAX_COLLATERAL_LOSS_LOVELACE);

@@ -23,8 +23,6 @@ export class LoadError extends Error {
   }
 }
 
-const MAX_CAUSE = 200;
-
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 const isTextList = (value: unknown): boolean => Array.isArray(value) && value.every((item) => typeof item === 'string');
 const isFunction = (value: unknown): boolean => typeof value === 'function';
@@ -67,12 +65,6 @@ function listed(kind: string, names: readonly string[], name: unknown): string {
   return entry;
 }
 
-/** What went wrong in an import, in one line: the kind of the error and the first line of its message. */
-function causeOf(err: unknown): string {
-  if (!(err instanceof Error)) return 'an error';
-  return `${err.name}: ${err.message.split('\n')[0]!.slice(0, MAX_CAUSE)}`;
-}
-
 /** Imports the file `<folder>/<name>.ts` below `base` and gives its default export. A file that is not there, one that cannot be imported and one with no default export are refusals. */
 async function importDefault(kind: string, folder: string, name: string, base: URL): Promise<unknown> {
   const folderUrl = new URL(base.href.endsWith('/') ? base.href : `${base.href}/`);
@@ -80,7 +72,10 @@ async function importDefault(kind: string, folder: string, name: string, base: U
   if (!existsSync(fileURLToPath(url))) throw new LoadError('missing', `the file of the ${kind} ${name} does not exist`);
   let loaded: unknown;
   // A dynamic import: the name of the file is chosen at run time from a closed list, and the files of the tasks and of the data need not exist when this module is built or tested.
-  try { loaded = await import(/* @vite-ignore */ url.href); } catch (err) { throw new LoadError('import', `the file of the ${kind} ${name} could not be loaded (${causeOf(err)})`); }
+  try { loaded = await import(/* @vite-ignore */ url.href); } catch (err) {
+    // The message of an import error can name a path or hold a line of the file, so only the name of the error goes into the refusal.
+    throw new LoadError('import', `the file of the ${kind} ${name} could not be loaded (${err instanceof Error ? err.name : 'an error'})`);
+  }
   if (!isObject(loaded) || !('default' in loaded)) throw new LoadError('shape', `the file of the ${kind} ${name} has no default export`);
   return loaded.default;
 }
