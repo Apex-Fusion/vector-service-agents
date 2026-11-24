@@ -1,6 +1,6 @@
 // The hosted build and the landing of a built transaction, over a world with the real builders. Each refusal has an accepted twin. No test uses a real key, a real clock or the network.
 // The tool names in the landing tests are labels: the fake tool builds the transaction that its test needs (a payment, or a delegation with two signers) and answers in the live format.
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, renameSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
@@ -9,6 +9,7 @@ import { iso } from '../../checks/lib/format.ts';
 import { HostedError } from '../../checks/lib/hosted.ts';
 import { GuardRefusal, LandRefused, NetworkGate } from '../../checks/lib/land.ts';
 import type { ChainAccess } from '../../checks/lib/session.ts';
+import type { WriteIo } from '../../checks/lib/files.ts';
 import type { StepPlan } from '../../checks/lib/guards.ts';
 import { VECTOR_MAINNET } from '../../checks/lib/settings.ts';
 import { StateError, StateFile } from '../../checks/lib/state.ts';
@@ -142,6 +143,8 @@ interface ContextOver {
   handlers?: Record<string, Handler>;
   /** The ring signs nothing: it fails when asked. */
   throwing?: boolean;
+  /** The io of the state file: a test makes its writes fail. */
+  stateIo?: Partial<WriteIo>;
 }
 
 async function context(over: ContextOver = {}): Promise<Ctx> {
@@ -151,7 +154,7 @@ async function context(over: ContextOver = {}): Promise<Ctx> {
   chmodSync(dir, 0o700);
   folders.push(dir);
   const identity = { check: 'operator', network: 'vector-mainnet', record: 'test' };
-  const state = StateFile.open(join(dir, 'state.json'), identity);
+  const state = StateFile.open(join(dir, 'state.json'), identity, over.stateIo);
   const evidence = EvidenceFile.open(join(dir, 'evidence.json'), identity);
   const go = 'go' in over ? (over.go ?? null) : goOf(keyOf(KEY_N.run).address);
   const exposurePath = join(dir, 'exposure.json');
@@ -611,15 +614,50 @@ describe('landBuilt in a submit run', () => {
     expect(c.state.step('fund')).toBeUndefined();
     expect(c.exposure.total()).toBe(payment.feeLovelace);
   });
-  it('gives the reserve back when the state file refuses the record, because another transaction is in flight, and submits nothing', async () => {
-    const c = await context();
-    const first = await pay(c.world, INSIDE);
+  it('refuses a transaction before any signature while another transaction is in flight, and leaves the exposure as it was', async () => {
+    const c = await context({ throwing: true });
+    const payment = await pay(c.world, INSIDE);
     c.state.setInFlight({ step: 'earlier', tx_hash: 'ab'.repeat(32), signed_cbor: 'aa', valid_to: NOW + 1_000, signed_at: NOW, refs: {}, facts: {} });
-    const err = await refusal(landBuilt(c.host, builtSpec(c, first)));
+    const err = await refusal(landBuilt(c.host, builtSpec(c, payment)));
     expect(err).toBeInstanceOf(StateError);
-    expect(c.exposure.total()).toBe(0n);
+    expect((err as StateError).reason).toBe('in_flight');
+    expect((err as StateError).message).toContain('the step earlier is in flight');
+    expect(c.events).not.toContain('sign');
+    expect(c.signer?.calls).toBe(0);
+    unreserved(c);
     expect(c.node.submitted).toEqual([]);
     expect(c.state.snapshot().in_flight?.step).toBe('earlier');
+  });
+  it('refuses the same bytes while they are in flight, before any signature, and keeps their reserve', async () => {
+    const c = await context({ go: goOf(keyOf(KEY_N.run).address, { capUnits: 7 }) });
+    c.node.submitError = new Error('connection reset');
+    const payment = await pay(c.world, OUTWARD);
+    const spec = builtSpec(c, payment, { destinations: [OUTSIDE] });
+    expect(await refusal(landBuilt(c.host, spec))).toBeInstanceOf(TxNotConfirmedError);
+    const net = 3_000_000n + payment.feeLovelace;
+    expect(c.exposure.total()).toBe(net);
+    const signed = c.events.filter((event) => event === 'sign').length;
+    c.node.submitError = null;
+    const err = await refusal(landBuilt(c.host, spec));
+    expect(err).toBeInstanceOf(StateError);
+    expect((err as StateError).reason).toBe('in_flight');
+    expect(c.events.filter((event) => event === 'sign')).toHaveLength(signed);
+    expect(c.exposure.total()).toBe(net);
+    expect(c.state.snapshot().in_flight?.tx_hash).toBe(payment.txHash);
+    expect(c.node.submitted).toEqual([]);
+  });
+  it('keeps the reserve when the state file throws after it wrote the record: the record is on disk, and nothing was submitted', async () => {
+    let armed = false;
+    const c = await context({ stateIo: { rename: (from, to) => { renameSync(from, to); if (armed) throw new Error('the folder could not be flushed'); } } });
+    const payment = await pay(c.world, INSIDE);
+    armed = true;
+    const err = await refusal(landBuilt(c.host, builtSpec(c, payment)));
+    armed = false;
+    expect((err as Error).message).toContain('the folder could not be flushed');
+    expect(StateFile.peek(c.state.path)?.in_flight?.tx_hash).toBe(payment.txHash);
+    expect(c.exposure.total()).toBe(payment.feeLovelace);
+    expect(c.node.submitted).toEqual([]);
+    expect(c.world.chain.applied).toEqual([]);
   });
 
   it('refuses a transaction that the plan does not allow, and lands it when the plan does: an output to an address that the plan does not name', async () => {

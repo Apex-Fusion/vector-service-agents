@@ -18,6 +18,7 @@ import type { LandIo, LandRequest } from '../../checks/lib/land.ts';
 import type { Utxo } from '../../checks/lib/platform.ts';
 import type { Signer } from '../../checks/lib/ports.ts';
 import { commitStep, landFor } from '../../checks/lib/session.ts';
+import { StateError } from '../../checks/lib/state.ts';
 import { factsOf } from '../../checks/lib/txfacts.ts';
 import type { TxFacts } from '../../checks/lib/txfacts.ts';
 import { netRegistryOutflow, requireGo } from './approval.ts';
@@ -159,6 +160,15 @@ function requireSigners(host: LandHost, core: Core, facts: TxFacts, utxos: reado
   throw refuse(core.step, 'signers', `the keys that sign are ${list(signing)}, and the step expects ${list(expected)}: ${problems.join('; ')}`);
 }
 
+/**
+ * The state file holds one transaction in flight. No other transaction is signed before that one is settled: the settling of the first needs its reserve in the cap, and a second record could not
+ * be written down. This holds for every transaction, and so for the same bytes landed again.
+ */
+function requireNoFlight(host: LandHost): void {
+  const flight = host.state.snapshot().in_flight;
+  if (flight !== null) throw new StateError('in_flight', `the step ${flight.step} is in flight (${flight.tx_hash}): settle it before another transaction is signed`);
+}
+
 // ---- the landing ----
 
 /** The signer, the view of the keys and the writer of `in_flight` that the landing of the checks takes. The signer can sign and nothing else; the view can sign nothing. */
@@ -170,13 +180,11 @@ function ioOf(host: LandHost, net: bigint): LandIo {
   return {
     mode: host.mode, node: host.node, signer, ring: view, network: host.network, out: (line) => host.out.out(line), clock: host.clock, awaitMs: host.awaitMs, pollMs: host.pollMs,
     inFlight: {
-      // The cap counts the transaction before the state file holds it and before the submit. When the state file refuses the record, nothing was submitted, and the reserve goes back.
+      // The cap counts the transaction before the state file holds it and before the submit. The reserve stays when the state file throws: the record may be on disk already, and `settleInFlight`
+      // settles it at the next run, so the transaction may still land.
       set: (record) => {
         host.exposure.reserve({ step: record.step, txHash: record.tx_hash, netLovelace: net, at: iso(host.clock.now()) });
-        try { host.state.setInFlight(record); } catch (err) {
-          host.exposure.release(record.tx_hash);
-          throw err;
-        }
+        host.state.setInFlight(record);
         reserved = record.tx_hash;
       },
       // The ledger refused the transaction outright: it cannot land, and its reserve goes back.
@@ -210,6 +218,7 @@ async function landCore(host: LandHost, core: Core): Promise<Landed> {
   const submit = host.mode === 'submit';
   requireValidTo(step, built.validTo, host.clock.now());
   if (submit) requireApproval(host, core.irreversible);
+  if (submit) requireNoFlight(host);
   const facts = factsOf(built.unsignedCbor);
   await requireValidityEnd(host, step, facts, built.validTo);
   const utxos = await host.node.resolveInputs([...facts.inputs, ...facts.collateralInputs]);
