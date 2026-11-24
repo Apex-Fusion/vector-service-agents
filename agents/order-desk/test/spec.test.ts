@@ -9,6 +9,7 @@ import { describe, expect, test } from 'vitest';
 import { parse as parseYaml } from 'yaml';
 import { BUSY_TEXT, CONTEXT_HEADERS, HEARTBEAT_MS, JobSlot, MAX_BODY, RESERVATION_MS, STOPPING_TEXT, operatorsText, parseWire } from '@vsa/service-kit';
 import type { MtlsTransport } from '@vsa/usecase-kit/access';
+import { HIRE_MIN_MS } from '@vsa/usecase-kit/decision';
 import {
   CONFIRMATION_CHECKS, INVENTORY_CAPABILITIES, LOT_NAMES, ORDER_DESK_CLAIM, PO_SCHEMA, REORDER_CLAIM, lotsFileSha256, parseLotsFile, parseOrderConfirmation, parsePurchaseOrder,
 } from '@vsa/usecase-kit/inventory';
@@ -142,7 +143,7 @@ describe('specs/order-desk.md: the Terms', () => {
     expect(terms).toContain('Amounts are `lovelace` fields. The last column is the same amount divided by 1,000,000, with six decimals.');
   });
 
-  test('the window, the timeout of the runtimes and the deadline of the job are the constants, the manifest, the example environment and the compose file', () => {
+  test('the window, the timeout of the runtimes and the deadline of the model hire are the constants, the manifest, the example environment and the compose file', () => {
     expect(tiers.every((tier) => tier.max_processing_ms === MIN_PROCESSING_WINDOW_MS)).toBe(true);
     expect(envExample.split('\n')).toContain(`ADVERT_MAX_PROCESSING_MS=${MIN_PROCESSING_WINDOW_MS}`);
     const timeout = JOB_DEADLINE_MS + 60_000;
@@ -152,8 +153,16 @@ describe('specs/order-desk.md: the Terms', () => {
     }
     expect(row(terms, 'Processing window, advert `max_processing_ms`')).toBe(`| Processing window, advert \`max_processing_ms\` | ${MIN_PROCESSING_WINDOW_MS} ms, for each of the three adverts |`);
     expect(row(terms, 'Service timeout, `SERVICE_TIMEOUT_MS` of each runtime')).toBe(`| Service timeout, \`SERVICE_TIMEOUT_MS\` of each runtime | ${timeout} ms |`);
-    expect(row(terms, 'Job deadline, set by the service when a request arrives')).toBe(`| Job deadline, set by the service when a request arrives | ${JOB_DEADLINE_MS} ms |`);
+    expect(row(terms, 'Deadline of the model hire, set by the service when a request arrives')).toBe(`| Deadline of the model hire, set by the service when a request arrives | ${JOB_DEADLINE_MS} ms after the request arrives |`);
     expect([MIN_PROCESSING_WINDOW_MS, timeout, JOB_DEADLINE_MS]).toStrictEqual([480_000, 360_000, 300_000]);
+    // The deadline reaches the model hire and nothing else: the one place that uses JOB_DEADLINE_MS as a time is the decision `availability` in the wiring, and the message of the rule of the window names it too.
+    // A hire does not start with less than HIRE_MIN_MS before its deadline: the decision gives `inference_failed`, and the job answers it with 502.
+    expect(readFileSync(new URL('../src/serve/wiring.ts', import.meta.url), 'utf8')).toContain('deadlineMs: arrivedAt + JOB_DEADLINE_MS,');
+    const sourceDir = new URL('../src/', import.meta.url);
+    const readers = readdirSync(sourceDir, { recursive: true, encoding: 'utf8' }).filter((file) => file.endsWith('.ts') && readFileSync(new URL(file, sourceDir), 'utf8').includes('JOB_DEADLINE_MS'));
+    expect(readers.sort()).toStrictEqual(['serve/settings.ts', 'serve/wiring.ts']);
+    expect(HIRE_MIN_MS).toBe(60_000);
+    expect(ORDER_REFUSAL_STATUS.inference_failed).toBe(502);
     // The one model call of a job is the decision availability.
     expect(AVAILABILITY_DECISION.name).toBe('availability');
     expect(row(terms, 'Model calls')).toBe('| Model calls | one for each job: the decision `availability` |');
@@ -277,6 +286,11 @@ describe('specs/order-desk.md: the receipt, the operator, how to hire it and the
     expect(parties).toHaveLength(5);
     expect(operator).toContain(manifest.behaviour.data_handling);
     expect(operator).toContain('All the data is synthetic. What leaves to third parties:');
+    // The ledger is written for each model hire, and after a digest mismatch: the row says what the service writes, and the line of the manifest says the same in short (the manifest test holds that line).
+    const ledger = operator.split('\n').find((line) => line.startsWith('| the Vector ledger (')) ?? '';
+    expect(ledger).toContain(' | the Post and the Accept transactions of the escrow of each model hire, and the Reclaim transaction of an escrow that a failed hire leaves. After a digest mismatch it also writes the evidence document (');
+    expect(ledger.endsWith('and the challenge. Each stays in the history of the ledger |')).toBe(true);
+    expect(operator).not.toContain('written only');
   });
 
   test('How to hire it sends the reader to the Reorder Agent, and the Links name files that exist', () => {
@@ -485,7 +499,8 @@ describe('specs/order-desk.md: what the job does, the response and the lots file
     expect(AVAILABILITY_DECISION.parse({ confirm: true, ship_by: '2026-11-28', note: 'It is in stock.' }).ok).toBe(true);
     expect(AVAILABILITY_DECISION.parse({ confirm: 'yes', ship_by: '2026-11-28', note: 'It is in stock.' }).ok).toBe(false);
     expect(rig.portal.calls.filter((call) => call.method === 'POST')).toHaveLength(1);
-    expect(does).toContain(`The job has a deadline of ${JOB_DEADLINE_MS} ms after its request arrives, and it runs these steps in this order. A failure ends the job with an error, and no later step runs.`);
+    expect(does).toContain('After the Claim the runtime posts the job to the service. The job runs these steps in this order. A failure ends the job with an error, and no later step runs.');
+    expect(does).toContain(`The service sets one deadline when the request arrives, and it holds the model hire only: ${JOB_DEADLINE_MS} ms after the request arrives. When less than ${HIRE_MIN_MS / 1000} s are left before that deadline, no hire starts, and the job fails with 502 \`inference_failed\`.`);
     expect(steps[0]).toContain('A job with no record, or with the record of another body, fails with `precheck_missing` and places no order.');
     expect(ORDER_REFUSAL_STATUS.precheck_missing).toBe(500);
   });

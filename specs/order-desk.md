@@ -79,7 +79,7 @@ The price stands for the size of the order on the ledger. It lets the vault limi
 |---|---|
 | Processing window, advert `max_processing_ms` | 480000 ms, for each of the three adverts |
 | Service timeout, `SERVICE_TIMEOUT_MS` of each runtime | 360000 ms |
-| Job deadline, set by the service when a request arrives | 300000 ms |
+| Deadline of the model hire, set by the service when a request arrives | 300000 ms after the request arrives |
 | Request | at most 900000 bytes of wire payload |
 | Model calls | one for each job: the decision `availability` |
 | Jobs at a time | one: a second job gets 409 `busy` |
@@ -191,7 +191,7 @@ When the check `approval_digest` fails, the approval is for another purchase ord
 
 ### What it does
 
-After the Claim the runtime posts the job to the service. The job has a deadline of 300000 ms after its request arrives, and it runs these steps in this order. A failure ends the job with an error, and no later step runs.
+After the Claim the runtime posts the job to the service. The job runs these steps in this order. A failure ends the job with an error, and no later step runs. The service sets one deadline when the request arrives, and it holds the model hire only: 300000 ms after the request arrives. When less than 60 s are left before that deadline, no hire starts, and the job fails with 502 `inference_failed`.
 
 1. The job takes the record of the checks that the hook kept for its escrow, and it compares the hash of its own body with the hash that the hook checked. A job with no record, or with the record of another body, fails with `precheck_missing` and places no order.
 2. It gets an X.509-SVID for the service key from the identity gateway.
@@ -400,7 +400,7 @@ The purchase order, the approval reference and the catalogue entry are held in m
 | the ledger, read only (the delegation, the escrow paid from a vault, the approval attestation) | the reads of the checks: the identifiers of the delegation, the escrow and the approval attestation |
 | the supplier portal of the mock service (the catalogue read and the order, with the X.509-SVID) | the SKU, for the catalogue read. The purchase order number, its hash, the SKU, the lot, the quantity and the ship-by date, for the order. Both calls present the X.509-SVID as the client certificate |
 | a model supplier on the Vector marketplace, hired through a bonded escrow, and the model provider behind it (the prompt of the decision: the purchase order and the catalogue entry) | one job: the instruction of the decision, the purchase order and the catalogue entry, and the reference of the escrow |
-| the ledger, written only after a digest mismatch (the evidence document and the challenge) | the evidence document (the statement S1 of the claim of the sender, the digest of the approval, the digest of the purchase order that was sent, and the references of the claim, the two agents, the escrow and the approval; no text of the purchase order and no salt) and the challenge |
+| the Vector ledger (the escrow of each model hire, which carries only hashes, and, after a digest mismatch, the evidence document and the challenge) | the Post and the Accept transactions of the escrow of each model hire, and the Reclaim transaction of an escrow that a failed hire leaves. After a digest mismatch it also writes the evidence document (the statement S1 of the claim of the sender, the digest of the approval, the digest of the purchase order that was sent, and the references of the claim, the two agents, the escrow and the approval; no text of the purchase order and no salt) and the challenge. Each stays in the history of the ledger |
 
 ## Known gaps
 

@@ -344,13 +344,16 @@ function rowsOf(body: string, header: string): string[][] {
 
 /**
  * The reasons that each job writes for a `failed` result, read from the code. `propose` writes the codes of its own list, the codes of the reader of the supplier, and the reasons of the model decision of the kit.
- * `execute` writes the codes of its own object `FAILED`, the constants of the buyer flow, the codes of the checks before the Pay, and the codes of the hire kit. The codes of the sub-delegation and of the token of
+ * `execute` writes the codes of its own object `FAILED`, the constants of the buyer flow, the codes of the checks before the Pay, and the nine codes of the hire kit that a hire of an agent gives (see `agentHire`). The codes of the sub-delegation and of the token of
  * `propose` are two lists of the access folder, written with a prefix: the page names them as two prefixes, and the list of the job holds them apart from its own codes.
  */
 function reasonsOfJobs(): { readonly propose: ReadonlySet<string>; readonly execute: ReadonlySet<string> } {
   const kit = 'packages/usecase-kit/src/';
   const prefixed = [...SUB_DELEGATION_FAILURES.map((code) => `sub_delegation_${code}`), ...GATEWAY_FAILURES.map((code) => `token_${code}`)];
   const hireKit = unionOf('packages/hire-kit/src/hire.ts', 'HireFailure');
+  // A hire of an agent (`hireAgent` of the hire kit) turns the kit codes `busy` and `refused` into an outcome before the Claim, or into `send_lost`. `refused` is no code of the protocol either, so `execute` never writes it. `busy` stays: it is a
+  // code of the protocol, and the flow writes it as the code of a 409 answer. The hire of a model keeps `refused`, so the reason `llm_refused` of `propose` stands.
+  const agentHire = hireKit.filter((code) => code !== 'refused');
   const decision = [
     ...hireKit.map((code) => `llm_${code}`),
     ...unionOf(`${kit}decision/answer.ts`, 'AnswerFault'),
@@ -365,7 +368,7 @@ function reasonsOfJobs(): { readonly propose: ReadonlySet<string>; readonly exec
     BAD_DOCUMENT, INCONSISTENT_OUTCOME, COUNTERPARTY_REFUSED, EARLIER_PAY_MAY_LAND, PAY_UNCONFIRMED, ...Object.values(INTERRUPTION_REASONS),
     NOT_ACCEPTED.invalid, NOT_ACCEPTED.notForOrder, NOT_ACCEPTED.failed,
     ...unionOf(`${kit}buyer/vault.ts`, 'VaultRefusal'), ...unionOf(`${kit}buyer/advert.ts`, 'AdvertRefusal'), ...callsIn(`${kit}buyer/hire.ts`, /failure\('([a-z_]+)'/g),
-    ...hireKit,
+    ...agentHire,
   ];
   return { propose: new Set([...own, ...SUPPLIER_FAILURES, ...decision]), execute: new Set(execute) };
 }
@@ -631,6 +634,19 @@ describe('specs/reorder-agent.md, Interface', () => {
     expect(text('agents/reorder-agent/src/execute/decision.ts')).toContain('deps.note(`execute: the decision accept_delivery failed (${read.code})`);');
     // The interrupted hire and the unconfirmed Pay.
     expect([INTERRUPTION_REASONS.decision_error, INTERRUPTION_REASONS.other, PAY_UNCONFIRMED]).toStrictEqual(['decision_error', 'hire_interrupted', 'pay_unconfirmed']);
+    // The ten codes of the hire kit: `execute` writes nine of them, as the comment of `agentHire` says, and the model hire of `propose` writes all ten with the prefix `llm_`.
+    const kitCodes = unionOf('packages/hire-kit/src/hire.ts', 'HireFailure');
+    expect(kitCodes).toHaveLength(10);
+    expect(text('packages/hire-kit/src/agent.ts')).toContain("if (what === 'busy' || what === 'refused') {");
+    expect(text('packages/hire-kit/src/agent.ts')).toContain("return { outcome: 'failed_after_claim', reason: 'send_lost', message: stop.message, ...escrow };");
+    expect([Object.hasOwn(ERROR_STATUS, 'refused'), Object.hasOwn(ERROR_STATUS, 'busy')]).toStrictEqual([false, true]);
+    const agentRow = rows.find((cells) => cells[0].startsWith('`post_failed`')) ?? [];
+    expect(namesOf([agentRow[0]])).toStrictEqual(kitCodes.filter((code) => code !== 'refused'));
+    expect(agentRow[1]).toBe('`execute`');
+    expect(agentRow[2]).toContain('The flow takes these nine codes from the hire kit, and it turns any other code into `inconsistent_outcome`. The tenth code of the hire kit, `refused`, is not a reason of `execute`: the hire of an agent turns it into a refusal before the Claim, or into `send_lost`');
+    const modelRow = rows.find((cells) => cells[0].startsWith('`llm_post_failed`')) ?? [];
+    expect(namesOf([modelRow[0]])).toStrictEqual(kitCodes.map((code) => `llm_${code}`));
+    expect(modelRow[2]).toContain('The hire kit has ten codes: the nine of the row of the hire of the Order Desk, and `refused`');
   });
 
   test('the co-sign route: the path, the rule, the allowlist and the codes are the kit and the manifest', () => {
@@ -757,7 +773,7 @@ describe('specs/reorder-agent.md, the operator, the gaps, the hire and the links
     const how = section('How to hire it');
     const hosted = text('scripts/specs.test.mjs');
     const tools = [...how.matchAll(/`(vector_[a-z_]+)`/g)].map((hit) => hit[1]);
-    expect(tools).toStrictEqual(['vector_build_delegation_delegate', 'vector_delegation_request_cosign', 'vector_build_vault_open', 'vector_build_attestation_attest', 'vector_build_vault_close', 'vector_build_delegation_undelegate']);
+    expect(tools).toStrictEqual(['vector_build_delegation_delegate', 'vector_delegation_request_cosign', 'vector_build_vault_open', 'vector_build_attestation_attest', 'vector_build_attestation_withdraw', 'vector_build_vault_close', 'vector_build_delegation_undelegate']);
     for (const tool of tools) expect(hosted.includes(`'${tool}'`), tool).toBe(true);
     expect(how.split('\n').filter((line) => /^\d\. \*\*/.test(line))).toHaveLength(6);
     // The actions of the delegation, and the resource of each mock route.
@@ -783,7 +799,9 @@ describe('specs/reorder-agent.md, the operator, the gaps, the hire and the links
     expect(validityReaders.map(({ file }) => file)).toStrictEqual(['protocol/approval.ts']);
     expect(text('packages/usecase-kit/src/protocol/approval.ts')).toContain('It returns 90 days after the attestation ends.');
     expect(how).toContain('the type is 5, the subject is this agent, and the digest is the `proposal_digest`');
-    expect(how).toContain('Set `valid_until` yourself: the tool sets no end. The runs use 4 hours. The attestation holds a deposit of 5000000 lovelace, and the deposit returns 90 days after the attestation ends.');
+    expect(how).toContain('Set `valid_until` yourself: the tool sets no end. The runs use 4 hours. The attestation holds a deposit of 5000000 lovelace. The deposit comes back only through `vector_build_attestation_withdraw`, 90 days after the attestation ends.');
+    // The tool builds the Withdraw of an attestation with the Burn of its token, and the deposit returns to the wallet.
+    expect(text('packages/buyer-core/src/vendored/mcp/attestation-build.ts')).toContain('Builds the unsigned Withdraw of an attestation with the Burn of its token (`[(id, -1)]`): the deposit returns to the wallet.');
     // Step 1: a delegation that the ledger does not show ends `propose` with `delegation_not_found`, and the sub-delegation needs 30 confirmations on every link of its chain.
     expect(how).toContain('Submit the transaction that comes back. Wait until the ledger shows the delegation: a `propose` job on a delegation that the ledger does not show ends with `delegation_not_found`. Then wait for 30 confirmations of the delegation. The sub-delegation of `propose` needs 30 confirmations on every link of its chain, and `stock-reader` gets no token before that.');
     expect(text('agents/reorder-agent/src/propose/propose.ts')).toContain("if (keyHash.value === null) return failed('delegation_not_found');");
