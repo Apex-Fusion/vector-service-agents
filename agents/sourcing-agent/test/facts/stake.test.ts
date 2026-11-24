@@ -207,7 +207,7 @@ describe('a source that cannot be read is no number', () => {
   });
 
   it.each([
-    ['an identifier of 63 characters', AGENT_ID.slice(1)],
+    ['an identifier of 63 characters', AGENT_ID.substring(1)],
     ['an identifier in upper case', AGENT_ID.toUpperCase()],
     ['a DID', `did:vector:${AGENT_ID}`],
     ['an empty text', ''],

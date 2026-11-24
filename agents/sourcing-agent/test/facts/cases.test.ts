@@ -87,6 +87,11 @@ describe('the cases against a bidder', () => {
     expect(await casesAgainst(lists([mine, stranger], [wrong]).deps, OTHER)).toStrictEqual(cases(1));
   });
 
+  it.each(['Open', 'Challenged', 'Validated', 'Invalidated'] as const)('counts a challenge against a claim in the state %s: the count joins by claim token and claimer, and reads no state', async (state) => {
+    const mine = claimView(1, BIDDER, { state });
+    expect(await casesAgainst(lists([mine], [challengeView(1, mine)]).deps, BIDDER)).toStrictEqual(cases(1));
+  });
+
   it('asks each port one time, and gives each call the time of the fact reads', async () => {
     const mine = claimView(1);
     const world = lists([mine], [challengeView(1, mine)]);
