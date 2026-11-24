@@ -207,11 +207,11 @@ async function systemStartOf(provider: Module1Provider): Promise<number> {
 
 /**
  * The unspent outputs that hold one token, from Koios at `<koiosUrl>/api/v1/asset_utxos`. The request is the one of `koios.assetUtxos` of vector-read, sent to the address of the settings. That reader takes its address from the
- * variable KOIOS_URL, which this service does not set, so the stake would come from another host than the one that the rest of the service reads. The call has the bound of one fact read, and an answer that is not a success is
- * an error.
+ * variable KOIOS_URL, which this service does not set, so the stake would come from another host than the one that the rest of the service reads. The slashes at the end of the address are cut first, as the tip reader of
+ * buyer-core does: the default address of buyer-core ends with a slash, and the path would then hold two slashes before `api`. The call has the bound of one fact read, and an answer that is not a success is an error.
  */
 async function assetUtxosAt(koiosUrl: string, policy: string, name: string, fetchImpl: typeof fetch): Promise<readonly KoiosUtxo[]> {
-  const response = await fetchImpl(`${koiosUrl}/api/v1/asset_utxos`, {
+  const response = await fetchImpl(`${koiosUrl.replace(/\/+$/, '')}/api/v1/asset_utxos`, {
     method: 'POST',
     headers: { accept: 'application/json', 'content-type': 'application/json', 'user-agent': 'vector-service-agents' },
     body: JSON.stringify({ _asset_list: [[policy, name]], _extended: true }),

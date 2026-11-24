@@ -6,7 +6,7 @@
 import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, test, vi } from 'vitest';
-import { READ_BUDGET_MS } from '@vsa/buyer-core';
+import { READ_BUDGET_MS, VECTOR_KOIOS_URL } from '@vsa/buyer-core';
 import type { AttestationQuery, VaultChain } from '@vsa/buyer-core';
 import { ALLOWLIST, INDEXER, LLM_ADVERT, T0, marketplace, vaultChainWith } from '@vsa/hire-kit/testing';
 import type { Marketplace } from '@vsa/hire-kit/testing';
@@ -23,8 +23,12 @@ import type { Decision } from '@vsa/usecase-kit/protocol';
 import { KOIOS_URL, REPUTATION_SCRIPT_HASH, stakeTokenName } from '@vsa/vector-read';
 import type { KoiosUtxo } from '@vsa/vector-read';
 import {
-  AGENT_DID as KIT_AGENT_DID, DELEG_A, DELEG_B, DEPLOYMENT, NOW, STRANGER, SYSTEM_START_MS, agentWallet, build, hostedToolTakes, keyOf as testKeyOf, liveDelegation, requestOf, withInput, world,
+  AGENT_DID as KIT_AGENT_DID, AGENT_ID as KIT_AGENT_ID, DELEG_A, DELEG_B, DEPLOYMENT, NOW, SERVICE as KIT_SERVICE, STRANGER, SUPPLIER as KIT_SUPPLIER, SYSTEM_START_MS, agentWallet, build, hostedToolTakes,
+  keyOf as testKeyOf, liveDelegation, requestOf, withInput, world,
 } from '../../../../packages/usecase-kit/test/cosign/support.ts';
+import type { TestKey } from '../../../../packages/usecase-kit/test/cosign/support.ts';
+import type { FixtureProvider } from '../../../../packages/buyer-core/test/fixtures/fixture-provider.ts';
+import { identityWorld, recordUtxo, rootRecord } from '../../../../packages/buyer-core/test/fixtures/identity-world.ts';
 import { ScriptedPort } from '../../../../packages/usecase-kit/test/dispute/support.ts';
 import { addDesk, deskOf, emptyWorld } from '../bidders/support.ts';
 import type { Desk, World } from '../bidders/support.ts';
@@ -763,19 +767,25 @@ describe('the read of the bidders, through the real readers over fake sources', 
   /** The sources of the bidder reader with no reader of the stake: the wiring then reads the stake with its own reader. */
   const withOwnStakeReader = ({ fetchSuppliers, readAdvert, safeFetch, listAttestations }: BidderSources): Partial<BidderSources> => ({ fetchSuppliers, readAdvert, safeFetch, listAttestations });
 
+  /** One request that a stub of Koios got: the address, the method, the body and the signal of the call. */
+  interface KoiosRequest {
+    readonly url: string;
+    readonly method: string | undefined;
+    readonly body: string;
+    readonly signal: AbortSignal | null | undefined;
+  }
+  /** A fetch in front of the wiring that records each request to `asset_utxos` and answers it with the stake rows of its bidder. Every other call goes on to the wiring. */
+  const koiosStub = (requests: KoiosRequest[]) => (next: typeof fetch, all: readonly Desk[]): typeof fetch => async (input, init) => {
+    if (!String(input).endsWith('/asset_utxos')) return next(input, init);
+    requests.push({ url: String(input), method: init?.method, body: String(init?.body), signal: init?.signal });
+    const { _asset_list: [[, name]] } = JSON.parse(String(init?.body)) as { _asset_list: [[string, string]] };
+    const rows = all.filter((desk) => stakeTokenName(desk.agent) === name).map((desk, n) => stakeOf(desk, n + 1));
+    return new Response(JSON.stringify(rows), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+
   test('reads the stake at the Koios address of the settings, with the request of vector-read, and never at the address that vector-read takes from its own variable', async () => {
-    const requests: { readonly url: string; readonly method: string | undefined; readonly body: string; readonly signal: AbortSignal | null | undefined }[] = [];
-    const { wired, settings, desks } = await reading({
-      env: { VECTOR_KOIOS_URL: KOIOS },
-      sources: withOwnStakeReader,
-      fetch: (next, all) => async (input, init) => {
-        if (!String(input).endsWith('/asset_utxos')) return next(input, init);
-        requests.push({ url: String(input), method: init?.method, body: String(init?.body), signal: init?.signal });
-        const { _asset_list: [[, name]] } = JSON.parse(String(init?.body)) as { _asset_list: [[string, string]] };
-        const rows = all.filter((desk) => stakeTokenName(desk.agent) === name).map((desk, n) => stakeOf(desk, n + 1));
-        return new Response(JSON.stringify(rows), { status: 200, headers: { 'content-type': 'application/json' } });
-      },
-    });
+    const requests: KoiosRequest[] = [];
+    const { wired, settings, desks } = await reading({ env: { VECTOR_KOIOS_URL: KOIOS }, sources: withOwnStakeReader, fetch: koiosStub(requests) });
     expect(settings.endpoints.koiosUrl).toBe(KOIOS);
     expect(`${KOIOS}/api/v1`).not.toBe(KOIOS_URL);
     const found = await wired.proposeDeps(T0).discover();
@@ -785,6 +795,31 @@ describe('the read of the bidders, through the real readers over fake sources', 
     expect(requests.map((request) => request.url)).toStrictEqual([ASSET_UTXOS, ASSET_UTXOS, ASSET_UTXOS]);
     expect(requests.every((request) => request.method === 'POST' && request.signal instanceof AbortSignal)).toBe(true);
     expect(requests.map((request) => request.body).sort()).toStrictEqual(desks.map((desk) => JSON.stringify({ _asset_list: [[REPUTATION_SCRIPT_HASH, stakeTokenName(desk.agent)]], _extended: true })).sort());
+  });
+
+  test.each([
+    ['one slash', `${KOIOS}/`],
+    ['three slashes', `${KOIOS}///`],
+  ])('reads the stake at the same address when the Koios address of the settings ends with %s', async (_what, address) => {
+    const requests: KoiosRequest[] = [];
+    const { wired, settings } = await reading({ env: { VECTOR_KOIOS_URL: address }, sources: withOwnStakeReader, fetch: koiosStub(requests) });
+    expect(settings.endpoints.koiosUrl).toBe(address);
+    const found = await wired.proposeDeps(T0).discover();
+    if (!found.ok) throw new Error(`the read failed with ${found.code}`);
+    expect(found.value.bidders.map((bidder) => bidder.file.stake_lovelace)).toStrictEqual(['11000000', '11000000', '11000000']);
+    expect(requests.map((request) => request.url)).toStrictEqual([ASSET_UTXOS, ASSET_UTXOS, ASSET_UTXOS]);
+  });
+
+  test('reads the stake at the default Koios address of buyer-core, which ends with a slash, with one slash before api', async () => {
+    const requests: KoiosRequest[] = [];
+    const { wired, settings } = await reading({ sources: withOwnStakeReader, fetch: koiosStub(requests) });
+    // The settings keep the default address as it is, and the reader cuts the slashes at its end.
+    expect(settings.endpoints.koiosUrl).toBe(VECTOR_KOIOS_URL);
+    const found = await wired.proposeDeps(T0).discover();
+    if (!found.ok) throw new Error(`the read failed with ${found.code}`);
+    expect(found.value.bidders.map((bidder) => bidder.file.stake_lovelace)).toStrictEqual(['11000000', '11000000', '11000000']);
+    const address = `${VECTOR_KOIOS_URL.endsWith('/') ? VECTOR_KOIOS_URL.slice(0, -1) : VECTOR_KOIOS_URL}/api/v1/asset_utxos`;
+    expect(requests.map((request) => request.url)).toStrictEqual([address, address, address]);
   });
 
   test.each([
@@ -1026,6 +1061,17 @@ async function* chunksOf(text: string): AsyncGenerator<string> {
   yield text;
 }
 
+/**
+ * The fixture world of the route with the keys in `listed` added to the record of the agent, each with the delegation purpose, so that the real builder takes one of them as the delegate key of a Delegate. The route
+ * reads no record of the agent, so this world serves the build only.
+ */
+function worldListing(listed: readonly TestKey[]): FixtureProvider {
+  const entry = (key: TestKey, purposes: number) => ({ keyType: 'Ed25519' as const, key: key.publicKey, purposes, pop: null });
+  const record = rootRecord({ keys: [entry(DELEG_A, 16), entry(DELEG_B, 16), entry(KIT_SUPPLIER, 1 + 8 + 16), entry(KIT_SERVICE, 16), ...listed.map((key) => entry(key, 16))] });
+  const wallets = [DELEG_A, DELEG_B, KIT_SUPPLIER, KIT_SERVICE].flatMap((key) => [agentWallet(key, 0), agentWallet(key, 1)]);
+  return identityWorld([recordUtxo(KIT_AGENT_ID, record), ...wallets]);
+}
+
 describe('the co-sign route', () => {
   /** The wiring over the fixture world of the route: the agent is the agent of that world, `extra` outputs stand on the node, and the clock stands at the time that the world builds its Delegate. */
   const routeOf = async (extra: Parameters<typeof world>[0] = [], over: Over = {}) => {
@@ -1091,6 +1137,30 @@ describe('the co-sign route', () => {
     // A new state directory has an empty register, so the body that the first one refused is signed.
     const fresh = await routeOf();
     expect((await fresh.route.handle(post(other.hex))).status).toBe(200);
+  });
+
+  test('refuses a Delegate whose delegate key is not a delegation key of the agent: the service key, the supplier key and each of the six keys of the scorers, and a delegation key is the twin', async () => {
+    const scorerRoles = KEY_ROLES.filter((role) => role.startsWith('scorer'));
+    const scorers = scorerRoles.map((role) => testKeyOf(KEY_NUMBERS[role]));
+    const { route, settings } = await routeOf();
+    expect(scorers).toHaveLength(6);
+    // Each key of the fixture world is the key of the settings that has its number.
+    expect([KIT_SERVICE.keyHash, KIT_SUPPLIER.keyHash, ...scorers.map((key) => key.keyHash)]).toStrictEqual([settings.keys.service.pkh, settings.supplier.pkh, ...scorerRoles.map((role) => settings.keys[role].pkh)]);
+    const listing = worldListing(scorers);
+    for (const key of [KIT_SERVICE, KIT_SUPPLIER, ...scorers]) {
+      const refused = await build({ delegateKey: key.keyHash }, listing);
+      expect(await route.cosign(requestOf(refused.hex)), `the key ${key.n}`).toMatchObject({ ok: false, code: 'not_for_this_agent' });
+    }
+    const twin = await build({ delegateKey: DELEG_A.keyHash }, listing);
+    expect(await route.cosign(requestOf(twin.hex))).toMatchObject({ ok: true });
+  });
+
+  test('refuses a Delegate for a delegation key that a live delegation on the ledger names, with key_in_use, and the other delegation key is the twin', async () => {
+    const { route } = await routeOf([liveDelegation(DELEG_A.keyHash)]);
+    const named = await build();
+    expect(await route.cosign(requestOf(named.hex))).toMatchObject({ ok: false, code: 'key_in_use' });
+    const other = await build({ delegateKey: DELEG_B.keyHash });
+    expect(await route.cosign(requestOf(other.hex))).toMatchObject({ ok: true });
   });
 });
 
