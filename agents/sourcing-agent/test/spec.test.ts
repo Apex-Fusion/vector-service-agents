@@ -5,11 +5,11 @@
 // file of the pack and some source files, and no network. The test of the headings holds the thirteen headings of the page and the seven sub-headings of Interface.
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test } from 'vitest';
 import { parse } from 'yaml';
 import { ACCEPT_WINDOW_MS, HIRE_ACTION } from '@vsa/buyer-core';
 import { MAX_BODY, RESERVATION_MS } from '@vsa/service-kit';
-import { CONFIRMATIONS_REQUIRED, GATEWAY_FAILURES, SUB_DELEGATION_FAILURES, tokenTarget } from '@vsa/usecase-kit/access';
+import { CONFIRMATIONS_REQUIRED, GATEWAY_FAILURES, MIN_SUB_DELEGATION_MS, SUB_DELEGATION_FAILURES, tokenTarget } from '@vsa/usecase-kit/access';
 import {
   BID_CAPABILITIES, BID_DESK_CLAIM, BID_DESK_MODEL, EXCLUDED_REASONS, MAX_ITEM_QUANTITY, MAX_RFQ_ITEMS, QUOTE_SCHEMA, SCORE_COMPONENTS, SOURCING_CLAIM, SOURCING_MODEL, WEIGHT_NAMES, buildRanking, parsePriceList, parseQuote,
   parseRanking, priceFor,
@@ -49,7 +49,11 @@ import { SETTINGS } from '../src/serve/start.ts';
 import { STATE_FILES } from '../src/serve/wiring.ts';
 import { DESKS, addDesk, advertOf, deskOf, extraDesk, goldenWorld, manifestText, ok, priceListText, revokedCompliance, revokedOf, rowOf, stubOf } from './bidders/support.ts';
 import type { Desk } from './bidders/support.ts';
-import { proposed, world } from './propose/support.ts';
+import { ALFA as GOLDEN_ALFA, BRAVO as GOLDEN_BRAVO, CHARLIE as GOLDEN_CHARLIE, acceptedOf, excludedOf, fanOf, proposed, shortlistAnswer, world } from './propose/support.ts';
+import * as quoteSupport from './quotes/support.ts';
+import * as quoteWorld from './quotes/world.ts';
+import { NOW as SCORING_NOW } from './scoring/support.ts';
+import { world as scoringWorld } from './scoring/world.ts';
 
 const root = new URL('../../../', import.meta.url);
 const text = (path: string): string => readFileSync(new URL(path, root), 'utf8');
@@ -643,6 +647,94 @@ describe('specs/sourcing-agent.md, Interface, Request', () => {
     expect(Object.keys(ranked)).toStrictEqual(['weights', 'scored']);
     expect(Object.keys(ranked.scored[0])).toStrictEqual(['desk_did', 'score', 'components', 'total', 'lead_time_days']);
     expect([RANKING_DECISION.parse({ order: [ALFA], tie_break: '' }).ok, RANKING_DECISION.parse({ order: [], tie_break: '' }).ok, RANKING_DECISION.parse({ order: [ALFA], tie_break: 'x'.repeat(301) }).ok]).toStrictEqual([true, false, false]);
+  });
+});
+
+describe('specs/sourcing-agent.md, the delegation of the hirer and a decision that fails', () => {
+  const request = sub('Request');
+  const how = section('How to hire it');
+  const SUB_CODES = ['sub_delegation_parent_exhausted', 'sub_delegation_parent_expiring', 'sub_delegation_build_refused'];
+
+  afterEach(() => {
+    quoteWorld.cleanWorlds();
+  });
+
+  test('the needs of the delegation: the page names them and their codes, and the kit refuses a delegation that fails them with those codes', async () => {
+    expect(MIN_SUB_DELEGATION_MS).toBe(300_000);
+    for (const code of SUB_CODES) {
+      expect(SCORING_FAILURES, code).toContain(code);
+      expect(request, code).toContain(`\`${code}\``);
+      expect(how, code).toContain(`\`${code}\``);
+    }
+    for (const part of [
+      '**The delegation.** `propose` uses the delegation in two ways. It pays each quote from the vault of the delegation, and it makes one sub-delegation under the delegation for each scorer. So the delegation must meet these needs when you send `propose`:',
+      '- `remaining` is 1 or more.',
+      `- At least ${MIN_SUB_DELEGATION_MS} ms of life are left when each sub-delegation is made (\`MIN_SUB_DELEGATION_MS\`).`,
+      '- The delegation covers `vendor.read` for the vendor master of the tenant, and `sourcing.award.write` for the sourcing record of the tenant. `propose` needs the first, and `execute` needs the second.',
+      '- The delegation has exactly one Live vault.',
+      'A delegation with `remaining` 0 ends the job with `sub_delegation_parent_exhausted`. A delegation with less than 300000 ms of life ends it with `sub_delegation_parent_expiring`. A delegation that does not cover `vendor.read` ends it with `sub_delegation_build_refused`.',
+      'A delegation with no Live vault, or with more than one, loses nothing (`no_live_vault`, `several_live_vaults`).',
+    ]) expect(request, part).toContain(part);
+    // The kit: a parent with `remaining` 0 gives parent_exhausted, a parent with less life than the least gives parent_expiring, and the builder refuses a sub-delegation that is wider than its parent.
+    const exhausted = scoringWorld();
+    exhausted.chain.parent = { ...exhausted.chain.parent!, remaining: 0 };
+    expect(await exhausted.run()).toMatchObject({ ok: false, code: 'sub_delegation_parent_exhausted' });
+    const expiring = scoringWorld();
+    expiring.chain.parent = { ...expiring.chain.parent!, notAfter: SCORING_NOW + MIN_SUB_DELEGATION_MS - 1 };
+    expect(await expiring.run()).toMatchObject({ ok: false, code: 'sub_delegation_parent_expiring' });
+    const access = text('packages/usecase-kit/src/access/subdelegation.ts');
+    expect(access).toContain("if (datum.remaining < 1) return refused('parent_exhausted'");
+    expect(access).toContain("< MIN_SUB_DELEGATION_MS) return refused('parent_expiring'");
+    expect(access).toContain("return refused('build_refused', `the Delegate could not be built");
+    expect(text('packages/buyer-core/src/vendored/mcp/delegation-build.ts')).toContain('no action pattern of the parent');
+    // The vault is checked before each Pay: a delegation with no Live vault gets no Pay, and the delegation with two is the other code of the same row.
+    expect(QUOTE_CODES).toEqual(expect.arrayContaining(['no_live_vault', 'several_live_vaults']));
+    const none = await quoteWorld.world();
+    const unpaid = await none.run(none.input(), { ...none.deps, reads: { delegation: (id) => none.reads.delegation(id), liveVaults: async () => ({ refs: [], complete: true }) } });
+    expect(unpaid.outcomes.map(quoteWorld.words)).toStrictEqual(['excluded failed no_live_vault', 'excluded failed no_live_vault', 'excluded failed no_live_vault']);
+    expect(quoteWorld.footprint(none).paid).toBe(0);
+  });
+
+  test('the job pays the quotes first: when the sub-delegation of a scorer fails, the quotes stay paid and the job ends with no ranking and the code of the sub-delegation', async () => {
+    for (const code of SUB_CODES) {
+      const w = world();
+      w.script.shortlist = async () => shortlistAnswer([GOLDEN_ALFA]);
+      w.script.scoring = async () => ({ ok: false, code, decisions: [] });
+      const result = await w.run();
+      // Before the quotes the job reads the delegate of the delegation and its key, and nothing else of the delegation.
+      expect(w.trace, code).toStrictEqual(['delegation', 'delegateKeyOf', 'discover', 'shortlist', 'quotes', 'scoring']);
+      expect(result, code).toMatchObject({ outcome: 'failed', exit_state: 'Failed', reason: code, document: null, salt: null, proposal_digest: null });
+      if (result.outcome !== 'failed') throw new Error('the job must fail');
+      expect([result.sub_jobs.length, result.quotes.map((record) => record.accepted)], code).toStrictEqual([1, ['confirmed']]);
+    }
+    expect(request).toContain('The job pays the quotes first (step 4 of `propose`). The sub-delegations come after that (step 6), and nothing checks `remaining`, the life or the cover before the job pays.');
+    expect(request).toContain('In each case the quotes stay paid, and the job ends `failed` with no ranking, so the hirer loses those payments.');
+    expect(how).toContain('Set the end of the delegation so that at least 300000 ms of its life are left when the last scorer gets its sub-delegation: a delegation with less ends that job with `sub_delegation_parent_expiring`.');
+    expect(how).toContain('A delegation that does not cover `vendor.read` for the vendor master ends it with `sub_delegation_build_refused`.');
+    expect(how).toContain('The job pays the quotes before it makes the first sub-delegation, and nothing checks the delegation earlier. So a delegation that fails here costs you the quote payments: they stay paid, and the job ends `failed` with no ranking.');
+  });
+
+  test('a decision that fails ends the whole job with the code of the decision: the quote that the agent accepted before it stays paid and gets no ranking', async () => {
+    // The fan-out: the first bidder is accepted, the decision on the second fails, the third bidder is not paid, and the loop reports the code of the decision.
+    const q = await quoteWorld.world();
+    q.accept.answer = (given) => (given.quote.desk_did === quoteSupport.BRAVO.did ? { ok: false, code: 'model_output_invalid' } : quoteSupport.rightAnswer(given));
+    const fan = await q.run();
+    expect(fan.outcomes.map(quoteWorld.words)).toStrictEqual(['accepted', 'excluded failed decision_failed', 'excluded failed not_attempted']);
+    expect(fan.stopped).toStrictEqual({ code: 'model_output_invalid' });
+    expect(q.booked.accepted).toBe(1);
+    expect(quoteWorld.footprint(q)).toMatchObject({ paid: 2, asked: 2, challenges: 0 });
+    // The job: it stops with the code of the decision, it holds the accepted quote, and it makes no ranking.
+    const w = world();
+    w.script.quotes = async () => fanOf([acceptedOf(GOLDEN_ALFA, 1, 'alfa'), excludedOf(GOLDEN_BRAVO, 'failed', 'decision_failed'), excludedOf(GOLDEN_CHARLIE, 'failed', 'not_attempted')], { code: 'model_output_invalid' });
+    const result = await w.run();
+    expect(w.trace).toStrictEqual(['delegation', 'delegateKeyOf', 'discover', 'shortlist', 'quotes']);
+    expect(result).toMatchObject({ outcome: 'failed', exit_state: 'Failed', reason: 'model_output_invalid', document: null, salt: null, proposal_digest: null });
+    if (result.outcome !== 'failed') throw new Error('the job must fail');
+    expect([result.sub_jobs.length, result.quotes.map((record) => [record.desk_did, record.accepted])]).toStrictEqual([1, [[GOLDEN_ALFA, 'confirmed']]]);
+    expect(text('agents/sourcing-agent/src/quotes/quotes.ts')).toContain('case NOT_ACCEPTED.failed: return { ...failed(CODE.decisionFailed), stop: { code: learned.code } };');
+    expect(text('agents/sourcing-agent/src/propose/propose.ts')).toContain("if (fan.stopped !== null) return job.failed('quotes', fan.stopped);");
+    expect(request).toContain('A decision that fails ends the whole job: no bidder after it is paid, and the job ends `failed` with the code of the decision. The quotes that the agent accepted before it stay paid, and they get no ranking. The failed result holds them (see Response).');
+    expect(sub('Errors')).toContain('| `decision_failed` | `propose` | the decision `accept_quote` could not be made or read. The quote hires stop, and the job ends `failed` with the code of that decision |');
   });
 });
 
