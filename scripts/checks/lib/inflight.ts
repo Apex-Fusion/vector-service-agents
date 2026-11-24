@@ -6,6 +6,8 @@
 // A part of a step (the Pay of a hire, which a hire of the kit makes inside one step) has a name with a colon, like `hire:pay`, and is kept as a note, not as a step.
 import { duration, iso } from './format.ts';
 import type { Clock, NodeAccess } from './ports.ts';
+import { blake2b256Hex, decodeTransaction } from './platform.ts';
+import { StateError } from './state.ts';
 import type { InFlight, StateFile } from './state.ts';
 
 /** After the end of its validity a transaction is let go only when this time has passed too: a node that is behind could still hold it. */
@@ -21,6 +23,8 @@ export interface SettleContext {
   pollMs: number;
   /** Return an expired, unconfirmed transaction without clearing its state. */
   onExpired?: 'reconcile';
+  /** Checks the recorded action just before resend. A refusal leaves the flight and reserve in place. */
+  beforeResubmit?(flight: Readonly<Pick<InFlight, 'step' | 'tx_hash' | 'refs' | 'facts'>>, inputRefs: readonly string[]): Promise<void>;
 }
 
 export type SettleResult =
@@ -78,6 +82,23 @@ export async function settleInFlight(context: SettleContext): Promise<SettleResu
   const waiting = (message: string): SettleResult => ({ kind: 'wait', step: flight.step, txHash: flight.tx_hash, untilMs: releaseAt, message });
   const may = `the transaction ${flight.tx_hash} of the step ${flight.step} was signed at ${iso(flight.signed_at)} and is not confirmed: it may land until ${iso(flight.valid_to)}`;
   if (context.mode === 'dry') return waiting(`${may}. Run with --submit to submit it again and wait for it`);
+  if (context.beforeResubmit !== undefined) {
+    let inputRefs: string[];
+    try {
+      const tx = decodeTransaction(flight.signed_cbor);
+      const body = tx.body();
+      if (!tx.is_valid() || blake2b256Hex(Buffer.from(body.to_cbor_hex(), 'hex')) !== flight.tx_hash) throw new Error();
+      const inputs = body.inputs();
+      inputRefs = [];
+      for (let i = 0; i < inputs.len(); i += 1) {
+        const input = inputs.get(i);
+        inputRefs.push(`${input.transaction_id().to_hex()}#${input.index()}`);
+      }
+    } catch {
+      throw new StateError('invalid', 'the in-flight bytes do not match the recorded transaction hash and valid phase');
+    }
+    await context.beforeResubmit({ step: flight.step, tx_hash: flight.tx_hash, refs: flight.refs, facts: flight.facts }, inputRefs);
+  }
   let submitNote = '';
   try { await node.submit(flight.signed_cbor); } catch (err) { submitNote = ` (the submit of the same bytes said: ${errorText(err)})`; }
   const deadline = clock.now() + context.awaitMs;

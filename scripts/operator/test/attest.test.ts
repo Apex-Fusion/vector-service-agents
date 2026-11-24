@@ -23,9 +23,12 @@ import type * as Platform from '../lib/platform.ts';
 import { loadTask } from '../lib/load.ts';
 import { loadRegistry } from '../lib/registry.ts';
 import type { Registry } from '../lib/registry.ts';
+import type { AgentSpec, UseCase } from '../lib/contract.ts';
 import { runTask } from '../lib/runner.ts';
 import attest from '../tasks/attest.ts';
 import data from '../usecases/inventory-reorder.ts';
+import UC2 from '../usecases/prior-authorization.ts';
+import UC3 from '../usecases/bid-evaluation.ts';
 import { World } from './support/fakes.ts';
 import { PackHosted } from './support/pack-hosted.ts';
 import { NOW, ScriptedNode, hashOf, taskWorld } from './support/task-world.ts';
@@ -68,6 +71,13 @@ const agentOf = (id: AgentId) => data.agents.find((agent) => agent.id === id)!;
 const nameOf = (agent: AgentId): string => attestationDocumentName(agent, COMMIT);
 const documentOf = (agent: AgentId, over: { manifest?: string; image?: string } = {}) => attestationDocumentOf({ manifestSha256: sha256(over.manifest ?? MANIFESTS[agent]), imageDigest: over.image ?? SERVICE[agent] });
 const locatorOf = (agent: AgentId): string => `${BASE}${nameOf(agent)}`;
+
+function advertFacts(facts: FactsFile, agent: AgentSpec, detailHash: string, replace = false): void {
+  for (const { model, origin } of agent.adverts) {
+    const tx = hashOf(`advert ${agent.id}:${model}`);
+    facts.put('adverts', [agent.id, model], { ref: `${tx}#0`, tx, detailUri: `${origin}/agent.json`, detailHash, endpoint: origin, postedAt: iso(NOW) }, { replace });
+  }
+}
 
 /** The running images as the wrapper writes them: both services and the four runtimes. */
 function runningImages(): Map<string, string> {
@@ -263,6 +273,7 @@ async function rig(options: { noFacts?: boolean; feeOutputs?: bigint[]; controll
     for (const agent of AGENTS) {
       facts.put('records', [agent], { did: `did:vector:${IDS[agent]}`, id: IDS[agent], tx: hashOf(`record ${agent}`), recordRef: `${hashOf(`record ${agent}`)}#0`, depositLovelace: '10000000', registeredAt: iso(NOW) });
       facts.put('manifests', [agent], { uri: `${agentOf(agent).endpoint}/agent.json`, sha256: sha256(MANIFESTS[agent]), bytes: MANIFESTS[agent].length, readAt: iso(NOW) });
+      advertFacts(facts, agentOf(agent), sha256(MANIFESTS[agent]));
     }
   }
   return state;
@@ -333,6 +344,13 @@ describe('the task attest', () => {
   });
   it('has the four attestation steps and then the four waits, as the data names them', () => {
     expect(attest.steps(data, { has: () => false, value: () => undefined })).toEqual([...STEPS, ...STEPS.map((step) => `visible:${step}`)]);
+  });
+  it.each([
+    [UC2, ['prior-authorization-agent', 'insurer-intake-agent']],
+    [UC3, ['sourcing-agent', 'bid-desk-alfa', 'bid-desk-bravo', 'bid-desk-charlie']],
+  ] as const)('names the steps for new agents in $name', (use, agents) => {
+    const steps = agents.flatMap((agent) => TYPES.map((type) => `${agent}:${type}`));
+    expect(attest.steps(use, { has: () => false, value: () => undefined })).toEqual([...steps, ...steps.map((step) => `visible:${step}`)]);
   });
   it('is the task that the command line loads for the name attest', async () => {
     const loaded = await loadTask('attest');
@@ -488,6 +506,59 @@ describe('attest run --record', () => {
   });
 });
 
+async function recordRig(use: UseCase) {
+  const web = new Web();
+  const w = await taskWorld({ use, keys: [], shared: [], wallets: {}, fetchImpl: web.fetchImpl, env: { OPERATOR_USE_CASE: data.name } });
+  const facts = FactsFile.open(join(w.stateDir, 'facts.json'), { useCase: use.name, network: 'vector-mainnet' });
+  const publicImages: Record<string, string> = { 'agent-runtime': RUNTIME };
+  const images: Record<string, string> = {};
+  const manifests: Record<string, string> = {};
+  for (const [index, agent] of use.agents.entries()) {
+    const id = hashOf(`record ${agent.id}`);
+    facts.put('records', [agent.id], { did: `did:vector:${id}`, id, tx: id, recordRef: `${id}#0`, depositLovelace: '10000000', registeredAt: iso(NOW) });
+    const manifest = JSON.stringify({ agent: agent.id });
+    manifests[agent.id] = sha256(manifest);
+    const uri = `${agent.endpoint}/agent.json`;
+    facts.put('manifests', [agent.id], { uri, sha256: manifests[agent.id], bytes: Buffer.byteLength(manifest), readAt: iso(NOW) });
+    advertFacts(facts, agent, manifests[agent.id]!);
+    web.set(uri, manifest);
+    const service = agent.kind === 'bid-desk' ? digest('bd') : digest(`${index + 1}a`);
+    publicImages[agent.kind] = service;
+    images[agent.serviceContainer] = `${REPOSITORY}/${agent.kind}@${service}`;
+    for (const advert of agent.adverts) images[advert.runtimeContainer] = `${REPOSITORY}/agent-runtime@${RUNTIME}`;
+  }
+  publish(web, publicImages);
+  writeFileSync(join(w.stateDir, 'running-images.json'), JSON.stringify({ generated_at: iso(w.clock.now()), images }));
+  return { w, web, facts, publicImages, images, manifests };
+}
+
+describe('attest records the build of each agent', () => {
+  it.each([UC2, UC3])('writes one document per agent for $name', async (use) => {
+    const { w, web, images, publicImages, manifests } = await recordRig(use);
+    expect(await w.run(attest, ...RECORD_ARGV)).toBe(0);
+    const folder = join(w.stateDir, 'attestation-documents');
+    expect(readdirSync(folder).sort()).toEqual(use.agents.map(({ id }) => attestationDocumentName(id, COMMIT)).sort());
+    for (const { id, kind } of use.agents) {
+      const doc = attestationDocumentOf({ manifestSha256: manifests[id]!, imageDigest: publicImages[kind]! });
+      expect(readFileSync(join(folder, attestationDocumentName(id, COMMIT)), 'utf8')).toBe(doc.text);
+    }
+    expect(w.facts().deploy).toEqual({ commit: COMMIT, images });
+    expect(w.node.submitted).toEqual([]);
+    expect(web.missed).toEqual([]);
+  });
+
+  it('refuses another Bid Desk manifest hash before it writes any document', async () => {
+    const { w, facts, manifests } = await recordRig(UC3);
+    const bravo = facts.read().manifests['bid-desk-bravo']!;
+    facts.put('manifests', ['bid-desk-bravo'], { ...bravo, sha256: manifests['bid-desk-alfa']! }, { replace: true });
+    expect(await w.run(attest, ...RECORD_ARGV)).toBe(2);
+    expect(w.screen.errorText).toContain('the manifest fact of bid-desk-bravo does not agree with its recorded advert');
+    expect(existsSync(join(w.stateDir, 'attestation-documents'))).toBe(false);
+    expect(facts.read().deploy).toBeNull();
+    expect(w.node.submitted).toEqual([]);
+  });
+});
+
 // ---- an attestation step ----
 
 const hashesOf = (r: Rig, names: string[]): string[] => names.map((name) => r.w.keys.registry.hashOf(name)).sort();
@@ -604,9 +675,14 @@ describe('an attestation step', () => {
     r.signing.throwing = true;
     const url = `${agentOf('reorder-agent').endpoint}/agent.json`;
     r.web.set(url, '{"manifest":"the reorder agent, changed"}');
-    FactsFile.open(join(r.w.stateDir, 'facts.json'), { useCase: 'inventory-reorder', network: 'vector-mainnet' }).put(
-      'manifests', ['reorder-agent'], { uri: url, sha256: sha256('{"manifest":"the reorder agent, changed"}'), bytes: 41, readAt: iso(NOW) }, { replace: true },
-    );
+    const facts = FactsFile.open(join(r.w.stateDir, 'facts.json'), { useCase: 'inventory-reorder', network: 'vector-mainnet' });
+    const changed = sha256('{"manifest":"the reorder agent, changed"}');
+    facts.put('manifests', ['reorder-agent'], { uri: url, sha256: changed, bytes: 41, readAt: iso(NOW) }, { replace: true });
+    expect(await r.run(...SUBMIT)).toBe(2);
+    expect(r.w.screen.errorText).toContain('the manifest fact of reorder-agent does not agree with its recorded advert');
+    nothingLanded(r);
+    expect(r.contexts).toBe(0);
+    advertFacts(facts, agentOf('reorder-agent'), changed, true);
     expect(await r.run(...SUBMIT)).toBe(2);
     expect(r.w.screen.errorText).toContain('is not the canonical JSON of the manifest');
     nothingLanded(r);

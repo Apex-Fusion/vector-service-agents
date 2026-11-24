@@ -86,11 +86,6 @@ export const IMAGE_REPOSITORY = 'ghcr.io/apex-fusion/vector-service-agents';
 const REPOSITORY_PATH = 'apex-fusion/vector-service-agents';
 const REPOSITORY_PATTERN = /^ghcr\.io\/apex-fusion\/vector-service-agents\/([a-z0-9][a-z0-9-]{0,62})$/;
 
-/** The service container of each kind of agent that a use case has so far, and the image of its service. The compose files of the deploy pack hold the same names (a test holds them to each other). */
-const SERVICES: Readonly<Partial<Record<AgentSpec['kind'], { readonly container: string; readonly image: string }>>> = {
-  'reorder-agent': { container: 'reorder-service', image: 'reorder-agent' },
-  'order-desk': { container: 'orders-service', image: 'order-desk' },
-};
 /** Every runtime of every agent runs this image. */
 const RUNTIME_IMAGE = 'agent-runtime';
 
@@ -100,11 +95,9 @@ export interface ImageNames {
   readonly runtimeRepository: string;
 }
 
-/** The service container of an agent kind, the repository of its image, and the repository of the image that its runtimes run. */
-export function imageNamesOf(kind: AgentSpec['kind']): ImageNames {
-  const service = SERVICES[kind];
-  if (service === undefined) throw new PreconditionError(`the pack names no service container for the kind ${kind}`);
-  return { serviceContainer: service.container, serviceRepository: `${IMAGE_REPOSITORY}/${service.image}`, runtimeRepository: `${IMAGE_REPOSITORY}/${RUNTIME_IMAGE}` };
+/** The agent's service container and the repositories for its service and runtimes. */
+export function imageNamesOf(agent: Pick<AgentSpec, 'kind' | 'serviceContainer'>): ImageNames {
+  return { serviceContainer: agent.serviceContainer, serviceRepository: `${IMAGE_REPOSITORY}/${agent.kind}`, runtimeRepository: `${IMAGE_REPOSITORY}/${RUNTIME_IMAGE}` };
 }
 
 /** A container that runs: its name, the repository of its image, the digest of the image index, and the reference as `running-images.json` holds it. */
@@ -125,8 +118,8 @@ export interface RunningImages {
  * a reference of the repository that is the image of that container, pinned by a sha256 digest. A container that is missing, an image of another repository, an image with a tag and an image id with
  * no repository are refused. A refusal names the container and never shows the text of a reference.
  */
-export function runningImagesOf(agent: Pick<AgentSpec, 'id' | 'kind' | 'adverts'>, running: ReadonlyMap<string, string>): RunningImages {
-  const names = imageNamesOf(agent.kind);
+export function runningImagesOf(agent: Pick<AgentSpec, 'id' | 'kind' | 'serviceContainer' | 'adverts'>, running: ReadonlyMap<string, string>): RunningImages {
+  const names = imageNamesOf(agent);
   const take = (container: string, repository: string): RunningImage => {
     const reference = running.get(container);
     if (reference === undefined) throw new PreconditionError(`the container ${container} of ${agent.id} is not in running-images.json: an attestation names a build that runs, and this agent is not deployed`);

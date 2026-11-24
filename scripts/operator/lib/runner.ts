@@ -724,7 +724,7 @@ async function execute<Extra>(def: TaskDefinition<Extra>, argv: readonly string[
   const settings: OperatorSettings = parseOperatorSettings(deps.env);
   ctx.lock = takeRunLock(join(settings.stateDir, RUN_LOCK), `${def.name} ${args.command} in ${args.mode} mode, started ${iso(clock.now())}`);
   const use = await (deps.loadUseCase ?? loadUseCase)(args.useCase ?? settings.useCase);
-  const extra = def.parse(deps.env, settings, use, args.flags);
+  const extra = def.parse(deps.env, settings, use, args.flags, args.command);
   const base = join(settings.stateDir, args.run === null ? def.name : `${def.name}.${args.run}`);
   const identity = { check: def.name, network: settings.network.name, record: args.run === null ? use.name : `${use.name}:${args.run}` };
   const factsPath = join(settings.stateDir, 'facts.json');
@@ -795,7 +795,18 @@ async function execute<Extra>(def: TaskDefinition<Extra>, argv: readonly string[
   // `cleanup --release=<hash>`: the operator lets the transaction in flight go. The network guard above and the settle below are skipped: the release asks the guard and the tip of the node itself, and only
   // after the clock says that the validity is over.
   if (args.release !== null) return letGo(args.release, flight, { node: connections.node, network: connections.network, clock, state, evidence, exposure, go, mode: args.mode, out, progress: ctx.progress });
-  const settled = await settleInFlight({ state, node: connections.node, clock, out: (line) => out.out(line), mode: args.mode, awaitMs, pollMs, onExpired: 'reconcile' });
+  const settled = await settleInFlight({
+    state, node: connections.node, clock, out: (line) => out.out(line), mode: args.mode, awaitMs, pollMs, onExpired: 'reconcile',
+    beforeResubmit: def.beforeResubmit === undefined ? undefined : (pending, inputRefs) => {
+      const session = sessionWith(go, exposure);
+      const { task, use, extra, settings, go: approval, clock, chain, fetchImpl, registry, facts, out, networkResult, node } = session;
+      return def.beforeResubmit!({
+        task, use, extra, settings, go: approval, clock, chain, fetchImpl, registry, facts, out, networkResult,
+        node: { resolveInputs: (refs) => node.resolveInputs(refs), txStatus: (hash) => node.txStatus(hash) },
+        state: { step: (name) => state.step(name) },
+      }, args.command, { step: pending.step, txHash: pending.tx_hash, inputRefs, refs: pending.refs, facts: pending.facts });
+    },
+  });
   if (settled.kind === 'wait') {
     ctx.progress.step = settled.step;
     return endOf({ kind: 'wait', message: settled.message, untilMs: settled.untilMs }, args.mode, out);
