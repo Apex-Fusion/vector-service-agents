@@ -3,9 +3,10 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { isDeepStrictEqual } from 'node:util';
 import { decodeClaimDatum, paymentKeyHashOf, soleTokenName, utxoOfKoiosRow } from '../../../packages/buyer-core/src/index.ts';
 import type { Module1Deployment } from '../../../packages/buyer-core/src/index.ts';
-// The package entry does not export the identity build window, guardian rules or datum encoder.
+// The package entry does not export the identity build window, guardian rules or datum encoders.
 import { windowAt } from '../../../packages/buyer-core/src/vendored/mcp/identity-chain.ts';
 import { activeKey, DAYS_7_MS, eligibleGuardian, tombstone } from '../../../packages/buyer-core/src/vendored/mcp/identity-rules.ts';
+import { WITHDRAW_CLAIM_REDEEMER } from '../../../packages/buyer-core/src/vendored/mcp/jury-codec.ts';
 // The package entry does not export the paged out-reference read or the bounded mint/burn history read.
 import { koiosCredentialUtxos, koiosPostList } from '../../../packages/buyer-core/src/vendored/mcp/marketplace-indexer.ts';
 import { addressDetails } from '../../../packages/vector-read/src/guarded-decode.ts';
@@ -265,10 +266,13 @@ async function requireRetiredAdverts(session: Closeout, current: RecordUtxo, adv
   }
 }
 
+const WITHDRAW_CLAIM_HASH = blake2b256Hex(Buffer.from(WITHDRAW_CLAIM_REDEEMER, 'hex'));
+
 /** Module-1 encodes WithdrawClaim as constructor 1 with no fields. */
-function isWithdrawClaim({ bytes, value }: RecordSpendDatum): boolean {
-  if (bytes == null && value == null) return false;
-  if (bytes != null) {
+function isWithdrawClaim({ bytes, value, hash }: RecordSpendDatum): boolean {
+  if (bytes == null) {
+    if (value == null || (hash != null && hash !== WITHDRAW_CLAIM_HASH)) return false;
+  } else {
     try {
       const data = decodePlutusDataHex(bytes);
       if (data.kind !== 'constr' || data.index !== 1n || data.fields.length !== 0) return false;

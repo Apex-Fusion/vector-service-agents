@@ -8,6 +8,7 @@ import { iso } from '../../checks/lib/format.ts';
 import { StateFile } from '../../checks/lib/state.ts';
 import { factsOf } from '../../checks/lib/txfacts.ts';
 import { SYSTEM_START_MS } from '../../checks/test/support/chain-view.ts';
+import { blake2b256Hex } from '../lib/platform.ts';
 import { FIRST, GUARDIAN, SECOND, TARGET, TOOLS, lifecycleWorld, refOf } from './support/lifecycle-world.ts';
 import { liveBuildAnswer } from './support/pack-hosted.ts';
 import { hashOf } from './support/task-world.ts';
@@ -460,13 +461,20 @@ describe('retirement and return', () => {
     const confirmed = f.closeouts.get(f.claimTx)!;
     const action = confirmed.plutus_contracts[0]!;
     const { datum } = action.input.redeemer;
-    f.closeouts.set(f.claimTx, { ...confirmed, plutus_contracts: [{ ...action,
-      input: { redeemer: { purpose: 'spend', datum: { ...datum, value: { constructor: 3, fields: [] } } } },
+    const report = (evidence: typeof datum) => f.closeouts.set(f.claimTx, { ...confirmed, plutus_contracts: [{ ...action,
+      input: { redeemer: { purpose: 'spend', datum: evidence } },
     }] });
-    expect(await f.run('--submit')).toBe(2);
-    expect(f.w.screen.errorText).toContain('does not show WithdrawClaim on the matching input');
+    const incorrect: (typeof datum)[] = [
+      { ...datum, value: { constructor: 3, fields: [] } },
+      { value: datum.value, hash: blake2b256Hex(Buffer.from('d87c80', 'hex')) },
+    ];
+    for (const evidence of incorrect) {
+      report(evidence);
+      expect(await f.run('--submit')).toBe(2);
+      expect(f.w.screen.errorText).toContain('does not show WithdrawClaim on the matching input');
+    }
     expect(asked(f, TOOLS.retire)).toHaveLength(0);
-    f.closeouts.set(f.claimTx, confirmed);
+    report({ value: datum.value, hash: blake2b256Hex(Buffer.from(datum.bytes!, 'hex')) });
     expect(await f.run('--submit'), f.w.screen.errorText).toBe(0);
     expect(submits(f)).toBe(4);
   });

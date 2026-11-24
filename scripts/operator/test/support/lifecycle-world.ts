@@ -71,11 +71,14 @@ function spentRow(out: Utxo) {
 
 function archivedSpend(tx: string, input: Utxo, paidTo: string, fee: bigint, script: string, redeemer: 1 | 2 | 3) {
   const row = (out: Utxo) => ({ ...spentRow(out), payment_addr: { bech32: out.address } });
+  const datum: { bytes?: string; value: { constructor: number; fields: [] }; hash?: string } = {
+    bytes: `d87${(9 + redeemer).toString(16)}80`, value: { constructor: redeemer, fields: [] },
+  };
   const wallet = { txHash: hashOf(`funding for ${tx}`), outputIndex: 0, address: paidTo, assets: { lovelace: 5_000_000n } };
   const paid = (outputIndex: number, lovelace: bigint) => row({ txHash: tx, outputIndex, address: paidTo, assets: { lovelace } });
   return { tx_hash: tx, fee: String(fee), inputs: [row(input), row(wallet)], outputs: [paid(0, input.assets.lovelace), paid(1, wallet.assets.lovelace - fee)],
     plutus_contracts: [{ script_hash: script, valid_contract: true, spends_input: { tx_hash: input.txHash, tx_index: input.outputIndex },
-      input: { redeemer: { purpose: 'spend', datum: { bytes: `d87${(9 + redeemer).toString(16)}80`, value: { constructor: redeemer, fields: [] } } } } }] };
+      input: { redeemer: { purpose: 'spend', datum } } }] };
 }
 
 export async function lifecycleWorld({ activeAdvert = false }: { activeAdvert?: boolean } = {}) {
