@@ -2,7 +2,7 @@
 // A key has a name (`run`, `fee`, `reorder-service`). Its file is `<dir>/shared/<name>.seed` for a key that several use cases share, and `<dir>/<use case>/<name>.seed` for a key of one use
 // case. A file holds 64 lower-case hex characters and one newline: the 32 bytes of the key. The key folders have mode 700 and the files mode 600.
 // The registry never prints, logs, returns or copies a seed, except through `secretHexForEnv`. A refusal names the key and the rule that it broke, and nothing that a file holds: no text, no
-// path and no message of the file system (only its short error code). `keys-public.json` lists the public part of each key, so that a person can see the wallets and compare them with the files.
+// path and no message of the file system (only its short error code). `keys-public.<use case>.json` lists the public part of each key of a use case, so that a person can see the wallets and compare them with the files.
 import { randomBytes } from 'node:crypto';
 import { chmodSync, closeSync, fchmodSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, unlinkSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
@@ -120,10 +120,15 @@ function attempt<T>(reason: KeyStoreReason, what: string, run: () => T): T {
   }
 }
 
-function checkSpecs(useCase: string, specs: readonly KeySpec[]): void {
+/** Refuses a use case name that cannot be the name of a folder: the key folder of a use case and its public key file carry the name. */
+function requireUseCaseName(useCase: unknown): asserts useCase is string {
   if (typeof useCase !== 'string' || !NAME.test(useCase) || useCase === 'shared') {
     throw new KeyStoreError('shape', 'the use case name is the name of a folder: it has lower-case letters, digits and hyphens, starts with a letter, has at most 48 characters, and is not the name shared');
   }
+}
+
+function checkSpecs(useCase: string, specs: readonly KeySpec[]): void {
+  requireUseCaseName(useCase);
   if (specs.length > MAX_KEYS) throw new KeyStoreError('shape', `a registry holds at most ${MAX_KEYS} keys`);
   const seen = new Set<string>();
   specs.forEach((spec, index) => {
@@ -377,4 +382,34 @@ export function checkPublicManifest(path: string, registry: Registry): void {
   }
   const network = typeof found === 'object' && found !== null && 'network' in found && typeof found.network === 'string' ? found.network : '';
   if (JSON.stringify(found) !== JSON.stringify(registry.publicManifest(network))) throw new KeyStoreError('manifest', 'the public key file does not equal what the key files give');
+}
+
+/** The name that the public key file had when one file served the whole key folder. A reader that finds no file of its use case looks for this name too (`findPublicManifest`). */
+export const LEGACY_PUBLIC_MANIFEST = 'keys-public.json';
+
+/** The public key file of a use case: `keys-public.<use case>.json`. Each use case has a file of its own, so that a run of one use case never changes the file of another. */
+export function publicManifestFile(useCase: string): string {
+  requireUseCaseName(useCase);
+  return `keys-public.${useCase}.json`;
+}
+
+/** True when the file holds JSON with a `use_case` that is a text other than `useCase`: the public key file of another use case. A file that cannot be read, or that names no use case, does not. */
+function namesAnotherUseCase(store: KeyStoreIo, path: string, useCase: string): boolean {
+  let found: unknown;
+  try { found = JSON.parse(store.read(path)); } catch { return false; }
+  return typeof found === 'object' && found !== null && 'use_case' in found && typeof found.use_case === 'string' && found.use_case !== useCase;
+}
+
+/**
+ * The public key file that a reader opens for a use case: the file of the use case when it is there, else the file of the earlier name (`LEGACY_PUBLIC_MANIFEST`) when that is a file that does
+ * not name another use case. When neither is there, the file of the use case, so that a refusal names the right file. An earlier file that cannot be read is still the file that is found: the
+ * reader then says that it cannot read it, and the guard of the run wallet does not lose a file that may show the wallet. It looks and writes nothing.
+ */
+export function findPublicManifest(dir: string, useCase: string, io: Partial<KeyStoreIo> = {}): string {
+  const store: KeyStoreIo = { ...realIo, ...io };
+  const own = join(dir, publicManifestFile(useCase));
+  if (attempt('manifest', 'the public key file could not be looked up', () => store.stat(own)) !== null) return own;
+  const earlier = join(dir, LEGACY_PUBLIC_MANIFEST);
+  const found = attempt('manifest', 'the public key file of the earlier name could not be looked up', () => store.stat(earlier));
+  return found?.isFile === true && !namesAnotherUseCase(store, earlier, useCase) ? earlier : own;
 }
