@@ -173,11 +173,20 @@ const SERVICE_CONTAINER: Readonly<Record<string, string>> = { 'reorder-agent': '
 /** The lock of an advert (the price and both bonds), in units. */
 const LOCK_UNITS: Readonly<Record<string, bigint>> = { 'reorder-agent-v1': 5n, 'lot-small': 4n, 'lot-medium': 7n, 'lot-large': 12n };
 const UNIT = 1_000_000n;
-const LEAST_CLAIM_STAKE = 50_000_000n;
-const LEAST_CLAIM_WINDOW_MS = 1_800_000;
-const MOST_CLAIM_WINDOW_MS = 86_400_000;
+/**
+ * The least deposit of an advert, in lovelace. An advert output holds a datum of about 300 bytes. The ledger asks 4310 lovelace for each byte of an output, so the output holds at least about
+ * 2.2 units, and the hosted builder refuses a deposit below the minimum of its output.
+ */
+const LEAST_ADVERT_DEPOSIT = 2_200_000n;
+interface Module1Manifest { protocol_params: { min_claim_stake: number; min_challenge_window: number; max_challenge_window: number } }
+/** The published manifest of the Module-1 deployment holds the parameters that limit a claim, the least stake and the window. The fixtures of buyer-core keep a copy of it. */
+const MODULE1 = JSON.parse(read('packages/buyer-core/test/fixtures/module1-mainnet-manifest.json')) as Module1Manifest;
+const LEAST_CLAIM_STAKE = BigInt(MODULE1.protocol_params.min_claim_stake);
+const LEAST_CLAIM_WINDOW_MS = MODULE1.protocol_params.min_challenge_window;
+const MOST_CLAIM_WINDOW_MS = MODULE1.protocol_params.max_challenge_window;
 const COLLATERAL = 5_000_000n;
-const FLOAT_SLACK = 10_000_000n;
+/** A float is the sum of the items of its wallet, rounded up to a multiple of this step, 10 units. */
+const FLOAT_STEP = 10_000_000n;
 const TOTAL_COLLATERAL = 45n * UNIT;
 const TOTAL_FLOATS = 460n * UNIT;
 const TOTAL_LINES = 505n * UNIT;
@@ -337,6 +346,7 @@ function termProblems(use: UseCase): string[] {
       const expected = LOCK_UNITS[advert.model];
       if (expected === undefined) problems.push(`${where}: no lock is known for this model`);
       else if (lock !== expected * UNIT) problems.push(`${where}: the lock is ${lock} lovelace and it must be ${expected} units`);
+      if (advert.depositLovelace < LEAST_ADVERT_DEPOSIT) problems.push(`${where}: the deposit ${advert.depositLovelace} is below the least that an advert output holds, ${LEAST_ADVERT_DEPOSIT}`);
     }
     for (const term of terms) {
       if (term.model !== null && !agent.adverts.some((advert) => advert.model === term.model)) problems.push(`${agent.id}: the template has the tier ${term.model} and the data has no advert for it`);
@@ -518,7 +528,9 @@ function specProblems(use: UseCase): string[] {
     const row = specRow(files?.spec ?? '', 'Subagent') ?? '';
     const found = /its own (authentication|assertion|transaction|delegation) key and its own (authentication|assertion|transaction|delegation) key/.exec(row);
     if (found === null) problems.push(`${subagent.id}: the spec of the parent has no row that gives the keys of the subagent`);
-    else if (!isDeepStrictEqual(subagent.keys.map((keyUse) => keyUse.purposes), [[found[1]], [found[2]]])) problems.push(`${subagent.id}: the purposes of its keys are not ${found[1]} and ${found[2]}, one for each key, as the spec says`);
+    else if (!isDeepStrictEqual(subagent.keys.map((keyUse) => [keyUse.key, keyUse.purposes]), [[`${subagent.id}-auth`, [found[1]]], [`${subagent.id}-delegation`, [found[2]]]])) {
+      problems.push(`${subagent.id}: the keys of the subagent are not ${subagent.id}-auth with the purpose ${found[1]} and ${subagent.id}-delegation with the purpose ${found[2]}, as the spec says`);
+    }
     const named = /^`([^`]+)`/.exec(row)?.[1];
     if (named !== subagent.name) problems.push(`${subagent.id}: the spec of the parent names the subagent ${named} and the data has ${subagent.name}`);
     const variable = `${subagent.id.toUpperCase().replaceAll('-', '_')}_DID`;
@@ -666,8 +678,9 @@ function fundingProblems(use: UseCase): string[] {
     if (wallets.filter((wallet) => wallet === line.wallet).length > 1) problems.push(`funding: the wallet ${line.wallet} has more than one line`);
     if (line.collateralLovelace !== COLLATERAL) problems.push(`funding ${line.wallet}: the collateral is ${line.collateralLovelace} and it must be ${COLLATERAL}`);
     const sum = line.items.reduce((total, item) => total + item.lovelace, 0n);
+    const rounded = ((sum + FLOAT_STEP - 1n) / FLOAT_STEP) * FLOAT_STEP;
     if (line.floatLovelace < sum) problems.push(`funding ${line.wallet}: the float ${line.floatLovelace} is below the sum of its items, ${sum}`);
-    if (line.floatLovelace > sum + FLOAT_SLACK) problems.push(`funding ${line.wallet}: the float ${line.floatLovelace} is more than 10 units above the sum of its items, ${sum}`);
+    else if (line.floatLovelace !== rounded) problems.push(`funding ${line.wallet}: the float ${line.floatLovelace} is not the sum of its items, ${sum}, rounded up to 10 units, ${rounded}`);
   }
   const paying = [...use.agents.flatMap((agent) => agent.keys.map((keyUse) => keyUse.key)), 'fee'];
   for (const wallet of paying) if (!wallets.includes(wallet)) problems.push(`funding: the paying wallet ${wallet} has no line`);
@@ -680,7 +693,7 @@ function fundingProblems(use: UseCase): string[] {
   return problems;
 }
 
-/** The items of a wallet follow the numbers of the data: the stake, two claims in flight, the challenge stake of the Reorder Agent, and the supplier bond of each advert. */
+/** The items of a wallet follow the numbers of the data: the stake, two claims in flight, the challenge stake of the Reorder Agent, and the supplier bond and the deposit of each advert. */
 function fundingTieProblems(use: UseCase): string[] {
   const problems: string[] = [];
   const needs = (wallet: string, lovelace: bigint, what: string): void => {
@@ -689,7 +702,10 @@ function fundingTieProblems(use: UseCase): string[] {
   for (const agent of use.agents) {
     needs(agent.serviceKey, agent.stakeLovelace, 'the stake');
     needs(agent.serviceKey, 2n * agent.claim.stakeLovelace, 'two claims in flight');
-    for (const advert of agent.adverts) needs(advert.supplierKey, advert.supplierBondLovelace, 'the supplier bond');
+    for (const advert of agent.adverts) {
+      needs(advert.supplierKey, advert.supplierBondLovelace, 'the supplier bond');
+      needs(advert.supplierKey, advert.depositLovelace, 'the advert deposit');
+    }
   }
   needs('reorder-service', BigInt(valueOf('.env.reorder-agent.example', 'DISPUTE_CHALLENGE_STAKE_LOVELACE')), 'one challenge stake');
   return problems;
@@ -836,9 +852,10 @@ describe('the data of use case 1 (inventory reorder)', () => {
   });
 
   describe('the claim', () => {
-    it('has a stake from 50,000,000 up to the challenge stake of both examples, a window from 30 minutes to 24 hours, and the capability as claim type', () => {
+    it('has a stake from the least stake of the Module-1 deployment up to the challenge stake of both examples, a window of 24 hours, the capability as claim type, and the Module-3 stake of 10,000,000', () => {
       expect(claimProblems(data)).toEqual([]);
       expect(data.agents.map((agent) => agent.claim.stakeLovelace)).toEqual([50_000_000n, 50_000_000n]);
+      expect(data.agents.map((agent) => [agent.stakeLovelace, agent.claim.windowMs])).toEqual([[10_000_000n, 86_400_000], [10_000_000n, 86_400_000]]);
     });
     it.each<[string, UseCase, string]>([
       ['a stake below the least stake', mapAgent(data, 'reorder-agent', (agent) => ({ ...agent, claim: { ...agent.claim, stakeLovelace: 49_999_999n } })), 'reorder-agent: the claim stake 49999999 is below the least stake of the Module-1 deployment, 50000000'],
@@ -872,6 +889,10 @@ describe('the data of use case 1 (inventory reorder)', () => {
       ['a lock that is not the lock of the lot', mapAdvert(data, 'order-desk', 'lot-large', { priceLovelace: 11_000_000n }), 'order-desk lot-large: the lock is 13000000 lovelace and it must be 12 units'],
     ])('refuse %s that differs', (_name, broken, problem) => {
       expect(termProblems(broken)).toContain(problem);
+    });
+    it('refuse a deposit below the least that an advert output holds', () => {
+      const broken = mapAdvert(data, 'order-desk', 'lot-small', { depositLovelace: 2_000_000n });
+      expect(termProblems(broken)).toEqual(['order-desk lot-small: the deposit 2000000 is below the least that an advert output holds, 2200000']);
     });
     it('refuse a tier of the template that has no advert', () => {
       const broken = mapAgent(data, 'order-desk', (agent) => ({ ...agent, adverts: agent.adverts.filter((advert) => advert.model !== 'lot-medium') }));
@@ -962,7 +983,8 @@ describe('the data of use case 1 (inventory reorder)', () => {
       ['a supplier key that loses the transaction purpose', mapKeyUse(data, 'reorder-supplier', (keyUse) => ({ ...keyUse, purposes: ['authentication'] })), 'reorder-agent: the purposes of reorder-supplier are authentication and the spec says authentication and transaction'],
       ['a delegation key that gains a purpose', mapKeyUse(data, 'reorder-delegation-2', (keyUse) => ({ ...keyUse, purposes: ['delegation', 'transaction'] })), 'reorder-agent: the purposes of reorder-delegation-2 are delegation and transaction and the spec says delegation'],
       ['a service key with another purpose', mapKeyUse(data, 'order-desk-service', (keyUse) => ({ ...keyUse, purposes: ['assertion', 'transaction'] })), 'order-desk: the purposes of order-desk-service are assertion and transaction and the spec says authentication and transaction'],
-      ['a subagent key with another purpose', mapKeyUse(data, 'stock-reader-delegation', (keyUse) => ({ ...keyUse, purposes: ['transaction'] })), 'stock-reader: the purposes of its keys are not authentication and delegation, one for each key, as the spec says'],
+      ['a subagent key with another purpose', mapKeyUse(data, 'stock-reader-delegation', (keyUse) => ({ ...keyUse, purposes: ['transaction'] })), 'stock-reader: the keys of the subagent are not stock-reader-auth with the purpose authentication and stock-reader-delegation with the purpose delegation, as the spec says'],
+      ['a subagent whose keys swap their purposes and their places', { ...data, subagents: data.subagents.map((subagent) => ({ ...subagent, keys: [{ ...subagent.keys[1], purposes: ['authentication' as const] }, { ...subagent.keys[0], purposes: ['delegation' as const] }] })) }, 'stock-reader: the keys of the subagent are not stock-reader-auth with the purpose authentication and stock-reader-delegation with the purpose delegation, as the spec says'],
       ['a subagent with another name than the spec gives', { ...data, subagents: data.subagents.map((subagent) => ({ ...subagent, name: 'stock-checker' })) }, 'stock-reader: the spec of the parent names the subagent stock-reader and the data has stock-checker'],
       ['a subagent that the example of its parent has no DID line for', { ...data, subagents: data.subagents.map((subagent) => ({ ...subagent, id: 'stock-checker' })) }, 'stock-checker: the example of the parent has no line STOCK_CHECKER_DID'],
     ])('refuse %s', (_name, broken, problem) => {
@@ -1099,10 +1121,19 @@ describe('the data of use case 1 (inventory reorder)', () => {
         'funding: the floats add to 459000000 and they must add to 460000000',
         'funding: the lines add to 504000000 and they must add to 505000000',
       ]],
-      ['a float more than 10 units above its items', mapFunding(data, 'fee', { floatLovelace: 63_660_001n }), [
-        'funding fee: the float 63660001 is more than 10 units above the sum of its items, 53660000',
+      ['a float above the rounded sum of its items', mapFunding(data, 'fee', { floatLovelace: 63_660_001n }), [
+        'funding fee: the float 63660001 is not the sum of its items, 53660000, rounded up to 10 units, 60000000',
         'funding: the floats add to 463660001 and they must add to 460000000',
         'funding: the lines add to 508660001 and they must add to 505000000',
+      ]],
+      ['a float within 10 units of the sum that is not the rounded sum', mapFunding(data, 'order-desk-service', { floatLovelace: 128_000_000n }), [
+        'funding order-desk-service: the float 128000000 is not the sum of its items, 125620000, rounded up to 10 units, 130000000',
+        'funding: the floats add to 458000000 and they must add to 460000000',
+        'funding: the lines add to 503000000 and they must add to 505000000',
+      ]],
+      ['two floats that move 2 units from one wallet to another', mapFunding(mapFunding(data, 'order-desk-service', { floatLovelace: 128_000_000n }), 'order-medium-supplier', { floatLovelace: 12_000_000n }), [
+        'funding order-medium-supplier: the float 12000000 is not the sum of its items, 7450000, rounded up to 10 units, 10000000',
+        'funding order-desk-service: the float 128000000 is not the sum of its items, 125620000, rounded up to 10 units, 130000000',
       ]],
     ])('refuses %s', (_name, broken, problems) => {
       expect(fundingProblems(broken)).toEqual(problems);
@@ -1111,7 +1142,7 @@ describe('the data of use case 1 (inventory reorder)', () => {
       const broken = { ...data, funding: [...data.funding, data.funding[0]] };
       expect(fundingProblems(broken)).toContain('funding: the wallet fee has more than one line');
     });
-    it('follows the stake, the two claims in flight, the challenge stake and the supplier bonds of the data', () => {
+    it('follows the stake, the two claims in flight, the challenge stake, and the supplier bond and the deposit of each advert', () => {
       expect(fundingTieProblems(data)).toEqual([]);
     });
     it.each<[string, UseCase, string]>([
@@ -1119,6 +1150,7 @@ describe('the data of use case 1 (inventory reorder)', () => {
       ['a claim stake that two claims in flight do not follow', mapAgent(data, 'reorder-agent', (agent) => ({ ...agent, claim: { ...agent.claim, stakeLovelace: 40_000_000n } })), 'funding reorder-service: no item is two claims in flight, 80000000'],
       ['a supplier bond that no item holds', mapAdvert(data, 'order-desk', 'lot-large', { supplierBondLovelace: 2_000_000n }), 'funding order-large-supplier: no item is the supplier bond, 2000000'],
       ['a challenge stake that no item holds', mapFunding(data, 'reorder-service', { items: data.funding.find((line) => line.wallet === 'reorder-service')?.items.filter((item) => item.what !== 'One challenge') ?? [] }), 'funding reorder-service: no item is one challenge stake, 50000000'],
+      ['an advert deposit that no item holds', mapAdvert(data, 'order-desk', 'lot-medium', { depositLovelace: 2_600_000n }), 'funding order-medium-supplier: no item is the advert deposit, 2600000'],
     ])('refuses %s', (_name, broken, problem) => {
       expect(fundingTieProblems(broken)).toContain(problem);
     });
