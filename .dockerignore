@@ -21,7 +21,8 @@ docs
 specs
 deploy
 # The scripts folder stays out, except the operator pack and the checks that it reuses. The last line that matches a path decides, and a line above a re-include does not reach into the folder that the
-# re-include lets in. So the four lines after the re-includes leave out of those two folders what the lines above leave out of the others: test folders, env files and node_modules.
+# re-include lets in. So the lines after the re-includes leave out of those two folders what the lines above leave out of the others (test folders, env files and node_modules), and two more files that
+# can hold a secret: the key files of the pack, which end in .seed, and .npmrc.
 scripts/*
 !scripts/operator
 !scripts/checks
@@ -29,3 +30,5 @@ scripts/**/test
 scripts/**/.env
 scripts/**/.env.*
 scripts/**/node_modules
+scripts/**/*.seed
+scripts/**/.npmrc

@@ -7480,13 +7480,44 @@ function folderNamesIn(dir, name, found = []) {
   }
   return found;
 }
-// The folders that a COPY takes whole and that hold a test folder, which the ignore file does not keep out: by the pattern for every folder named test, or by the path of the test folder.
+// The ignore file as the Docker builders read it: each line is a rule, and the last rule that matches a path, or a folder above it, decides. A line with a leading ! puts the path back. `**` crosses
+// folders, and `*` and `?` stop at a slash.
+function ignoreRulesOf(text) {
+  return text.split('\n').map((line) => line.trim()).filter((line) => line !== '' && !line.startsWith('#')).map((line) => {
+    const exclusion = line.startsWith('!');
+    const glob = (exclusion ? line.slice(1) : line).replace(/^\/+/, '').replace(/\/+$/, '');
+    let source = '';
+    for (let at = 0; at < glob.length; at += 1) {
+      const char = glob[at];
+      if (char === '*' && glob[at + 1] === '*') {
+        at += 1;
+        if (glob[at + 1] === '/') at += 1;
+        source += at + 1 >= glob.length ? '.*' : '(.*/)?';
+      } else if (char === '*') source += '[^/]*';
+      else if (char === '?') source += '[^/]';
+      else source += char.replace(/[\\^$.|+(){}[\]]/g, '\\$&');
+    }
+    return { exclusion, pattern: new RegExp(`^${source}$`) };
+  });
+}
+function reachesContext(rules, path) {
+  const parts = path.split('/');
+  const folders = parts.slice(0, -1).map((_, at) => parts.slice(0, at + 1).join('/'));
+  let ignored = false;
+  for (const rule of rules) {
+    if (rule.exclusion !== ignored) continue;
+    if (rule.pattern.test(path) || folders.some((folder) => rule.pattern.test(folder))) ignored = !rule.exclusion;
+  }
+  return !ignored;
+}
+// The folders that a COPY takes whole and that hold a test folder, which the ignore file does not keep out of the build context. The last line that matches the test folder decides: a re-include
+// that stands below the line for every folder named test brings the test folders of the re-included folder back, unless a line below it puts them out again.
 function dockerignoreProblems(ignoreText, folders) {
-  const lines = ignoreText.split('\n');
-  return folders.flatMap((folder) => folderNamesIn(folder, 'test').filter((path) => !lines.includes('**/test') && !lines.includes(path)).map((path) => `${path} is copied into an image: the ignore file keeps no test folder out`));
+  const rules = ignoreRulesOf(ignoreText);
+  return folders.flatMap((folder) => folderNamesIn(folder, 'test').filter((path) => reachesContext(rules, path)).map((path) => `${path} is copied into an image: the ignore file keeps no test folder out`));
 }
 
-test('dockerignore: no image holds a test folder, and the first comment line names the Dockerfiles that build from the repo root; the guard refuses an ignore file that leaves a test folder in', () => {
+test('dockerignore: no image holds a test folder, and the first comment line names the Dockerfiles that build from the repo root; the last line that matches decides, and the guard refuses an ignore file that leaves a test folder in', () => {
   const ignore = read('.dockerignore');
   const lines = ignore.split('\n');
   const rows = CI_IMAGES.filter((row) => row.context === '.');
@@ -7495,16 +7526,25 @@ test('dockerignore: no image holds a test folder, and the first comment line nam
   // The kit packages are copied whole by the agent images, with their test folders. The two agents of use case 1 copy their source folder only.
   for (const folder of ['packages/usecase-kit', 'packages/hire-kit', 'packages/service-kit', 'packages/id-kit', 'agents/audio-snippets']) assert.ok(withTests.includes(folder), `${folder} is copied whole and holds a test folder: ${withTests.join(', ')}`);
   assert.deepEqual(['agents/reorder-agent', 'agents/order-desk'].filter((folder) => folders.includes(folder)), [], 'the two agents of use case 1 are not copied whole');
-  assert.ok(lines.includes('**/test'), 'the ignore file has the line for every folder named test');
+  const TEST_LINES = ['**/test', 'scripts/**/test'];
+  assert.ok(TEST_LINES.every((line) => lines.includes(line)), 'the ignore file has the line for every folder named test, and the line that leaves them out again after the re-includes of the scripts folder');
   assert.deepEqual(dockerignoreProblems(ignore, folders), [], 'the real file passes');
-  const without = lines.filter((line) => line !== '**/test').join('\n');
-  const refused = dockerignoreProblems(without, folders);
-  assert.ok(refused.includes('packages/usecase-kit/test is copied into an image: the ignore file keeps no test folder out'), `a file with no line for the test folders is refused: ${JSON.stringify(refused)}`);
-  assert.equal(refused.length, withTests.flatMap((folder) => folderNamesIn(folder, 'test')).length, 'each test folder is named once');
-  // The twin: the path of each test folder in place of the pattern.
-  const paths = withTests.flatMap((folder) => folderNamesIn(folder, 'test'));
-  assert.deepEqual(dockerignoreProblems([without, ...paths].join('\n'), folders), [], 'a path for each test folder');
-  assert.equal(dockerignoreProblems([without, ...paths.slice(1)].join('\n'), folders).length, 1, 'one test folder left out of the list');
+  const tests = withTests.flatMap((folder) => folderNamesIn(folder, 'test'));
+  const named = (path) => `${path} is copied into an image: the ignore file keeps no test folder out`;
+  const text = (...dropped) => lines.filter((line) => !dropped.includes(line)).join('\n');
+  const refused = dockerignoreProblems(text(...TEST_LINES), folders);
+  assert.ok(refused.includes(named('packages/usecase-kit/test')), `a file with no line for the test folders is refused: ${JSON.stringify(refused)}`);
+  assert.deepEqual(refused, tests.map(named), 'each test folder is named once');
+  // The last line that matches decides. The re-includes of the scripts folder stand below `**/test`, so they bring the test folder of the pack back, and the line below them puts it out again.
+  assert.deepEqual(dockerignoreProblems(text('scripts/**/test'), folders), [named('scripts/operator/test')], 'without the line below the re-includes, the test folder of the pack comes back');
+  const above = lines.filter((line) => line !== 'scripts/**/test').flatMap((line) => (line === '!scripts/operator' ? ['scripts/**/test', line] : [line])).join('\n');
+  assert.deepEqual(dockerignoreProblems(above, folders), [named('scripts/operator/test')], 'the line for the scripts folder above the re-includes does not hold');
+  assert.deepEqual(dockerignoreProblems(text('**/test'), folders), tests.filter((path) => !path.startsWith('scripts/')).map(named), 'without the line for every folder, the test folders of the packages and the agents come back');
+  // The twins: the path of each test folder in place of the lines, a line that leaves out more, and the line below the re-includes at depth one, where the test folder of the pack is.
+  assert.deepEqual(dockerignoreProblems([text(...TEST_LINES), ...tests].join('\n'), folders), [], 'a path for each test folder');
+  assert.equal(dockerignoreProblems([text(...TEST_LINES), ...tests.slice(1)].join('\n'), folders).length, 1, 'one test folder left out of the list');
+  assert.deepEqual(dockerignoreProblems(`${ignore}*.tmp\n`, folders), [], 'a line that leaves out more');
+  assert.deepEqual(dockerignoreProblems(rtChange(ignore, 'scripts/**/test\n', 'scripts/*/test\n'), folders), [], 'the line at depth one');
   // The first comment line names the Dockerfiles of the repo root context.
   for (const row of rows) assert.ok(lines[0].includes(row.file), `${row.file} is named in the first comment line`);
   assert.equal(lines[0].includes(RT.dockerfile), false, 'the runtime Dockerfile has another context');

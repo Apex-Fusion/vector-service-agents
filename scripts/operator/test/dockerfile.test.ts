@@ -20,8 +20,8 @@ const ENTRYPOINT = 'ENTRYPOINT ["/usr/bin/tini", "--", "node", "--import", "tsx"
 const ROOT_FILES = ['pnpm-workspace.yaml', 'pnpm-lock.yaml', 'package.json', 'tsconfig.base.json'];
 /** The names that can carry a secret. */
 const SECRET_NAME = /KEY|TOKEN|SECRET|PASSWORD|PASSPHRASE|SEED|CREDENTIAL|AUTH/i;
-/** What no copy may bring into the image: a test folder or file, an env file, a shell script and a key file. */
-const NEVER_IN_IMAGE = /(^|\/)tests?(\/|$)|\.test\.|(^|\/)\.env(\.|$)|\.sh$|\.(seed|key|pem)$/;
+/** What no copy may bring into the image: a test folder or file, an env file, an npm settings file, a shell script and a key file. */
+const NEVER_IN_IMAGE = /(^|\/)tests?(\/|$)|\.test\.|(^|\/)\.(env|npmrc)(\.|$)|\.sh$|\.(seed|key|pem)$/;
 
 interface Manifest { name: string; packageManager?: string; dependencies?: Record<string, string>; devDependencies?: Record<string, string> }
 const manifest = (dir: string): Manifest => JSON.parse(read(dir === '' ? 'package.json' : `${dir}/package.json`)) as Manifest;
@@ -91,6 +91,7 @@ function problemsOf(text: string): string[] {
   if (JSON.stringify([...sources].sort()) !== JSON.stringify(expected)) problems.push(`the copies take: ${[...sources].sort().join(' ')}; they must take: ${expected.join(' ')}`);
   if (JSON.stringify(final.filter((line) => /^(COPY|ADD) /.test(line))) !== JSON.stringify([FINAL_COPY])) problems.push(`the final stage copies only the workspace of the builder: ${FINAL_COPY}`);
   if (instructions.some((line) => /^ADD /.test(line))) problems.push('no ADD: it can fetch a file');
+  for (const line of instructions) if (/--(?:from|mount)\b/.test(line) && line !== FINAL_COPY) problems.push(`${line.split(' ').slice(0, 2).join(' ')} takes files from another stage or image: only ${FINAL_COPY} may`);
   // The install: from the lockfile, for the closure of the use-case kit, with the manifests before it and the sources after it.
   if (JSON.stringify(instructions.filter((line) => /^RUN pnpm /.test(line))) !== JSON.stringify([INSTALL])) problems.push(`the one pnpm command is: ${INSTALL}`);
   const install = instructions.indexOf(INSTALL);
@@ -192,6 +193,9 @@ describe('scripts/operator/Dockerfile', () => {
     ['another base image in the final stage', swap(real, `\n${BASE}\n`, `\n${BASE.replace('22', '20')}\n`), /the stages are the builder and the final image/],
     ['an instruction on two lines', swap(real, ' tini && ', ' tini \\\n  && '), /a line continues/],
     ['a copy of a path that is not in the repository', swap(real, 'COPY scripts/operator ./scripts/operator\n', 'COPY scripts/operator ./scripts/operator\nCOPY scripts/missing ./scripts/missing\n'), /scripts\/missing is copied and is not in the repository/],
+    ['a docker client copied in the builder stage', swap(real, 'COPY scripts/operator ./scripts/operator\n', 'COPY scripts/operator ./scripts/operator\nCOPY --from=docker:27-cli /usr/local/bin/docker /repo/node_modules/.bin/docker\n'), /COPY --from=docker:27-cli takes files from another stage or image/],
+    ['a mount of another image in the builder stage', swap(real, 'WORKDIR /repo\n', 'WORKDIR /repo\nRUN --mount=type=bind,from=docker:27-cli,source=/usr/local/bin/docker,target=/mnt/docker cp /mnt/docker /repo/docker\n'), /RUN --mount=\S+ takes files from another stage or image/],
+    ['a cache mount on the install', swap(real, 'RUN pnpm install', 'RUN --mount=type=cache,target=/root/.local/share/pnpm/store pnpm install'), /RUN --mount=\S+ takes files from another stage or image/],
   ];
   for (const [name, text, expected] of broken) {
     it(`refuses a copy with ${name}`, () => {
@@ -243,15 +247,17 @@ function inContext(rules: readonly Rule[], path: string): boolean {
 /** Whether the image needs a file (true), must never get it (false), or has no rule for it (null). */
 function wanted(path: string): boolean | null {
   const parts = path.split('/');
-  if (parts.includes('node_modules') || parts.includes('test') || /^\.env(\.|$)/.test(parts.at(-1) ?? '')) return false;
+  const name = parts.at(-1) ?? '';
+  if (parts.includes('node_modules') || parts.includes('test') || /^\.(env|npmrc)(\.|$)/.test(name) || name.endsWith('.seed')) return false;
   if (path.startsWith('packages/') || path.startsWith('scripts/operator/') || path.startsWith('scripts/checks/lib/') || path === 'scripts/checks/tsconfig.json') return true;
   return path.startsWith('scripts/checks/') ? null : !path.startsWith('scripts/');
 }
-/** The real files of the folders that the Dockerfile reads, and paths that a host can hold: an env file and a node_modules folder in each place that a re-include opens. */
+/** The real files of the folders that the Dockerfile reads, and paths that a host can hold: an env file, a key file, an npm settings file and a node_modules folder in each place that a re-include opens. */
 const TREE = [...filesBelow('scripts'), ...filesBelow('packages')];
 const PROBES = [
   'scripts/operator/.env', 'scripts/operator/.env.local', 'scripts/operator/lib/.env', 'scripts/checks/lib/.env', 'scripts/checks/.env.keys', 'scripts/operator/node_modules/x/index.js',
   'scripts/checks/lib/node_modules/x/index.js', 'packages/buyer-core/.env', 'packages/buyer-core/node_modules/x/index.js', 'scripts/run-e2e-from-keyfile.sh', 'scripts/operator/lib/test/x.ts', 'scripts/checks/lib/test/y.ts',
+  'scripts/operator/alpha.seed', 'scripts/checks/lib/shared/alpha.seed', 'scripts/operator/.npmrc', 'scripts/checks/lib/.npmrc',
 ];
 function contextProblems(ignoreText: string): string[] {
   const rules = rulesOf(ignoreText);
@@ -305,6 +311,8 @@ describe('.dockerignore, for the image of the operator pack', () => {
     ['no line for env files after the re-includes', without('scripts/**/.env'), /scripts\/operator\/\.env reaches/],
     ['no line for env files with a suffix after the re-includes', without('scripts/**/.env.*'), /scripts\/operator\/\.env\.local reaches/],
     ['no line for node_modules after the re-includes', without('scripts/**/node_modules'), /scripts\/checks\/lib\/node_modules\/x\/index\.js reaches/],
+    ['no line for key files after the re-includes', without('scripts/**/*.seed'), /scripts\/operator\/alpha\.seed reaches/],
+    ['no line for npm settings files after the re-includes', without('scripts/**/.npmrc'), /scripts\/operator\/\.npmrc reaches/],
     ['no line for env files at any depth', without('**/.env'), /packages\/buyer-core\/\.env reaches/],
     ['no line for the scripts folder', without('scripts/*'), /scripts\/deploy\.test\.mjs reaches/],
   ];
@@ -315,10 +323,11 @@ describe('.dockerignore, for the image of the operator pack', () => {
     });
   }
 
-  it('accepts a file with a note, a line that leaves out more, a slash at the end of a line, and the env lines in another order', () => {
+  it('accepts a file with a note, a line that leaves out more, a slash at the end of a line, and the env lines and the key lines in another order', () => {
     expect(contextProblems(`# a note\n${real}`)).toEqual([]);
     expect(contextProblems(`${real}*.tmp\n`)).toEqual([]);
     expect(contextProblems(swap(real, 'scripts/**/test\n', 'scripts/**/test/\n'))).toEqual([]);
     expect(contextProblems(swap(real, 'scripts/**/.env\nscripts/**/.env.*\n', 'scripts/**/.env.*\nscripts/**/.env\n'))).toEqual([]);
+    expect(contextProblems(swap(real, 'scripts/**/*.seed\nscripts/**/.npmrc\n', 'scripts/**/.npmrc\nscripts/**/*.seed\n'))).toEqual([]);
   });
 });
