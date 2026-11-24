@@ -357,7 +357,11 @@ describe('the task results', () => {
         expect(page).not.toContain('Order Desk');
         expect(page).not.toContain('purchase order');
         expect(page).toContain(SHOWS['Module-1 challenge']!.shows);
-        expect(page).toContain(SHOWS['Hold removes the agent from the listing']!.shows);
+        const hold = rowOf(page, 'r2-c');
+        const primitive = use === bidEvaluation ? 'Proposal during a verified hold' : 'Hold removes the agent from the listing';
+        expect(hold[2]).toBe(primitive);
+        expect(hold[4]).toBe(SHOWS[primitive]!.shows);
+        expect(hold[5]).toBe(SHOWS[primitive]!.doesNotShow);
         expect(page).toContain(SHOWS['Module-1 verdict and hold']!.shows);
       }
     });

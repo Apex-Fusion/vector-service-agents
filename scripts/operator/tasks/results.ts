@@ -116,6 +116,10 @@ export const SHOWS: Readonly<Record<string, Sentences>> = {
     shows: 'The marketplace listing during the hold did not show the held agent.',
     doesNotShow: 'That the listing will show the advert again after the hold.',
   },
+  'Proposal during a verified hold': {
+    shows: 'The signed proposal during the hold names the other two Bid Desks and omits Bid Desk Charlie.',
+    doesNotShow: 'Which adverts the marketplace listed at that time.',
+  },
   'Hold and lift by a party': {
     shows: 'The Accountable key of the organisation put a hold on the Order Desk and lifted it.',
     doesNotShow: 'That another party can hold. It shows the Accountable party only.',
