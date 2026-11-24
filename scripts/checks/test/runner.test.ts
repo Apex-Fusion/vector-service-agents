@@ -7,11 +7,13 @@ import { HostedError } from '../lib/hosted.ts';
 import type { HostedTools } from '../lib/hosted.ts';
 import { GuardRefusal } from '../lib/land.ts';
 import type { LandRequest } from '../lib/land.ts';
-import { FlagError, parseArguments, runCheck, runSteps, waitFor } from '../lib/runner.ts';
+import { FlagError, lazyHosted, parseArguments, realChain, runCheck, runSteps, unusedChain, waitFor } from '../lib/runner.ts';
 import type { CheckDefinition, StepHandler } from '../lib/runner.ts';
 import { commitStep, stepPlan } from '../lib/session.ts';
 import type { Session, StepOutcome } from '../lib/session.ts';
 import { TxNotConfirmedError } from '../lib/platform.ts';
+import type { OgmiosProvider } from '../lib/platform.ts';
+import { deploymentFor, parseCommonSettings } from '../lib/settings.ts';
 import { factsOf } from '../lib/txfacts.ts';
 import { harness } from './support/harness.ts';
 import { AGENT_N, MEMBER_N, keyOf } from './support/world.ts';
@@ -240,5 +242,32 @@ describe('the files of a run', () => {
     expect(h.screen.errorText).toContain('CHECKS_NETWORK');
     expect(h.screen.errorText).toContain('CHECKS_RECORD');
     expect(h.screen.errorText).toContain('CHECKS_MEMBER_KEY_FILE');
+  });
+});
+
+describe('the parts of the real world that a runner of another pack builds its session with', () => {
+  it('unusedChain refuses each use of the ledger and says why', async () => {
+    const chain = unusedChain('the test');
+    expect(() => chain.provider).toThrow('this check does not read the ledger (the test)');
+    expect(() => chain.deployment).toThrow('this check does not read the ledger (the test)');
+    await expect(chain.context(member.address)).rejects.toThrow('this check builds no transaction (the test)');
+    await expect(chain.liveVaultsOf('dd'.repeat(32), 0)).rejects.toThrow('this check reads no vault (the test)');
+  });
+  it('realChain reads with the provider that it is given and the deployment of the network, and builds for a wallet', async () => {
+    const h = await harness();
+    const settings = parseCommonSettings(h.env, { keys: [] });
+    const chain = realChain(settings, h.env, h.chain.fetchImpl, h.world.chain as unknown as OgmiosProvider);
+    expect(chain.provider).toBe(h.world.chain);
+    expect(chain.deployment).toEqual(deploymentFor(settings.network, h.env));
+    expect(chain.koiosUrl).toBe(settings.urls.koios);
+    const context = await chain.context(member.address);
+    expect(context.provider).toBe(h.world.chain);
+    expect(context.deployment).toBe(chain.deployment);
+    expect(typeof context.lucid.newTx).toBe('function');
+  });
+  it('lazyHosted connects at the first call only: it can be closed before a call, with no server', async () => {
+    const lazy = lazyHosted('https://hosted.test/mcp', ['vector_get_vault']);
+    expect(typeof lazy.tools.call).toBe('function');
+    await expect(lazy.close()).resolves.toBeUndefined();
   });
 });

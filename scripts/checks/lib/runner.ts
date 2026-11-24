@@ -20,7 +20,7 @@ import { HostedError, connectHosted } from './hosted.ts';
 import type { HostedTools } from './hosted.ts';
 import { settleInFlight } from './inflight.ts';
 import { KeyFileError, KeyRing, readKeyFile } from './keys.ts';
-import type { KeyRole, LoadedKey } from './keys.ts';
+import type { CheckKeyRole, LoadedKey } from './keys.ts';
 import { VectorNode } from './node.ts';
 import { OgmiosProvider, TxNotConfirmedError, lucidForAddress, readVaults } from './platform.ts';
 import type { Clock, NodeAccess, Output } from './ports.ts';
@@ -38,7 +38,7 @@ export interface CheckDefinition<Extra = unknown> {
   name: string;
   title: string;
   needs: {
-    keys: readonly KeyRole[];
+    keys: readonly CheckKeyRole[];
     /** The check reads the ledger and builds transactions. */
     chain: boolean;
     /** The hosted tools that it calls: the server must list each. */
@@ -65,7 +65,7 @@ export interface RunDeps {
   node?: NodeAccess;
   chain?: ChainAccess;
   hosted?: HostedTools;
-  readKey?: (path: string, role: KeyRole) => LoadedKey;
+  readKey?: (path: string, role: CheckKeyRole) => LoadedKey;
   awaitMs?: number;
   pollMs?: number;
 }
@@ -105,7 +105,8 @@ const usage = (def: Pick<CheckDefinition, 'name' | 'flags'>): string =>
 
 // ─── The real world ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
-function unusedChain(why: string): ChainAccess {
+/** The chain of a check that reads no ledger: each use of it refuses, and says why. */
+export function unusedChain(why: string): ChainAccess {
   const refuse = (): never => { throw new Error(`this check does not read the ledger (${why})`); };
   return {
     get provider(): never { return refuse(); }, get deployment(): never { return refuse(); }, koiosUrl: '', fetchImpl: fetch,
@@ -113,7 +114,8 @@ function unusedChain(why: string): ChainAccess {
   };
 }
 
-function realChain(settings: CommonSettings, env: Env, fetchImpl: typeof fetch, provider: OgmiosProvider): ChainAccess {
+/** The chain of a run on a node: the provider that it is given, the identity deployment of the network, and the reads of the live vaults. */
+export function realChain(settings: CommonSettings, env: Env, fetchImpl: typeof fetch, provider: OgmiosProvider): ChainAccess {
   const deployment = deploymentFor(settings.network, env);
   const koiosUrl = settings.urls.koios;
   return {
@@ -124,7 +126,7 @@ function realChain(settings: CommonSettings, env: Env, fetchImpl: typeof fetch, 
 }
 
 /** The hosted tools, connected when the first call is made: a dry run that calls none never needs the server. */
-function lazyHosted(url: string, required: readonly string[]): { tools: HostedTools; close(): Promise<void> } {
+export function lazyHosted(url: string, required: readonly string[]): { tools: HostedTools; close(): Promise<void> } {
   let connected: ReturnType<typeof connectHosted> | null = null;
   return {
     tools: { async call(name, args) { connected ??= connectHosted(url, { required }); return (await connected).call(name, args); } },
@@ -240,7 +242,7 @@ export async function runCheck<Extra>(def: CheckDefinition<Extra>, argv: readonl
     const args = parseArguments(def, argv);
     const common = parseCommonSettings(deps.env, { keys: def.needs.keys });
     const extra = def.parse(deps.env, common);
-    const readKey = deps.readKey ?? ((path: string, role: KeyRole) => readKeyFile(path, role));
+    const readKey = deps.readKey ?? ((path: string, role: CheckKeyRole) => readKeyFile(path, role));
     const loaded = def.needs.keys.map((role) => readKey(common.keyFiles[role]!, role));
     const ring = new KeyRing(loaded);
     const authPath = common.keyFiles.authentication;

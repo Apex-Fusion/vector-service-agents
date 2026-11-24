@@ -4,7 +4,7 @@
 import { resolve } from 'node:path';
 import { VECTOR_KOIOS_URL, VECTOR_OGMIOS_URL, VECTOR_SUBMIT_URL, identityDeploymentFrom, makeIdentityDeployment } from './platform.ts';
 import type { IdentityDeployment } from './platform.ts';
-import type { KeyRole } from './keys.ts';
+import type { CheckKeyRole } from './keys.ts';
 
 export type Env = Readonly<Record<string, string | undefined>>;
 
@@ -89,14 +89,14 @@ export interface CommonSettings {
   maxFeeLovelace: bigint;
   maxCollateralLossLovelace: bigint;
   /** The key files that the check needs, and the authentication key file when it is given. */
-  keyFiles: Partial<Record<KeyRole | 'authentication', string>>;
+  keyFiles: Partial<Record<CheckKeyRole | 'authentication', string>>;
 }
 
 export interface Needs {
-  keys: readonly KeyRole[];
+  keys: readonly CheckKeyRole[];
 }
 
-const KEY_SETTING: Record<KeyRole, string> = {
+const KEY_SETTING: Record<CheckKeyRole, string> = {
   controller: 'CHECKS_CONTROLLER_KEY_FILE',
   agent: 'CHECKS_AGENT_KEY_FILE',
   member: 'CHECKS_MEMBER_KEY_FILE',

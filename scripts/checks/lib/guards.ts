@@ -10,11 +10,10 @@
 //   outflow        what leaves the wallet of each key is under the limit that the step names, and no asset leaves a wallet
 //   collateral     what a script that fails takes from the collateral is under the limit
 //   mint           the transaction mints and burns what the step says, and nothing else
-//   nothing_else   no withdrawal and no certificate
+//   nothing_else   no certificate, and no withdrawal besides the ones that the step names
 //   vault          a payment from a vault is within the limits of its delegation
 import { keyCredentialOf } from './addresses.ts';
 import { units } from './format.ts';
-import type { KeyRing } from './keys.ts';
 import { decodeVaultDatum } from './platform.ts';
 import type { Utxo } from './platform.ts';
 import type { TxFacts } from './txfacts.ts';
@@ -42,11 +41,21 @@ export interface StepPlan {
   mint: Readonly<Record<string, bigint>>;
   /** Words for an address, for the summary. */
   labels?: Readonly<Record<string, string>>;
+  /**
+   * How many withdrawals the transaction has. A withdrawal runs a stake script: the registration of an identity with a Module-1 party has one, as the consent of that party.
+   * The default is none. The transaction must have exactly this number, and no certificate.
+   */
+  withdrawals?: number;
   /** The limits of the delegation that a vault pays under, and the addresses of the vault script and of the escrow script. */
   vault?: { address: string; escrowAddress: string; perTx: bigint; total: bigint };
 }
 
-export type RingView = Pick<KeyRing, 'keyHashes' | 'wallets' | 'roleOf'>;
+/** What the guards read of the keys of a run: the key hashes, the wallet of each key and the name of each key. A `KeyRing` is one, and so is any object with these three methods. */
+export interface RingView {
+  keyHashes(): ReadonlySet<string>;
+  wallets(): ReadonlyMap<string, string>;
+  roleOf(keyHash: string): string | undefined;
+}
 
 export interface GuardInput {
   facts: TxFacts;
@@ -169,9 +178,11 @@ function mintGuard({ facts, plan }: GuardInput): GuardResult {
   return pass('mint', units_.size === 0 ? 'nothing is minted or burned' : `the transaction mints and burns what the step says: ${[...units_].map((unit) => `${plan.mint[unit]} of ${unit}`).join(', ')}`);
 }
 
-function nothingElseGuard({ facts }: GuardInput): GuardResult {
-  if (facts.withdrawals > 0 || facts.certificates > 0) return fail('nothing_else', `the transaction has ${facts.withdrawals} withdrawal(s) and ${facts.certificates} certificate(s), and the step has none`);
-  return pass('nothing_else', 'no withdrawal and no certificate');
+function nothingElseGuard({ facts, plan }: GuardInput): GuardResult {
+  const named = plan.withdrawals ?? 0;
+  const step = named === 0 ? 'none' : `${named} withdrawal(s) and no certificate`;
+  if (facts.withdrawals !== named || facts.certificates > 0) return fail('nothing_else', `the transaction has ${facts.withdrawals} withdrawal(s) and ${facts.certificates} certificate(s), and the step has ${step}`);
+  return pass('nothing_else', named === 0 ? 'no withdrawal and no certificate' : `${named} withdrawal(s), as the step says, and no certificate`);
 }
 
 function vaultGuard({ facts, plan }: GuardInput, spending: Spending): GuardResult {

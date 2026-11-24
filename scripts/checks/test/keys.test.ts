@@ -123,6 +123,32 @@ describe('a loaded key', () => {
     const spki = Buffer.concat([Buffer.from('302a300506032b6570032100', 'hex'), Buffer.from(key.publicKeyHex, 'hex')]);
     expect(verify(null, Buffer.from(built.txHash, 'hex'), createPublicKey({ key: spki, format: 'der', type: 'spki' }), Buffer.from(witness.ed25519_signature().to_raw_bytes()))).toBe(true);
   });
+  it('signs a message with the key of the object: 128 lower-case hex characters that verify with its public key and with no other', () => {
+    const spki = Buffer.from('302a300506032b6570032100', 'hex');
+    const message = Buffer.from('the bytes that an envelope covers');
+    const signature = key.signMessage(message);
+    expect(signature).toMatch(/^[0-9a-f]{128}$/);
+    const verifies = (publicKeyHex: string, bytes: Buffer): boolean => verify(null, bytes, createPublicKey({ key: Buffer.concat([spki, Buffer.from(publicKeyHex, 'hex')]), format: 'der', type: 'spki' }), Buffer.from(signature, 'hex'));
+    expect(verifies(key.publicKeyHex, message)).toBe(true);
+    expect(verifies(key.publicKeyHex, Buffer.from('other bytes'))).toBe(false);
+    const other = parseKeyText(seedHex(10), 'member');
+    expect(verifies(other.publicKeyHex, message)).toBe(false);
+    expect(other.signMessage(message)).not.toBe(signature);
+    expect(key.signMessage(message)).toBe(signature);
+    expect(key.signMessage(new Uint8Array(message))).toBe(signature);
+  });
+  it('shows nothing of the key: not in the signature, and not in the error for a message that is no bytes', () => {
+    const secrets = [seedHex(9), rawHexToBech32(seedHex(9))];
+    const signature = key.signMessage(Buffer.from('a message'));
+    for (const secret of secrets) expect(signature).not.toContain(secret);
+    for (const notBytes of ['a text', 42, null, undefined, ['a'], {}]) {
+      let thrown: unknown;
+      try { key.signMessage(notBytes as unknown as Uint8Array); } catch (err) { thrown = err; }
+      expect(thrown, String(notBytes)).toBeInstanceOf(TypeError);
+      const text = `${(thrown as Error).message}\n${(thrown as Error).stack}`;
+      for (const secret of secrets) expect(text).not.toContain(secret);
+    }
+  });
 });
 
 describe('readKeyFile', () => {
@@ -173,5 +199,15 @@ describe('KeyRing', () => {
     const ring = new KeyRing([member, agent]);
     expect(decodeTransaction(ring.sign(member.keyHash, built.unsignedCbor)).witness_set().vkeywitnesses()?.len()).toBe(1);
     expect(() => ring.sign('00'.repeat(28), built.unsignedCbor)).toThrow(/no key/);
+  });
+  it('holds keys by any name, each name once and each key once', () => {
+    const run = parseKeyText(seedHex(11), 'run');
+    const fee = parseKeyText(seedHex(12), 'fee');
+    const ring = new KeyRing([run, fee]);
+    expect(ring.get('run')).toBe(run);
+    expect(ring.roleOf(fee.keyHash)).toBe('fee');
+    expect(() => ring.get('provider')).toThrow(/provider key was not given/);
+    expect(() => new KeyRing([run, parseKeyText(seedHex(13), 'run')])).toThrow(/one key for each role/);
+    expect(() => new KeyRing([run, parseKeyText(seedHex(11), 'fee')])).toThrow(/same key/);
   });
 });

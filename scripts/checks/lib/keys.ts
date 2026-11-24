@@ -7,14 +7,18 @@
 //   - lines `NAME=value`, as `keygen` prints them: one of the values is the key, and an `addr1...` value is the wallet address of the key.
 // A comment line starts with `#`. The file may be UTF-8, UTF-8 with a byte-order mark, or UTF-16 with one, and its lines may end with CR LF.
 // Without an address line, the wallet of a key is its enterprise address on mainnet. With one, the wallet is that address, and the key must be its payment key.
-import { createPrivateKey, createPublicKey } from 'node:crypto';
+import { createPrivateKey, createPublicKey, sign } from 'node:crypto';
 import type { KeyObject } from 'node:crypto';
 import { readFileSync, statSync } from 'node:fs';
 import { inspect } from 'node:util';
 import { bech32Decode, keyCredentialOf } from './addresses.ts';
 import { enterpriseAddressOf, keyHashOf, rawHexToBech32, signTransaction } from './platform.ts';
 
-export type KeyRole = 'controller' | 'agent' | 'member';
+/** The name of a key in a ring: one of the three roles of a check, or the name that a pack gives its key. */
+export type KeyRole = string;
+
+/** The three roles of the keys of a check. A check names its keys with these, so a wrong name does not compile. */
+export type CheckKeyRole = 'controller' | 'agent' | 'member';
 
 /** Why a key file was refused. The text of a refusal never holds what the file holds. */
 export type KeyFileReason = 'unreadable' | 'mode' | 'no_key' | 'more_than_one_key' | 'extended_key' | 'address_mismatch';
@@ -89,6 +93,15 @@ export class LoadedKey {
   /** Adds the vkey witness of this key to a transaction that is unsigned or carries the witnesses of other keys. The body stays as it is. */
   signTransaction(cborHex: string): { signedCborHex: string; txHashHex: string } {
     return signTransaction(cborHex, rawHexToBech32(this.#seed.toString('hex')));
+  }
+
+  /**
+   * The raw Ed25519 signature of this key over `bytes`: 128 lower-case hex characters. It signs with the key of this object and returns the signature only.
+   * It signs any bytes, and a signature over the hash of a transaction body is a valid witness: sign a transaction with `signTransaction` and the guards, never with this method.
+   */
+  signMessage(bytes: Uint8Array): string {
+    if (!(bytes instanceof Uint8Array)) throw new TypeError('signMessage signs bytes: give a Uint8Array');
+    return sign(null, bytes, this.#privateKey()).toString('hex');
   }
 
   toJSON(): { role: KeyRole; keyHash: string } {
