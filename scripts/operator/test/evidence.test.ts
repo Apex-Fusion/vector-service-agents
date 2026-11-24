@@ -786,6 +786,55 @@ describe('modules of the evidence task', () => {
     expect(r.calls.some(({ url }) => url.includes('/jury/cases'))).toBe(false);
   });
 
+  it('distinguishes a proved null approval from an absent request and keeps signed input private', async () => {
+    const s = scenario('clean');
+    s.modern = true;
+    s.record = { approvals: [] };
+    const hire = s.hires.find((entry) => entry.step === 'execute')!;
+    const proposal = makeProposal({ note: 'private request words' }, h('private payload salt'));
+    if (!proposal.ok) throw new Error('invalid fixture proposal');
+    const request = JSON.stringify({ op: 'execute', authority: { principal_did: DID(APPROVAL_ISSUER), delegation: s.delegations[0]!.id },
+      tenant: s.tenant, proposal: proposal.value, approval: null });
+    hire.request = { committed: request };
+    hire.result.detail = 'private signed result words';
+    const privateDecision = (hire.result.decisions as Obj[])[0]!;
+    privateDecision.reasoning = 'private decision words';
+    s.log.push({ ...logLine('POST /po', 'token', ['one']), path: '/private/log/path' });
+    const task = createEvidenceTask({ [TEST_USE]: {
+      ...testModule,
+      projectPublicResult: () => ({ fields: { operation: 'execute' }, decisionNames: ['accept_delivery'] }),
+      rules: { checked(a) {
+        const found = a.committedExecutes.get(hire.step);
+        return found?.approval === null && found.escrow_ref === escrowOf(hire.step) && found.digest === proposal.value.proposal_digest &&
+          a.committedApprovals.get(hire.step) === null ? [evidenceRef('escrow', found.escrow_ref)] : 'no exact execute proof';
+      } },
+    } });
+    const options = { use: testUse([testStep]), task };
+    const r = await go(s, undefined, options);
+    expect(r.err).toBe('');
+    expect(r.exit).toBe(0);
+    const text = r.read(publicFile())!;
+    for (const secret of ['private request words', 'private signed result words', 'private decision words', '/private/log/path']) expect(text).not.toContain(secret);
+    const doc: Obj = JSON.parse(text);
+    expect(doc).toMatchObject({ result_projection: { operation: 'execute' }, result_sha256: createHash('sha256').update(JSON.stringify(hire.result)).digest('hex') });
+    expect(doc).not.toHaveProperty('result');
+    expect(doc).not.toHaveProperty('receipt');
+    expect(doc).not.toHaveProperty('receipt_signature');
+    expect(doc.decisions).toEqual([{ step: hire.step, decisions: [{ name: 'accept_delivery', escrow_ref: ref('model escrow 2') }] }]);
+    const privateRun = await go(s, ['run', '--run', s.label, '--private'], options);
+    expect(privateRun.exit).toBe(0);
+    expect(privateRun.read('evidence/private/c1.json')).toContain('private signed result words');
+    hire.request.saved = request + ' ';
+    const changed = await go(s, undefined, options);
+    expect(changed.exit).toBe(2);
+    expect(changed.err).toContain('exact execute request is unproven');
+    expect(changed.read(publicFile())).toBeNull();
+    delete hire.request;
+    const missing = await go(s, undefined, options);
+    expect(missing.exit).toBe(2);
+    expect(missing.err).toContain('no exact execute proof');
+  });
+
   it('does not turn a failed source, a missing rule, or a malformed reference into an evidence file', async () => {
     const s = scenario('failure');
     s.modern = true;

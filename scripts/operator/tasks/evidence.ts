@@ -29,7 +29,7 @@ import type { ClaimFact, Facts, RecordFact, StepOutcome, TaskDefinition } from '
 import { EVIDENCE_MODULES, evidenceModuleOf } from '../lib/evidence/index.ts';
 import { isObject, lastHire, txOf } from '../lib/evidence/types.ts';
 import type {
-  ApprovalRead, Assembly, CaseRead, CaseView, Challenge, CommittedApproval, EvidenceModule, EvidenceOptions, EvidenceSession, FaultEntry, HireView, Hold, HoldCandidate,
+  ApprovalRead, Assembly, CaseRead, CaseView, Challenge, CommittedApproval, CommittedExecute, EvidenceModule, EvidenceOptions, EvidenceSession, FaultEntry, HireView, Hold, HoldCandidate,
   IndexedCase, Loaded, MockRead, Obj, Reads, Ref, ReportedHire, Shown, TerminalSpend, VaultPayment,
 } from '../lib/evidence/types.ts';
 import { MOCK_PUBLIC_BASE } from '../lib/mock-hosts.ts';
@@ -521,10 +521,10 @@ async function readSubmittedReceipt(session: EvidenceSession, post: string, subm
 }
 
 /** The file holds the exact text passed as payload, not a reconstruction from a result or a receipt. */
-function committedApproval(session: EvidenceSession, record: RunRecord, step: string, promptHash: string): CommittedApproval | null | undefined {
+function committedExecute(session: EvidenceSession, record: RunRecord, hire: HireEntry, promptHash: string): CommittedExecute | undefined {
   const state = realpathSync(session.settings.stateDir);
   const dir = join(state, 'runs', record.label);
-  const path = join(dir, `${step}.request.json`);
+  const path = join(dir, `${hire.step}.request.json`);
   let fd: number;
   try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
   catch (err) {
@@ -553,7 +553,8 @@ function committedApproval(session: EvidenceSession, record: RunRecord, step: st
       throw new PreconditionError('the committed text is not an execute request for this tenant');
     }
     const { approval, proposal } = request.value;
-    return approval === null ? null : { attestation: approval.attestation, issuer_did: approval.issuer_did, digest: proposal.proposal_digest };
+    return { escrow_ref: hire.escrow_ref, digest: proposal.proposal_digest,
+      approval: approval === null ? null : { attestation: approval.attestation, issuer_did: approval.issuer_did } };
   } finally { closeSync(fd); }
 }
 
@@ -600,9 +601,11 @@ async function checkReceipt(session: EvidenceSession, view: ReportedHire, posted
 
 async function checkHires(session: EvidenceSession, loaded: Loaded, facts: Readonly<Facts>, discover: DiscoverEscrow, problems: Problems): Promise<{
   terminals: ReadonlyMap<string, TerminalSpend>; committedApprovals: ReadonlyMap<string, CommittedApproval | null>;
+  committedExecutes: ReadonlyMap<string, CommittedExecute>;
 }> {
   const terminals = new Map<string, TerminalSpend>();
   const committedApprovals = new Map<string, CommittedApproval | null>();
+  const committedExecutes = new Map<string, CommittedExecute>();
   const keys = new Map<string, Promise<readonly string[]>>();
   for (const view of loaded.hires) {
     const { entry, index } = view;
@@ -658,14 +661,17 @@ async function checkHires(session: EvidenceSession, loaded: Loaded, facts: Reado
     if (receiptHash === null) { problems.add(`${where}.report_file`, 'the actual Submitted escrow receipt commitment is unproven'); continue; }
     const beforeReceipt = problems.lines.length;
     await checkReceipt(session, view, posted, receiptHash, record, keys, problems);
-    if (problems.lines.length === beforeReceipt && view.role === 'execute' && loaded.record.approvals.length !== 0 && typeof posted.prompt_hash === 'string') {
+    if (problems.lines.length === beforeReceipt && view.role === 'execute' && typeof posted.prompt_hash === 'string') {
       try {
-        const request = committedApproval(session, loaded.record, entry.step, posted.prompt_hash);
-        if (request !== undefined) committedApprovals.set(entry.step, request);
-      } catch (err) { problems.add(`${where}.request`, `read_failed: ${shown(err)}`); }
+        const request = committedExecute(session, loaded.record, entry, posted.prompt_hash);
+        if (request !== undefined) {
+          committedExecutes.set(entry.step, request);
+          committedApprovals.set(entry.step, request.approval === null ? null : { ...request.approval, digest: request.digest });
+        }
+      } catch (err) { problems.add(`${where}.request`, `the exact execute request is unproven: ${shown(err)}`); }
     }
   }
-  return { terminals, committedApprovals };
+  return { terminals, committedApprovals, committedExecutes };
 }
 
 // ---- 4. the delegations, the vaults and the approval ----
@@ -1364,8 +1370,57 @@ function subjectOf(a: Assembly) {
 
 const RESERVED_DOCUMENT = new Set([
   'kind', 'date', 'capability_id', 'builder', 'advert_ref', 'escrow_ref', 'post_tx', 'accept_tx', 'explorer', 'verdict', 'checks', 'receipt',
-  'receipt_signature', 'result_sha256', 'result', 'hires', 'delegation', 'vault', 'mock', 'decisions', 'challenge', 'case', 'exit_state', 'steps', 'refusals', 'audience',
+  'receipt_signature', 'result_sha256', 'result', 'result_projection', 'hires', 'delegation', 'vault', 'mock', 'decisions', 'challenge', 'case', 'exit_state', 'steps', 'refusals', 'audience',
 ]);
+
+const SAFE_PROJECTION_KEY = /^[a-z][a-z0-9_]{0,31}$/;
+const SAFE_PROJECTION_TEXT = /^[A-Za-z0-9._:#/-]{1,128}$/;
+const SAFE_DECISION = /^[a-z][a-z0-9_]{0,31}$/;
+
+function publicResults(a: Assembly, project: NonNullable<EvidenceModule['projectPublicResult']>): {
+  result: Readonly<Obj> | undefined; decisions: readonly Obj[];
+} {
+  let result: Readonly<Obj> | undefined;
+  const decisions: Obj[] = [];
+  for (const hire of a.loaded.hires) {
+    if (hire.report === null) continue;
+    const { fields, decisionNames } = hook('result_projection', () => project(hire));
+    if (!isObject(fields) || !Array.isArray(decisionNames) || !decisionNames.every((name: unknown) => typeof name === 'string' && SAFE_DECISION.test(name))) {
+      throw new PreconditionError('result_projection: the module did not give approved field and decision names');
+    }
+    const entries = Object.entries(fields);
+    if (entries.length > 16 || !entries.every(([key, value]) => SAFE_PROJECTION_KEY.test(key) &&
+        (value === null || typeof value === 'boolean' || (typeof value === 'string' && SAFE_PROJECTION_TEXT.test(value)) || Number.isSafeInteger(value)))) {
+      throw new PreconditionError('result_projection: a field is not a public code, reference or count');
+    }
+    if (hire === a.loaded.carried) result = Object.fromEntries(entries);
+    const shown = hire.decisions.filter((one) => typeof one.name === 'string' && decisionNames.includes(one.name)).map((one) => {
+      const inference = one.inference;
+      const job = isObject(inference) ? inference.sub_job : null;
+      if (!isObject(job) || typeof job.escrow_ref !== 'string' || !REF.test(job.escrow_ref)) throw new PreconditionError('result_projection: the decision has no checked escrow');
+      return { name: one.name, escrow_ref: job.escrow_ref };
+    });
+    if (shown.length > 0) decisions.push({ step: hire.entry.step, decisions: shown });
+  }
+  return { result, decisions };
+}
+
+/** A projected public file does not copy caller paths, identities, or free text from the log. */
+function publicLog(a: Assembly): readonly Obj[] {
+  return (a.mock?.lines ?? []).map(({ at, route, credential, decision, status }) => ({
+    at: typeof at === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(at) ? at : null,
+    route, credential: credential === 'token' || credential === 'jwt-svid' || credential === 'x509-svid' ? credential : null,
+    decision: decision === 'allowed' || decision === 'refused' ? decision : null,
+    status: typeof status === 'number' && Number.isSafeInteger(status) && status >= 100 && status <= 599 ? status : null,
+  }));
+}
+
+function publicRefusals(record: RunRecord): readonly Obj[] {
+  return record.refusals.map((one) => one.kind === 'tool'
+    ? { step: one.step, kind: one.kind, message_sha256: sha256(one.message) }
+    : { step: one.step, kind: one.kind, evaluation_error_sha256: sha256(one.evaluation_error),
+        transaction_body_sha256: sha256(one.transaction_body) });
+}
 
 function documentOf(session: Session, a: Assembly, steps: readonly StepEntry[], exitState: string | null): Obj {
   const { record, carried, hires } = a.loaded;
@@ -1374,35 +1429,40 @@ function documentOf(session: Session, a: Assembly, steps: readonly StepEntry[], 
     throw new PreconditionError('document: the module did not name the run or tried to replace a core member');
   }
   const header = { run, kind: record.kind, date: record.date, capability_id: subjectOf(a).capability, builder: session.settings.urls.hosted };
+  const projector = session.extra.priv ? undefined : session.extra.module.projectPublicResult;
+  const refusals = projector === undefined ? record.refusals : publicRefusals(record);
   if (record.kind === 'lifecycle') {
     if (approval !== undefined || claims !== undefined || fault_mode !== undefined || sub_delegations !== undefined) {
       throw new PreconditionError('document: a lifecycle run cannot carry a claim, approval, fault or delegation');
     }
-    return { ...header, steps, refusals: record.refusals, ...added };
+    return { ...header, steps, refusals, ...added };
   }
   const c = a.challenge;
   const caseRead = a.caseRead;
   const e = carried?.entry;
+  const projected = projector === undefined ? null : publicResults(a, projector);
   return {
     ...header,
     ...(e === undefined || carried === null ? {} : {
       advert_ref: e.advert_ref, escrow_ref: e.escrow_ref, post_tx: e.post_tx, accept_tx: e.accept_tx,
       explorer: { post: `${EXPLORER_TX}${e.post_tx}`, accept: e.accept_tx === null ? null : `${EXPLORER_TX}${e.accept_tx}` },
-      verdict: carried.report.verdict, checks: carried.report.checks, receipt: carried.report.receipt, receipt_signature: carried.report.receipt_signature, result_sha256: carried.sha256, result: carried.report.result,
+      verdict: carried.report.verdict,
+      ...(projected === null ? { checks: carried.report.checks, receipt: carried.report.receipt, receipt_signature: carried.report.receipt_signature,
+        result_sha256: carried.sha256, result: carried.report.result } : { result_sha256: carried.sha256, result_projection: projected.result }),
     }),
     hires: hires.map((hire) => ({
       step: hire.entry.step, agent: hire.entry.agent, advert_ref: hire.entry.advert_ref, escrow_ref: hire.entry.escrow_ref, post_tx: hire.entry.post_tx, accept_tx: hire.entry.accept_tx,
       reclaim_tx: hire.entry.reclaim_tx, verdict: hire.report?.verdict ?? null, result_sha256: hire.sha256,
     })),
     delegation: a.reads.delegations, vault: a.reads.vaults, ...(approval === undefined ? {} : { approval }), sub_delegations: sub_delegations ?? a.reads.subDelegations,
-    mock: { tenant: record.tenant, log: a.mock?.lines ?? [], unattributed_lines: a.mock?.unattributed ?? 0, state: a.mock?.counts ?? null },
-    decisions: hires.filter((hire) => hire.decisions.length > 0).map((hire) => ({ step: hire.entry.step, decisions: hire.decisions })),
+    mock: { tenant: record.tenant, log: projected === null ? a.mock?.lines ?? [] : publicLog(a), unattributed_lines: a.mock?.unattributed ?? 0, state: a.mock?.counts ?? null },
+    decisions: projected?.decisions ?? hires.filter((hire) => hire.decisions.length > 0).map((hire) => ({ step: hire.entry.step, decisions: hire.decisions })),
     ...(claims === undefined ? {} : { claims }),
     challenge: c === null ? null : { claim: c.claim, evidence: c.evidence, challenge: c.challenge },
     case: caseRead === null || caseRead.verdict === null ? null : { verdict: caseRead.verdict, live: caseRead.listed, indexed: caseRead.indexed, hold: caseRead.hold },
     ...(fault_mode === undefined ? {} : { fault_mode }),
     exit_state: exitState,
-    steps, refusals: record.refusals, ...added,
+    steps, refusals, ...added,
   };
 }
 
@@ -1429,7 +1489,7 @@ async function readPaidFromVault(session: EvidenceSession, loaded: Loaded, hire:
 function baseAssembly(session: Session, loaded: Loaded, purpose: Assembly['purpose'], discover = escrowDiscovery(session)): Assembly {
   return {
     purpose, use: session.use, loaded, facts: session.facts.read(), reads: EMPTY_READS, mock: null, terminals: new Map(), times: new Map(), faults: [], extra: {},
-    challenge: null, caseRead: null, approvalStates: [], committedApprovals: new Map(), lifecycleTransactions: new Set(),
+    challenge: null, caseRead: null, approvalStates: [], committedApprovals: new Map(), committedExecutes: new Map(), lifecycleTransactions: new Set(),
     paidFromVault(hire) {
       if (!loaded.hires.some((one) => one.entry === hire)) throw new PreconditionError('the hire is not in the run');
       return readPaidFromVault(session, loaded, hire);
