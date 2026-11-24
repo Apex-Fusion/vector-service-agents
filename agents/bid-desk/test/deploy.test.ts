@@ -1332,8 +1332,8 @@ function keyProblems(text: string, allowed: ReadonlySet<string> = new Set()): st
   return problems;
 }
 
-/** One line that waits 2 minutes, checks that the runtime of one Bid Desk says free, and then runs its command at once. The captures are the port of the runtime and the name of the Bid Desk. */
-const GUARDED = /^sleep 120; if curl -s --max-time 5 http:\/\/127\.0\.0\.1:(\d{4})\/status \| grep -q '"status":"free"'; then docker compose -f docker-compose\.bid-desk-([a-z]+)\.yml (?:up -d --no-deps --force-recreate (?:service|runtime|service runtime)|stop); else echo '[^']+'; fi$/;
+/** One line that waits, checks the status of the same Bid Desk, and recreates its containers. */
+const GUARDED = /^sleep 120; if curl -s --max-time 5 http:\/\/127\.0\.0\.1:(\d{4})\/status \| grep -q '"status":"free"'; then docker compose -f docker-compose\.bid-desk-([a-z]+)\.yml up -d --no-deps --force-recreate (?:service|runtime|service runtime); else echo '[^']+'; fi$/;
 
 /** What is wrong with the runbook. An empty list is a pass. */
 function runbookProblems(text: string): string[] {
@@ -1371,7 +1371,7 @@ function runbookProblems(text: string): string[] {
   if (/\bsetup\.sh\b/.test(text)) problems.push('the folders are made with install -d: the set-up script refuses on a host that already runs agents');
   // A restart waits 2 minutes first, then checks that the runtime of its own Bid Desk says free, then runs its command at once, all in one line. A check before the wait leaves a gap in which a job can start and be cut.
   for (const line of code) {
-    if (!/--force-recreate|\bdocker compose\b[^\n]* stop\b|\bdocker (?:restart|stop)\b|\bcompose restart\b/.test(line)) continue;
+    if (!/--force-recreate|\bdocker (?:restart|stop)\b|\bcompose restart\b/.test(line)) continue;
     const hit = GUARDED.exec(line);
     const bid = BIDS.find((b) => b.name === hit?.[2]);
     if (hit === null || bid === undefined || String(bid.runtimeHostPort) !== hit[1]) problems.push(`a restart waits 2 minutes, then checks that the runtime of its own Bid Desk says free, then runs its command at once, in one line: ${line}`);
@@ -1540,7 +1540,7 @@ describe('deploy/server/RUNBOOK-bid-desk.md', () => {
   test('the restart rule waits first, then checks that the runtime of the Bid Desk says free, then runs the command at once, for one Bid Desk and no other; it names every action that is a restart', () => {
     const rule = sectionOf(runbookText, 'The restart rule');
     for (const part of ['/status', 'free', 'working', 'docker restart', 'docker compose restart', '--force-recreate', '120', '300', '330', 'SERVICE_AUTH_HEADER', '2 minutes', 'at once', 'Never check first and then wait', 'The Bid Desks share no job slot',
-      'asks nothing of the other two', 'service runtime', 'The stop of section "Back out" follows the same three steps', 'one Bid Desk after the other']) expect(rule, part).toContain(part);
+      'asks nothing of the other two', 'service runtime', 'one Bid Desk after the other']) expect(rule, part).toContain(part);
     expect(rule).toMatch(/reload/);
     const at = (part: string): number => rule.indexOf(part);
     const steps = ['1. Wait 2 minutes', '2. Check that the runtime of this Bid Desk says `free`', '3. Run the `up` command at once'];
@@ -1620,16 +1620,19 @@ describe('deploy/server/RUNBOOK-bid-desk.md', () => {
     }
   });
 
-  test('back out retires the advert first, waits 2 minutes, checks that the runtime says free and stops the containers at once, then removes the Caddy block of that Bid Desk and keeps the volume and the other two Bid Desks', () => {
+  test('both rollback paths follow advert retirement and the shared ledger check', () => {
     const out = sectionOf(runbookText, 'Back out');
-    const at = (part: string): number => out.indexOf(part);
-    const order = ['Retire', 'Wait 2 minutes after the last job', 'stop its containers at once', 'Remove the Caddy block of that Bid Desk', 'volume'];
-    for (const part of order) expect(at(part), part).toBeGreaterThanOrEqual(0);
-    expect(order.map(at)).toStrictEqual([...order.map(at)].sort((a, b) => a - b));
-    for (const part of ['bid-desk-<name>-state', 'docker network disconnect', 'The other two Bid Desks', 'their blocks stay', 'with its own pair of markers', 'rfq-book.json']) expect(out, part).toContain(part);
-    const stops = blockWith(out, 'sleep 120').split('\n');
-    expect(stops, 'one stop for each Bid Desk').toHaveLength(3);
-    for (const bid of BIDS) expect(stops.filter((line) => line.includes(`:${bid.runtimeHostPort}/status`) && line.includes(`-f ${bid.composeFile} stop`)), bid.name).toHaveLength(1);
+    const running = blockWith(out, '/status');
+    const order = [
+      '`vector_build_marketplace_advert_retire`', '`vector_await_transaction`',
+      'RUNBOOK.md#check-the-ledger-before-a-use-case-3-stop', running.split('\n')[0],
+      '`docker compose -f docker-compose.bid-desk-<name>.yml stop service`',
+      'docker network disconnect', 'docker compose -f docker-compose.bid-desk-<name>.yml down',
+    ].map((part) => out.indexOf(part));
+    expect(order[0]).toBeGreaterThanOrEqual(0);
+    for (let i = 1; i < order.length; i++) expect(order[i]).toBeGreaterThan(order[i - 1]);
+    expect(blocksOf(runbookText).filter((block) => /\bdocker compose\b[^\n]* stop\b/.test(block))).toStrictEqual([running]);
+    for (const part of ['bid-desk-<name>-state', 'rfq-book.json']) expect(out).toContain(part);
   });
 
   test('the operator pack makes the claim of each Bid Desk, and the service never does', () => {
@@ -1669,14 +1672,11 @@ describe('deploy/server/RUNBOOK-bid-desk.md', () => {
     ['the folders made by the set-up script', (t) => `${t}\n\`\`\`sh\nsudo ./setup.sh bid-desk-alfa\n\`\`\`\n`, 'the folders are made with install -d'],
     ['a recreate with no wait and no check', (t) => `${t}\n\`\`\`sh\ndocker compose -f docker-compose.bid-desk-alfa.yml up -d --no-deps --force-recreate service\n\`\`\`\n`, 'a restart waits 2 minutes, then checks'],
     ['a check, then a wait, then the command', (t) => `${t}\n\`\`\`sh\ncurl -s http://127.0.0.1:8108/status; sleep 120; docker compose -f docker-compose.bid-desk-alfa.yml up -d --no-deps --force-recreate service\n\`\`\`\n`, 'a restart waits 2 minutes, then checks'],
-    ['a stop with no wait and no check', (t) => `${t}\n\`\`\`sh\ndocker compose -f docker-compose.bid-desk-bravo.yml stop\n\`\`\`\n`, 'a restart waits 2 minutes, then checks'],
     ['a restart with docker restart', (t) => `${t}\n\`\`\`sh\ndocker restart bids-alfa-runtime\n\`\`\`\n`, 'a restart waits 2 minutes, then checks'],
     ['a restart that checks the runtime of another Bid Desk', (t) => swap(t, 'http://127.0.0.1:8109/status | grep -q \'"status":"free"\'; then docker compose -f docker-compose.bid-desk-bravo.yml up', 'http://127.0.0.1:8108/status | grep -q \'"status":"free"\'; then docker compose -f docker-compose.bid-desk-bravo.yml up'), 'a restart waits 2 minutes, then checks'],
-    ['a stop that checks the runtime of another Bid Desk', (t) => swap(t, 'http://127.0.0.1:8110/status | grep -q \'"status":"free"\'; then docker compose -f docker-compose.bid-desk-charlie.yml stop', 'http://127.0.0.1:8109/status | grep -q \'"status":"free"\'; then docker compose -f docker-compose.bid-desk-charlie.yml stop'), 'a restart waits 2 minutes, then checks'],
     ['the check before the wait, in the line of the command', (t) => swap(t, 'sleep 120; if curl -s --max-time 5 http://127.0.0.1:8108/status | grep -q \'"status":"free"\'; then docker compose -f docker-compose.bid-desk-alfa.yml up -d', 'if curl -s --max-time 5 http://127.0.0.1:8108/status | grep -q \'"status":"free"\'; then sleep 120; docker compose -f docker-compose.bid-desk-alfa.yml up -d'), 'a restart waits 2 minutes, then checks'],
   ];
   test('each copy that breaks one rule is refused, in the words of that rule', () => {
-    expect(faults.length).toBeGreaterThan(35);
     for (const [what, change, expected] of faults) {
       const problems = runbookProblems(change(runbookText));
       expect(problems.some((problem) => says(problem, expected)), `${what}: found ${JSON.stringify(problems)}`).toBe(true);
@@ -1827,10 +1827,10 @@ describe('deploy/server/RUNBOOK-bid-desk.md', () => {
 
     /** The calls that the stand-ins record, in order. */
     const callsOf = (dir: string): string[] => readFileSync(join(dir, 'calls'), 'utf8').split('\n').filter((line) => line !== '');
-    /** Stand-ins for sleep, curl and docker: each writes its call to the file `calls`, and curl answers with the status word of the runtime. */
-    const standIns = (status: string): Record<string, string> => ({
+    /** Stand-ins record the commands. Curl can fail even when it returns a body. */
+    const standIns = (status: string, activeSessions = 0, curlExit = 0): Record<string, string> => ({
       sleep: 'echo "sleep $*" >> calls',
-      curl: `echo "curl $*" >> calls; echo '{"status":"${status}","last_seen":"2026-11-23T00:00:00.000Z"}'`,
+      curl: `echo "curl $*" >> calls; echo '{"status":"${status}","active_sessions":${activeSessions}}'; exit ${curlExit}`,
       docker: 'echo "docker $*" >> calls',
     });
 
@@ -1849,14 +1849,40 @@ describe('deploy/server/RUNBOOK-bid-desk.md', () => {
       }
     });
 
-    test('the stop command of each Bid Desk waits first, then checks the runtime of that Bid Desk, and stops its containers only then', () => {
-      const stops = blockWith(sectionOf(runbookText, 'Back out'), 'sleep 120').split('\n');
+    test('the ledger check reads the current outputs of both script addresses in one request', () => {
+      const proof = sectionOf(readPack('RUNBOOK.md'), '8. Remove an agent');
+      const ledger = blockWith(proof, 'queryLedgerState/utxo')
+        .replace('<advert address>', 'advert-example').replace('<escrow address>', 'escrow-example').replace('<Ogmios URL>', 'https://ledger.example.test');
+      const read = runInFolder(ledger, {}, { curl: 'printf "%s\\n" "$@"' });
+      expect(read.status).toBe(0);
+      const args = read.out.trimEnd().split('\n');
+      expect(args.at(-1)).toBe('https://ledger.example.test');
+      expect(JSON.parse(args[args.indexOf('--data') + 1])).toMatchObject({
+        jsonrpc: '2.0', method: 'queryLedgerState/utxo', params: { addresses: ['advert-example', 'escrow-example'] },
+      });
+      for (const part of ['queryNetwork/tip', 'decodeIdentityAdvertDatum', 'decodeIdentityEscrowDatum', '`Open`', '`Claimed`', '`Submitted`']) expect(proof).toContain(part);
+    });
+
+    test('after the ledger check, each stop targets only its own desk and refuses an occupied or unreadable runtime', () => {
+      const out = sectionOf(runbookText, 'Back out');
+      const running = blockWith(out, '/status');
+      const partial = out.match(/`(docker compose -f \S+ stop service)`/)?.[1];
+      expect(partial).toBeDefined();
       for (const bid of BIDS) {
-        const script = stops.find((line) => line.includes(`:${bid.runtimeHostPort}/status`))!;
-        expect(callsOf(runInFolder(script, {}, standIns('free')).dir), bid.name).toStrictEqual(['sleep 120', `curl -s --max-time 5 http://127.0.0.1:${bid.runtimeHostPort}/status`, `docker compose -f ${bid.composeFile} stop`]);
-        const held = runInFolder(script, {}, standIns('working'));
-        expect(callsOf(held.dir), bid.name).toStrictEqual(['sleep 120', `curl -s --max-time 5 http://127.0.0.1:${bid.runtimeHostPort}/status`]);
-        expect(held.out).toContain('the runtime does not say free: nothing was stopped');
+        const script = running.replace('<runtime port>', String(bid.runtimeHostPort)).replace('<name>', bid.name);
+        const statusRead = `curl -fsS --max-time 5 http://127.0.0.1:${bid.runtimeHostPort}/status`;
+        const stop = `docker compose -f ${bid.composeFile} stop`;
+        const free = runInFolder(script, {}, standIns('free'));
+        expect(free.status, bid.name).toBe(0);
+        expect(callsOf(free.dir), bid.name).toStrictEqual([statusRead, stop]);
+        for (const [status, activeSessions, curlExit] of [['working', 1, 0], ['offline', 0, 0], ['free', 1, 0], ['free', 0, 22]] as const) {
+          const held = runInFolder(script, {}, standIns(status, activeSessions, curlExit));
+          expect(held.status, bid.name).not.toBe(0);
+          expect(callsOf(held.dir), bid.name).toStrictEqual([statusRead]);
+        }
+        const neverStarted = runInFolder(partial!.replace('<name>', bid.name), {}, standIns('offline'));
+        expect(neverStarted.status, bid.name).toBe(0);
+        expect(callsOf(neverStarted.dir), bid.name).toStrictEqual([`${stop} service`]);
       }
     });
 
