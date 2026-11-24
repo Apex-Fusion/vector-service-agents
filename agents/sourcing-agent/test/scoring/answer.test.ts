@@ -1,8 +1,9 @@
 // agents/sourcing-agent/test/scoring/answer.test.ts: the answer of the decision `score` and the vendor entry that the model gets. The review question: is a score ever built from a choice that is not the choice that
 // the decision records, or from an object of the port, and does a vendor entry ever reach the model by a domain that no check backs? The choice must equal `decision.choice` and be a score: the result holds the
 // checked copy. A decision that was paid for stays in the failed result. Each refusal has an accepted twin.
+import type { ScoreChoice } from '@vsa/usecase-kit/bids';
 import { describe, expect, it } from 'vitest';
-import type { ScoreAnswer, ScoreChoice } from '../../src/scoring/index.ts';
+import type { ScoreAnswer } from '../../src/scoring/index.ts';
 import { BIDDERS, GOLDEN_SCORES, VENDORS_BODY, expectFailed, json, scoreAnswerFor, scoresOf, subjectOf } from './support.ts';
 import { expectRecordedAndEnded, world } from './world.ts';
 import type { World } from './world.ts';

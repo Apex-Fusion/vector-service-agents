@@ -18,6 +18,6 @@ export type { ShortlistChoice } from './shortlist.ts';
 export { ACCEPT_QUOTE_DECISION, acceptQuoteInput } from './accept.ts';
 export type { AcceptQuoteChoice } from './accept.ts';
 export { SCORE_DECISION, scoreInput } from './score.ts';
-export type { ScoreChoice, ScoreParts, VendorEntry } from './score.ts';
+export type { ScoreParts, VendorEntry } from './score.ts';
 export { RANKING_DECISION, rankingInput } from './rank.ts';
 export type { RankingChoice, ScoredBidder } from './rank.ts';
