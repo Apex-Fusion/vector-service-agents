@@ -79,7 +79,7 @@ describe('a delivery that is no intake record, or not the record of this request
     ['a record with no hash of the request', () => { const { request_sha256: _hash, ...rest } = intakeRecordOf(REQUEST); return rest; }, 'intake_record_invalid'],
     ['a record whose hash is not hex', () => intakeRecordOf(REQUEST, { request_sha256: 'x'.repeat(64) }), 'intake_record_invalid'],
     ['a record whose hash is too short', () => intakeRecordOf(REQUEST, { request_sha256: requestHash(REQUEST).slice(1) }), 'intake_record_invalid'],
-    ['a record with the right hash in upper case, which is the same value as text that is not the same text', () => intakeRecordOf(REQUEST, { request_sha256: requestHash(REQUEST).toUpperCase() }), 'intake_record_invalid'],
+    ['a record that names the right hash in upper case: the parser of the kit takes a hash in lower case only', () => intakeRecordOf(REQUEST, { request_sha256: requestHash(REQUEST).toUpperCase() }), 'intake_record_invalid'],
     ['a record of another request number', () => intakeRecordOf(REQUEST, { request_number: 'run1-2' }), 'intake_not_for_request'],
     ['a record of the same request number in another case', () => intakeRecordOf(REQUEST, { request_number: 'RUN1-1' }), 'intake_not_for_request'],
     ['a record of another sender', () => intakeRecordOf(REQUEST, { sender: { did: `did:vector:${'c4'.repeat(32)}`, organisation: 'org.example', organisation_verified: true } }), 'intake_not_for_request'],
