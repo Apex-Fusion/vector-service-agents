@@ -132,6 +132,15 @@ function subjectOf(session: Session, spec: AttestationSpec): Subject {
   if (manifest === undefined) throw new PreconditionError(`the facts hold no manifest of ${agent.id}: run the task advert first`);
   if (!HASH.test(record.id) || record.did !== `did:vector:${record.id}`) throw new PreconditionError(`the record of ${agent.id} in the facts has an identifier that is not the one of its DID`);
   if (!HASH.test(manifest.sha256)) throw new PreconditionError(`the manifest of ${agent.id} in the facts has a SHA-256 that is not 64 lower-case hex characters`);
+  const adverts = Object.entries(facts.adverts[agent.id] ?? {});
+  if (adverts.length === 0) throw new PreconditionError(`the facts hold no advert of ${agent.id} to bind to its manifest`);
+  for (const [model, advert] of adverts) {
+    const planned = agent.adverts.find((candidate) => candidate.model === model);
+    if (planned === undefined || advert.detailHash !== manifest.sha256 || advert.detailUri !== `${planned.origin.replace(/\/+$/, '')}/agent.json`) {
+      throw new PreconditionError(`the manifest fact of ${agent.id} does not agree with its recorded advert ${model}`);
+    }
+  }
+  if (!adverts.some(([, advert]) => advert.detailUri === manifest.uri)) throw new PreconditionError(`the manifest fact of ${agent.id} names no URI of its recorded adverts`);
   return { agent, record, manifestSha256: manifest.sha256 };
 }
 
