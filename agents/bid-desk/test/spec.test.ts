@@ -161,10 +161,10 @@ async function alfaQuote(mode: FaultSetting<'bid-desk'>): Promise<Quote> {
 }
 
 describe('specs/bid-desk.md: the frame, the identity and the capability', () => {
-  test("the opening line, the capability, the model string and the status line are the manifest's, and the page says that the agent has no record", () => {
+  test('the opening line explains the model and receipt, and the capability, model and status match the manifest', () => {
     expect(page.split('\n')[0]).toBe('# Bid Desk');
     expect(INSTANCES.map((instance) => INSTANCE_NAMES[instance])).toStrictEqual(['Bid Desk Alfa', 'Bid Desk Bravo', 'Bid Desk Charlie']);
-    expect(page.split('\n')[2]).toBe(`Capability \`${template.capability_id}\`. ${template.description}`);
+    expect(page.split('\n')[2]).toBe(`Capability \`${template.capability_id}\`. For a supplier: takes a request for quotation from a buyer's agent, checks who sent it, and asks a model to price it using the supplier's published list. The runtime signs a receipt that commits to the exact quote bytes.`);
     expect(template.capability_id).toBe(BID_CAPABILITIES.quote);
     expect(section('Capability id').split('\n')[1]).toBe(`\`${template.capability_id}\``);
     expect(page.split('\n')[4]).toBe('One code base serves three Bid Desks: Bid Desk Alfa, Bid Desk Bravo and Bid Desk Charlie. Each has its own record, keys, advert, organisation and price list. This page covers all three.');
@@ -412,10 +412,14 @@ describe('specs/bid-desk.md: the routes of the Interface', () => {
     expect(interfaceText).toContain('`POST /` and `POST /precheck` need the token that only the runtime holds. A call without it gets 401 `{"error":"unauthorized"}`, before the body is read.');
     expect(interfaceText).toContain('`GET /price-list.json`, `GET /agent.json` and `GET /healthz` need no token. Any other route gets 404 `{"error":"not_found"}`.');
     expect(interfaceText).toContain('A buyer sends its job to the runtime of its advert, on the runtime route `/v1/job` of the manifest, and never to the service.');
+    expect(row(interfaceText, '`GET /healthz`')).toBe('| `GET /healthz` | on the service port, for operators | `{"ok":true}` when the Bid Desk service can answer HTTP |');
+    expect(interfaceText).toContain('Caddy sends it to the runtime, which can return `{"ok":true}` when the Bid Desk service is down.');
+    expect(interfaceText).toContain('Caddy sends public `/agent.json` and `/price-list.json` to the service.');
+    expect(interfaceText).toContain('None of these responses proves that the service can take or finish a job.');
     expect(ERROR_STATUS.unauthorized).toBe(401);
     expect(readme).toContain('Without it, 401 `{"error":"unauthorized"}`');
     expect(readme).toContain('| any other route | 404 `{"error":"not_found"}` |');
-    // The real service over HTTP: the two calls that need the token get 401 without it, the three public routes need none, and any other route is a 404.
+    // The real service over HTTP: the two calls that need the token get 401 without it, the three GET routes need none, and any other route is a 404.
     await serve(makeServiceWorld(), async (api) => {
       for (const path of ['/', '/precheck']) {
         const refused = await api.request('POST', path, { body: '[]', headers: { authorization: null } });
@@ -723,10 +727,11 @@ describe('specs/bid-desk.md: what the job does', () => {
     expect(priceFor(rig.deps.priceList.list, 'GLV-NIT-M', 100)?.unit_price).toBe(125);
     expect(quote.fault_mode).toBe('');
     expect(does).toContain('The model sets the prices and the code does not check them. The code checks the SKU and the quantity of each line against the request, and it does not check a unit price against the price list. So a quote can hold a price that is not on the list.');
-    // The buyer can check each price, because the quote names the list: a price that differs from the list is found by the rule of the kit, and the Sourcing Agent compares the prices of the quote with the list.
+    // The list check only compares hashes. The Sourcing Agent asks its model to compare prices.
     expect(checkQuoteFromList(quote, rig.deps.priceList.sha256)).toStrictEqual({ ok: true, value: null });
     expect(readFileSync(new URL('../../sourcing-agent/src/model/accept.ts', import.meta.url), 'utf8')).toContain('For each line, compare its "unit_price" with its listed price.');
-    expect(does).toContain('The Sourcing Agent asks its model to compare the unit price of each line of a quote with the price of the list before it accepts the quote. The one price off the list that this Bid Desk makes on purpose is the fault `quote_off_price_list`.');
+    expect(does).toContain('The Sourcing Agent checks this hash in code and asks its model to compare unit prices. It can accept a quote with an off-list price if the model reports no mismatch.');
+    expect(does).toContain('The one price off the list that this Bid Desk makes on purpose is the fault `quote_off_price_list`.');
     // A request none of whose SKUs the list carries: the model gets no entry, the instruction says to leave the item out, and a choice with no line is model_output_invalid after the Claim.
     expect(QUOTE_DECISION.instruction).toContain('Leave an item that the price list does not carry out of "lines", and name it in "notes".');
     const unlisted = makeRig({ rfq: { items: [{ sku: 'NO-SUCH-SKU', quantity: 3 }] } });
@@ -848,7 +853,7 @@ describe('specs/bid-desk.md: the response', () => {
     expect(readme).toContain('| `sender` | the sender: `did`, `organisation` and `organisation_verified`. The organisation is the one that the covering Accountable Party names, or `null`. It is recorded, and the hook never refuses a sender for it. The job refuses one of more than 1024 characters with `precheck_missing` (500) after the Claim |');
     expect(Object.keys(given).at(-1)).toBe('fault_mode');
     expect(response).toContain('`schema` is `vector.usecase.quote.v1`. A job that makes the quote answers with it, as the body of the answer, serialised once, with its members in the order of the table below.');
-    expect(response).toContain('The signed receipt of the job is the signed quote: the receipt commits to the text of the quote. A job that does not make a quote answers with an error (see Errors) and no quote.');
+    expect(response).toContain('The signed receipt commits to the exact quote bytes. A job that does not make a quote answers with an error (see Errors) and no quote.');
     expect(response).toContain('It is an illustration and not a recorded run. Its desk DID, sender, credential, references, hashes and signature are made up, so none of them is of a real agent, escrow or key. Only the price list hash and the prices are those of the file of Bid Desk Alfa.');
   });
 
@@ -1018,7 +1023,9 @@ describe('specs/bid-desk.md: the receipt, the claim and the fault switch', () =>
     expect(row(receipt, '`prompt_tokens`, `completion_tokens`')).toBe('| `prompt_tokens`, `completion_tokens` | 0 and 0, the runtime counts none. The token counts of the model hire are in the sub-receipt under `decisions[0].inference.sub_job` |');
     expect(row(receipt, '`wallclock_ms`')).toBe('| `wallclock_ms` | how long the service call took |');
     expect(receipt).toContain(`who sent the request, the ${QUOTE_CHECKS.length} checks, and the pricing decision with its reasoning and the sub-receipt of the model supplier.`);
-    expect(receipt).toContain('The signed receipt of the job is the signed quote, and the quote is the committed output.');
+    expect(receipt).toContain('The quote is the committed output.');
+    expect(receipt).toContain('Check the SHA-256 of those bytes against `receipt.response_hash`, and verify the signature with the Bid Desk supplier key.');
+    expect(receipt).toContain('Parsed or re-serialized JSON is not a substitute for the original bytes.');
     expect(receipt).toContain('It does not hold the Bid Desk to the quote: a quote is not a binding offer (see Known gaps).');
     expect(receipt).toContain('The signature is Ed25519 over the canonical JSON of the receipt. The sha256 of the canonical JSON of `{ receipt, signature }` is the `result_receipt_hash` in the Submitted escrow datum.');
     // A challenge on S1 uses the hash of the quote text: the facts of the evidence name it next to the hash of the list and the line that differs from the list.
@@ -1050,7 +1057,8 @@ describe('specs/bid-desk.md: the receipt, the claim and the fault switch', () =>
     // S1 is the statement of the evidence of a quote challenge, and the Sourcing Agent challenges the first statement of this claim.
     expect(EVIDENCE_STATEMENTS.quote_price).toBe('S1');
     expect(readFileSync(new URL('../../sourcing-agent/src/quotes/evidence.ts', import.meta.url), 'utf8')).toContain('statement_text: BID_DESK_CLAIM.statements[0].text,');
-    expect(claim).toContain('S1 is the statement that the fault `quote_off_price_list` breaks. A buyer\'s agent that finds a unit price that differs from the published list declines the quote and challenges the claim of the Bid Desk on S1. The Sourcing Agent does this. S2 is held by the member `rfq_sha256` of the quote, and S3 by the book of the Bid Desk (see What it checks before the Claim).');
+    expect(claim).toContain('S1 is the statement that the fault `quote_off_price_list` breaks. When the Sourcing Agent\'s model reports a mismatch, the agent declines the quote. It challenges S1 only if there is an open claim and it can show that a line the model named has a different unit price. If the model misses a mismatch, the quote can be accepted.');
+    expect(claim).toContain('S2 is held by the member `rfq_sha256` of the quote, and S3 by the book of the Bid Desk (see What it checks before the Claim).');
   });
 
   test('the Fault switch names the one value of the kit, a unit price a fifth below the list on the first line that the list prices, and the field that every quote carries', async () => {
@@ -1085,7 +1093,7 @@ describe('specs/bid-desk.md: the receipt, the claim and the fault switch', () =>
     expect(fault).toContain('When no line can take the new price, the job ends with `internal` (500): a run never says that a fault was on when it changed nothing.');
     // The failure run is a plan. The operator pack has the data of use case 1 only, so no command runs use case 3: the data file of another use case fails this test and forces a change of the page.
     expect([...USE_CASE_NAMES]).toStrictEqual(['inventory-reorder']);
-    expect(fault).toContain('The planned failure run sets the switch on one Bid Desk only, Bid Desk Charlie, to show that the Sourcing Agent catches a quote that is below the published price list. No command of this repository runs use case 3 yet. The switch of one Bid Desk never changes another: each Bid Desk reads an env file of its own.');
+    expect(fault).toContain('The planned failure run sets the switch on one Bid Desk only, Bid Desk Charlie, to test whether the Sourcing Agent\'s model identifies the off-list price. No command of this repository runs use case 3 yet. The switch of one Bid Desk never changes another: each Bid Desk reads an env file of its own.');
   });
 
   test('the switch is empty in a clean run, any other value stops the start, the hook does not know the switch, and the manifest is the same for every value', () => {

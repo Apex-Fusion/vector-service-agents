@@ -302,7 +302,7 @@ describe('specs/sourcing-agent.md', () => {
     expect(QUOTE_CODES).toContain('deadline');
   });
 
-  test('the service limits the full wire payload; the runtime has a separate limit on its request body', () => {
+  test('the wire payload, the runtime body and the hosted send body have separate size limits', () => {
     const terms = section('Terms');
     expect([MAX_REQUEST_BYTES, RUNTIME_BODY_LIMIT_BYTES, MAX_BODY]).toStrictEqual([900_000, 1_048_576, 1_000_000]);
     expect(terms).toContain('`POST /` and `POST /precheck` count the UTF-8 bytes of the full wire payload, including the one-message array and all escapes.');
@@ -310,6 +310,11 @@ describe('specs/sourcing-agent.md', () => {
     expect(terms).toContain(`The shared HTTP reader stops at ${MAX_BODY} bytes.`);
     expect(terms).toContain(`The runtime has a separate limit of ${RUNTIME_BODY_LIMIT_BYTES} bytes for its whole request body.`);
     expect(terms).toContain('Escaping the payload again can make that body too large even if the payload fits.');
+    // The hosted send counts the UTF-8 bytes of the same envelope as the runtime, with its own decimal cap.
+    const hostedSendLimit = 1_000_000;
+    expect(terms).toContain(`\`vector_marketplace_send_job\` limits the entire JSON body it sends to \`/v1/job\` to ${hostedSendLimit} UTF-8 bytes, not the \`payload\` field alone.`);
+    expect(terms).toContain('To check the limit, count the bytes of `JSON.stringify({ escrow_ref, payload: wirePayload })`.');
+    expect(terms).toContain('Check the size before you sign and submit the Post.');
     expect(section('Interface')).toContain('The wire payload carries the entire request, including `proposal.document` for `execute`.');
 
     // Count the document, the message framing and the escapes. The request text alone is below the limit in both cases.
@@ -324,6 +329,9 @@ describe('specs/sourcing-agent.md', () => {
     const tabs = request + '\t'.repeat(440_000);
     expect(checkWirePayload(tabs).ok).toBe(true);
     expect(checkRuntimeBody(tabs)).toMatchObject({ ok: false, code: 'request_too_large' });
+    const fitsRuntime = request + '\t'.repeat(340_000);
+    expect(must(checkWirePayload(fitsRuntime))).toBeLessThan(MAX_REQUEST_BYTES);
+    expect(must(checkRuntimeBody(fitsRuntime))).toBeGreaterThan(hostedSendLimit);
   });
 
   test('the economics: what the supplier receives, the window to accept, the vault, the quotes of the Bid Desks and the fees', () => {
@@ -632,7 +640,9 @@ describe('specs/sourcing-agent.md, Interface, Request', () => {
     for (const part of [
       'The sourcing record checks the approval, and that the supplier of rank 1 resolves and is Active now. A `null` approval is refused with `approval_not_found`.',
       'The agent never builds, replaces or defaults an approval. It makes the call one time and never again, also after a failure, because a failed call can have written the ranking.',
-      'The sourcing record has no rule of one ranking for each request, so a hirer who sends `execute` again after a `failed` result can write a second ranking. Read the sourcing record before you send `execute` again.',
+      'The sourcing record does not reject a duplicate ranking.',
+      'Read `GET <mock base>/t/<tenant>/state` and check `sourcing.rankings` for the same `rfq_id`, ranking document and `approval.attestation`. This read needs no token.',
+      'If you cannot confirm that the previous job ended without writing the ranking, do not retry.',
     ]) expect(request, part).toContain(part);
     // The facts that the steps give about the model: the decision `shortlist` reads the items and the date of the request and the facts of each file, at most 3 DIDs, a reason of at most 200 characters.
     const shortlist = shortlistInput(RFQ, [ALFA_FILE, BRAVO_FILE]) as { request: Record<string, unknown>; bidders: Array<Record<string, unknown>> };
@@ -669,7 +679,7 @@ describe('specs/sourcing-agent.md, Interface, Request', () => {
     const { propose, execute, protocol } = reasonsOfJobs();
     const codes = new Set<string>([...propose, ...execute, ...protocol, ...SCORING_FAILURES, ...QUOTE_CODES, ...EXCLUDED_REASONS, ...EXECUTE_OUTCOMES, ...Object.keys(ERROR_STATUS)]);
     // The names of the steps that are no code: the decisions, the members of the requests and results, and the name of the second job.
-    const noCode = new Set<string>([SHORTLIST_DECISION.name, ACCEPT_QUOTE_DECISION.name, SCORE_DECISION.name, RANKING_DECISION.name, 'document', 'mismatch', 'null', 'reason', 'execute']);
+    const noCode = new Set<string>([SHORTLIST_DECISION.name, ACCEPT_QUOTE_DECISION.name, SCORE_DECISION.name, RANKING_DECISION.name, 'document', 'mismatch', 'null', 'reason', 'execute', 'rfq_id']);
     const steps = request.split('What `propose` does, in this order, under its deadline:')[1] ?? '';
     const names = [...new Set([...steps.matchAll(/`([a-z][a-z0-9_]*)`/g)].map((hit) => hit[1]))];
     expect(names).toEqual(expect.arrayContaining(['delegation_not_mine', 'delivery_not_recordable', 'decision_failed', 'model_output_invalid', 'ranking_not_for_tenant', 'approval_not_found', 'refused_by_system', 'mock_system_failed']));
@@ -849,9 +859,13 @@ describe('specs/sourcing-agent.md, the checks in code, the order of the ranking,
     ];
     for (const [what, delivery, code] of cases) expect(await judged(delivery), what).toStrictEqual({ answer: { accept: false, reason: code }, learned: { said: code }, asked: 0 });
     expect(await judged(delivered(quote))).toMatchObject({ answer: { accept: true }, asked: 1 });
+    const offList = quoteTotals(LINES.map((line, i) => ({ ...line, unit_price: line.unit_price + (i === 0 ? 1 : 0) })));
+    if (offList === null) throw new Error('The off-list quote has no totals.');
+    expect(await judged(delivered({ ...QUOTE, ...offList }))).toMatchObject({ answer: { accept: true }, asked: 1 });
     expect(request).toContain(
-      'Then five checks in code come before the model: the answer must be a quote (`quote_invalid`), it must come from this bidder (`quote_not_from_bidder`), it must answer this request (`quote_not_for_rfq`), it must name the price list that the agent read (`quote_not_from_list`), and the receipt must name the key hash of the supplier, so that the agent can record the delivery (`delivery_not_recordable`). A check that fails files no challenge.',
+      'Then five checks in code come before the model: the answer must be a quote (`quote_invalid`), it must come from this bidder (`quote_not_from_bidder`), it must answer this request (`quote_not_for_rfq`), it must name the price list that the agent read (`quote_not_from_list`), and the receipt must name the key hash of the supplier, so that the agent can record the delivery (`delivery_not_recordable`). The list check compares hashes, not unit prices. A check that fails files no challenge.',
     );
+    expect(request).toContain('An off-list price can pass this decision and enter the ranking.');
     expect(sub('Errors')).toContain('so the delivery cannot be recorded (the fifth check in code, step 4 of `propose`)');
   });
 
@@ -1024,7 +1038,7 @@ describe('specs/sourcing-agent.md, Interface, Response', () => {
     expect(parseQuote({ ...QUOTE, decisions: [decision] }).ok).toBe(true);
     expect([parseQuote({ ...QUOTE, notes: 'one line' }).ok, parseQuote({ ...QUOTE, notes: 'two\nlines' }).ok, parseQuote({ ...QUOTE, notes: 'x'.repeat(500) }).ok, parseQuote({ ...QUOTE, notes: 'x'.repeat(501) }).ok]).toStrictEqual([true, false, true, false]);
     expect(sub('Response')).toContain(
-      'The `quotes` hold each quote as the Bid Desk returned it. Two parts of a quote take any character: `sender.organisation` (any text of at most 1024 characters) and the decision of the Bid Desk under `decisions` (its choice and its reasoning). A rule on them would fail a quote that was paid for. Show them to an approver as data, escaped, and never as text that a person or a prompt reads as an instruction. The `notes` of a quote are one line of at most 500 characters with no control, format or separator character.',
+      'The `quotes` hold parsed quote data, not the original response text. Two parts of a quote take any character: `sender.organisation` (any text of at most 1024 characters) and the decision of the Bid Desk under `decisions` (its choice and its reasoning). A rule on them would fail a quote that was paid for. Show them to an approver as data, escaped, and never as text that a person or a prompt reads as an instruction. The `notes` of a quote are one line of at most 500 characters with no control, format or separator character.',
     );
   });
 
@@ -1178,7 +1192,9 @@ describe('specs/sourcing-agent.md, Interface, The ranking', () => {
     }
     for (const part of [
       '| `receipt_sha256` | the sha256 of the canonical JSON of `{ receipt, signature }`: the signed receipt of the quote job. The record of the quote under `quotes` has the receipt and its signature |',
-      'To check a score, find the record of the quote under `quotes` by its `escrow_ref`, hash `{ receipt, signature }`, and compare the hash with `receipt_sha256`.',
+      'Compare that hash with `receipt_sha256`. A change to `quotes[].result` does not change this hash.',
+      'To verify the quote independently, obtain the exact original quote response bytes. Check their SHA-256 against `receipt.response_hash`. Verify the Ed25519 signature over the canonical receipt with the Bid Desk supplier key.',
+      'If you cannot obtain them, you can review the parsed quote, but you cannot verify the Bid Desk\'s quote from the proposal alone.',
       'The job builds it from the quote that the agent holds and accepted: the escrow of its record, the hash of its signed receipt, and the total and the lead time of the parsed quote.',
     ]) expect(ranking, part).toContain(part);
     expect(ranking).toContain('The model never writes the `quote` member.');
@@ -1493,7 +1509,7 @@ describe('specs/sourcing-agent.md, the receipt, the claim and the fault switch',
     expect(row(receipt, '`response_hash`')).toBe('| `response_hash` | sha256 of the UTF-8 bytes of the result exactly as the service returned them |');
     expect(row(receipt, '`model`')).toBe('| `model` | `sourcing-agent-v1` |');
     expect(receipt).toContain(
-      'The receipt of a `propose` job commits the ranking, its salt and its digest, the file of every candidate as the agent read it, every quote with the signed receipt of its Bid Desk, every model decision with its reasoning and the sub-job that bought it, and any challenge that the agent filed.',
+      'The receipt of a `propose` job commits the ranking, its salt and its digest, the file of every candidate as the agent read it, the parsed quotes with the signed receipts of their Bid Desks, every model decision with its reasoning and the sub-job that bought it, and any challenge that the agent filed.',
     );
     expect(receipt).toContain('The receipt of an `execute` job commits the outcome and the one write to the sourcing record, with its reference when it has one.');
     expect(receipt).toContain('It does not commit to the ranking being right, to the prices of the Bid Desks being fair, or to any order being placed. The use case ends at the approved ranking.');
@@ -1563,6 +1579,8 @@ describe('specs/sourcing-agent.md, the operator, the gaps, the hire and the link
     const parties = firstCells(operator, '| Party | What it receives |');
     expect(parties).toStrictEqual(manifest.behaviour.third_parties);
     expect(parties).toHaveLength(6);
+    expect(operator).toContain('Anyone who knows the tenant name can read `GET <mock base>/t/<tenant>/state` without a token.');
+    expect(operator).toContain('The `sourcing.rankings` list shows the full ranking, including scores and quote totals, and the approval reference.');
     // What each decision carries: the members of the data block of each of the four decisions.
     const vendor = { vendor_id: 'v-1', organisation: 'alfa.vector.apexfusion.org', name: 'Alfa Supplies', on_time_delivery_rate: 0.9, defect_rate: 0.01, years_as_vendor: 4, payment_terms_days: 30, certifications: ['ISO 9001'], last_audit: '2026-05-01' };
     const shortlist = shortlistInput(RFQ, [ALFA_FILE]) as Record<string, unknown>;
@@ -1648,7 +1666,7 @@ describe('specs/sourcing-agent.md, the operator, the gaps, the hire and the link
     const how = section('How to hire it');
     const hosted = text('scripts/specs.test.mjs');
     const tools = [...how.matchAll(/`(vector_[a-z_]+)`/g)].map((hit) => hit[1]);
-    expect(tools).toStrictEqual(['vector_build_delegation_delegate', 'vector_delegation_request_cosign', 'vector_build_vault_open', 'vector_build_attestation_attest', 'vector_build_vault_close', 'vector_build_delegation_undelegate']);
+    expect(tools).toStrictEqual(['vector_build_delegation_delegate', 'vector_delegation_request_cosign', 'vector_build_vault_open', 'vector_build_attestation_attest', 'vector_await_transaction', 'vector_build_vault_close', 'vector_build_delegation_undelegate', 'vector_build_attestation_withdraw']);
     for (const tool of tools) expect(hosted.includes(`'${tool}'`), tool).toBe(true);
     expect(how.split('\n').filter((line) => /^\d\. \*\*/.test(line))).toHaveLength(6);
     // The actions of the delegation, and the resource of each mock route.
@@ -1679,11 +1697,15 @@ describe('specs/sourcing-agent.md, the operator, the gaps, the hire and the link
     expect(how).toContain('Set `total` to cover the planned locks and any spending already recorded for the same period');
     expect(how).toContain('Add the ledger minimum that must stay in the Live vault.');
     expect(how).toContain('close the Live vault and collect any `Returned` outputs.');
-    // The approval: the type, the deposit and the validity of the runs. The hosted tool sets no end, so the hirer sets `valid_until`.
+    // The hosted tool uses the approval name, not the numeric ledger type.
     expect([APPROVAL_ATT_TYPE, APPROVAL_DEPOSIT_LOVELACE, RUN_APPROVAL_VALIDITY_MS / 3_600_000]).toStrictEqual([5, 5_000_000n, 4]);
-    expect(text('packages/usecase-kit/src/protocol/approval.ts')).toContain('It returns 90 days after the attestation ends.');
-    expect(how).toContain('the type is 5, the subject is this agent, and the digest is the `proposal_digest`');
-    expect(how).toContain('Set `valid_until` yourself: the tool sets no end. The planned runs use 4 hours. The attestation holds a deposit of 5000000 lovelace, and the deposit returns 90 days after the attestation ends.');
+    expect(how).toContain('Set `att_type: "approval"`, `subject` to this agent\'s DID, and `digest` to `proposal_digest`.');
+    expect(how).toContain('Set `valid_until` in POSIX milliseconds. The tool sets no end by default. The planned runs use 4 hours.');
+    expect(how).toContain('Submit it and wait for confirmation with `vector_await_transaction` before you hire `execute`.');
+    expect(how).toContain('If the ledger does not show the approval, the sourcing record returns `approval_not_found`.');
+    expect(how).toContain('The default and minimum deposit is 5 units (5000000 lovelace).');
+    expect(how).toContain('The deposit does not return automatically. Withdrawal becomes eligible 90 days after `valid_until` or, if revoked, 90 days after revocation, whichever date comes first.');
+    expect(how).toContain('Submit the withdrawal and wait for confirmation. The transaction burns the attestation token and returns the deposit to the wallet less the fee.');
     // Step 1: a delegation that the ledger does not show ends `propose` with `delegation_not_found`, and the sub-delegation of a scorer needs 30 confirmations on every link of its chain.
     expect(how).toContain('Wait until the ledger shows the delegation: a `propose` job on a delegation that the ledger does not show ends with `delegation_not_found`. Then wait for 30 confirmations of the delegation.');
     expect(text('packages/usecase-kit/src/live/chain.ts')).toContain('Every link of the chain must have 30 confirmations or more for `ready`.');
