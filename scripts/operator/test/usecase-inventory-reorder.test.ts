@@ -55,6 +55,7 @@ const EXAMPLE_OF: Readonly<Record<string, ExampleFile>> = {
 interface Template {
   name: string;
   capability_id: string;
+  interface: { routes: { status: string } };
   terms: {
     price_lovelace?: number; supplier_bond_lovelace?: number; buyer_bond_lovelace?: number; max_processing_ms?: number;
     tiers?: { model: string; price_lovelace: number; supplier_bond_lovelace: number; buyer_bond_lovelace: number; max_processing_ms: number }[];
@@ -147,9 +148,9 @@ const AGENT_FILES: Readonly<Record<string, AgentFiles | undefined>> = {
   'order-desk': agentFiles('order-desk', '.env.order-desk.example'),
 };
 
-/** The files of an agent of the data. An agent that has no files is a problem, and the caller skips it. */
-function filesOf(agent: AgentSpec, problems: string[]): AgentFiles | undefined {
-  const files = AGENT_FILES[agent.id];
+/** The files of an agent of the data. An agent that has no files is a problem, and the caller skips it. A test gives a table with a broken copy of a file. */
+function filesOf(agent: AgentSpec, problems: string[], table = AGENT_FILES): AgentFiles | undefined {
+  const files = table[agent.id];
   if (files === undefined) problems.push(`${agent.id}: the repository has no public files for this agent`);
   return files;
 }
@@ -217,6 +218,14 @@ const mapLine = (use: UseCase, key: string, name: string, change: Partial<KeyLin
 const mapParties = (use: UseCase, id: string, change: (parties: readonly PartySpec[]) => readonly PartySpec[]): UseCase => mapAgent(use, id, (agent) => ({ ...agent, parties: change(agent.parties) }));
 const mapFunding = (use: UseCase, wallet: string, change: Partial<UseCase['funding'][number]>): UseCase => ({
   ...use, funding: use.funding.map((line) => (line.wallet === wallet ? { ...line, ...change } : line)),
+});
+/** A table of the public files with the files of one agent changed: a test uses it to show that a check refuses a broken copy of a public file. */
+const withFiles = (id: string, change: (files: AgentFiles) => AgentFiles): Readonly<Record<string, AgentFiles | undefined>> => ({ ...AGENT_FILES, [id]: change(need(AGENT_FILES[id], `the files of ${id}`)) });
+const mapService = (files: AgentFiles, container: string, change: (service: ComposeService) => ComposeService): AgentFiles => ({
+  ...files, compose: files.compose.map((service) => (service.container === container ? change(service) : service)),
+});
+const mapHandle = (files: AgentFiles, path: string | null, change: (handle: CaddyHandle) => CaddyHandle): AgentFiles => ({
+  ...files, caddy: files.caddy.map((block) => ({ ...block, handles: block.handles.map((handle) => (handle.path === path ? change(handle) : handle)) })),
 });
 
 // ---- the capabilities and the claim statements ----
@@ -541,15 +550,19 @@ function keyProblems(use: UseCase): string[] {
 
 // ---- the hosts ----
 
-/** Each advert origin and each status URL has a host block in the Caddy snippet and a PUBLIC_ORIGIN in the compose file, and each container has the port that the deployment gives it. */
-function hostProblems(use: UseCase): string[] {
+/**
+ * Each advert origin and each status URL has a host block in the Caddy snippet and a PUBLIC_ORIGIN in the compose file. Each container has the port that the deployment gives it, each runtime
+ * calls its service on that port, and every path that Caddy sends to the service goes to that port. `table` holds the public files, and a test gives it a broken copy of one of them.
+ */
+function hostProblems(use: UseCase, table = AGENT_FILES): string[] {
   const problems: string[] = [];
   for (const agent of use.agents) {
-    const files = filesOf(agent, problems);
+    const files = filesOf(agent, problems, table);
     if (files === undefined) continue;
     const origins = agent.adverts.map((advert) => advert.origin);
     if (agent.endpoint !== origins[0]) problems.push(`${agent.id}: the endpoint is not the origin of the first advert`);
-    if (!isDeepStrictEqual(agent.statusUrls, origins.map((origin) => `${origin}/status`))) problems.push(`${agent.id}: statusUrls is not the list of the /status of its adverts`);
+    const status = files.template.interface.routes.status;
+    if (!isDeepStrictEqual(agent.statusUrls, origins.map((origin) => `${origin}${status}`))) problems.push(`${agent.id}: statusUrls is not the list of the ${status} of its adverts`);
     const caddyHosts = new Set(files.caddy.map((block) => block.host));
     const composeHosts = new Set(files.compose.map((service) => hostOf(service.env.PUBLIC_ORIGIN ?? '')));
     for (const url of [...origins, ...agent.statusUrls]) {
@@ -558,7 +571,10 @@ function hostProblems(use: UseCase): string[] {
       if (host === null || !caddyHosts.has(host)) problems.push(`${agent.id}: the host of ${url} has no block in the Caddy snippet`);
       if (host === null || !composeHosts.has(host)) problems.push(`${agent.id}: the host of ${url} is the PUBLIC_ORIGIN of no container of the compose file`);
     }
-    for (const url of agent.statusUrls) if (parseUrl(url)?.pathname !== '/status') problems.push(`${agent.id}: the status URL ${url} does not end in /status`);
+    for (const url of agent.statusUrls) if (parseUrl(url)?.pathname !== status) problems.push(`${agent.id}: the status URL ${url} does not end in ${status}`);
+    const serviceName = SERVICE_CONTAINER[agent.id];
+    const servicePort = EXPECTED_PORTS[serviceName];
+    const serviceUrl = `http://${serviceName}:${servicePort}`;
     const containers = new Set<string>();
     for (const advert of agent.adverts) {
       const where = `${agent.id} ${advert.model}`;
@@ -576,13 +592,13 @@ function hostProblems(use: UseCase): string[] {
       else if (!isDeepStrictEqual(runtime.ports, [`127.0.0.1:${port}:${runtime.env.PORT}`])) problems.push(`${where}: the compose file publishes ${runtime.ports.join(', ')} for ${advert.runtimeContainer} and it must be 127.0.0.1:${port}:${runtime.env.PORT}`);
       if (runtime.env.PUBLIC_ORIGIN !== advert.origin) problems.push(`${where}: PUBLIC_ORIGIN of ${advert.runtimeContainer} is ${runtime.env.PUBLIC_ORIGIN} and the origin is ${advert.origin}`);
       if (runtime.env.ADVERT_MAX_PROCESSING_MS !== String(advert.windowMs)) problems.push(`${where}: ADVERT_MAX_PROCESSING_MS of ${advert.runtimeContainer} is ${runtime.env.ADVERT_MAX_PROCESSING_MS} and the window is ${advert.windowMs}`);
+      if (runtime.env.SERVICE_URL !== `${serviceUrl}/`) problems.push(`${where}: SERVICE_URL of ${advert.runtimeContainer} is ${runtime.env.SERVICE_URL} and it must be ${serviceUrl}/`);
+      if (runtime.env.SERVICE_PRECHECK_URL !== `${serviceUrl}/precheck`) problems.push(`${where}: SERVICE_PRECHECK_URL of ${advert.runtimeContainer} is ${runtime.env.SERVICE_PRECHECK_URL} and it must be ${serviceUrl}/precheck`);
       const envFiles = [...new Set([agent.serviceEnvFile, advert.runtimeEnvFile])].map((file) => `./${file}`);
       if (!isDeepStrictEqual(runtime.envFiles, envFiles)) problems.push(`${where}: the env files of ${advert.runtimeContainer} are ${runtime.envFiles.join(', ')} and the data has ${envFiles.join(', ')}`);
       const fallback = files.caddy.find((block) => block.host === host)?.handles.find((handle) => handle.path === null);
       if (fallback?.upstream !== `${advert.runtimeContainer}:${runtime.env.PORT}`) problems.push(`${where}: the default handle of the Caddy block of ${host} is ${fallback?.upstream} and it must be ${advert.runtimeContainer}:${runtime.env.PORT}`);
     }
-    const serviceName = SERVICE_CONTAINER[agent.id];
-    const servicePort = EXPECTED_PORTS[serviceName];
     const service = files.compose.find((candidate) => candidate.container === serviceName);
     if (service === undefined) problems.push(`${agent.id}: the compose file has no container ${serviceName}`);
     else {
@@ -591,8 +607,11 @@ function hostProblems(use: UseCase): string[] {
       if (!isDeepStrictEqual(service.envFiles, [`./${agent.serviceEnvFile}`])) problems.push(`${agent.id}: the env files of ${serviceName} are ${service.envFiles.join(', ')} and the data has ./${agent.serviceEnvFile}`);
     }
     for (const block of files.caddy) {
-      const manifest = block.handles.find((handle) => handle.path === '/agent.json');
-      if (manifest?.upstream !== `${serviceName}:${servicePort}`) problems.push(`${agent.id}: the /agent.json handle of the Caddy block of ${block.host} is ${manifest?.upstream} and it must be ${serviceName}:${servicePort}`);
+      const routed = block.handles.filter((handle) => handle.path !== null);
+      if (!routed.some((handle) => handle.path === '/agent.json')) problems.push(`${agent.id}: the Caddy block of ${block.host} has no /agent.json handle`);
+      for (const handle of routed) {
+        if (handle.upstream !== `${serviceName}:${servicePort}`) problems.push(`${agent.id}: the ${handle.path} handle of the Caddy block of ${block.host} is ${handle.upstream} and it must be ${serviceName}:${servicePort}`);
+      }
       if (!agent.adverts.some((advert) => hostOf(advert.origin) === block.host)) problems.push(`${agent.id}: the Caddy snippet has a block for ${block.host} and no advert has that host`);
     }
     for (const container of files.compose.map((candidate) => candidate.container)) {
@@ -1000,6 +1019,17 @@ describe('the data of use case 1 (inventory reorder)', () => {
         'order-desk: the Caddy snippet has a block for mp-suppliers-orders-large.vector.apexfusion.org and no advert has that host',
         'order-desk: the compose file has the container orders-large-runtime and no advert uses it',
       ]);
+    });
+    it.each<[string, Readonly<Record<string, AgentFiles | undefined>>, string]>([
+      ['a port of a runtime in the compose file', withFiles('order-desk', (files) => mapService(files, 'orders-medium-runtime', (service) => ({ ...service, ports: ['127.0.0.1:8113:8080'] }))), 'order-desk lot-medium: the compose file publishes 127.0.0.1:8113:8080 for orders-medium-runtime and it must be 127.0.0.1:8103:8080'],
+      ['a port of a service in the compose file', withFiles('reorder-agent', (files) => mapService(files, 'reorder-service', (service) => ({ ...service, ports: ['127.0.0.1:9111:9101'] }))), 'reorder-agent: the compose file publishes 127.0.0.1:9111:9101 for reorder-service and it must be 127.0.0.1:9101:9101'],
+      ['a window of a runtime in the compose file', withFiles('reorder-agent', (files) => mapService(files, 'reorder-runtime', (service) => ({ ...service, env: { ...service.env, ADVERT_MAX_PROCESSING_MS: '1800001' } }))), 'reorder-agent reorder-agent-v1: ADVERT_MAX_PROCESSING_MS of reorder-runtime is 1800001 and the window is 1800000'],
+      ['a port in the service address of a runtime', withFiles('order-desk', (files) => mapService(files, 'orders-large-runtime', (service) => ({ ...service, env: { ...service.env, SERVICE_URL: 'http://orders-service:9112/' } }))), 'order-desk lot-large: SERVICE_URL of orders-large-runtime is http://orders-service:9112/ and it must be http://orders-service:9102/'],
+      ['a port in the check address of a runtime', withFiles('reorder-agent', (files) => mapService(files, 'reorder-runtime', (service) => ({ ...service, env: { ...service.env, SERVICE_PRECHECK_URL: 'http://reorder-service:9111/precheck' } }))), 'reorder-agent reorder-agent-v1: SERVICE_PRECHECK_URL of reorder-runtime is http://reorder-service:9111/precheck and it must be http://reorder-service:9101/precheck'],
+      ['a port of the lots path in a Caddy block', withFiles('order-desk', (files) => mapHandle(files, '/lots.json', (handle) => ({ ...handle, upstream: 'orders-service:9112' }))), 'order-desk: the /lots.json handle of the Caddy block of mp-suppliers-orders-small.vector.apexfusion.org is orders-service:9112 and it must be orders-service:9102'],
+      ['a port of the runtime in a Caddy block', withFiles('reorder-agent', (files) => mapHandle(files, null, (handle) => ({ ...handle, upstream: 'reorder-runtime:8180' }))), 'reorder-agent reorder-agent-v1: the default handle of the Caddy block of mp-suppliers-reorder.vector.apexfusion.org is reorder-runtime:8180 and it must be reorder-runtime:8080'],
+    ])('refuse a broken copy of a public file: %s', (_name, table, problem) => {
+      expect(hostProblems(data, table)).toContain(problem);
     });
   });
 
