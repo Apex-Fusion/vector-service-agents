@@ -114,7 +114,7 @@ describe('the call that makes a tenant', () => {
     expect(body(failure.mock.calls[0]!).tenant).toBe(FAILURE_NAME);
     expect(failure.w.screen.lines).toContain(`the tenant ${FAILURE_NAME} is new: the mock service made it from the default seed (the run reads MSK-N95)`);
     const labelled = await tenantWorld();
-    expect(await submit(labelled, '--run', 'dress', '--kind', 'clean')).toBe(0);
+    expect(await submit(labelled, '--run', 'trial', '--kind', 'clean')).toBe(0);
     expect(body(labelled.mock.calls[0]!).tenant).toBe(CLEAN_NAME);
     const named = await tenantWorld();
     expect(await submit(named, '--run', 'r1', '--name', 'my-tenant-1')).toBe(0);
@@ -133,10 +133,12 @@ describe('the call that makes a tenant', () => {
       ['a name with an underscore', ['--run', 'r1', '--name', 'bad_name'], 'the name of a tenant'],
       ['a name that starts with a hyphen', ['--run', 'r1', '--name', '-lead'], 'the name of a tenant'],
       ['a name of 49 characters', ['--run', 'r1', '--name', 'a'.repeat(49)], 'the name of a tenant'],
-      ['a kind that is the label of a run', ['--run', 'r1', '--kind', 'dress'], '--kind is one of: clean, failure'],
+      ['a kind that is the label of a run', ['--run', 'r1', '--kind', 'trial'], '--kind is one of: clean, failure'],
       ['a kind that is a short label', ['--run', 'r1', '--kind', 'r1'], '--kind is one of: clean, failure'],
       ['a kind in upper case', ['--run', 'r1', '--kind', 'Clean'], '--kind is one of: clean, failure'],
       ['no kind and no name', ['--run', 'r1'], 'give --kind'],
+      ['a run label that is the name of a kind', ['--run', 'clean'], 'give --kind'],
+      ['a run label that is the name of the other kind', ['--run', 'failure'], 'give --kind'],
       ['no run', ['--kind', 'clean'], '--run <label> is required'],
     ];
     for (const [label, argv, words] of table) {
