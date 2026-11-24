@@ -364,7 +364,7 @@ test('the compose check lets a service with no key through, and refuses one that
 // at least 20 characters of the alphabet), and no file is named like a key file (.seed or .skey) or holds one key and nothing else. The text PRIV_KEY_HEX that is not followed by an equals sign (a key variable name, also
 // one that the code builds) stands only in the data of the use case, which lists the variables, and in the task env, which writes them. The file that holds the marks of a secret has `PRIV_KEY_HEX=`, so it passes.
 const PACK_FOLDER = 'scripts/operator';
-const KEY_VARIABLE_FILES = ['usecases/inventory-reorder.ts', 'tasks/env.ts'];
+const KEY_VARIABLE_FILES = ['usecases/inventory-reorder.ts', 'usecases/prior-authorization.ts', 'usecases/bid-evaluation.ts', 'tasks/env.ts'];
 const SECRET_LINE = /seed|secret|private|priv_key|mnemonic|signing key|_sk\b/i;
 const KEY_VARIABLE = /PRIV_KEY_HEX(?!=)/;
 const KEY_TEXT = /(?:ed25519e?_sk|_x?sk|xprv)1[02-9ac-hj-np-z]{20,}/i;
@@ -421,6 +421,8 @@ test('the guard of the operator pack refuses a key file, a lone key, a key in a 
     ['63 hex characters in a script file', 'lib/x.ts', `const a = '${KEY.slice(1)}';`],
     ['two runs of 32 hex characters in a script file', 'lib/x.ts', `const a = '${'ab'.repeat(16)}-${'cd'.repeat(16)}';`],
     ['a key variable in the data of the use case', 'usecases/inventory-reorder.ts', "line(FILE, 'SUPPLIER_PRIV_KEY_HEX', 'secret')"],
+    ['a key variable in the prior authorization data', 'usecases/prior-authorization.ts', "line(FILE, 'PRIORAUTH_SERVICE_PRIV_KEY_HEX', 'secret')"],
+    ['a key variable in the bid evaluation data', 'usecases/bid-evaluation.ts', "line(FILE, 'SUPPLIER_PRIV_KEY_HEX', 'secret')"],
     ['a key variable in the task env', 'tasks/env.ts', "{ name: 'REORDER_SERVICE_PRIV_KEY_HEX' }"],
     ['a key variable in a test', 'test/env.test.ts', "expect(file.get('SUPPLIER_PRIV_KEY_HEX')).toBe('');"],
     ['the mark of a secret with no variable name', 'lib/secrets.ts', 'const SECRET_TEXT = /ed25519e?_sk|PRIV_KEY_HEX=|bearer\\s/i;'],
