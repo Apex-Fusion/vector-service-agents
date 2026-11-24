@@ -87,6 +87,7 @@ describe('a portal that refuses or fails', () => {
     ['a failure of the portal (500)', json(500, { error: 'internal', message: MARKER }), 'internal'],
     ['a portal that is busy (503)', json(503, { error: 'service_busy', message: MARKER }), 'service_busy'],
     ['a portal that answers on another host (421)', json(421, { error: 'wrong_host', message: MARKER }), 'wrong_host'],
+    ['a redirect (302), which the kit never follows', json(302, { error: 'moved', message: MARKER }), 'status 302'],
     ['an answer 200 that is not JSON', { status: 200, body: `<html>${MARKER}</html>` }, 'status 200'],
     ['an answer 200 with no body', { status: 200, body: '' }, 'status 200'],
     ['no answer at all', { throws: new Error(`connect ECONNREFUSED 203.0.113.9:443 ${MARKER}`) }, 'no answer'],
@@ -120,6 +121,14 @@ describe('a portal that refuses or fails', () => {
     expect(refusal.code).toBe('mock_system_failed');
     expect(refusal.status).toBe(502);
     expect(refusal.message).toBe(PORTAL_REFUSAL);
+  });
+
+  it.each([401, 403, 404, 409, 500, 503])('an answer with the status %s is a refusal or a failure even when its body is a requirement set', async (status) => {
+    const rig = makeRig();
+    rig.portal.requirements = json(status, REQUIREMENTS['SYN-MRI-LS']);
+    expect(await refusalOf(() => read(rig))).toMatchObject({ code: 'mock_system_failed', status: 502, message: PORTAL_REFUSAL });
+    expectNothingAfterRead(rig);
+    expect(rig.logs[0]).toMatch(/refused by the portal|failed \(status/);
   });
 
   it('ends the step with mock_system_failed when the portal gives no answer within the time of the call', async () => {

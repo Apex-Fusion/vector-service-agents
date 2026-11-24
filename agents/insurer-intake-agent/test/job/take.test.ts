@@ -14,7 +14,8 @@ import type { TakenJob } from '../../src/job/take.ts';
 import { makeRig, refusalOf } from './rig.ts';
 import type { Rig } from './rig.ts';
 import {
-  ATTESTATION_ID, CHECKS, DELEGATION_ID, ESCROW_REF, FACTS, ISSUER_DID, PRIOR_REQUEST, PRIOR_REQUEST_SHA256, SENDER_DID, VALID_UNTIL, handoffOf, hashOf, priorRequest, recordFor,
+  ADVERT_REF, ATTESTATION_ID, CHECKS, DELEGATION_ID, ESCROW_REF, FACTS, INSURER_DID, ISSUER_DID, PRIOR_REQUEST, PRIOR_REQUEST_SHA256, SALT, SENDER_DID, VALID_UNTIL, handoffOf, hashOf, priorRequest,
+  recordFor,
 } from './samples.ts';
 
 /** The step as the job calls it: the ports of the rig, the handoff and the context. */
@@ -315,6 +316,38 @@ describe('what the job takes', () => {
     take(rig);
     expectNothingDone(rig);
     expect(rig.logs).toHaveLength(0);
+  });
+});
+
+describe('the log of a refusal', () => {
+  /** The values of the request and of the record that no line of the log and no text of a refusal may hold. */
+  const values = [
+    String(PRIOR_REQUEST.patient_ref), String(PRIOR_REQUEST.ordering_clinician_ref), String(PRIOR_REQUEST.justification), String(PRIOR_REQUEST.record_set_sha256), SENDER_DID, ISSUER_DID, INSURER_DID,
+    ATTESTATION_ID, DELEGATION_ID, SALT, ADVERT_REF, PRIOR_REQUEST_SHA256, 'buyer.example',
+  ];
+  /** Each breaker spoils the rig for one refusal. It gives the request of the job when that is not the request of the rig. */
+  const breakers: ReadonlyArray<readonly [string, (rig: Rig) => Handoff | undefined]> = [
+    ['no record', (rig) => void rig.kept.clear()],
+    ['a record of another body', () => handoffOf(priorRequest({ request_number: 'run1-2' }))],
+    ['a record with another hash', (rig) => void rig.kept.set(ESCROW_REF, { ...recordFor(rig.request), request_sha256: 'cd'.repeat(32) })],
+    ['a record without a check', (rig) => void rig.kept.set(ESCROW_REF, recordFor(rig.request, { checks: { ...CHECKS, advert: undefined as never } }))],
+    ['a record with a fact that cannot be read', (rig) => void rig.kept.set(ESCROW_REF, recordFor(rig.request, { facts: { ...FACTS, organisation_verified: 'true' } }))],
+    [
+      'a document that is no authorization request',
+      (rig) => {
+        const bad = handoffOf(priorRequest({ diagnosis_codes: [] }));
+        rig.kept.set(ESCROW_REF, recordFor(bad));
+        return bad;
+      },
+    ],
+  ];
+
+  it.each(breakers)('%s: one line, and no value of the request or of the record in the line or in the text of the refusal', async (_what, spoil) => {
+    const rig = makeRig();
+    const request = spoil(rig);
+    const refusal = await refusalOf(() => take(rig, request === undefined ? {} : { request }));
+    expect(rig.logs).toHaveLength(1);
+    for (const text of [...rig.logs, refusal.message]) for (const value of values) expect(text).not.toContain(value);
   });
 });
 
