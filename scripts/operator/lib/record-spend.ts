@@ -1,9 +1,14 @@
 import { join } from 'node:path';
 // These codecs and the minimum-output calculation are not exported by the package entries.
 import { ledgerMinLovelace } from '../../../packages/buyer-core/src/vendored/mcp/attestation-build.ts';
+import { findConfigRecord, readRefScript } from '../../../packages/buyer-core/src/vendored/mcp/identity-deployment.ts';
+import { terminal } from '../../../packages/buyer-core/src/vendored/mcp/identity-rules.ts';
+import { koiosPostList } from '../../../packages/buyer-core/src/vendored/mcp/marketplace-indexer.ts';
+import { readFrame } from '../../../packages/usecase-kit/src/cosign/layout.ts';
 import { decodeIdentityDatum, decodeIdentitySpend, encodeIdentityDatum } from '../../../packages/vector-read/src/identity-codec.ts';
 import type { IdentitySpend } from '../../../packages/vector-read/src/identity-codec.ts';
 import { isCollateralOutput } from '../../checks/lib/collateral.ts';
+import type { Utxo } from '../../checks/lib/platform.ts';
 import type { StepPlan } from '../../checks/lib/guards.ts';
 import { GuardRefusal } from '../../checks/lib/land.ts';
 import { eventually } from '../../checks/lib/retry.ts';
@@ -32,6 +37,11 @@ const ACTIONS = {
 } as const satisfies Record<string, IdentitySpend['type']>;
 const STATUSES = ['Active', 'Suspended', 'Revoked', 'Retired'] as const;
 const IDENTIFIER = /^[0-9a-f]{64}$/;
+const OUTPUT_REF = /^[0-9a-f]{64}#(?:0|[1-9][0-9]{0,9})$/;
+// The identity builder uses a script reference and one spend redeemer. Only the collateral return, total collateral and action signers are optional.
+const BODY_REQUIRED = [0, 1, 2, 3, 8, 11, 13, 18];
+const BODY_OPTIONAL = [14, 16, 17];
+const TX_INFO_LIMIT_BYTES = 512 * 1024;
 
 type RecordReader = Pick<TaskSession, 'chain'>;
 
@@ -104,10 +114,43 @@ export interface RecordSpendSpec<Extra = unknown> {
   /** Check the decoded unsigned output. Give a public reason to refuse it, or null. */
   checkBuild?(before: RecordUtxo, after: RecordUtxo, details: { action: IdentitySpend; validFrom: number; validTo: number }, session: TaskSession<Extra>): string | null;
   facts?(session: TaskSession<Extra>, landed: VerifiedRecordSpend): void;
-  evidence(session: TaskSession<Extra>, before: RecordSpendBefore, after: RecordUtxo): Record<string, unknown> | Promise<Record<string, unknown>>;
+  evidence?(session: TaskSession<Extra>, before: RecordSpendBefore, after: RecordUtxo): Record<string, unknown> | Promise<Record<string, unknown>>;
 }
 
 const refOf = ({ utxo }: RecordUtxo): string => formatOutRef(utxo.txHash, utxo.outputIndex);
+const utxoRef = (utxo: Utxo): string => formatOutRef(utxo.txHash, utxo.outputIndex);
+const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
+
+function refuseSpend(step: string, message: string): never {
+  throw new GuardRefusal(step, [{ guard: 'body', ok: false, message }]);
+}
+
+function exactMembers(actual: readonly string[], expected: readonly string[]): boolean {
+  return actual.length === expected.length && new Set(actual).size === actual.length && actual.every((item) => expected.includes(item));
+}
+
+/** Check the raw field keys as well as the decoded bytes. No unrelated ledger action is part of a record spend. */
+function recordSpendBody(step: string, build: HostedBuild, facts: TxFacts, authorities: readonly string[]) {
+  const bytes = Buffer.from(build.unsignedCbor, 'hex');
+  const frame = readFrame(bytes);
+  if (!frame) return refuseSpend(step, 'The unsigned record spend has no complete transaction frame.');
+  if (!frame.isValid) return refuseSpend(step, 'The unsigned record spend is marked invalid.');
+  const keys = frame.body.entries.map(({ key }) => key);
+  if (!frame.auxiliaryIsNull || keys.some((key) => !BODY_REQUIRED.includes(key) && !BODY_OPTIONAL.includes(key))
+    || BODY_REQUIRED.some((key) => !keys.includes(key))) {
+    return refuseSpend(step, 'The transaction body is not in the supported form for a record spend.');
+  }
+  if (frame.witnesses.entries.some(({ key }) => key !== 0 && key !== 5) || facts.witnesses.length !== 0) {
+    return refuseSpend(step, 'The unsigned record spend must have only the witnesses for its spend redeemer.');
+  }
+  const transaction = decodeTransaction(build.unsignedCbor);
+  if (!transaction.is_valid() || transaction.to_cbor_hex() !== build.unsignedCbor
+    || bytes.toString('hex', frame.body.head.start, frame.body.end) !== facts.bodyHex) {
+    return refuseSpend(step, 'The decoder does not preserve the checked record-spend transaction.');
+  }
+  if (!exactMembers(facts.requiredSigners, authorities)) refuseSpend(step, 'The body does not require exactly the keys that authorize the record action.');
+  return transaction;
+}
 
 function snapshot(record: RecordUtxo, nowMs: number): RecordSpendBefore {
   return { effective: effectiveStatus(record.record, new Map(), nowMs, nowMs), subagentEpoch: record.record.subagentEpoch, lovelace: String(record.utxo.assets.lovelace), nowMs };
@@ -125,9 +168,10 @@ function datumHashOf(record: RecordUtxo['record']): string {
 
 function checkOutput(
   step: string, before: RecordUtxo, build: HostedBuild, facts: TxFacts,
-  wanted: { action: IdentitySpend['type']; address: string; unit: string; fee: string; minimum: bigint | null },
+  wanted: { action: IdentitySpend['type']; address: string; unit: string; fee: string; minimum: bigint | null; authorities: readonly string[] },
 ) {
-  const refuse = (message: string): never => { throw new GuardRefusal(step, [{ guard: 'body', ok: false, message }]); };
+  const refuse = (message: string): never => refuseSpend(step, message);
+  const transaction = recordSpendBody(step, build, facts, wanted.authorities);
   const ref = refOf(before);
   if (!facts.inputs.includes(ref) || facts.collateralInputs.includes(ref)) refuse('The transaction does not spend the selected record as a regular input.');
   const outputs = facts.outputs.filter(({ address }) => address === wanted.address);
@@ -147,7 +191,9 @@ function checkOutput(
   } else if (output.lovelace !== wanted.minimum || datumHashOf(record) !== datumHashOf(before.record)) {
     refuse('A reclaim must keep the tombstone unchanged at the ledger minimum.');
   }
-  const transaction = decodeTransaction(build.unsignedCbor);
+  const collateralReturn = transaction.body().collateral_return();
+  if (collateralReturn !== undefined && (collateralReturn.datum() !== undefined || collateralReturn.script_ref() !== undefined
+    || collateralReturn.amount().multi_asset().policy_count() !== 0)) refuse('The collateral return must contain only lovelace at the fee wallet.');
   const redeemers = transaction.witness_set().redeemers()?.to_flat_format();
   if (redeemers === undefined || redeemers.len() !== 1) return refuse('A record spend must have one spend redeemer.');
   const redeemer = redeemers.get(0);
@@ -168,6 +214,194 @@ function checkOutput(
     txHash: facts.txHash, outputIndex: output.index, address: output.address, assets: { lovelace: output.lovelace, ...output.assets }, datum: output.inlineDatum,
   } };
   return { found, action, validFrom: build.validTo - Number(end - start) * 1_000, validTo: build.validTo };
+}
+
+async function checkReferences(
+  session: RecordReader, step: string, before: RecordUtxo, after: RecordUtxo, action: IdentitySpend['type'], references: readonly string[],
+): Promise<void> {
+  const { provider, deployment } = session.chain;
+  try {
+    const required = [utxoRef(await readRefScript(provider, deployment, 'identity', deployment.identity.hash))];
+    if (before.record.parties.some(({ signer }) => signer.type === 'Script') || after.record.parties.some(({ signer }) => signer.type === 'Script')) {
+      const config = await findConfigRecord(provider, deployment);
+      if (config === null) return refuseSpend(step, 'The Module-1 configuration record is not on the node.');
+      required.push(utxoRef(config.utxo));
+    }
+    if (action === 'SetSuccessor') {
+      const { status } = after.record;
+      if ((status.type !== 'Revoked' && status.type !== 'Retired') || status.successor === null || status.successor === before.id) {
+        return refuseSpend(step, 'The transaction does not name a successor record.');
+      }
+      const successor = await readRecord(session, status.successor);
+      if (successor.record.lineage.type !== 'Root' || terminal(successor.record.status)) {
+        return refuseSpend(step, 'The successor is not a live root record.');
+      }
+      required.push(refOf(successor));
+    }
+    if (!exactMembers(references, required)) refuseSpend(step, 'The transaction does not reference exactly the outputs that the record action needs.');
+  } catch (err) {
+    if (err instanceof GuardRefusal) throw err;
+    refuseSpend(step, 'The required record-spend references could not be read on the node.');
+  }
+}
+
+export interface RecordSpendValueRow {
+  readonly ref: string;
+  readonly address: string;
+  readonly lovelace: bigint;
+  readonly inline_datum?: unknown;
+  readonly asset_list?: unknown;
+}
+export interface RecordSpendValueFlow {
+  readonly fee: bigint;
+  readonly inputs: readonly RecordSpendValueRow[];
+  readonly outputs: readonly RecordSpendValueRow[];
+}
+
+/** The transaction fee and normal inputs and outputs. Reference inputs and collateral are not part of the payment. */
+function valueSeal(flow: RecordSpendValueFlow): string {
+  const ordered = (rows: readonly RecordSpendValueRow[]) => rows.map(({ ref, address, lovelace }) => `${ref} ${address} ${lovelace}`).sort();
+  return blake2b256Hex(Buffer.from(JSON.stringify([String(flow.fee), ordered(flow.inputs), ordered(flow.outputs)])));
+}
+
+async function checkValue(
+  session: Pick<LandHost, 'node'>, step: string, before: RecordUtxo, after: RecordUtxo, facts: TxFacts, unit: string, feeWallet: string, reclaim: boolean,
+): Promise<RecordSpendValueFlow> {
+  const refuse = (message: string): never => refuseSpend(step, message);
+  const refs = [...new Set([...facts.inputs, ...facts.collateralInputs])];
+  let held: Utxo[];
+  try { held = await session.node.resolveInputs(refs); } catch { return refuse('The node could not read the record-spend inputs.'); }
+  if (!exactMembers(held.map(utxoRef), refs) || new Set(facts.inputs).size !== facts.inputs.length
+    || new Set(facts.collateralInputs).size !== facts.collateralInputs.length || facts.collateralInputs.length === 0) {
+    return refuse('The node does not show each distinct input of the record spend.');
+  }
+  const inputs = new Map(held.map((utxo) => [utxoRef(utxo), utxo]));
+  const recordRef = refOf(before);
+  const original = inputs.get(recordRef)!;
+  if (original.address !== before.utxo.address || original.assets.lovelace !== before.utxo.assets.lovelace
+    || original.datum !== before.utxo.datum || original.scriptRef != null || original.assets[unit] !== 1n || Object.keys(original.assets).length !== 2) {
+    return refuse('The input on the node is not the selected record, with its deposit and only its identity token.');
+  }
+  let collateral = 0n;
+  for (const ref of facts.collateralInputs) {
+    const utxo = inputs.get(ref)!;
+    if (utxo.address !== feeWallet || utxo.datum != null || utxo.datumHash != null || utxo.scriptRef != null
+      || Object.keys(utxo.assets).length !== 1 || !(utxo.assets.lovelace > 0n)) {
+      return refuse('The selected collateral is not a pure lovelace output of the exact fee wallet.');
+    }
+    collateral += utxo.assets.lovelace;
+  }
+  const loss = collateral - (facts.collateralReturn?.lovelace ?? 0n);
+  if (loss <= 0n || (facts.totalCollateral !== null && loss !== facts.totalCollateral)) {
+    return refuse('The collateral inputs and return do not match the declared collateral loss.');
+  }
+
+  const assetChanges = new Map<string, bigint>();
+  const spent: RecordSpendValueRow[] = [];
+  let feeIn = 0n;
+  for (const ref of facts.inputs) {
+    const { address, assets, datum, datumHash, scriptRef } = inputs.get(ref)!;
+    const lovelace = assets.lovelace;
+    if (typeof lovelace !== 'bigint' || lovelace <= 0n) return refuse('A record-spend input has no usable lovelace amount.');
+    spent.push({ ref, address, lovelace });
+    if (ref === recordRef) continue;
+    if (address !== feeWallet || datum != null || datumHash != null || scriptRef != null) {
+      return refuse('Every regular input except the record must be a payment output of the exact fee wallet.');
+    }
+    feeIn += lovelace;
+    for (const [name, quantity] of Object.entries(assets)) if (name !== 'lovelace') assetChanges.set(name, (assetChanges.get(name) ?? 0n) - quantity);
+  }
+  const made: RecordSpendValueRow[] = [];
+  let feeOut = 0n;
+  for (const { address, index, lovelace, assets } of facts.outputs) {
+    made.push({ ref: formatOutRef(facts.txHash, index), address, lovelace });
+    if (address !== feeWallet) continue;
+    feeOut += lovelace;
+    for (const [name, quantity] of Object.entries(assets)) assetChanges.set(name, (assetChanges.get(name) ?? 0n) + quantity);
+  }
+  for (const change of assetChanges.values()) if (change !== 0n) return refuse('The transaction does not return all fee-wallet assets to that wallet.');
+  const credit = feeOut - feeIn;
+  const reduction = original.assets.lovelace - after.utxo.assets.lovelace;
+  if (credit !== reduction - facts.feeLovelace) return refuse('The fee-wallet value change is not the record deposit change minus the actual fee.');
+  if (reclaim && credit <= 0n) return refuse('The reclaim does not credit the fee wallet after the actual fee.');
+  return { fee: facts.feeLovelace, inputs: spent, outputs: made };
+}
+
+function lovelaceOf(value: unknown): bigint | null {
+  if (typeof value === 'string' && /^[0-9]{1,20}$/.test(value)) return BigInt(value);
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? BigInt(value) : null;
+}
+
+function archivedRows(value: unknown, withDetails: boolean, txHash?: string): RecordSpendValueRow[] {
+  if (!Array.isArray(value) || value.length === 0) throw new VerificationError('The confirmed transaction has no complete input and output lists.');
+  const seen = new Set<string>();
+  return value.map((item: unknown) => {
+    if (!isObject(item)) throw new VerificationError('The confirmed transaction has an unreadable output reference.');
+    const { tx_hash: origin, tx_index: index, payment_addr: payment } = item;
+    const amount = lovelaceOf(item.value);
+    const address = isObject(payment) ? payment.bech32 : null;
+    if (typeof origin !== 'string' || !IDENTIFIER.test(origin) || (txHash !== undefined && origin !== txHash)
+      || typeof index !== 'number' || !Number.isSafeInteger(index) || index < 0 || index > 0xffff_ffff || typeof address !== 'string' || address.length === 0 || amount === null || amount <= 0n) {
+      throw new VerificationError('The confirmed transaction has an unreadable output reference, address or amount.');
+    }
+    const ref = formatOutRef(origin, index);
+    if (seen.has(ref)) throw new VerificationError('The confirmed transaction lists the same output reference more than once.');
+    seen.add(ref);
+    return { ref, address, lovelace: amount, ...(withDetails ? { inline_datum: item.inline_datum, asset_list: item.asset_list } : {}) };
+  });
+}
+
+/** Read the fee, spent outputs and created outputs of one confirmed record spend. Details are raw fields for the caller to check. */
+export async function readConfirmedRecordSpend(
+  session: Pick<LandHost, 'chain' | 'node'>, txHash: string, { withDetails = false }: { withDetails?: boolean } = {},
+): Promise<RecordSpendValueFlow> {
+  if (!IDENTIFIER.test(txHash)) throw new VerificationError('The record spend has no usable transaction hash.');
+  const { koiosUrl, fetchImpl } = session.chain;
+  let rows: unknown[];
+  let confirmations: number | null;
+  try {
+    const [answer, status] = await Promise.all([
+      koiosPostList(koiosUrl, 'tx_info', { _tx_hashes: [txHash], _inputs: true, ...(withDetails ? { _assets: true, _scripts: true } : {}) }, fetchImpl, '', TX_INFO_LIMIT_BYTES),
+      session.node.txStatus(txHash),
+    ]);
+    rows = answer;
+    confirmations = status.confirmations;
+  } catch {
+    throw new VerificationError('The confirmed record spend could not be read from the indexer.');
+  }
+  const row = rows[0];
+  if (rows.length !== 1 || !isObject(row) || row.tx_hash !== txHash || (row.valid_contract !== undefined && row.valid_contract !== true)
+    || confirmations === null || !Number.isSafeInteger(confirmations) || confirmations < 1) {
+    throw new VerificationError('The indexer does not confirm the exact record spend.');
+  }
+  const fee = lovelaceOf(row.fee);
+  if (fee === null) throw new VerificationError('The confirmed record spend has no actual fee.');
+  return { fee, inputs: archivedRows(row.inputs, withDetails), outputs: archivedRows(row.outputs, withDetails, txHash) };
+}
+
+/** Reconcile the payment after confirmation. The fee outputs do not need to be unspent. */
+async function reclaimCredit(
+  session: Pick<LandHost, 'chain' | 'node' | 'registry'>, txHash: string, recordBefore: string, beforeLovelace: bigint, after: RecordUtxo, seal: string,
+): Promise<Record<string, unknown>> {
+  const flow = await readConfirmedRecordSpend(session, txHash);
+  const { fee } = flow;
+  if (valueSeal(flow) !== seal) throw new VerificationError('The confirmed reclaim inputs, outputs or fee differ from the checked transaction.');
+  const feeWallet = session.registry.addressOf('fee');
+  const original = flow.inputs.find(({ ref }) => ref === recordBefore);
+  const tombstone = flow.outputs.find(({ ref }) => ref === refOf(after));
+  if (!original || !tombstone || original.address !== after.utxo.address || original.lovelace !== beforeLovelace
+    || tombstone.address !== after.utxo.address || tombstone.lovelace !== after.utxo.assets.lovelace) {
+    throw new VerificationError('The confirmed reclaim does not name the selected tombstone input and output.');
+  }
+  const feeWalletIn = flow.inputs.reduce((sum, item) => sum + (item.address === feeWallet ? item.lovelace : 0n), 0n);
+  const feeWalletOut = flow.outputs.reduce((sum, item) => sum + (item.address === feeWallet ? item.lovelace : 0n), 0n);
+  const released = original.lovelace - tombstone.lovelace;
+  const credit = feeWalletOut - feeWalletIn;
+  if (credit <= 0n || credit !== released - fee) throw new VerificationError('The confirmed reclaim does not credit the surplus minus the actual fee to the fee wallet.');
+  return {
+    receivedBy: 'fee', releasedLovelace: String(released), feeLovelace: String(fee), feeWalletInputLovelace: String(feeWalletIn),
+    feeWalletOutputLovelace: String(feeWalletOut), feeWalletCreditLovelace: String(credit), valueSource: 'confirmed tx_info',
+  };
 }
 
 /** Reads the resolver for evidence. It cannot confirm or refuse a spend. */
@@ -191,6 +425,8 @@ export async function resolverReading(session: Pick<TaskSession, 'hosted'>, did:
 /** The runner verifies a confirmed spend before another step can run. The saved output lets it resume without another build or signature. */
 export function recordSpendStep<Extra>(spec: RecordSpendSpec<Extra>): StepHandler<Extra> {
   const { agentId, step, tool } = spec;
+  const action = ACTIONS[tool];
+  const reclaim = action === 'Reclaim';
   return {
     name: step,
     async run(session) {
@@ -211,7 +447,6 @@ export function recordSpendStep<Extra>(spec: RecordSpendSpec<Extra>): StepHandle
         fetchImpl: session.fetchImpl, runtimes: runtimesOf(agent), running: readRunning(join(session.settings.stateDir, 'running-images.json'), session.clock.now()), out: session.out,
       });
       await requireFree();
-      const reclaim = ACTIONS[tool] === 'Reclaim';
       let minimum: bigint | null = null;
       if (reclaim) {
         if (prior.effective !== 'Revoked' && prior.effective !== 'Retired') throw new PreconditionError('The record is not Revoked or Retired.');
@@ -227,41 +462,52 @@ export function recordSpendStep<Extra>(spec: RecordSpendSpec<Extra>): StepHandle
         return { kind: 'dry' };
       }
       let planned: RecordUtxo;
+      let reclaimSeal: string | null = null;
+      const authorities = spec.expectSigners.filter((name) => name !== 'fee').map((name) => session.registry.hashOf(name));
       const landed = await landHosted(session, {
         step, tool, args: { ...spec.args(session, before), changeAddress: fee, did: fact.did }, expectSigners: spec.expectSigners, irreversible: spec.irreversible, notes,
         beforeSign: async () => { await requireFree(); },
-        plan: (build, facts) => {
+        plan: async (build, facts) => {
           try {
-            const checked = checkOutput(step, before, build, facts, { action: ACTIONS[tool], address, unit, fee, minimum });
+            const checked = checkOutput(step, before, build, facts, { action, address, unit, fee, minimum, authorities });
             const problem = spec.checkBuild?.(before, checked.found, checked, session);
-            if (problem) throw new GuardRefusal(step, [{ guard: 'body', ok: false, message: problem }]);
+            if (problem) refuseSpend(step, problem);
             planned = checked.found;
+            await checkReferences(session, step, before, planned, action, facts.referenceInputs);
+            const flow = await checkValue(session, step, before, planned, facts, unit, fee, reclaim);
+            if (reclaim) reclaimSeal = valueSeal(flow);
           } catch (err) {
             if (err instanceof GuardRefusal) throw err;
-            throw new GuardRefusal(step, [{ guard: 'body', ok: false, message: 'The unsigned record spend could not be decoded.' }]);
+            refuseSpend(step, 'The unsigned record spend could not be checked.');
           }
           return recordSpendPlan(session, { recordRef });
         },
         refs: () => ({ recordBefore: recordRef, recordAfter: refOf(planned) }),
-        facts: () => ({ agent: agentId, did: fact.did, before: prior, datumHash: datumHashOf(planned.record), keptLovelace: String(planned.utxo.assets.lovelace) }),
+        facts: () => ({
+          agent: agentId, did: fact.did, before: prior, datumHash: datumHashOf(planned.record), keptLovelace: String(planned.utxo.assets.lovelace),
+          ...(reclaimSeal === null ? {} : { reclaimSeal }),
+        }),
       });
       return { kind: 'done', message: `${step} landed: ${landed.txHash}.` };
     },
     async verify(session, landed) {
       if (session.networkResult()?.ok !== true) throw new PreconditionError('The node did not pass the network guard.');
       const { did, id } = recordFact(session, agentId);
-      const { agent, before, datumHash, keptLovelace } = landed.facts;
-      const { recordAfter } = landed.refs;
+      const { agent, before, datumHash, keptLovelace, reclaimSeal } = landed.facts;
+      const { recordBefore, recordAfter } = landed.refs;
       const txHash = landed.tx_hash;
       if (agent !== agentId || landed.facts.did !== did || !isSnapshot(before) || txHash === null || !IDENTIFIER.test(txHash)
         || typeof datumHash !== 'string' || !IDENTIFIER.test(datumHash) || typeof keptLovelace !== 'string' || !/^\d+$/.test(keptLovelace)
-        || !recordAfter?.startsWith(`${txHash}#`)) {
+        || !recordBefore || !OUTPUT_REF.test(recordBefore) || !recordAfter || !OUTPUT_REF.test(recordAfter) || !recordAfter.startsWith(`${txHash}#`)
+        || (reclaim && (typeof reclaimSeal !== 'string' || !IDENTIFIER.test(reclaimSeal)))) {
         throw new VerificationError(`The state of ${step} does not describe a spend of the record of ${agentId}.`);
       }
       let problems: readonly string[] = ['The node does not show the confirmed record output.'];
+      const { address, hash } = session.chain.deployment.identity;
       const after = await awaitRecord(session, id, async (record) => {
         if (refOf(record) !== recordAfter) return false;
-        if (datumHashOf(record.record) !== datumHash || String(record.utxo.assets.lovelace) !== keptLovelace) {
+        if (record.utxo.address !== address || record.utxo.assets[`${hash}${id}`] !== 1n || Object.keys(record.utxo.assets).length !== 2
+          || record.utxo.scriptRef != null || datumHashOf(record.record) !== datumHash || String(record.utxo.assets.lovelace) !== keptLovelace) {
           problems = ['The output on the node differs from the checked transaction.'];
           return false;
         }
@@ -269,10 +515,15 @@ export function recordSpendStep<Extra>(spec: RecordSpendSpec<Extra>): StepHandle
         return problems.length === 0;
       });
       if (after === null) throw new VerificationError(`${step}: ${problems.join(' ')} The step is not verified.`);
+      const recorded = session.evidence.entries().some((entry) => entry.step === step && entry.status === 'verified' && isObject(entry.shows) && entry.shows.txHash === txHash);
+      if (!recorded) {
+        const credit = typeof reclaimSeal === 'string' && reclaim ? await reclaimCredit(session, txHash, recordBefore, BigInt(before.lovelace), after, reclaimSeal) : {};
+        session.evidence.add({ step, status: 'verified', hosted: [], shows: {
+          ...await spec.evidence?.(session, before, after), ...credit, agent: agentId, did, txHash, before, after: snapshot(after, session.clock.now()),
+        } });
+      }
+      // A fact can let a dependent step spend this output. Write the verification evidence first.
       spec.facts?.(session, { txHash, at: landed.confirmed_at, before, record: after });
-      session.evidence.add({ step, status: 'verified', hosted: [], shows: {
-        ...await spec.evidence(session, before, after), agent: agentId, did, txHash, before, after: snapshot(after, session.clock.now()),
-      } });
     },
   };
 }

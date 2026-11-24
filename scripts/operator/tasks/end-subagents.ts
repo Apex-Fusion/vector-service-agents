@@ -18,6 +18,7 @@ function agentOf(use: UseCase, id: string | undefined): AgentSpec {
   if (id !== undefined) {
     const found = use.agents.find((agent) => agent.id === id);
     if (found === undefined) throw new FlagError(`--agent must name an agent in ${use.name}.`);
+    if (found.end.subagents !== 'ended') throw new FlagError('The use case does not mark the selected agent to end its subagents.');
     return found;
   }
   const selected = use.agents.filter((agent) => agent.end.subagents === 'ended');
@@ -102,6 +103,7 @@ const task: TaskDefinition<Extra> = {
   needs: { keys: () => ['controller', 'fee'], chain: true, hosted: [TOOL, 'vector_resolve_did'], approval: 'submit' },
   steps: () => [STEP],
   parse(_env, _settings, use, flags) {
+    if (flags.has('run')) throw new FlagError('The end of subagents is permanent and takes no --run label.');
     const agent = agentOf(use, flags.value('agent'));
     return { agent, children: use.subagents.filter(({ parent }) => parent === agent.id) };
   },

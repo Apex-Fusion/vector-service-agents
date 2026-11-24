@@ -1,11 +1,15 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { buildReclaim, buildRevoke } from '../../../packages/buyer-core/src/vendored/mcp/identity-build.ts';
 import { tombstone } from '../../../packages/buyer-core/src/vendored/mcp/identity-rules.ts';
 import { DAY, WINDOW, recordUtxo } from '../../../packages/buyer-core/test/fixtures/identity-world.ts';
 import type { IdentityDatum, Party } from '../../../packages/vector-read/src/identity-codec.ts';
+import { EvidenceError, EvidenceFile } from '../../checks/lib/evidence.ts';
 import { iso } from '../../checks/lib/format.ts';
+import { factsOf } from '../../checks/lib/txfacts.ts';
+import { FactsFile } from '../lib/facts.ts';
 import revokeRecord from '../tasks/revoke-record.ts';
 import bids from '../usecases/bid-evaluation.ts';
+import inventory from '../usecases/inventory-reorder.ts';
 import { spendWorld, TOOLS } from './support/record-spend-builds.ts';
 import type { SpendWorld, SpendWorldOptions } from './support/record-spend-builds.ts';
 import { NOW } from './support/task-world.ts';
@@ -55,6 +59,7 @@ describe('revoke-record', () => {
     } });
     expect(await f.run(revokeRecord, ...ARGS)).toBe(2);
     expect(await f.run(revokeRecord, ...ARGS, '--run', 'again')).toBe(2);
+    expect(f.w.screen.errorText).toContain('take no --run label');
     expect(f.w.node.submitted).toHaveLength(1);
   });
 
@@ -73,6 +78,53 @@ describe('revoke-record', () => {
     expect(f.w.screen.errorText).toContain('The record has ended.');
     expect(f.hosted.calls).toEqual([]);
     expect(f.signed).toEqual([]);
+  });
+
+  it('does not let revocation or reclaim select the wrong closeout operation', async () => {
+    const active = await setup({ use: inventory, agent: 'reorder-agent' });
+    expect(await active.run(revokeRecord, 'run', '--agent', active.agent.id, '--by', active.organisation.accountableKey, '--reason', '9', '--submit')).toBe(2);
+    expect(active.w.screen.errorText).toContain('does not mark the selected record for revocation');
+    const retirement = await setup({ agent: 'bid-desk-bravo' });
+    expect(await retirement.run(revokeRecord, 'cleanup', '--agent', retirement.agent.id, '--submit')).toBe(2);
+    expect(retirement.w.screen.errorText).toContain('does not mark the selected record for revocation');
+    for (const f of [active, retirement]) {
+      expect(f.hosted.calls).toEqual([]);
+      expect(f.signed).toEqual([]);
+    }
+  });
+
+  it('writes verification evidence before the dependent fact and does not duplicate it on retry', async () => {
+    const f = await setup();
+    const built = await prepareRevocation(f);
+    const original = EvidenceFile.prototype.add;
+    const writeEvidence = vi.spyOn(EvidenceFile.prototype, 'add').mockImplementation(function (this: EvidenceFile, entry) {
+      if (entry.status === 'verified') throw new EvidenceError('The verification evidence write failed.');
+      original.call(this, entry);
+    });
+    try {
+      expect(await f.run(revokeRecord, ...ARGS)).toBe(1);
+      expect(f.w.facts().revocations[NAME]).toBeUndefined();
+      expect(await f.run(revokeRecord, ...CLEANUP)).toBe(2);
+      expect(f.hosted.calls.some(({ name }) => name === TOOLS.reclaim)).toBe(false);
+    } finally {
+      writeEvidence.mockRestore();
+    }
+    const writeFact = vi.spyOn(FactsFile.prototype, 'put').mockImplementationOnce(() => { throw new Error('The revocation fact write failed.'); });
+    try {
+      expect(await f.run(revokeRecord, ...ARGS)).toBe(1);
+      expect(f.w.facts().revocations[NAME]).toBeUndefined();
+      expect(f.w.evidence('revoke-record').filter(({ status }) => status === 'verified')).toMatchObject([{ shows: { txHash: built.txHash } }]);
+      expect(f.w.state('revoke-record').steps.revoke?.verified_at).toBeNull();
+    } finally {
+      writeFact.mockRestore();
+    }
+    expect(await f.run(revokeRecord, ...ARGS)).toBe(0);
+    expect(f.w.evidence('revoke-record').filter(({ status }) => status === 'verified')).toHaveLength(1);
+    expect(f.w.facts().revocations[NAME]?.tx).toBe(built.txHash);
+    expect(f.w.state('revoke-record').steps.revoke?.verified_at).toEqual(expect.any(String));
+    expect(f.hosted.calls.filter(({ name }) => name === TOOLS.revoke)).toHaveLength(1);
+    expect(f.w.node.submitted).toHaveLength(1);
+    expect(f.signed.sort()).toEqual([BY, 'fee']);
   });
 
   it.each<[string[], string]>([
@@ -151,16 +203,63 @@ describe('reclaim', () => {
     const after = await f.record();
     expect(after.record).toEqual(before.record);
     expect(after.utxo.assets.lovelace).toBe(built.outputLovelace);
+    const fee = factsOf(f.w.node.submitted.at(-1)!).feeLovelace;
+    const released = before.utxo.assets.lovelace - after.utxo.assets.lovelace;
+    expect(f.w.evidence('revoke-record').find(({ step, status }) => step === `reclaim:${NAME}` && status === 'verified')).toMatchObject({ shows: {
+      txHash: built.txHash, receivedBy: 'fee', releasedLovelace: String(released), feeLovelace: String(fee),
+      feeWalletCreditLovelace: String(released - fee), valueSource: 'confirmed tx_info',
+    } });
     expect(f.w.state('revoke-record').notes[`part.reclaim:${NAME}`]).toMatchObject({ tx_hash: built.txHash, verified_at: expect.any(String) });
     expect(await f.run(revokeRecord, ...CLEANUP, '--run', 'again')).toBe(2);
-    expect(f.w.screen.errorText).toContain('no deposit above the ledger minimum');
+    expect(f.w.screen.errorText).toContain('take no --run label');
+    expect(await f.run(revokeRecord, ...CLEANUP)).toBe(0);
     expect(f.hosted.calls.filter(({ name }) => name === TOOLS.reclaim)).toHaveLength(1);
+  });
+
+  it('resumes the submitted reclaim without signing again and reports only independently confirmed credit', async () => {
+    const f = await setup();
+    await prepareRevocation(f);
+    expect(await f.run(revokeRecord, ...ARGS)).toBe(0);
+    const built = await buildReclaim(await f.context(), { changeAddress: f.fee, id: f.id, nowMs: f.w.clock.now() });
+    f.prepare(TOOLS.reclaim, built);
+    f.w.node.neverConfirm = true;
+    expect(await f.run(revokeRecord, ...CLEANUP)).toBe(1);
+    const step = `reclaim:${NAME}`;
+    expect(f.w.state('revoke-record').in_flight).toMatchObject({ step, tx_hash: built.txHash, facts: { reclaimSeal: expect.any(String) } });
+    const archived = f.archive.get(built.txHash)!;
+    f.archive.delete(built.txHash);
+    f.w.node.neverConfirm = false;
+    expect(await f.run(revokeRecord, ...CLEANUP)).toBe(1);
+    expect(f.w.screen.errorText).toContain('does not confirm the exact record spend');
+    const pending = f.w.state('revoke-record').notes[`part.${step}`];
+    expect(pending).toMatchObject({ tx_hash: built.txHash });
+    expect(pending).not.toHaveProperty('verified_at');
+    f.archive.set(built.txHash, { ...archived, fee: String(BigInt(archived.fee) + 1n) });
+    expect(await f.run(revokeRecord, ...CLEANUP)).toBe(1);
+    expect(f.w.screen.errorText).toContain('inputs, outputs or fee differ from the checked transaction');
+    expect(f.w.evidence('revoke-record').some((entry) => entry.step === step && entry.status === 'verified')).toBe(false);
+    const wrongWallet = f.registry.addressOf('controller');
+    f.archive.set(built.txHash, { ...archived, outputs: archived.outputs.map((output) => (
+      output.payment_addr.bech32 === f.fee ? { ...output, payment_addr: { bech32: wrongWallet } } : output
+    )) });
+    expect(await f.run(revokeRecord, ...CLEANUP)).toBe(1);
+    expect(f.w.evidence('revoke-record').some((entry) => entry.step === step && entry.status === 'verified')).toBe(false);
+    f.archive.set(built.txHash, archived);
+    // The archive still reports the payment when the fee change is no longer unspent.
+    f.w.world.chain.held = f.w.world.chain.held.filter((output) => output.txHash !== built.txHash || output.address !== f.fee);
+    expect(await f.run(revokeRecord, ...CLEANUP)).toBe(0);
+    expect(f.w.evidence('revoke-record').filter((entry) => entry.step === step && entry.status === 'verified')).toMatchObject([{
+      shows: { txHash: built.txHash, receivedBy: 'fee', feeWalletCreditLovelace: String(built.returnedLovelace - BigInt(archived.fee)) },
+    }]);
+    expect(f.hosted.calls.filter(({ name }) => name === TOOLS.reclaim)).toHaveLength(1);
+    expect(f.w.node.submitted).toHaveLength(2);
+    expect(f.signed.sort()).toEqual([BY, 'controller', 'fee', 'fee']);
   });
 
   it('refuses a live record and a tombstone without a matching fact', async () => {
     const f = await setup();
     expect(await f.run(revokeRecord, ...CLEANUP)).toBe(2);
-    expect(f.w.screen.errorText).toContain('not Revoked or Retired');
+    expect(f.w.screen.errorText).toContain('The record is not Revoked.');
     await replaceRecord(f, tombstone(f.parent, { type: 'Revoked', by: { type: 'KeyHash', hash: f.accountableHash }, reason: 9, at: WINDOW.lo, invalidFrom: null, successor: null }));
     expect(await f.run(revokeRecord, ...CLEANUP)).toBe(2);
     expect(f.w.screen.errorText).toContain('no matching revocation fact');

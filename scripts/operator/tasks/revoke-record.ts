@@ -7,6 +7,7 @@ import type { Party, Status } from '../../../packages/vector-read/src/identity-c
 import { iso } from '../../checks/lib/format.ts';
 import { PreconditionError } from '../../checks/lib/session.ts';
 import type { AgentSpec, OrganisationSpec, TaskDefinition } from '../lib/contract.ts';
+import { formatOutRef } from '../lib/platform.ts';
 import { recordFact, recordSpendStep, resolverReading } from '../lib/record-spend.ts';
 import { FlagError, runSteps } from '../lib/runner.ts';
 
@@ -88,24 +89,22 @@ function reclaimStep(agentId: string) {
     step: `reclaim:${agentId}`, agentId, tool: RECLAIM, expectSigners: ['controller', 'fee'], args: () => ({}),
     before(current, session) {
       const { status, controller } = current.record;
-      if (status.type !== 'Revoked' && status.type !== 'Retired') throw new PreconditionError('The record is not Revoked or Retired.');
+      if (status.type !== 'Revoked') throw new PreconditionError('The record is not Revoked. The lifecycle task reclaims retired records.');
       if (controller !== session.registry.publicKeyOf('controller')) throw new PreconditionError('The controller key does not control the selected record.');
       const facts = session.facts.read();
-      if (status.type === 'Revoked') {
-        const fact = facts.revocations[agentId];
-        const invalidFrom = status.invalidFrom === null ? null : iso(status.invalidFrom);
-        if (fact === undefined || fact.reason !== status.reason || fact.invalidFrom !== invalidFrom || fact.revokedAt !== iso(status.at)) {
-          throw new PreconditionError(`The pack holds no matching revocation fact for ${agentId}.`);
-        }
-      } else if (session.use.lifecycle?.agent !== agentId || facts.lifecycle.retire === undefined) {
-        throw new PreconditionError(`The pack holds no retirement fact for ${agentId}.`);
+      const fact = facts.revocations[agentId];
+      const invalidFrom = status.invalidFrom === null ? null : iso(status.invalidFrom);
+      if (fact === undefined || fact.reason !== status.reason || fact.invalidFrom !== invalidFrom || fact.revokedAt !== iso(status.at)) {
+        throw new PreconditionError(`The pack holds no matching revocation fact for ${agentId}.`);
+      }
+      const revocation = session.state.step('revoke');
+      const ref = formatOutRef(current.utxo.txHash, current.utxo.outputIndex);
+      if (revocation?.tx_hash !== fact.tx || revocation.verified_at === null || revocation.refs.recordAfter !== ref) {
+        throw new PreconditionError('Verify this record output in the revocation state before reclaiming its deposit.');
       }
     },
     after(after, _session, before) {
       return after.record.status.type === before.effective && after.utxo.assets.lovelace < BigInt(before.lovelace) ? [] : ['The tombstone did not release its surplus.'];
-    },
-    evidence(_session, before, after) {
-      return { releasedLovelace: String(BigInt(before.lovelace) - after.utxo.assets.lovelace), receivedBy: 'fee' };
     },
   });
 }
@@ -121,11 +120,13 @@ const task: TaskDefinition<Extra> = {
   },
   steps: () => ['revoke'],
   parse(_env, _settings, use, flags) {
+    if (flags.has('run')) throw new FlagError('Record revocation and reclaim take no --run label.');
     const id = flags.value('agent');
     let target: Target | null = null;
     if (id !== undefined) {
       const agent = use.agents.find((candidate) => candidate.id === id);
       if (agent === undefined) throw new FlagError(`--agent must name an agent in ${use.name}.`);
+      if (agent.end.record !== 'revoked') throw new FlagError('The use case does not mark the selected record for revocation.');
       const organisation = use.organisations.find((candidate) => candidate.id === agent.organisation);
       if (organisation === undefined) throw new PreconditionError(`The use case lists no organisation for ${id}.`);
       target = { agent, organisation };

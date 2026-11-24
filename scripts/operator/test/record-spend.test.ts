@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { awaitRecord, readRecord, recordSpendPlan, resolverReading } from '../lib/record-spend.ts';
+import { awaitRecord, readConfirmedRecordSpend, readRecord, recordSpendPlan, resolverReading } from '../lib/record-spend.ts';
 import { parseOperatorSettings } from '../lib/settings.ts';
 import priorAuth from '../usecases/prior-authorization.ts';
 import { spendWorld } from './support/record-spend-builds.ts';
@@ -39,5 +39,31 @@ describe('a record spend plan', () => {
     await expect(resolverReading({ hosted: f.hosted }, f.did)).resolves.toEqual({ read: 'ok', effective: 'Revoked', deactivated: true });
     f.hosted.handlers.vector_resolve_did = () => ({ text: `Failed: ${'abc'.repeat(22)}`, isError: true });
     await expect(resolverReading({ hosted: f.hosted }, f.did)).resolves.toEqual({ read: 'failed', message: 'The resolver message is not public.' });
+  });
+});
+
+describe('confirmed record-spend accounting', () => {
+  it('reads the exact transaction and returns raw details only when requested', async () => {
+    const { w, fee } = await setup();
+    const txHash = hashOf('confirmed transaction');
+    const inputHash = hashOf('spent output');
+    const raw = { inline_datum: { bytes: null, value: { constructor: 0, fields: [] } }, asset_list: [] };
+    const out = { tx_hash: txHash, tx_index: 0, payment_addr: { bech32: fee }, value: '9000000', ...raw };
+    const input = { ...out, tx_hash: inputHash, value: '10000000' };
+    let reported = [out];
+    const fetchImpl: typeof fetch = async (_url, init) => {
+      expect(JSON.parse(String(init?.body))).toEqual({ _tx_hashes: [txHash], _inputs: true, _assets: true, _scripts: true });
+      return Response.json([{ tx_hash: txHash, fee: '1000000', inputs: [input], outputs: reported }]);
+    };
+    const session = { node: w.node, chain: { ...w.chain, fetchImpl } };
+    w.node.script.push({ confirmations: 1 }, { confirmations: 1 }, { confirmations: 0 });
+    await expect(readConfirmedRecordSpend(session, txHash, { withDetails: true })).resolves.toStrictEqual({
+      fee: 1_000_000n, inputs: [{ ref: `${inputHash}#0`, address: fee, lovelace: 10_000_000n, ...raw }],
+      outputs: [{ ref: `${txHash}#0`, address: fee, lovelace: 9_000_000n, ...raw }],
+    });
+    reported = [out, out];
+    await expect(readConfirmedRecordSpend(session, txHash, { withDetails: true })).rejects.toThrow('same output reference more than once');
+    reported = [out];
+    await expect(readConfirmedRecordSpend(session, txHash, { withDetails: true })).rejects.toThrow('does not confirm the exact record spend');
   });
 });
