@@ -59,8 +59,8 @@ const MAX_ABOUT = 200;
 const CANNOT_FLUSH: Record<string, true> = { EPERM: true, EINVAL: true, EISDIR: true };
 
 /** The short code of a system error (EIO, ENOSPC), and nothing else of it: the message of a system error holds a path. */
-function codeOf(err: unknown): string {
-  const code = (err as NodeJS.ErrnoException | null)?.code;
+export function codeOf(err: unknown): string {
+  const code = typeof err === 'object' && err !== null && 'code' in err ? err.code : undefined;
   return typeof code === 'string' && /^[A-Z0-9_]{2,24}$/.test(code) ? code : 'ERROR';
 }
 

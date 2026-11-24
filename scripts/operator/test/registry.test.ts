@@ -423,10 +423,10 @@ describe('loadRegistry', () => {
 describe('what an error or the registry shows', () => {
   const seeds: string[] = [];
   const roots: string[] = [];
-  const errors: unknown[] = [];
+  const errors: Error[] = [];
   const marker = (): string => { const seed = counterSeed(); seeds.push(seed); return seed; };
   const root = (): string => { const made = makeKeyRoot(); roots.push(made); return made; };
-  const trap = (run: () => unknown): void => { try { run(); } catch (err) { errors.push(err); } };
+  const trap = (run: () => unknown): void => { try { run(); } catch (err) { errors.push(err instanceof Error ? err : new Error(String(err))); } };
 
   /** The markers that appear in a text, in either case: a whole seed, its first 16 characters or its last 16 characters, and the path of a key folder. */
   function leaks(texts: readonly string[]): string[] {
@@ -492,7 +492,7 @@ describe('what an error or the registry shows', () => {
     expect(errors.length).toBeGreaterThanOrEqual(25);
     for (const err of errors) {
       expect(err).toBeInstanceOf(KeyStoreError);
-      expect(leaks([(err as Error).message, String(err), inspect(err, { depth: 10, showHidden: true }), JSON.stringify(err)]), (err as Error).message).toEqual([]);
+      expect(leaks([err.message, String(err), inspect(err, { depth: 10, showHidden: true }), JSON.stringify(err)]), err.message).toEqual([]);
     }
   });
 
@@ -513,12 +513,14 @@ describe('what an error or the registry shows', () => {
 });
 
 describe('the public key file', () => {
-  interface Entry { scope: string; about: string; public_key_hex: string; key_hash: string; address: string }
+  type Entry = { scope: string; about: string; public_key_hex: string; key_hash: string; address: string };
   interface Shown { note: string; network: string; use_case: string; keys: Record<string, Entry>; [extra: string]: unknown }
   const NAMES = ['alpha', 'bravo', 'charlie'] as const;
   const flip = (hex: string): string => `${hex.slice(0, -1)}${hex.endsWith('0') ? '1' : '0'}`;
   const read = (path: string): Shown => JSON.parse(readFileSync(path, 'utf8')) as Shown;
   const rewrite = (path: string, change: (shown: Shown) => void): void => { const shown = read(path); change(shown); writeFileSync(path, `${JSON.stringify(shown, null, 2)}\n`); };
+  /** The entry of a key as a plain map, so that a test can add a member that the entry does not have and remove one that it has. */
+  const looseEntry = (shown: Shown, name: string): Record<string, unknown> => shown.keys[name]!;
 
   /** Test keys, the registry over them and the public file that the registry wrote. */
   function written() {
@@ -563,8 +565,8 @@ describe('the public key file', () => {
     ['a changed about text', (shown) => { shown.keys.bravo!.about = 'Another text.'; }],
     ['a missing key', (shown) => { delete shown.keys.bravo; }],
     ['an added key', (shown) => { shown.keys.delta = { ...shown.keys.bravo! }; }],
-    ['a member that an entry does not have', (shown) => { (shown.keys.bravo as unknown as Record<string, unknown>).extra = 'x'; }],
-    ['a missing member of an entry', (shown) => { delete (shown.keys.bravo as unknown as Record<string, unknown>).about; }],
+    ['a member that an entry does not have', (shown) => { looseEntry(shown, 'bravo').extra = 'x'; }],
+    ['a missing member of an entry', (shown) => { delete looseEntry(shown, 'bravo').about; }],
     ['a member that the file does not have', (shown) => { shown.extra = 'x'; }],
     ['another use case', (shown) => { shown.use_case = 'another-case'; }],
     ['an empty network', (shown) => { shown.network = ''; }],
