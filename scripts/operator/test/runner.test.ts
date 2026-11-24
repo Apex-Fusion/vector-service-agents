@@ -22,7 +22,8 @@ import { FactsConflict, FactsError, FactsFile } from '../lib/facts.ts';
 import { ToolRefused } from '../lib/land-hosted.ts';
 import { LoadError } from '../lib/load.ts';
 import { KeyStoreError, loadRegistry } from '../lib/registry.ts';
-import { FlagError, RunLockError, inputsToCheck, parseArguments, reportError, runCli, runSteps, runTask, usageLines, waitFor } from '../lib/runner.ts';
+import type { NodeAccess } from '../../checks/lib/ports.ts';
+import { FlagError, RunLockError, checkInputs, inputsToCheck, judgeInputs, parseArguments, reportError, runCli, runSteps, runTask, usageLines, waitFor } from '../lib/runner.ts';
 import type { StepHandler } from '../lib/runner.ts';
 import { TASK_NAMES } from '../tasks/names.ts';
 import { MemoryOutput } from './support/fakes.ts';
@@ -89,6 +90,13 @@ describe('the arguments', () => {
     expect(parsed().flags.has('label')).toBe(false);
     expect(parsed().flags.value('label')).toBeUndefined();
   });
+  it('take the hash of a transaction with --release for the command cleanup, in both spellings, and give it to the run', () => {
+    const hash = 'ab'.repeat(32);
+    expect(parsed('cleanup', '--release', hash)).toMatchObject({ command: 'cleanup', release: hash, mode: 'dry' });
+    expect(parsed(`--release=${hash}`, 'cleanup', '--submit')).toMatchObject({ command: 'cleanup', release: hash, mode: 'submit' });
+    expect(parsed('cleanup').release).toBeNull();
+    expect(parsed().release).toBeNull();
+  });
   it('refuse a name that the task does not list when the task asks for it', () => {
     const flags = parsed().flags;
     expect(() => flags.has('typo')).toThrow('does not list');
@@ -119,6 +127,15 @@ describe('the arguments', () => {
     [['--run', ''], 'the flag --run needs a value'],
     [['--use-case='], 'the flag --use-case needs a value'],
     [['--use-case', ''], 'the flag --use-case needs a value'],
+    [['--release', 'a'.repeat(64)], '--release goes with the command cleanup only'],
+    [['run', '--release', 'a'.repeat(64)], '--release goes with the command cleanup only'],
+    [['status', `--release=${'a'.repeat(64)}`], 'takes only --run and --use-case'],
+    [['cleanup', '--release', 'abc'], '--release is the hash of a transaction'],
+    [['cleanup', `--release=${'A'.repeat(64)}`], '--release is the hash of a transaction'],
+    [['cleanup', '--release='], 'the flag --release needs a value'],
+    [['cleanup', '--release', ''], 'the flag --release needs a value'],
+    [['cleanup', '--release', '--submit'], 'the flag --release needs a value'],
+    [['cleanup', `--release=${'a'.repeat(64)}`, `--release=${'b'.repeat(64)}`], 'the flag --release is given twice'],
     [['--extra=1'], 'the flag --extra takes no value'],
     [['--submit=1'], 'the flag --submit takes no value'],
     [['--all=1'], 'the flag --all takes no value'],
@@ -770,8 +787,8 @@ describe('a transaction in flight', () => {
         const applied = w.world.chain.applied.length;
         w.node.script.push({ confirmations: null }, { confirmations: null });
         expect(await w.run(def, ...argv), argv.join(' ')).toBe(2);
-        expect(w.screen.errorText).toContain(`the transaction ${hash} of the step one is not known to the indexer, and its validity ended at ${iso(NOW + 30 * 60_000)}, but its inputs are spent (${inputs.length} of ${inputs.length}).`);
-        expect(w.screen.errorText).toContain('The operator must check the chain for the transaction and for its inputs before the next run.');
+        expect(w.screen.errorText).toContain(`the transaction ${hash} of the step one is not known to the indexer, and its validity ended at ${iso(NOW + 30 * 60_000)}, but all ${inputs.length} of its inputs are spent, and a transaction that landed spends all of them. It may have landed.`);
+        expect(w.screen.errorText).toContain(`the operator lets it go with the command cleanup and the flags --release=${hash} and --submit.`);
         expect(w.node.inputReads[0], argv.join(' ')).toEqual(inputs);
         expect(w.screen.text).not.toContain('is released');
         expect(w.state('toy').in_flight?.tx_hash).toBe(hash);
@@ -787,23 +804,107 @@ describe('a transaction in flight', () => {
         expect(w.state('toy').in_flight).toBeNull();
       }
     });
-    it('keeps a transaction when another transaction spent one of its inputs: the inputs do not say who spent them', async () => {
-      const w = await taskWorld();
-      const ran: string[] = [];
-      const { hash, def, inputs } = await strand(w, ran, { applied: false });
-      const other = await w.world.simplePayment(w.keys.registry.addressOf('run'), 2_000_000n, w.keys.registry.addressOf('fee'));
-      const signed = w.keys.registry.ring.sign(w.keys.registry.hashOf('run'), other.unsignedCbor);
-      const shared = factsOf(signed).inputs.filter((ref) => inputs.includes(ref)).length;
-      expect(shared).toBeGreaterThan(0);
-      w.world.chain.apply(signed);
-      w.clock.t = AFTER_VALIDITY;
-      w.node.neverConfirm = false;
-      w.node.script.push({ confirmations: null }, { confirmations: null });
-      expect(await w.run(def, '--submit')).toBe(2);
-      expect(w.screen.errorText).toContain(`its inputs are spent (${shared} of ${inputs.length}).`);
-      expect(w.state('toy').in_flight?.tx_hash).toBe(hash);
-      expect(w.exposure().map((entry) => entry.tx_hash)).toEqual([hash]);
-      expect(ran).toEqual(['one']);
+    describe('a lost transaction whose inputs other transactions spent', () => {
+      /** A world whose run wallet holds eight outputs of 2 units: the payment of 3 units of the toy task needs two or three of them, so that a lost transaction has more than one input, and the wallet can pay again after other transactions spent those inputs. */
+      const manySmall = (): Promise<TaskWorld> => taskWorld({ wallets: { run: Array.from({ length: 8 }, () => 2_000_000n), fee: [1_000_000_000n, 5_000_000n] } });
+      /** Takes the outputs at these references from the world, as if other transactions had spent them. */
+      const spendByOthers = (w: TaskWorld, refs: readonly string[]): void => {
+        w.world.chain.held = w.world.chain.held.filter((utxo) => !refs.includes(`${utxo.txHash}#${utxo.outputIndex}`));
+      };
+      it('lets the transaction go when another transaction spent one of its inputs and the others are unspent: a transaction that landed spends all of its inputs', async () => {
+        const w = await manySmall();
+        const ran: string[] = [];
+        const { hash, def, inputs } = await strand(w, ran, { applied: false });
+        expect(inputs.length).toBeGreaterThanOrEqual(2);
+        spendByOthers(w, [inputs[0]!]);
+        w.clock.t = AFTER_VALIDITY;
+        w.node.neverConfirm = false;
+        w.node.script.push({ confirmations: null }, { confirmations: null });
+        expect(await w.run(def, '--submit')).toBe(0);
+        expect(w.screen.text).toContain('Its reserve of the cap is released.');
+        expect(w.exposure().map((entry) => entry.tx_hash)).not.toContain(hash);
+        expect(ran).toEqual(['one', 'one']);
+        expect(w.state('toy').steps.one!.tx_hash).not.toBe(hash);
+      });
+      it('keeps the transaction when other transactions spent all of its inputs, and lets it go at the word of the operator: cleanup --release with its hash, after a check of the chain', async () => {
+        const w = await manySmall();
+        const ran: string[] = [];
+        const { hash, def, inputs } = await strand(w, ran, { applied: false });
+        spendByOthers(w, inputs);
+        w.clock.t = AFTER_VALIDITY;
+        w.node.neverConfirm = false;
+        w.node.script.push({ confirmations: null }, { confirmations: null });
+        expect(await w.run(def, '--submit')).toBe(2);
+        expect(w.screen.errorText).toContain(`but all ${inputs.length} of its inputs are spent, and a transaction that landed spends all of them. It may have landed.`);
+        expect(w.screen.errorText).toContain(`--release=${hash} and --submit`);
+        expect(w.state('toy').in_flight?.tx_hash).toBe(hash);
+        expect(ran).toEqual(['one']);
+        const reads = w.node.reads.length;
+        const tips = w.node.tipReads;
+        const networks = w.node.networkReads;
+        reset(w);
+        expect(await w.run(def, 'cleanup', '--release', hash)).toBe(0);
+        expect(w.screen.text).toContain(`the transaction ${hash} of the step one would be let go, and its reserve of the cap would be given back. A dry run lets nothing go.`);
+        expect(w.state('toy').in_flight?.tx_hash).toBe(hash);
+        expect(w.exposure().map((entry) => entry.tx_hash)).toEqual([hash]);
+        expect(w.evidence('toy')).toEqual([]);
+        expect(w.machine()).toMatchObject({ command: 'cleanup', mode: 'dry', outcome: 'dry', exit: 0, step: 'one' });
+        reset(w);
+        expect(await w.run(def, 'cleanup', `--release=${hash}`, '--submit')).toBe(0);
+        expect(w.screen.text).toContain(`the operator says that the chain was checked and that the transaction ${hash} of the step one is not there: it is let go.`);
+        expect(w.screen.text).toContain('Its reserve of the cap is released.');
+        expect(w.screen.text).not.toContain('there is nothing to take back');
+        expect(w.state('toy').in_flight).toBeNull();
+        expect(w.state('toy').steps).toEqual({});
+        expect(w.exposure()).toEqual([]);
+        expect(w.evidence('toy')).toEqual([expect.objectContaining({ step: 'one', status: 'info', shows: { note: 'the operator lets the transaction go, and says that the chain was checked', transaction: hash, session: 's1' } })]);
+        expect(w.machine()).toMatchObject({ command: 'cleanup', mode: 'submit', outcome: 'done', exit: 0, step: 'one' });
+        expect(w.node.reads).toHaveLength(reads);
+        expect(w.node.tipReads).toBe(tips);
+        expect(w.node.networkReads).toBe(networks);
+        reset(w);
+        const rebuilt = await w.run(def, '--submit');
+        expect(rebuilt, w.screen.errorText).toBe(0);
+        expect(ran).toEqual(['one', 'one']);
+        expect(w.state('toy').steps.one!.tx_hash).not.toBe(hash);
+      });
+      it('refuses --release for a hash that is not the transaction in flight, and when nothing is in flight: nothing changes', async () => {
+        const w = await taskWorld();
+        const { hash, def } = await strand(w, [], { applied: false });
+        for (const argv of [[], ['--submit']]) {
+          reset(w);
+          expect(await w.run(def, 'cleanup', `--release=${'cd'.repeat(32)}`, ...argv), argv.join(' ')).toBe(2);
+          expect(w.screen.errorText).toContain(`the transaction in flight is ${hash} of the step one, and --release names another transaction: nothing is let go`);
+          expect(w.state('toy').in_flight?.tx_hash).toBe(hash);
+          expect(w.exposure().map((entry) => entry.tx_hash)).toEqual([hash]);
+          expect(w.evidence('toy')).toEqual([]);
+          expect(w.machine()).toMatchObject({ command: 'cleanup', outcome: 'stopped', exit: 2 });
+        }
+        const idle = await taskWorld();
+        idle.writeGo();
+        expect(await idle.run(toyTask(twoSteps([])), 'cleanup', `--release=${hash}`, '--submit')).toBe(2);
+        expect(idle.screen.errorText).toContain('no transaction is in flight, so --release has nothing to let go');
+      });
+      it('refuses --release under an approval that does not allow the task, and leaves the transaction in flight', async () => {
+        const w = await taskWorld();
+        const { hash, def } = await strand(w, [], { applied: false });
+        w.writeGo({ tasks: ['other'] });
+        expect(await w.run(def, 'cleanup', `--release=${hash}`, '--submit')).toBe(2);
+        expect(w.screen.errorText).toContain('does not list the task toy');
+        expect(w.state('toy').in_flight?.tx_hash).toBe(hash);
+        expect(w.exposure().map((entry) => entry.tx_hash)).toEqual([hash]);
+        expect(w.evidence('toy')).toEqual([]);
+      });
+      it('lets the transaction go for a task that needs no approval, and says that its reserve stays when no approval file is loaded', async () => {
+        const w = await taskWorld();
+        const { hash } = await strand(w, [], { applied: false });
+        rmSync(w.goPath);
+        expect(await w.run(unapproved([]), 'cleanup', '--release', hash, '--submit')).toBe(0);
+        expect(w.screen.text).toContain('No approval file is loaded, so its reserve stays in the cap file of its session.');
+        expect(w.state('toy').in_flight).toBeNull();
+        expect(w.exposure().map((entry) => entry.tx_hash)).toEqual([hash]);
+        expect(w.evidence('toy')).toEqual([expect.objectContaining({ status: 'info', shows: expect.objectContaining({ transaction: hash, session: null }) })]);
+      });
     });
     it('keeps a transaction when the node cannot say whether its inputs are spent, and lets it go at the next run that can', async () => {
       const w = await taskWorld();
@@ -1065,6 +1166,63 @@ describe('a transaction in flight', () => {
   }
   it('stops a submit run with exit 2 before the settle when the approval file no longer lists the task: the bytes are not submitted again', () => stopsBeforeTheSettle(() => ({ tasks: ['other'] }), 'does not list the task toy'));
   it('stops a submit run with exit 2 before the settle when the approval file names another run wallet: the bytes are not submitted again', () => stopsBeforeTheSettle((w) => ({ runWallet: w.keys.registry.addressOf('fee') }), 'another run wallet'));
+});
+
+describe('the rule for the inputs of a lost transaction', () => {
+  const INPUTS = ['aa#0', 'bb#0'];
+  const COLLATERAL = ['cc#0', 'dd#0'];
+  const cases: Array<[string, string[], string[], string[], 'unspent' | 'spent', string]> = [
+    ['every input unspent and no collateral input', INPUTS, [], INPUTS, 'unspent', ''],
+    ['one of two inputs unspent, the other spent by another transaction, and no collateral input', INPUTS, [], ['bb#0'], 'unspent', ''],
+    ['every input spent, because a transaction that landed spends all of them', INPUTS, [], [], 'spent', 'all 2 of its inputs are spent'],
+    ['every input spent and the collateral inputs unspent', INPUTS, COLLATERAL, COLLATERAL, 'spent', 'all 2 of its inputs are spent'],
+    ['an input unspent and every collateral input spent, because a script that failed spends all of them', INPUTS, COLLATERAL, ['aa#0'], 'spent', 'all 2 of its collateral inputs are spent'],
+    ['an input and one of two collateral inputs unspent', INPUTS, COLLATERAL, ['aa#0', 'dd#0'], 'unspent', ''],
+    ['every input and every collateral input unspent', INPUTS, COLLATERAL, [...INPUTS, ...COLLATERAL], 'unspent', ''],
+    ['no input at all', [], [], [], 'spent', 'it has no input'],
+  ];
+  for (const [name, inputs, collateral, unspent, kind, why] of cases) {
+    it(`judges ${name}: ${kind}`, () => {
+      const verdict = judgeInputs(inputs, collateral, new Set(unspent));
+      expect(verdict.kind).toBe(kind);
+      if (verdict.kind === 'spent') expect(verdict.why).toContain(why);
+    });
+  }
+  /** A node that holds the references in `unspent` as outputs and has its tip at the slot `tip`, and the lists of references that it was asked for. */
+  const stub = (unspent: readonly string[], tip = 2000): { node: NodeAccess; asked: string[][] } => {
+    const asked: string[][] = [];
+    const node: NodeAccess = {
+      networkFacts: async () => { throw new Error('not asked'); },
+      networkTip: async () => ({ slot: tip }),
+      resolveInputs: async (refs) => {
+        asked.push([...refs]);
+        return refs.filter((ref) => unspent.includes(ref)).map((ref) => ({ txHash: ref.slice(0, ref.indexOf('#')), outputIndex: Number(ref.slice(ref.indexOf('#') + 1)), address: 'addr_test', assets: {} }));
+      },
+      submit: async () => { throw new Error('not asked'); },
+      txStatus: async () => { throw new Error('not asked'); },
+    };
+    return { node, asked };
+  };
+  it('asks the node for the inputs and the collateral inputs, each reference once, and judges the answer with the collateral inputs', async () => {
+    const facts = { inputs: INPUTS, collateralInputs: ['cc#0', 'aa#0'], validityEndSlot: 1000n };
+    const free = stub(['aa#0', 'cc#0']);
+    expect(await checkInputs(free.node, facts)).toEqual({ kind: 'unspent' });
+    expect(free.asked).toEqual([['aa#0', 'bb#0', 'cc#0']]);
+    const failed = stub(['bb#0']);
+    expect(await checkInputs(failed.node, facts)).toEqual({ kind: 'spent', why: 'all 2 of its collateral inputs are spent, and a script that failed spends all of them' });
+    const landed = stub(['cc#0']);
+    expect(await checkInputs(landed.node, facts)).toMatchObject({ kind: 'spent', why: expect.stringContaining('all 2 of its inputs are spent') });
+  });
+  it('counts the answer of the node only past the end of the validity and the margin, and reads nothing from the node for a transaction that has no input or no end of validity', async () => {
+    const facts = { inputs: INPUTS, collateralInputs: [], validityEndSlot: 1000n };
+    expect(await checkInputs(stub(INPUTS, 1020).node, facts)).toMatchObject({ kind: 'unreadable' });
+    expect(await checkInputs(stub(INPUTS, 1021).node, facts)).toEqual({ kind: 'unspent' });
+    expect(await checkInputs(stub(INPUTS, Number.NaN).node, facts)).toMatchObject({ kind: 'unreadable' });
+    const none = stub(INPUTS);
+    expect(await checkInputs(none.node, { ...facts, inputs: [] })).toEqual({ kind: 'unreadable', why: 'the transaction has no input' });
+    expect(await checkInputs(none.node, { ...facts, validityEndSlot: null })).toMatchObject({ kind: 'unreadable', why: expect.stringContaining('no end of validity') });
+    expect(none.asked).toEqual([]);
+  });
 });
 
 describe('the status', () => {
