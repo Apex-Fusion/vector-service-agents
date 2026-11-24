@@ -15,6 +15,8 @@ import { accepted, isPlainObject } from '@vsa/usecase-kit/protocol';
 import type { Handoff, JsonValue } from '@vsa/usecase-kit/protocol';
 import type { AttestationReport, CompletenessChoice, IntakeDeps, ReportInput, TakenChecks } from '../../src/job/ports.ts';
 import { IntakeRefusal } from '../../src/job/refusal.ts';
+import type { IntakeRecord } from '@vsa/usecase-kit/priorauth';
+import { runIntake } from '../../src/job/intake.ts';
 import { ADVERT_REF, ATTESTATIONS, BASES, BUYER_PKH, ESCROW_REF, REQUIREMENTS, decisionOf, handoffOf, priorRequest, recordFor } from './samples.ts';
 
 /** One call that reached the portal, as `fetch` gave it: the header names are in lower case. */
@@ -196,6 +198,11 @@ export interface Rig {
   logThrows: boolean;
   /** True when the waits of the clock end at once. */
   expireWaits: boolean;
+  /**
+   * Runs the job with the ports of the rig, at the time of the clock of the rig. `over` replaces the handoff, the context, the signal, or members of the deps: a test that must change one port gives that
+   * member and leaves the others to the rig.
+   */
+  run(over?: { readonly request?: Handoff; readonly context?: JobContext; readonly signal?: AbortSignal; readonly deps?: Partial<IntakeDeps> }): Promise<IntakeRecord>;
 }
 
 /** A rig in which every port gives what the job needs: the record is kept, the gateway issues the SVID, the portal serves the requirements and files the request, and the model finds the request complete. */
@@ -269,6 +276,7 @@ export function makeRig(options: RigOptions = {}): Rig {
         logs.push(line);
       },
     },
+    run: (over = {}) => runIntake({ ...rig.deps, ...over.deps }, over.request ?? request, over.context ?? context, gateway.now(), over.signal),
   };
   return rig;
 }

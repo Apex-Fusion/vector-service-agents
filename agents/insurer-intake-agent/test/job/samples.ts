@@ -8,6 +8,8 @@ import { INTAKE_CHECKS, PRIORAUTH_REQUEST_SCHEMA } from '@vsa/usecase-kit/priora
 import { HANDOFF_SCHEMA, canonicalSha256, parseHandoff } from '@vsa/usecase-kit/protocol';
 import type { Decision, Digest, Document, Handoff, JsonValue, SubJob } from '@vsa/usecase-kit/protocol';
 import type { AttestationReport, CompletenessChoice, TakenChecks } from '../../src/job/ports.ts';
+import { INTAKE_RECORD_SCHEMA } from '@vsa/usecase-kit/priorauth';
+import type { IntakeRecord } from '@vsa/usecase-kit/priorauth';
 
 /** The two origins of the mock service, for a test with no server. */
 export const BASES: MockBases = { publicBase: 'https://mock.example', mtlsBase: 'https://mock-mtls.example' };
@@ -133,3 +135,29 @@ export function failureOf(code: DecisionFailure['code'], over: Partial<DecisionF
 
 /** What the report of the attestations of the sender gives when all three are valid. */
 export const ATTESTATIONS: AttestationReport = { provenance: 'valid', software: 'valid', principal_binding: 'valid' };
+
+// --- the intake record -----------------------------------------------------------------------------------------------------------------------------
+
+/** The id that the insurer portal of the rig gives to the first request of the tenant `run1`. */
+export const INTAKE_ID = 'IN-run1-0001';
+
+/** An intake record that the parser of the kit takes: the sample request, complete, with the sample report and the sample decision. `over` replaces members. */
+export function intakeRecordOf(over: Partial<IntakeRecord> = {}): IntakeRecord {
+  return {
+    schema: INTAKE_RECORD_SCHEMA,
+    outcome: 'done',
+    request_number: String(PRIOR_REQUEST.request_number),
+    request_sha256: PRIOR_REQUEST_SHA256,
+    status: 'complete',
+    missing: [],
+    intake_id: INTAKE_ID,
+    sender: { did: SENDER_DID, organisation: 'buyer.example', organisation_verified: true },
+    approval: { attestation: ATTESTATION_ID, issuer_did: ISSUER_DID, valid_until: VALID_UNTIL },
+    attestations: ATTESTATIONS,
+    // Every name of INTAKE_CHECKS is a member with the value true (see CHECKS), so the entries make the object of the type.
+    checks: CHECKS as IntakeRecord['checks'],
+    decisions: [decisionOf()],
+    fault_mode: '',
+    ...over,
+  };
+}
