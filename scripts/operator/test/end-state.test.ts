@@ -595,21 +595,33 @@ describe('the task end-state', () => {
       expect(dated.world.screen.lines.find((line) => line.startsWith('WAIT: '))).toContain(`(until ${iso(JURY_UNTIL)})`);
     }, SLOW);
 
-    it('says NOT DONE with status for every state that is not done, and exits 0 because the runner ends status so', async () => {
+    it('never ends status with exit 0 or the outcome done for a state that is not done: a claim, a delegation, a hold and a wait all end with exit 1', async () => {
       const claim = await makeRig();
       claim.ledger.live.push(openClaim({ ageMs: 5 * HOUR }));
-      expect(await claim.run('status')).toBe(0);
+      expect(await claim.run('status')).toBe(1);
       expect(claim.world.screen.lines).toContain('end state: NOT DONE: 1 check(s) fail (claims:reorder-agent) and 0 check(s) wait (none)');
       expect(claim.world.screen.text).not.toContain('end state: DONE');
+      expect(claim.errors()).toContain('the end state is not reached: 1 check(s) fail (claims:reorder-agent)');
+      expect(claim.world.machine()).toMatchObject({ command: 'status', outcome: 'failed', exit: 1 });
+      const open = await makeRig();
+      open.ledger.live.push(openClaim({ ageMs: HOUR }));
+      expect(await open.run('status')).toBe(1);
+      expect(open.errors()).toContain('the end state is not reached yet: 1 check(s) wait (claims:reorder-agent)');
+      expect(open.world.screen.text).not.toContain('end state: DONE');
+      expect(open.world.machine()).toMatchObject({ command: 'status', outcome: 'failed', exit: 1 });
       const delegated = await makeRig();
       delegated.ledger.live.push(delegationUtxo(hash('delegation 1'), delegation({ delegate: REORDER_ID })));
-      expect(await delegated.run('status')).toBe(0);
+      expect(await delegated.run('status')).toBe(1);
       expect(delegated.world.screen.text).not.toContain('end state: DONE');
       const held = await makeRig();
       held.setRecord(ORDER_ID, PARTY_HELD);
-      expect(await held.run('status')).toBe(0);
+      expect(await held.run('status')).toBe(1);
       expect(held.world.screen.text).not.toContain('end state: DONE');
-      expect(held.world.machine()).toMatchObject({ command: 'status', outcome: 'done', exit: 0 });
+      expect(held.world.machine()).toMatchObject({ command: 'status', outcome: 'failed', exit: 1 });
+      const jury = await makeRig();
+      jury.setRecord(ORDER_ID, JURY_HELD);
+      expect(await jury.run('status')).toBe(1);
+      expect(jury.world.screen.lines.some((line) => line.startsWith('WAIT record_active:order-desk: '))).toBe(true);
     }, SLOW);
 
     it('takes nothing back in cleanup', async () => {

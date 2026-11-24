@@ -1,7 +1,8 @@
 // scripts/operator/tasks/end-state.ts - the task `end-state`: a read-only check of the end state that the build of the use case wants after the last run.
 //
 //   run      reads the end state, prints each check, and ends with the exit code of the whole: 0 when every check is ok, 4 when no check fails and some wait, 1 when a check fails
-//   status   reads the same and prints the same lines. The runner ends `status` with exit 0 whatever the lines say, so the exit code of the check comes from `run`
+//   status   reads the same and prints the same lines. It ends with exit 0 when every check is ok. The runner cannot end `status` with exit 4, so a status that is not done ends with exit 1, a wait
+//            included. It never ends with exit 0 and the outcome done for a state that is not done
 //
 // The agents that work stay listed and funded. No claim is open, no delegation of a hirer is live, no hold of this pack is on, each record is Active, each organisation is verified, and the
 // deposits that return have their dates. Each check has a name, a result (`ok`, `wait` or `fail`) and a line that says in words what is still to do. A source that cannot be read is a `fail` with
@@ -525,19 +526,23 @@ function reportLines(checks: readonly Check[]): string[] {
   return [...checks.map((check) => `${check.result.toUpperCase().padEnd(4)} ${check.name}: ${check.line}`), last];
 }
 
+/** The message that ends a run or a status that did not reach the end state. */
+function notReached(checks: readonly Check[], verdict: 'wait' | 'fail'): string {
+  const count = checks.filter((check) => check.result === verdict).length;
+  return verdict === 'fail'
+    ? `the end state is not reached: ${count} check(s) fail (${namesOf(checks, 'fail')}). The lines above say what is still to do`
+    : `the end state is not reached yet: ${count} check(s) wait (${namesOf(checks, 'wait')}). The lines above say what is still to do`;
+}
+
 async function run(session: TaskSession<EndStateExtra>): Promise<StepOutcome> {
   const checks = await readEndState(session);
   session.extra.checks = checks;
   for (const line of reportLines(checks)) session.out.out(line);
   const verdict = verdictOf(checks);
-  if (verdict === 'fail') throw new EndStateError(`the end state is not reached: ${checks.filter((check) => check.result === 'fail').length} check(s) fail (${namesOf(checks, 'fail')}). The lines above say what is still to do`);
+  if (verdict === 'fail') throw new EndStateError(notReached(checks, verdict));
   if (verdict === 'wait') {
-    const waits = checks.filter((check) => check.result === 'wait');
-    const ends = waits.map((check) => check.untilMs);
-    return {
-      kind: 'wait', message: `the end state is not reached yet: ${waits.length} check(s) wait (${namesOf(checks, 'wait')}). The lines above say what is still to do`,
-      untilMs: ends.every((end): end is number => end !== null) ? Math.max(...ends) : null,
-    };
+    const ends = checks.filter((check) => check.result === 'wait').map((check) => check.untilMs);
+    return { kind: 'wait', message: notReached(checks, verdict), untilMs: ends.every((end): end is number => end !== null) ? Math.max(...ends) : null };
   }
   return { kind: 'finished', message: 'the end state is reached: every check is ok' };
 }
@@ -555,7 +560,12 @@ const endState: TaskDefinition<EndStateExtra> = {
   async status(session) {
     const checks = await readEndState(session);
     session.extra.checks = checks;
-    return reportLines(checks);
+    const lines = reportLines(checks);
+    const verdict = verdictOf(checks);
+    if (verdict === 'done') return lines;
+    // The runner ends `status` with exit 0 and the outcome done whatever a task shows. A state that is not done must not look done: the lines go out first, and the error ends the command with exit 1.
+    for (const line of lines) session.out.out(line);
+    throw new EndStateError(notReached(checks, verdict));
   },
   result: (session) => (session.extra.checks === null ? {} : { verdict: verdictOf(session.extra.checks), checks: session.extra.checks.map(({ name, result, line }) => ({ name, result, line })) }),
 };
