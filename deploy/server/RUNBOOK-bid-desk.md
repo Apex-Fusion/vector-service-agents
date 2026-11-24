@@ -126,7 +126,7 @@ The keys come from the operator pack, and the key rules of RUNBOOK.md (section "
 - The supplier key of a Bid Desk goes in the four `SUPPLIER_` lines of its file. It is the key of its runtime. The service reads only the two public lines, `SUPPLIER_PKH` and `SUPPLIER_PUB_KEY_HEX`: the compose file blanks `SUPPLIER_PRIV_KEY_HEX` for the service.
 - The service key of a Bid Desk goes in `BID_DESK_SERVICE_PRIV_KEY_HEX` of its file. It pays for the model hire of each quote and signs the transactions of the janitor. It is never the supplier key. The compose file blanks the line for the runtime. `BID_DESK_SERVICE_PKH` is its key hash. The line is public and optional. When it has a value, the service checks it against the key at start.
 
-The two keys of a Bid Desk have two wallets. Each wallet needs two transfers. The first is one pure output, alone, as collateral. The second is a float for the fees of its jobs. The funding table of the operator pack gives the sizes. A wallet that gets both in one transfer can have its collateral merged into change by an ordinary transaction. The wallet of the service key also holds the stake of the claim of its Bid Desk, which the operator commands make (section "The operator pack").
+The two keys of a Bid Desk have two wallets. Each wallet needs two transfers. The first is one pure output, alone, as collateral. The second is a float for the fees of its jobs. The funding table of the operator pack gives the sizes. A wallet that gets both in one transfer can have its collateral merged into change by an ordinary transaction. The wallet of the service key also funds the claim of its Bid Desk (section "The operator pack").
 
 Make the three tokens, and write each one into its own file. The command prints nothing, and it makes a new token for each file:
 
@@ -563,6 +563,8 @@ To take one Bid Desk out of service, retire its listing first. An escrow that al
 
 ## The operator pack
 
-The claim of each Bid Desk is made with the operator commands of the operator pack, and never by the service. The claim is the three statements in `behaviour.claim` of the manifest. The stake of the claim and its record belong to the service key of that Bid Desk: the operator commands make them, one Bid Desk at a time. The service has no claim code and no dispute code, and it never challenges. A challenge against the claim of a Bid Desk comes from the Sourcing Agent, and never from this service.
+The `claim` task of the operator pack supports one Module-1 claim for each Bid Desk before each clean or failure run. The task signs with the service key of that Bid Desk. The stake is 50 units (50,000,000 lovelace). The challenge window is 24 hours. After the window, `claim cleanup` withdraws the claim if nobody challenged it. The operator CLI does not enable use case 3 yet.
+
+The claim holds the three statements in `behaviour.claim` of the manifest. The task signs the claim document transaction and then the stake transaction, one Bid Desk at a time. The service has no claim code and no dispute code, and it never challenges. A challenge against the claim of a Bid Desk comes from the Sourcing Agent, and never from this service.
 
 This runbook starts the three services and the three runtimes. It never makes a stake, a claim or a record.
