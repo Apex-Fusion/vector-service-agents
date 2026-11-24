@@ -1,9 +1,11 @@
 // agents/sourcing-agent/src/bidders/file.ts
 // `readBidders` lists the Bid Desks that quote on the marketplace, reads for each one its facts through ports, and gives the FILE that the model reads and the price list that the quote check needs.
 //
-//   1. The candidates come from `discoverCandidates`: the adverts that the indexer lists and the chain shows. A listing that cannot be read is `bidders_unavailable`, and no candidate is `no_bidders`.
+//   1. The candidates come from `discoverCandidates`: the adverts that the indexer lists, the chain shows and whose record lists the supplier key. It reads the DID resolution of each one. A listing that cannot be read
+//      is `bidders_unavailable`, and no candidate is `no_bidders`.
 //   2. The catalog of the gateway is read one time. A catalog that cannot be read is `null`, and `in_catalog` of each file is then `null`.
-//   3. Each candidate is read, at most `MAX_PARALLEL_READS` at one time: its price list, its DID resolution, its stake, its cases, its compliance attestation and its credential, one after the other.
+//   3. Each candidate is read, at most `MAX_PARALLEL_READS` at one time: its price list, its stake, its cases, its compliance attestation and its credential, one after the other. Its status, its lineage and its
+//      organisation come from the resolution that discovery read.
 //
 // A fact is data for the model and never a filter in code: a bidder with a bad fact still has its file. The only bidders that leave no file are the ones that discovery drops. A source that cannot be read gives
 // the state `unreadable` or the value `null` in its own member and never ends the read: a port that throws, does not answer within `FACT_READ_TIMEOUT_MS`, or has no time left in `BIDDER_READ_BUDGET_MS`.
@@ -17,7 +19,6 @@ import type { Did, ProtocolResult } from '@vsa/usecase-kit/protocol';
 import { discoverCandidates, readPriceList, startBudget, viaPort } from './discover.ts';
 import type { Budget, Candidate } from './discover.ts';
 import { factsOfResolution, timeOfIso, unreadableRecord } from './lineage.ts';
-import type { RecordFacts } from './lineage.ts';
 import { BIDDER_READ_BUDGET_MS, FACT_READ_TIMEOUT_MS, MAX_PARALLEL_READS } from './types.ts';
 import type { BidderFile, BidderView, BiddersDeps, BiddersOptions, ComplianceFact, FactState } from './types.ts';
 
@@ -48,12 +49,6 @@ function boundOf(value: unknown, name: string, ceiling: number): number {
 }
 
 // --- The facts of one bidder -------------------------------------------------------------------------------------------------------------------------
-
-/** The DID resolution of a bidder, as the members of the file. A call that failed gives the status `unreadable`. */
-async function recordOf(deps: BiddersDeps, budget: Budget, did: Did): Promise<RecordFacts> {
-  const read = await viaPort(budget, () => deps.resolve(did));
-  return read.ok ? factsOfResolution(read.value, did, budget.now()) : unreadableRecord();
-}
 
 /** The stake as decimal text, or null for a stake that could not be read: never 0. */
 async function stakeOf(deps: BiddersDeps, budget: Budget, agentId: string): Promise<string | null> {
@@ -133,7 +128,7 @@ async function complianceOf(deps: BiddersDeps, budget: Budget, did: Did): Promis
 async function readBidder(deps: BiddersDeps, budget: Budget, catalog: ReadonlySet<Did> | null, candidate: Candidate): Promise<BidderView> {
   const { did } = candidate;
   const price = await readPriceList(deps, budget, candidate);
-  const record = await recordOf(deps, budget, did);
+  const record = candidate.resolution === null ? unreadableRecord() : factsOfResolution(candidate.resolution, did, budget.now());
   const stake = await stakeOf(deps, budget, agentIdOf(did));
   const cases = await casesOf(deps, budget, did);
   const compliance = await complianceOf(deps, budget, did);

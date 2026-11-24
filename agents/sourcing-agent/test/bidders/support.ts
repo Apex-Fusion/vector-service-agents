@@ -143,14 +143,19 @@ export function metadataOf(desk: Desk): Record<string, unknown> {
   };
 }
 
-/** The resolution of a record that exists: the kind `resolved`. */
-export function resolvedOf(desk: Desk, metadata: Record<string, unknown> = metadataOf(desk), over: { effectiveStatus?: string; effectiveReason?: string | null } = {}): Resolution {
+/** The key of a desk as its record lists it: the supplier key of its advert, an Ed25519 key with the transaction purpose. */
+export const listedKeyOf = (desk: Desk): { keyHash: string; type: string; purposes: string[] } => ({ keyHash: desk.pkh, type: 'Ed25519', purposes: ['transaction'] });
+
+/** The resolution of a record that exists: the kind `resolved`. The record lists the supplier key of the advert of the desk, unless `over.keys` says another list. */
+export function resolvedOf(
+  desk: Desk, metadata: Record<string, unknown> = metadataOf(desk), over: { effectiveStatus?: string; effectiveReason?: string | null; keys?: { keyHash: string; type: string; purposes: string[] }[] } = {},
+): Resolution {
   return {
     kind: 'resolved',
     did: desk.did,
     effectiveStatus: (over.effectiveStatus ?? 'active') as 'active',
     effectiveReason: over.effectiveReason === undefined ? null : over.effectiveReason,
-    keys: [],
+    keys: over.keys ?? [listedKeyOf(desk)],
     document: {},
     metadata,
   };
@@ -306,7 +311,7 @@ export interface Calls {
 }
 
 /** The ports that the discovery and the price list reader use. */
-export type DiscoveryPorts = Pick<BiddersDeps, 'listAdverts' | 'readAdvert' | 'fetchBytes' | 'clock'>;
+export type DiscoveryPorts = Pick<BiddersDeps, 'listAdverts' | 'readAdvert' | 'resolve' | 'fetchBytes' | 'clock'>;
 
 export interface Stub {
   readonly deps: BiddersDeps;

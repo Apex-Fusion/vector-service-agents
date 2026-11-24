@@ -3,7 +3,10 @@
 //
 // Discovery. The indexer lists the adverts of the capability of the Bid Desk. A row counts when it has that capability, the model `bid-desk-v1`, the status Active and an agent id. A DID with exactly one such
 // row goes on, and a DID with two rows is not a candidate: the reader never picks one of two. An advert that the indexer lists two times is one advert. The chain must show the advert of each DID: unspent,
-// Active, with that capability, that model and that DID as its agent. The candidates are in the order of their advert references, as a plain string compare, and at most `MAX_CANDIDATES` stay.
+// Active, with that capability, that model and that DID as its agent. The record of the DID must list the supplier key of the advert as an Ed25519 key with the transaction purpose. That is the rule of the
+// listing of an advert, which the indexer applies and the hire checks again, and the reader checks it on the answer of `resolve`. A record that ended, a DID with no record and a record that cannot be read are
+// no reason to drop a bidder: its file shows the status. The answer of `resolve` goes on with the candidate, so the file reads the record one time. The candidates are in the order of their advert references, as
+// a plain string compare, and at most `MAX_CANDIDATES` stay. A DID that fails a rule gives its place to the next one.
 //
 // A listing that cannot be read is `bidders_unavailable`. So is a read of the chain that gave no usable answer for any advert, and so is an empty result when one read of the chain failed: a source that cannot
 // be read never reads as "nobody quotes". `no_bidders` means that every read worked and that no DID passed.
@@ -22,6 +25,7 @@ import { accepted, didOfAgentId, isKeyHash, isPlainObject, parseDocument, parseJ
 import type { Did, Digest, OutputRef, ProtocolResult } from '@vsa/usecase-kit/protocol';
 import { BIDDER_FETCH_TIMEOUT_MS, BIDDER_FILE_MAX_BYTES, MAX_CANDIDATES } from './types.ts';
 import type { BiddersDeps } from './types.ts';
+import { listsSupplierKey } from './lineage.ts';
 
 // --- The time of the read ----------------------------------------------------------------------------------------------------------------------------
 
@@ -90,7 +94,10 @@ export async function viaPort<T>(budget: Budget, call: (limitMs: number) => Prom
 
 // --- The discovery -----------------------------------------------------------------------------------------------------------------------------------
 
-/** A bidder that the indexer lists and the chain shows. The address and the hash of the manifest are the words of its advert: they are read, and they never reach a file. */
+/**
+ * A bidder that the indexer lists, the chain shows and whose record lists the supplier key. The address and the hash of the manifest are the words of its advert: they are read, and they never reach a file.
+ * `resolution` is what `resolve` gave for the DID, with its shape checked, or null for a call that failed. The file of the bidder reads its status from it.
+ */
 export interface Candidate {
   readonly did: Did;
   readonly advert_ref: OutputRef;
@@ -98,6 +105,7 @@ export interface Candidate {
   readonly supplier_pkh: string;
   readonly detail_uri: string;
   readonly detail_hash: string;
+  readonly resolution: unknown;
 }
 
 const AGENT_ID = /^[0-9a-f]{64}$/;
@@ -133,15 +141,16 @@ function judgeAdvert(read: unknown, agent: string, ref: OutputRef): Judged {
   const { supplier_pkh: pkh, status, capability_id: capability, model, detail_uri: uri, detail_hash: hash } = advert;
   if (!isKeyHash(pkh) || typeof status !== 'string' || typeof capability !== 'string' || typeof model !== 'string' || typeof uri !== 'string' || typeof hash !== 'string') return UNREAD;
   if (spent || status !== 'Active' || capability !== BID_CAPABILITIES.quote || model !== BID_DESK_MODEL || agentId !== agent) return NOT_LISTED;
-  return { kind: 'candidate', candidate: { did: didOfAgentId(agent), advert_ref: ref, supplier_pkh: pkh, detail_uri: uri, detail_hash: hash } };
+  return { kind: 'candidate', candidate: { did: didOfAgentId(agent), advert_ref: ref, supplier_pkh: pkh, detail_uri: uri, detail_hash: hash, resolution: null } };
 }
 
 /**
- * The bidders that the indexer lists and the chain shows, in the order of their advert references and at most `MAX_CANDIDATES`. The adverts are read one after the other, in that order, and the reader stops
- * when it has enough candidates. A DID whose advert cannot be read, or that the chain does not show, is no candidate and leaves no file.
+ * The bidders that the indexer lists, the chain shows and whose record lists the supplier key of the advert, in the order of their advert references and at most `MAX_CANDIDATES`. The adverts are read one after
+ * the other, in that order, and the reader stops when it has enough candidates. A DID whose advert cannot be read, that the chain does not show, or whose record does not list the supplier key is no candidate and
+ * leaves no file. The answer of `resolve` has its shape checked here: a value of another shape throws a `TypeError`.
  */
 export async function discoverCandidates(
-  deps: Pick<BiddersDeps, 'listAdverts' | 'readAdvert'>, budget: Budget,
+  deps: Pick<BiddersDeps, 'listAdverts' | 'readAdvert' | 'resolve'>, budget: Budget,
 ): Promise<ProtocolResult<readonly Candidate[], 'bidders_unavailable' | 'no_bidders'>> {
   const listed = await viaPort(budget, () => deps.listAdverts(BID_CAPABILITIES.quote));
   if (!listed.ok) return refused('bidders_unavailable', 'the listing of the adverts could not be read');
@@ -176,9 +185,14 @@ export async function discoverCandidates(
     const read = await viaPort(budget, () => deps.readAdvert(ref));
     examined += 1;
     const judged = read.ok ? judgeAdvert(read.value, agent, ref) : UNREAD;
-    if (judged.kind === 'candidate') candidates.push(judged.candidate);
-    if (judged.kind === 'candidate' || judged.kind === 'not_listed') shown += 1;
     if (judged.kind === 'unread') unread += 1;
+    if (judged.kind === 'candidate' || judged.kind === 'not_listed') shown += 1;
+    if (judged.kind !== 'candidate') continue;
+    // The record decides too. A record that cannot be read does not drop the bidder: its file has the status `unreadable`. An answer of another shape than a resolution is a fault of the wiring.
+    const { did, supplier_pkh: key } = judged.candidate;
+    const record = await viaPort(budget, () => deps.resolve(did));
+    if (record.ok && listsSupplierKey(record.value, did, key) === false) continue;
+    candidates.push({ ...judged.candidate, resolution: record.ok ? record.value : null });
   }
   if (candidates.length > 0) return accepted(candidates);
   // No candidate. A chain that gave no usable answer, or a read that failed, is a source that cannot be read: it must not look like a marketplace with no bidder.

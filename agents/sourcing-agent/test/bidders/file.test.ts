@@ -169,6 +169,7 @@ describe('readBidders: the golden marketplace', () => {
     const { calls } = await read(goldenWorld());
     expect(new Set(calls.stake)).toStrictEqual(new Set([ALFA.agent, BRAVO.agent, CHARLIE.agent]));
     for (const port of ['resolve', 'cases', 'credential'] as const) expect(new Set(calls[port])).toStrictEqual(new Set([ALFA.did, BRAVO.did, CHARLIE.did]));
+    expect(calls.resolve).toHaveLength(3);
     expect(calls.compliance).toHaveLength(3);
     expect(new Set(calls.compliance.map((call) => call.did))).toStrictEqual(new Set([ALFA.did, BRAVO.did, CHARLIE.did]));
     expect(new Set(calls.compliance.map((call) => call.nowMs))).toStrictEqual(new Set([1_800_000_000_000]));
@@ -424,7 +425,7 @@ describe('readBidders: a port that gives a value of the wrong shape', () => {
     const stub = stubOf(world);
     const deps: BiddersDeps = { ...stub.deps, stake: async (agentId) => (agentId === first.agent ? (({ ok: true, stake_lovelace: 5 }) as never) : stub.deps.stake(agentId)) };
     await expect(readBidders(deps)).rejects.toThrow(TypeError);
-    expect(stub.calls.resolve.length).toBeLessThanOrEqual(MAX_PARALLEL_READS);
+    expect(stub.calls.stake.length).toBeLessThanOrEqual(MAX_PARALLEL_READS);
   });
 
   test.each(['listAdverts', 'readAdvert', 'fetchBytes', 'resolve', 'catalog', 'stake', 'cases', 'compliance', 'credential', 'clock'] as const)('throws a TypeError for a %s port that is missing, before any call', async (port) => {
@@ -472,31 +473,33 @@ describe('readBidders: the bounds of the read', () => {
     const files = filesOf(result);
     expect(files.map((file) => file.did)).toStrictEqual([ALFA.did, BRAVO.did, CHARLIE.did]);
     for (const file of files) {
-      expect(file).toMatchObject({ ...UNREADABLE_RECORD, stake_lovelace: null, cases_against: null, price_list: 'unreadable', compliance: UNREADABLE_COMPLIANCE, credential: 'unreadable' });
+      expect(file).toMatchObject({ stake_lovelace: null, cases_against: null, price_list: 'unreadable', compliance: UNREADABLE_COMPLIANCE, credential: 'unreadable' });
     }
-    // The catalog was read in time, so its fact is still a fact.
+    // The records and the catalog were read in time, so their facts are still facts.
+    expect(files.map((file) => file.status)).toStrictEqual(['active', 'active', 'active']);
     expect(files.map((file) => file.in_catalog)).toStrictEqual([true, true, true]);
     expect(must(result).bidders.map((bidder) => bidder.price_list)).toStrictEqual([null, null, null]);
     expect(calls.fetch).toStrictEqual([]);
-    expect([calls.resolve, calls.stake, calls.cases, calls.compliance, calls.credential].every((list) => list.length === 0)).toBe(true);
+    expect([calls.stake, calls.cases, calls.compliance, calls.credential].every((list) => list.length === 0)).toBe(true);
   });
 
   test('ends the budget at the time that the option gives', async () => {
     const run = (options: BiddersOptions) => read(goldenWorld(), (deps, clock) => ({ catalog: async () => { clock.now += 5_000; return deps.catalog(); } }), options);
-    expect(filesOf((await run({ budgetMs: 5_000 })).result).map((file) => file.status)).toStrictEqual(['unreadable', 'unreadable', 'unreadable']);
-    expect(filesOf((await run({ budgetMs: 5_001 })).result).map((file) => file.status)).toStrictEqual(['active', 'active', 'active']);
+    expect(filesOf((await run({ budgetMs: 5_000 })).result).map((file) => file.price_list)).toStrictEqual(['unreadable', 'unreadable', 'unreadable']);
+    expect(filesOf((await run({ budgetMs: 5_001 })).result).map((file) => file.price_list)).toStrictEqual(['valid', 'valid', 'valid']);
   });
 
   test('gives the sources that were read before the budget ended their facts, and the sources after it no fact', async () => {
     const world = emptyWorld();
     addDesk(world, BRAVO);
-    const { result, calls } = await read(world, (deps, clock) => ({ resolve: async (did) => { clock.now += BIDDER_READ_BUDGET_MS; return deps.resolve(did); } }));
+    const { result, calls } = await read(world, (deps, clock) => ({ stake: async (agentId) => { clock.now += BIDDER_READ_BUDGET_MS; return deps.stake(agentId); } }));
     const bidder = must(result).bidders[0]!;
     expect(bidder.file.price_list).toBe('valid');
     expect(bidder.price_list).not.toBeNull();
     expect(bidder.file.status).toBe('active');
-    expect(bidder.file).toMatchObject({ stake_lovelace: null, cases_against: null, compliance: UNREADABLE_COMPLIANCE, credential: 'unreadable' });
-    expect([calls.stake, calls.cases, calls.compliance, calls.credential].every((list) => list.length === 0)).toBe(true);
+    // The stake answered as the budget ended, and an answer that arrived is a fact. The sources after it are not read.
+    expect(bidder.file).toMatchObject({ stake_lovelace: '7500000000', cases_against: null, compliance: UNREADABLE_COMPLIANCE, credential: 'unreadable' });
+    expect([calls.cases, calls.compliance, calls.credential].every((list) => list.length === 0)).toBe(true);
   });
 
   test('reads at most four bidders at one time, and the next one starts when a place is free', async () => {
@@ -508,13 +511,13 @@ describe('readBidders: the bounds of the read', () => {
     const full = new Promise<void>((resolve) => { filled = resolve; });
     let active = 0;
     let peak = 0;
-    const pending = read(world, (deps) => ({ resolve: async (did) => {
+    const pending = read(world, (deps) => ({ stake: async (agentId) => {
       active += 1;
       peak = Math.max(peak, active);
       if (active === MAX_PARALLEL_READS) filled();
       await gate;
       active -= 1;
-      return deps.resolve(did);
+      return deps.stake(agentId);
     } }));
     await full;
     // Every step before the held port is a promise that is already settled, so a fifth bidder would have started within these turns.

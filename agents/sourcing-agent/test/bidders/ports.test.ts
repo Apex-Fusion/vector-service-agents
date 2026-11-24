@@ -6,12 +6,12 @@ import { VECTOR_KOIOS_URL, fetchSuppliers, readAdvert } from '@vsa/buyer-core';
 import type { IdentityDeployment } from '@vsa/buyer-core';
 import { createGatewayClient } from '@vsa/id-kit/client';
 import type { GatewayClient } from '@vsa/id-kit/client';
-import { createStubGateway } from '@vsa/id-kit/testing';
+import { createStubGateway, ed25519Key } from '@vsa/id-kit/testing';
 import { safeFetch } from '@vsa/vector-read';
 import { parseArdCatalog } from '../../src/bidders/catalog.ts';
 import { readBidders } from '../../src/bidders/file.ts';
 import type { BiddersDeps } from '../../src/bidders/types.ts';
-import { addDesk, deskOf, emptyWorld, must, stubOf } from './support.ts';
+import { addDesk, deskOf, emptyWorld, must, refusal, stubOf } from './support.ts';
 import type { Desk } from './support.ts';
 
 const EMPTY_LINEAGE = { hold_until: null, ended_at: null, invalid_from: null, successor: null, recovery_pending: false };
@@ -48,12 +48,21 @@ describe('the ports of the reader and the real readers', () => {
 });
 
 describe('the file of a bidder whose record the stub gateway serves', () => {
-  /** A world with one Bid Desk whose DID is the DID of an agent of the stub gateway, and the ports of the stub with the real client as the DID resolution. */
-  function setup() {
+  /**
+   * A world with one Bid Desk whose DID is the DID of an agent of the stub gateway, and the ports of the stub with the real client as the DID resolution. The record lists the supplier key of the advert with the
+   * transaction purpose (the bit 8 of the stub), unless `purposes` says another set.
+   */
+  function setup(options: { verified?: boolean; purposes?: number } = {}) {
     const gateway = createStubGateway();
-    const agent = gateway.createAgent({ label: 'bid-desk-bravo', name: 'Bid Desk Bravo', organisation: { domain: 'bravo.example.org', verified: true } });
+    const supplier = ed25519Key('bid-desk-bravo-supplier');
+    const agent = gateway.createAgent({
+      label: 'bid-desk-bravo',
+      name: 'Bid Desk Bravo',
+      organisation: { domain: 'bravo.example.org', verified: options.verified ?? true },
+      keys: [{ key: supplier, purposes: options.purposes ?? 8 }],
+    });
     const client = createGatewayClient({ baseUrl: gateway.baseUrl, fetch: gateway.fetch, now: gateway.now });
-    const desk: Desk = { ...deskOf('bravo'), agent: agent.id, did: agent.did };
+    const desk: Desk = { ...deskOf('bravo'), agent: agent.id, did: agent.did, pkh: supplier.keyHash };
     const world = emptyWorld();
     addDesk(world, desk);
     world.catalog = new Set([desk.did]);
@@ -76,21 +85,16 @@ describe('the file of a bidder whose record the stub gateway serves', () => {
   });
 
   test('gives no organisation, and not verified, for an organisation that the gateway did not verify', async () => {
-    const gateway = createStubGateway();
-    const agent = gateway.createAgent({ label: 'bid-desk-bravo', organisation: { domain: 'bravo.example.org' } });
-    const client = createGatewayClient({ baseUrl: gateway.baseUrl, fetch: gateway.fetch, now: gateway.now });
-    const desk: Desk = { ...deskOf('bravo'), agent: agent.id, did: agent.did };
-    const world = emptyWorld();
-    addDesk(world, desk);
-    const stub = stubOf(world);
-    const resolve: BiddersDeps['resolve'] = async (did) => {
-      const answer = await client.resolve(did);
-      if (!answer.ok) throw new Error('the gateway gave no answer');
-      return answer.value;
-    };
-    const file = must(await readBidders({ ...stub.deps, resolve, clock: () => gateway.now() })).bidders[0]!.file;
+    const { deps } = setup({ verified: false });
+    const file = must(await readBidders(deps)).bidders[0]!.file;
     expect(file.organisation).toBeNull();
     expect(file.organisation_verified).toBe(false);
+  });
+
+  test('gives a Bid Desk whose record lists the supplier key with the transaction purpose a file, and one whose record lists it with another purpose no file', async () => {
+    expect(must(await readBidders(setup().deps)).bidders).toHaveLength(1);
+    // The authentication purpose only (the bit 1 of the stub): every read worked and nobody passes.
+    expect(refusal(await readBidders(setup({ purposes: 1 }).deps)).code).toBe('no_bidders');
   });
 
   test.each(['revoked', 'retired'] as const)('gives a record that ended the status %s, as the real client reads the answer 410, and no organisation', async (status) => {

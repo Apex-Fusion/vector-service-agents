@@ -161,7 +161,10 @@ export interface BiddersDeps {
    * a private host, and it throws for a body above `maxBytes`. A port that returns more than `maxBytes` bytes gets the state `invalid`, because the reader checks the size again.
    */
   readonly fetchBytes: (url: string, limits: FetchLimits) => Promise<FetchedBytes>;
-  /** The DID resolution of a bidder: the `resolve` of the gateway client. A function that throws when the gateway gives no answer. */
+  /**
+   * The DID resolution of a bidder: the `resolve` of the gateway client. A function that throws when the gateway gives no answer. It is called one time for each bidder whose advert the chain shows. The keys of a
+   * record that exists must list the supplier key of the advert with the transaction purpose, or the bidder has no file.
+   */
   readonly resolve: (did: Did) => Promise<Resolution>;
   /** The DIDs of the catalog of the gateway, or null when it cannot be read: `parseArdCatalog` over the bytes of `/.well-known/ard.json`. */
   readonly catalog: () => Promise<ReadonlySet<Did> | null>;

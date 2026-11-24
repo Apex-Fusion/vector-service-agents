@@ -8,8 +8,8 @@ import { BIDDER_FETCH_TIMEOUT_MS, BIDDER_FILE_MAX_BYTES, BIDDER_READ_BUDGET_MS, 
 import { discoverCandidates, readPriceList, startBudget, timeOf, viaPort } from '../../src/bidders/discover.ts';
 import type { Candidate } from '../../src/bidders/discover.ts';
 import {
-  DESKS, LIMITS, MARKER, STRANGER_ID, addDesk, advertOf, budgetOf, bytesOf, changeManifest, deskOf, emptyWorld, expectNames, extraDesk, goldenWorld, manifestText, must, ok, paddedList, paddedManifest,
-  priceListText, refusal, rowOf, serveList, serveManifest, sha256, stubOf,
+  DESKS, LIMITS, MARKER, STRANGER_ID, addDesk, advertOf, budgetOf, bytesOf, changeManifest, deskOf, emptyWorld, expectNames, extraDesk, goldenWorld, manifestText, metadataOf, must, notFoundOf, ok, paddedList,
+  paddedManifest, priceListText, refusal, resolvedOf, retiredOf, revokedOf, rowOf, serveList, serveManifest, sha256, stubOf,
 } from './support.ts';
 import type { Desk, DiscoveryPorts, World } from './support.ts';
 
@@ -27,7 +27,7 @@ async function discover(world: World, over: Partial<DiscoveryPorts> = {}) {
 }
 
 /** The golden candidate of a desk: what the row, the chain and the advert say. */
-const candidateOf = (desk: Desk): Candidate => ({ did: desk.did, advert_ref: desk.ref, supplier_pkh: desk.pkh, detail_uri: desk.manifestUrl, detail_hash: sha256(manifestText(desk)) });
+const candidateOf = (desk: Desk): Candidate => ({ did: desk.did, advert_ref: desk.ref, supplier_pkh: desk.pkh, detail_uri: desk.manifestUrl, detail_hash: sha256(manifestText(desk)), resolution: resolvedOf(desk) });
 
 /** The state of the price list of `desk`: the discovery must pass, and the reader takes the candidate of the desk. `calls.fetch` holds the fetches of the reader only. */
 async function priceOf(world: World, desk: Desk, over: Partial<DiscoveryPorts> = {}) {
@@ -75,6 +75,8 @@ describe('discoverCandidates: the golden marketplace', () => {
   test('takes the key hash of the supplier from the advert on the chain', async () => {
     const world = goldenWorld();
     world.reads[BRAVO.ref] = advertOf(BRAVO, sha256(manifestText(BRAVO)), { supplier_pkh: 'ab'.repeat(28) });
+    // The record lists that key, so the rule of the listing holds.
+    world.resolutions[BRAVO.did] = resolvedOf(BRAVO, undefined, { keys: [{ keyHash: 'ab'.repeat(28), type: 'Ed25519', purposes: ['transaction'] }] });
     expect(must((await discover(world)).result)[1]!.supplier_pkh).toBe('ab'.repeat(28));
   });
 
@@ -329,8 +331,120 @@ describe('discoverCandidates: the adverts on the chain', () => {
     const read = advertOf(BRAVO, sha256(manifestText(BRAVO)));
     world.reads[BRAVO.ref] = { ...read, advert: { ...read.advert, name: MARKER, description: MARKER } } as never;
     const found = must((await discover(world)).result)[1]!;
-    expect(Object.keys(found)).toStrictEqual(['did', 'advert_ref', 'supplier_pkh', 'detail_uri', 'detail_hash']);
+    expect(Object.keys(found)).toStrictEqual(['did', 'advert_ref', 'supplier_pkh', 'detail_uri', 'detail_hash', 'resolution']);
     expect(JSON.stringify(found)).not.toContain('zq9');
+  });
+});
+
+describe('discoverCandidates: the record of the bidder lists the supplier key of its advert', () => {
+  const OTHER_KEY = 'ab'.repeat(28);
+  const withKeys = (world: World, desk: Desk, keys: unknown): void => {
+    world.resolutions[desk.did] = resolvedOf(desk, undefined, { keys: keys as never });
+  };
+
+  test('keeps a Bid Desk whose record lists the supplier key with the transaction purpose, also among other keys and other purposes', async () => {
+    const world = goldenWorld();
+    withKeys(world, BRAVO, [
+      { keyHash: OTHER_KEY, type: 'Ed25519', purposes: ['authentication'] },
+      { keyHash: BRAVO.pkh, type: 'Ed25519', purposes: ['authentication', 'transaction', 'delegation'] },
+    ]);
+    expect(must((await discover(world)).result).map((candidate) => candidate.did)).toStrictEqual([ALFA.did, BRAVO.did, CHARLIE.did]);
+  });
+
+  test.each([
+    ['no key', []],
+    ['another key with the transaction purpose', [{ keyHash: OTHER_KEY, type: 'Ed25519', purposes: ['transaction'] }]],
+    ['the key with the authentication purpose only', [{ keyHash: BRAVO.pkh, type: 'Ed25519', purposes: ['authentication'] }]],
+    ['the key with the delegation purpose only', [{ keyHash: BRAVO.pkh, type: 'Ed25519', purposes: ['delegation'] }]],
+    ['the key with no purpose', [{ keyHash: BRAVO.pkh, type: 'Ed25519', purposes: [] }]],
+    ['the key as a P-256 key', [{ keyHash: BRAVO.pkh, type: 'P-256', purposes: ['transaction'] }]],
+    ['the key hash in upper case', [{ keyHash: BRAVO.pkh.toUpperCase(), type: 'Ed25519', purposes: ['transaction'] }]],
+    ['the purposes as a text that holds the word', [{ keyHash: BRAVO.pkh, type: 'Ed25519', purposes: 'transaction' }]],
+    ['entries that are not keys', [null, 7, 'key', []]],
+  ])('does not make a candidate of a Bid Desk whose record lists %s, and keeps the others', async (_name, keys) => {
+    const world = goldenWorld();
+    withKeys(world, BRAVO, keys);
+    const { result, calls } = await discover(world);
+    expect(must(result).map((candidate) => candidate.did)).toStrictEqual([ALFA.did, CHARLIE.did]);
+    // The advert and the record were both read: the rule is checked, and not guessed.
+    expect(calls.read).toContain(BRAVO.ref);
+    expect(calls.resolve).toContain(BRAVO.did);
+  });
+
+  test('gives `no_bidders` when the only Bid Desk fails the rule: every read worked and nobody passes', async () => {
+    const world = goldenWorld();
+    world.rows = [rowOf(BRAVO)];
+    withKeys(world, BRAVO, []);
+    expect(refusal((await discover(world)).result).code).toBe('no_bidders');
+  });
+
+  test('gives the place of a Bid Desk that fails the rule to the next one: nine desks give eight candidates, and the first desk is not one of them', async () => {
+    const world = emptyWorld();
+    const desks = Array.from({ length: MAX_CANDIDATES + 1 }, (_unused, index) => extraDesk(index + 1));
+    for (const desk of desks) addDesk(world, desk);
+    withKeys(world, desks[0]!, []);
+    const { result, calls } = await discover(world);
+    expect(must(result).map((candidate) => candidate.did)).toStrictEqual(desks.slice(1).map((desk) => desk.did));
+    expect(calls.resolve).toStrictEqual(desks.map((desk) => desk.did));
+  });
+
+  test('asks the gateway one time for each Bid Desk that the chain shows, in the order of the references, and never for a row that is no candidate', async () => {
+    const world = goldenWorld();
+    world.reads[BRAVO.ref] = advertOf(BRAVO, sha256(manifestText(BRAVO)), { spent: true });
+    const { calls } = await discover(world);
+    expect(calls.resolve).toStrictEqual([ALFA.did, CHARLIE.did]);
+  });
+
+  test('gives each candidate the answer of the gateway, so that the file reads the record one time', async () => {
+    const found = must((await discover(goldenWorld())).result);
+    expect(found.map((candidate) => candidate.resolution)).toStrictEqual([resolvedOf(ALFA), resolvedOf(BRAVO), resolvedOf(CHARLIE)]);
+  });
+
+  test('keeps a Bid Desk whose record cannot be read, with no answer: a source that cannot be read is no reason to drop it', async () => {
+    const world = goldenWorld();
+    const { result } = await discover(world, { resolve: async (did) => (did === BRAVO.did ? boom() : (world.resolutions[did] as never)) });
+    const found = must(result);
+    expect(found.map((candidate) => candidate.did)).toStrictEqual([ALFA.did, BRAVO.did, CHARLIE.did]);
+    expect(found[1]!.resolution).toBeNull();
+  });
+
+  test('keeps a Bid Desk whose record does not answer within the time of one call', async () => {
+    vi.useFakeTimers();
+    const world = goldenWorld();
+    const stub = stubOf(world, { resolve: async (did) => (did === BRAVO.did ? never() : (world.resolutions[did] as never)) });
+    const pending = discoverCandidates(stub.deps, budgetOf(stub));
+    await vi.advanceTimersByTimeAsync(FACT_READ_TIMEOUT_MS);
+    const found = must(await pending);
+    expect(found.map((candidate) => candidate.did)).toStrictEqual([ALFA.did, BRAVO.did, CHARLIE.did]);
+    expect(found[1]!.resolution).toBeNull();
+  });
+
+  test.each([
+    ['a record that was retired', retiredOf],
+    ['a record that was revoked', revokedOf],
+    ['a DID that the gateway has no record for', notFoundOf],
+  ])('keeps a Bid Desk with %s: the rule is for a record that exists, and the file shows the status', async (_name, answer) => {
+    const world = goldenWorld();
+    world.resolutions[BRAVO.did] = answer(BRAVO);
+    expect(must((await discover(world)).result).map((candidate) => candidate.did)).toStrictEqual([ALFA.did, BRAVO.did, CHARLIE.did]);
+  });
+
+  test('keeps a Bid Desk whose record is Suspended and lists the key: a status is a fact, and the rule is about the key', async () => {
+    const world = goldenWorld();
+    world.resolutions[BRAVO.did] = resolvedOf(BRAVO, metadataOf(BRAVO), { effectiveStatus: 'suspended' });
+    expect(must((await discover(world)).result)).toHaveLength(3);
+  });
+
+  test.each([
+    ['null', null],
+    ['the resolution of another DID', resolvedOf(ALFA)],
+    ['a resolved record with no list of keys', { ...resolvedOf(BRAVO), keys: undefined }],
+    ['a resolved record whose keys are a text', { ...resolvedOf(BRAVO), keys: 'keys' }],
+    ['a kind that the id-kit does not have', { ...resolvedOf(BRAVO), kind: 'pending' }],
+  ])('throws a TypeError when the gateway gives %s: it is a fault of the wiring', async (_name, answer) => {
+    const world = goldenWorld();
+    world.resolutions[BRAVO.did] = answer as never;
+    await expect(discover(world)).rejects.toThrow(TypeError);
   });
 });
 

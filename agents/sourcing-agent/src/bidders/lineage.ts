@@ -12,6 +12,9 @@
 // No free text of a record reaches a member. A reason is kept only when it is one of the reason words of the gateway. A time is kept only in the form `YYYY-MM-DDTHH:MM:SSZ` and only when it is a real time.
 // A successor is kept only as a DID. A key hash is kept only as 56 lower-case hex characters. An organisation is shown only as a lower-case domain, and only when the gateway verified it, because the bidder
 // chooses the text of its organisation: `organisation_verified` is true exactly when the organisation is shown, and it is never inferred.
+//
+// `listsSupplierKey` answers the one question about a record that decides whether a bidder has a file at all: does the record list the supplier key of the advert with the transaction purpose? It applies to a
+// record that exists and has not ended.
 import type { EffectiveStatus } from '@vsa/id-kit/client';
 import { isKeyHash, isPlainObject, parseDid } from '@vsa/usecase-kit/protocol';
 import type { Did } from '@vsa/usecase-kit/protocol';
@@ -107,24 +110,39 @@ function coveringParty(metadata: Record<string, unknown>, nowMs: number | null):
 
 const wrong = (): TypeError => new TypeError('the port resolve gave a value that is not a DID resolution of the bidder: a wrong kind, a wrong DID or a member of another form');
 
+/** A DID resolution after the check of its shape: the members that this folder reads. Only the kind `resolved` has keys. */
+type Checked =
+  | { readonly kind: 'not_found' }
+  | { readonly kind: 'deactivated'; readonly status: EffectiveStatus; readonly reason: string | null; readonly metadata: Record<string, unknown> }
+  | { readonly kind: 'resolved'; readonly status: EffectiveStatus; readonly reason: string | null; readonly metadata: Record<string, unknown>; readonly keys: readonly unknown[] };
+
+/** The shape of a DID resolution of the id-kit for `did`: one of the three kinds, with the members that its kind has. Any other value is a fault of the wiring and throws a `TypeError`. */
+function check(answer: unknown, did: Did): Checked {
+  if (!isPlainObject(answer) || typeof answer.kind !== 'string' || !KINDS.includes(answer.kind) || answer.did !== did) throw wrong();
+  if (answer.kind === 'not_found') return { kind: 'not_found' };
+  const { effectiveStatus: status, effectiveReason: reason, metadata, keys } = answer;
+  if (!isStatus(status) || !(reason === null || typeof reason === 'string') || !isPlainObject(metadata)) throw wrong();
+  if (answer.kind === 'deactivated') return { kind: 'deactivated', status, reason, metadata };
+  if (!Array.isArray(keys)) throw wrong();
+  return { kind: 'resolved', status, reason, metadata, keys };
+}
+
 /**
  * The members of the file that the resolution of `did` gives, at the time `nowMs` (null for a clock with no time). `answer` is what the port gave. A value that is not a resolution of the id-kit for this DID is
  * a fault of the wiring and throws a `TypeError`.
  */
 export function factsOfResolution(answer: unknown, did: Did, nowMs: number | null): RecordFacts {
-  if (!isPlainObject(answer) || typeof answer.kind !== 'string' || !KINDS.includes(answer.kind) || answer.did !== did) throw wrong();
-  if (answer.kind === 'not_found') return { ...unreadableRecord(), status: 'not_found' };
-  const { effectiveStatus, effectiveReason, metadata } = answer;
-  if (!isStatus(effectiveStatus) || !(effectiveReason === null || typeof effectiveReason === 'string') || !isPlainObject(metadata)) throw wrong();
-  const ended = answer.kind === 'deactivated';
+  const record = check(answer, did);
+  if (record.kind === 'not_found') return { ...unreadableRecord(), status: 'not_found' };
+  const { status, reason, metadata } = record;
   // A record that ended is revoked or retired. A resolution that says that it ended and is Active or Suspended contradicts itself: it gives no status.
-  if (ended && (effectiveStatus === 'active' || effectiveStatus === 'suspended')) return unreadableRecord();
+  if (record.kind === 'deactivated' && (status === 'active' || status === 'suspended')) return unreadableRecord();
   const common = {
-    status: effectiveStatus,
-    status_reason: (EFFECTIVE_REASONS as readonly (string | null)[]).includes(effectiveReason) ? effectiveReason : null,
+    status,
+    status_reason: (EFFECTIVE_REASONS as readonly (string | null)[]).includes(reason) ? reason : null,
     lineage: lineageOf(metadata),
   };
-  if (ended) return { ...common, accountable: null, organisation: null, organisation_verified: false };
+  if (record.kind === 'deactivated') return { ...common, accountable: null, organisation: null, organisation_verified: false };
   const party = coveringParty(metadata, nowMs);
   const organisation = party === null ? null : domainOf(party.organisation);
   const verified = organisation !== null && party !== null && party.organisationVerified === true;
@@ -134,4 +152,15 @@ export function factsOfResolution(answer: unknown, did: Did, nowMs: number | nul
     organisation: verified ? organisation : null,
     organisation_verified: verified,
   };
+}
+
+/**
+ * Whether the record of `did` lists the supplier key of an advert as an Ed25519 key with the transaction purpose. It is the rule of the listing of an advert that the indexer applies and that the hire checks
+ * again before the Post, here on the keys that the gateway gives. A record that ended and a DID with no record give null: the rule does not apply to them, and the file shows their status. A value that is not
+ * a DID resolution of the id-kit for this DID throws a `TypeError`.
+ */
+export function listsSupplierKey(answer: unknown, did: Did, supplierPkh: string): boolean | null {
+  const record = check(answer, did);
+  if (record.kind !== 'resolved') return null;
+  return record.keys.some((key) => isPlainObject(key) && key.type === 'Ed25519' && key.keyHash === supplierPkh && Array.isArray(key.purposes) && key.purposes.includes('transaction'));
 }

@@ -3,7 +3,7 @@
 // reason, a successor, an organisation and a key hash are kept only in their own form, and the text of a record never reaches a member beyond that form. A resolution that is not a resolution of the id-kit
 // for the bidder is a fault of the wiring. Each refusal changes one thing in the golden record, so the golden record is its accepted twin.
 import { describe, expect, test } from 'vitest';
-import { EFFECTIVE_REASONS, domainOf, factsOfResolution, timeOfIso, unreadableRecord } from '../../src/bidders/lineage.ts';
+import { EFFECTIVE_REASONS, domainOf, factsOfResolution, listsSupplierKey, timeOfIso, unreadableRecord } from '../../src/bidders/lineage.ts';
 import type { RecordFacts } from '../../src/bidders/lineage.ts';
 import { ACCOUNTABLE, MARKER, NOW_MS, PARTY_SINCE, SUCCESSOR, deactivatedOf, deskOf, metadataOf, notFoundOf, resolvedOf, retiredOf, revokedOf } from './support.ts';
 
@@ -352,6 +352,8 @@ describe('factsOfResolution: a record that does not exist, and a record that can
     ['a not_found for another DID', { kind: 'not_found', did: deskOf('alfa').did }],
     ['a resolved with no metadata', { ...resolvedOf(BRAVO), metadata: undefined }],
     ['a resolved whose metadata is a list', { ...resolvedOf(BRAVO), metadata: [] }],
+    ['a resolved with no list of keys', { ...resolvedOf(BRAVO), keys: undefined }],
+    ['a resolved whose keys are a text', { ...resolvedOf(BRAVO), keys: 'keys' }],
     ['a deactivated with no metadata', { ...revokedOf(BRAVO), metadata: null }],
     ['a status that the id-kit does not have', { ...resolvedOf(BRAVO), effectiveStatus: 'pending' }],
     ['a status that is not text', { ...resolvedOf(BRAVO), effectiveStatus: 7 }],
@@ -365,6 +367,61 @@ describe('factsOfResolution: a record that does not exist, and a record that can
     } catch (error) {
       expect(String((error as Error).message)).not.toContain('zq9');
     }
+  });
+});
+
+describe('listsSupplierKey: the record lists the supplier key of the advert', () => {
+  const key = (over: Record<string, unknown> = {}): Record<string, unknown> => ({ keyHash: BRAVO.pkh, type: 'Ed25519', purposes: ['transaction'], ...over });
+  const lists = (keys: unknown, pkh: string = BRAVO.pkh): boolean | null => listsSupplierKey({ ...resolvedOf(BRAVO), keys }, BRAVO.did, pkh);
+
+  test.each([
+    ['an Ed25519 key with the transaction purpose', [key()]],
+    ['the key among other keys and with other purposes', [key({ keyHash: 'ab'.repeat(28) }), key({ purposes: ['authentication', 'transaction', 'delegation'] })]],
+    ['the key after entries that are not keys', [null, 7, 'key', [], key()]],
+  ])('is true for %s', (_name, keys) => {
+    expect(lists(keys)).toBe(true);
+  });
+
+  test.each([
+    ['no key', []],
+    ['another key with the transaction purpose', [key({ keyHash: 'ab'.repeat(28) })]],
+    ['the key with the authentication purpose only', [key({ purposes: ['authentication'] })]],
+    ['the key with the assertion purpose only', [key({ purposes: ['assertion'] })]],
+    ['the key with the delegation purpose only', [key({ purposes: ['delegation'] })]],
+    ['the key with no purpose', [key({ purposes: [] })]],
+    ['the key as a P-256 key', [key({ type: 'P-256' })]],
+    ['the key as a key of no known type', [key({ type: 'ed25519' })]],
+    ['the key hash in upper case', [key({ keyHash: BRAVO.pkh.toUpperCase() })]],
+    ['purposes that are a text with the word in it', [key({ purposes: 'transaction' })]],
+    ['purposes that are missing', [key({ purposes: undefined })]],
+    ['the purpose in upper case', [key({ purposes: ['Transaction'] })]],
+    ['entries that are not keys', [null, 7, 'key', []]],
+  ])('is false for a record that lists %s', (_name, keys) => {
+    expect(lists(keys)).toBe(false);
+  });
+
+  test('is false for the key of another desk: the key hash must be the supplier key of this advert', () => {
+    expect(lists([key()], deskOf('alfa').pkh)).toBe(false);
+  });
+
+  test('is true for a Suspended record that lists the key: a status is a fact, and the rule is about the key', () => {
+    expect(listsSupplierKey(resolvedOf(BRAVO, metadataOf(BRAVO), { effectiveStatus: 'suspended' }), BRAVO.did, BRAVO.pkh)).toBe(true);
+  });
+
+  test('is null for a record that ended and for a DID that has no record: the rule is for a record that exists', () => {
+    expect(listsSupplierKey(retiredOf(BRAVO), BRAVO.did, BRAVO.pkh)).toBeNull();
+    expect(listsSupplierKey(revokedOf(BRAVO), BRAVO.did, BRAVO.pkh)).toBeNull();
+    expect(listsSupplierKey(notFoundOf(BRAVO), BRAVO.did, BRAVO.pkh)).toBeNull();
+  });
+
+  test.each([
+    ['null', null],
+    ['the resolution of another DID', resolvedOf(deskOf('alfa'))],
+    ['a kind that the id-kit does not have', { ...resolvedOf(BRAVO), kind: 'pending' }],
+    ['a resolved with no list of keys', { ...resolvedOf(BRAVO), keys: undefined }],
+    ['a resolved whose keys are an object', { ...resolvedOf(BRAVO), keys: {} }],
+  ])('throws a TypeError for %s: it is a fault of the wiring', (_name, answer) => {
+    expect(() => listsSupplierKey(answer, BRAVO.did, BRAVO.pkh)).toThrow(TypeError);
   });
 });
 
