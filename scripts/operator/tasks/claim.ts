@@ -1,7 +1,7 @@
 // scripts/operator/tasks/claim.ts - the task `claim`: before a run, each agent stakes a Module-1 claim; after the challenge window, the same task withdraws the claims that nobody challenged.
 //
 //   run --run <label> --kind clean|failure   stakes the claim of the run for each agent, in the order of the data: `reorder-agent`, then `order-desk` (one step each)
-//   cleanup --run <label>                    withdraws each claim of the run that its facts hold, after its window
+//   cleanup --run <label>                    withdraws each claim of the run that its facts hold, after its window; a claim that a challenge moved waits for its verdict
 //   status --run <label>                     shows the claims of the run from the facts, the time left of each window, and the open claims that the chain shows
 //   run --trial                              writes the documents for the test of the jury: no chain, no key, no transaction
 //
@@ -11,6 +11,8 @@
 // service wallet but one, and a running service uses the same wallet. A claim is staked in two transactions (the claim document, then the claim). The kit confirms the first before it builds the
 // second, and the guarded signer keeps the first as a part of the step in the state file. If the task stops after the claim landed, the next run reads the claim from the chain and records the step:
 // it never stakes a second claim for the same run.
+// A challenge spends the claim output and makes a new output that holds the same claim token, so a spent output does not end a claim. `cleanup` records a claim as `not open` only when no live claim
+// output holds its token. A claim in a new output that is Open is withdrawn from that output. A claim in a new output that is Challenged, Validated or Invalidated waits, and the step records nothing.
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -37,7 +39,7 @@ import { MODULE1_FEE_BUFFER, txHashOfUri } from '../../../packages/buyer-core/sr
 import type { Module1Deployment } from '../../../packages/buyer-core/src/index.ts';
 import { createSerialQueue } from '../../../packages/usecase-kit/src/access/index.ts';
 import { MAX_JUROR_DOCUMENT_BYTES } from '../../../packages/usecase-kit/src/dispute/index.ts';
-import type { ClaimView, EvidenceDocumentInput, JurorDocument, Module1Provider, RunClaimNotStaked, WithdrawNotDone } from '../../../packages/usecase-kit/src/dispute/index.ts';
+import type { ClaimView, EvidenceDocumentInput, JurorDocument, Module1Port, Module1Provider, RunClaimNotStaked, WithdrawNotDone } from '../../../packages/usecase-kit/src/dispute/index.ts';
 import { CONFIRMATION_CHECKS, CONFIRMATION_SCHEMA, PO_SCHEMA, lotSizeOf, parseLotsFile } from '../../../packages/usecase-kit/src/inventory/index.ts';
 import type { LotName, LotsFile } from '../../../packages/usecase-kit/src/inventory/index.ts';
 import { RECEIPT_CHECKS } from '../../../packages/usecase-kit/src/protocol/index.ts';
@@ -166,6 +168,8 @@ function refuseSigning(): never {
 
 interface Kit {
   readonly dispute: Dispute;
+  /** The chain port under the dispute code, for the read that the dispute code does not give: the live claim outputs in every state. */
+  readonly port: Module1Port;
   /** The errors that the signer threw, in order: the kit turns each into the text of a refusal, so the task reads the cause here. */
   readonly stops: readonly Error[];
 }
@@ -194,7 +198,7 @@ function kitOf(session: TaskSession<ClaimExtra>, agent: AgentSpec, module1: Modu
       port, queue: createSerialQueue(), clock, sleep: boundedSleep,
       settings: { challenge_stake_lovelace: CLAIM_STAKE_LOVELACE, min_window_left_ms: MIN_WINDOW_LEFT_MS, read_timeout_ms: READ_TIMEOUT_MS },
     });
-    return { dispute, stops };
+    return { dispute, port, stops };
   } catch (err) {
     throw new PreconditionError(`the kit cannot be set up for the agent ${agent.id}: ${errorText(err)}`);
   }
@@ -409,7 +413,11 @@ function withdrawFailure(agent: AgentSpec, result: WithdrawNotDone, stops: reado
   );
 }
 
-type Withdrawal = { readonly kind: 'withdrawn' | 'not_open' | 'not_seen' | 'dry' } | { readonly kind: 'wait'; readonly untilMs: number | null };
+type Withdrawal =
+  | { readonly kind: 'withdrawn' | 'not_open' | 'not_seen' | 'dry' }
+  | { readonly kind: 'wait'; readonly untilMs: number | null }
+  /** The claim token is in the live output `ref`, and that output is not Open: a challenge moved the claim, and the jury decides it, or its verdict is not spent yet. */
+  | { readonly kind: 'moved'; readonly state: Exclude<ClaimView['state'], 'Open'>; readonly ref: string };
 
 /**
  * A claim is recorded as not open only when the indexer shows its output as spent. The node cannot tell "spent" from "not seen yet": a node that is behind passes the network guard and shows no output, and
@@ -438,11 +446,50 @@ async function requireOutputSpent(session: TaskSession<ClaimExtra>, agent: Agent
 }
 
 /**
- * Withdraws the claim of one agent. The window is checked from the facts first: the kit checks it again from the chain. A claim that the chain shows as not open is recorded as `not open` only by a submit
- * run whose network guard passed, and only when the indexer shows its output as spent (`requireOutputSpent`): the fact ends the claim for good, because the next cleanup skips it. A dry run, and a run
- * whose guard failed (a node of another network shows no claim), say what they saw and record nothing.
+ * The live claim outputs of the chain in every state, from one read of the chain port. The read has the bound of the reads of the kit: a read that is not done within `READ_TIMEOUT_MS` throws, and the
+ * read that lost is left to end alone, so its error is not an unhandled one.
  */
-async function withdrawOne(session: TaskSession<ClaimExtra>, agent: AgentSpec, run: string, fact: ClaimFact, module1: Module1Deployment): Promise<Withdrawal> {
+export async function readLiveClaims(port: Pick<Module1Port, 'readClaims'>): Promise<readonly ClaimView[]> {
+  const running = port.readClaims();
+  running.catch(() => undefined);
+  const claims = await Promise.race([running, boundedSleep(READ_TIMEOUT_MS).then(() => null)]);
+  if (claims === null) throw new Error(`no answer came within ${READ_TIMEOUT_MS} ms`);
+  return claims;
+}
+
+/**
+ * The live claim output that holds the claim token of `fact`, in any state, or null when no live output holds it: the claim is withdrawn or resolved, and its token is burned. A challenge spends the claim
+ * output and makes a new one that holds the token, so a spent output of the facts does not say that the claim is over. Only a read that answers in full says that no output holds the token. A read that fails
+ * or is not done in time stops the task with exit 2. So do a list with two outputs that hold the token, and an output that holds the token and names another claimer than the agent: nothing is recorded.
+ */
+async function liveHolderOf(session: TaskSession<ClaimExtra>, agent: AgentSpec, module1: Module1Deployment, known: { readonly id: string; readonly did: string }, fact: ClaimFact): Promise<ClaimView | null> {
+  const { port } = kitOf(session, agent, module1, known.id, null);
+  const named = `the claim ${fact.claimRef} of the agent ${agent.id}`;
+  let views: readonly ClaimView[];
+  try {
+    views = await readLiveClaims(port);
+  } catch (err) {
+    throw new PreconditionError(`the live claim outputs cannot be read (${errorText(err)}), so nothing says whether ${named} is over, and it is not recorded as not open. Run claim cleanup again when the chain answers`);
+  }
+  const holders = views.filter((view) => view.token === fact.claimToken);
+  if (holders.length > 1) {
+    throw new PreconditionError(`${holders.length} live outputs hold the claim token of ${named} (${holders.map((view) => view.ref).join(', ')}), so the task cannot tell which one is the claim, and nothing is recorded. Read the chain`);
+  }
+  const [holder] = holders;
+  if (holder !== undefined && holder.claimer !== known.did) {
+    throw new PreconditionError(`the output ${holder.ref} holds the claim token of ${named}, and its claimer is ${holder.claimer}, not ${known.did}: nothing is recorded. Read the chain`);
+  }
+  return holder ?? null;
+}
+
+/**
+ * Withdraws the claim of one agent. The window is checked from the facts first: the kit checks it again from the chain. A claim that the chain shows as not open is judged only by a submit run whose network
+ * guard passed, and only when the indexer shows its output as spent (`requireOutputSpent`). A dry run, and a run whose guard failed (a node of another network shows no claim), say what they saw and record
+ * nothing. A spent output does not end a claim, because a challenge makes a new output that holds the same token, so `liveHolderOf` finds the live output that holds it. When none does, the token is burned: the
+ * claim is recorded as `not open`, and the fact ends the claim for good, because the next cleanup skips it. A holder in the state Open is withdrawn from: the same steps run again with the output of the holder
+ * (`isNewOutput`), and a second `claim_not_open` stops the task. A holder in another state is a claim that the jury decides, or whose verdict is not spent yet: the result is `moved`, and nothing is recorded.
+ */
+async function withdrawOne(session: TaskSession<ClaimExtra>, agent: AgentSpec, run: string, fact: ClaimFact, module1: Module1Deployment, isNewOutput = false): Promise<Withdrawal> {
   const known = factsOf(session, agent);
   const { dispute, stops } = kitOf(session, agent, module1, known.id, withdrawRequest(session, agent, module1, run, fact));
   const result = await dispute.withdrawClaim({ claim: fact.claimRef });
@@ -458,9 +505,17 @@ async function withdrawOne(session: TaskSession<ClaimExtra>, agent: AgentSpec, r
   if (stops[0] instanceof DryStop) return { kind: 'dry' };
   if (result.code === 'claim_not_open') {
     if (session.mode === 'submit' && session.networkResult()?.ok === true) {
+      if (isNewOutput) {
+        throw new PreconditionError(`the claim output ${fact.claimRef} of the agent ${agent.id} was open when it was read, and it is not open now: the claim moved again, so nothing is recorded. Run claim cleanup again`);
+      }
       await requireOutputSpent(session, agent, fact);
-      session.facts.put('claims', [run, agent.id, 'withdrawTx'], NOT_OPEN);
-      return { kind: 'not_open' };
+      const holder = await liveHolderOf(session, agent, module1, known, fact);
+      if (holder === null) {
+        session.facts.put('claims', [run, agent.id, 'withdrawTx'], NOT_OPEN);
+        return { kind: 'not_open' };
+      }
+      if (holder.state === 'Open') return withdrawOne(session, agent, run, { ...fact, claimRef: holder.ref }, module1, true);
+      return { kind: 'moved', state: holder.state, ref: holder.ref };
     }
     return { kind: 'not_seen' };
   }
@@ -517,8 +572,15 @@ async function cleanup(session: TaskSession<ClaimExtra>): Promise<StepOutcome> {
       waiting = true;
       if (done.untilMs !== null) waits.push(done.untilMs);
       lines.push(`the chain says that the window of the claim of the agent ${agent.id} has not ended`);
+    } else if (done.kind === 'moved') {
+      waiting = true;
+      lines.push(
+        done.state === 'Challenged'
+          ? `the claim of the agent ${agent.id} is challenged (its token is in ${done.ref}): nothing is recorded. Run claim cleanup again after the verdict`
+          : `the claim of the agent ${agent.id} is ${done.state} (its token is in ${done.ref}), and that output is not spent yet: nothing is recorded. Run claim cleanup again after the output is spent`,
+      );
     } else if (done.kind === 'not_open') {
-      lines.push(`the claim of the agent ${agent.id} is not open (it is challenged, resolved or withdrawn): recorded as ${NOT_OPEN}`);
+      lines.push(`the claim of the agent ${agent.id} is not open (no live claim output holds its token: it is resolved or withdrawn): recorded as ${NOT_OPEN}`);
     } else if (done.kind === 'not_seen') {
       unseen.push(agent.id);
       lines.push(`the chain shows no open claim for the agent ${agent.id}, and ${session.mode === 'dry' ? 'a dry run' : 'a run whose network guard did not pass'} records nothing: the facts keep the claim as it is`);

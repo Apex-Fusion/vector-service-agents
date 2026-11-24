@@ -10,6 +10,8 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { ensureSlotConfig } from '../../../packages/buyer-core/src/index.ts';
 import { DEPLOYMENT, testKey } from '../../../packages/buyer-core/test/fixtures/identity-world.ts';
 import { AUDITOR_ID, CLAIMER_ID, IDENTITY_ADDRESS, IDENTITY_HASH, MODULE1, MODULE1_MANIFEST, agentRecord, recordUtxo } from '../../../packages/buyer-core/test/fixtures/jury-world.ts';
+import { decodeClaimDatum, encodeClaimDatum } from '../../../packages/buyer-core/src/vendored/mcp/jury-codec.ts';
+import type { ClaimState } from '../../../packages/buyer-core/src/vendored/mcp/jury-codec.ts';
 import { scriptAddress } from '../../../packages/buyer-core/src/vendored/mcp/jury-deployment.ts';
 import { createSerialQueue } from '../../../packages/usecase-kit/src/access/index.ts';
 import { Dispute } from '../../../packages/usecase-kit/src/dispute/index.ts';
@@ -37,7 +39,7 @@ import { guardedSign, recordingProvider } from '../lib/guarded-sign.ts';
 import { ORDER_DESK_CLAIM, REORDER_CLAIM, withdrawableFrom } from '../lib/platform.ts';
 import { loadRegistry } from '../lib/registry.ts';
 import { runTask } from '../lib/runner.ts';
-import claim, { claimRequest, trialDocument, withdrawRequest } from '../tasks/claim.ts';
+import claim, { claimRequest, readLiveClaims, trialDocument, withdrawRequest } from '../tasks/claim.ts';
 import data from '../usecases/inventory-reorder.ts';
 import { MemoryOutput } from './support/fakes.ts';
 import { writeSeed } from './support/keys.ts';
@@ -61,6 +63,9 @@ const WALLET_2 = testKey(13);
 const REORDER_STATUS = `${REORDER.endpoint}/status`;
 const ORDER_STATUS = `${ORDER.endpoint}/status`;
 const IMAGE = `ghcr.io/apex-fusion/vector-service-agents/agent@sha256:${'ab'.repeat(32)}`;
+/** The transactions of the tests that move a claim: each makes the output 0 that holds the claim token. */
+const MOVED_TX = '7a'.repeat(32);
+const MOVED_AGAIN_TX = '7b'.repeat(32);
 const HOST_SETTINGS: OperatorSettings = {
   network: VECTOR_MAINNET, useCase: USE_CASE, keysDir: '/test/keys', stateDir: '/test/state', agentsDir: '/test/agents', goFile: '/test/state/GO.json', mockEnvFile: null, contact: null, module1Commit: COMMIT,
   urls: { ogmios: 'https://node.test', submit: 'https://submit.test', koios: 'https://indexer.test', hosted: 'https://hosted.test/mcp', gateway: 'https://gateway.test' },
@@ -215,6 +220,33 @@ const lockFacts = (rig: Rig): string => {
   return lock;
 };
 const stateOf = (rig: Rig) => rig.world.state('claim', RUN);
+
+type Output = LedgerProvider['live'][number];
+
+const refOfOutput = (utxo: Output): string => `${utxo.txHash}#${utxo.outputIndex}`;
+
+/** Empties the screen, so that a test reads only what the next run prints: the screen of the world keeps the lines of every run. */
+const clearScreen = (rig: Rig): void => { rig.world.screen.lines.splice(0); rig.world.screen.errors.splice(0); };
+
+/**
+ * What a challenge does to a claim output, as the ledger shows it: the live output at `ref` is spent (the indexer still describes it, as spent), and the output 0 of the transaction `txHash` has the same
+ * address and value, holds the same claim token, and has the datum in the state `state`. It gives the new output.
+ */
+function moveClaim(rig: Rig, ref: string, state: ClaimState, txHash: string): Output {
+  const spent = rig.ledger.at(ref);
+  if (spent === undefined) throw new Error(`the ledger holds no live output ${ref}`);
+  const moved: Output = { ...spent, txHash, outputIndex: 0, datum: encodeClaimDatum({ ...decodeClaimDatum(spent.datum!), state }) };
+  rig.ledger.live = rig.ledger.live.filter((utxo) => utxo !== spent);
+  rig.ledger.live.push(moved);
+  rig.ledger.koiosSpent.push(spent);
+  return moved;
+}
+
+/** What the resolution of a claim does: the output that holds the claim token is consumed, and the token is burned. The indexer still describes the output, as spent. */
+function burnClaim(rig: Rig, output: Output): void {
+  rig.ledger.live = rig.ledger.live.filter((utxo) => utxo !== output);
+  rig.ledger.koiosSpent.push(output);
+}
 
 // ---- a host for the guarded signer, for the tests that drive the kit by hand ----
 
@@ -878,6 +910,143 @@ describe('claim cleanup', () => {
     expect(claimOf(rig, ORDER).withdrawTx).toBe(rig.ledger.accepted[5]);
     expect(await openClaims(rig, AUDITOR_ID)).toEqual([]);
   }, SLOW);
+
+  it('does not record a claim that a challenge moved as not open: it waits for the verdict with exit 4, stops with exit 2 when the live claims cannot be placed, and records not open when no live output holds the claim token', async () => {
+    const rig = await staged();
+    const order = claimOf(rig, ORDER);
+    // A challenge spends the claim output of the Order Desk, and the claim token moves to a new output in the state Challenged. The indexer shows the old output as spent.
+    const challenged = moveClaim(rig, order.claimRef, 'Challenged', MOVED_TX);
+    const waiting = `the claim of the agent order-desk is challenged (its token is in ${MOVED_TX}#0): nothing is recorded. Run claim cleanup again after the verdict`;
+    later(rig, 25);
+    approve(rig, 10, 's2');
+    // The claim of the Reorder Agent is open, and it is withdrawn. The claim of the Order Desk is not recorded: the run waits.
+    expect(await cleanup(rig)).toBe(4);
+    expect(rig.world.machine()).toMatchObject({ outcome: 'wait', exit: 4 });
+    expect(rig.world.screen.lines).toContain(waiting);
+    expect(rig.text()).toMatch(/^WAIT: a claim of the run run-a cannot be withdrawn yet$/m);
+    expect(rig.ledger.accepted).toHaveLength(5);
+    expect(claimOf(rig).withdrawTx).toBe(rig.ledger.accepted[4]);
+    expect(claimOf(rig, ORDER).withdrawTx).toBeNull();
+    expect(stateOf(rig).notes['part.withdraw:order-desk']).toBeUndefined();
+    expect(rig.world.evidence('claim', RUN).map((entry) => entry.step)).not.toContain('withdraw:order-desk');
+    // The next run finds the claim in the same place: the same wait, and nothing is signed or recorded.
+    clearScreen(rig);
+    expect(await cleanup(rig)).toBe(4);
+    expect(rig.world.screen.lines).toContain(waiting);
+    expect(rig.ledger.accepted).toHaveLength(5);
+    expect(claimOf(rig, ORDER).withdrawTx).toBeNull();
+    // A read of the live claims that fails stops the run with exit 2, and records nothing.
+    const listed = rig.ledger.getUtxos.bind(rig.ledger);
+    const down = vi.spyOn(rig.ledger, 'getUtxos').mockImplementation(async (address) => {
+      if (address === MODULE1.claim.address) throw new Error('the node does not answer');
+      return listed(address);
+    });
+    clearScreen(rig);
+    expect(await cleanup(rig)).toBe(2);
+    expect(rig.world.machine()).toMatchObject({ outcome: 'stopped', exit: 2 });
+    expect(rig.errors()).toContain(`the live claim outputs cannot be read (the node does not answer), so nothing says whether the claim ${order.claimRef} of the agent order-desk is over, and it is not recorded as not open. Run claim cleanup again when the chain answers`);
+    expect(claimOf(rig, ORDER).withdrawTx).toBeNull();
+    down.mockRestore();
+    // Two live outputs hold the claim token: the task cannot tell which one is the claim, and records nothing.
+    const twin: Output = { ...challenged, txHash: MOVED_AGAIN_TX };
+    rig.ledger.live.push(twin);
+    clearScreen(rig);
+    expect(await cleanup(rig)).toBe(2);
+    expect(rig.errors()).toMatch(/2 live outputs hold the claim token of the claim \S+ of the agent order-desk /);
+    expect(claimOf(rig, ORDER).withdrawTx).toBeNull();
+    rig.ledger.live = rig.ledger.live.filter((utxo) => utxo !== twin);
+    // An output that holds the claim token and names another claimer is not the claim of the agent: nothing is recorded.
+    const foreign: Output = { ...challenged, datum: encodeClaimDatum({ ...decodeClaimDatum(challenged.datum!), claimerDid: CLAIMER_ID }) };
+    rig.ledger.live = rig.ledger.live.map((utxo) => (utxo === challenged ? foreign : utxo));
+    clearScreen(rig);
+    expect(await cleanup(rig)).toBe(2);
+    expect(rig.errors()).toContain(`its claimer is did:vector:${CLAIMER_ID}, not did:vector:${AUDITOR_ID}: nothing is recorded`);
+    expect(claimOf(rig, ORDER).withdrawTx).toBeNull();
+    rig.ledger.live = rig.ledger.live.map((utxo) => (utxo === foreign ? challenged : utxo));
+    // The twin of each refusal: the claim is back in its place, and the run waits.
+    clearScreen(rig);
+    expect(await cleanup(rig)).toBe(4);
+    expect(rig.world.screen.lines).toContain(waiting);
+    expect(claimOf(rig, ORDER).withdrawTx).toBeNull();
+    expect(rig.ledger.accepted).toHaveLength(5);
+    // The verdict: the claim output is consumed, and the claim token is burned. No live output holds the token, so the claim is recorded as not open.
+    burnClaim(rig, challenged);
+    clearScreen(rig);
+    expect(await cleanup(rig)).toBe(0);
+    expect(rig.world.machine()).toMatchObject({ outcome: 'done', exit: 0 });
+    expect(claimOf(rig, ORDER).withdrawTx).toBe('not open');
+    expect(rig.text()).toMatch(/the claim of the agent order-desk is not open .*recorded as not open/);
+    expect(rig.ledger.accepted).toHaveLength(5);
+    // Cleanup again: both claims are settled, and nothing is signed.
+    clearScreen(rig);
+    expect(await cleanup(rig)).toBe(0);
+    expect(rig.text()).toContain('the claim of the agent order-desk is settled already (not open)');
+    expect(rig.ledger.accepted).toHaveLength(5);
+  }, SLOW);
+
+  it('waits in the same way when the live output that holds the claim token is Validated or Invalidated, and records nothing', async () => {
+    const rig = await staged();
+    const order = claimOf(rig, ORDER);
+    const validated = moveClaim(rig, order.claimRef, 'Validated', MOVED_TX);
+    later(rig, 25);
+    approve(rig, 10, 's2');
+    expect(await cleanup(rig)).toBe(4);
+    expect(rig.world.machine()).toMatchObject({ outcome: 'wait', exit: 4 });
+    expect(rig.world.screen.lines).toContain(`the claim of the agent order-desk is Validated (its token is in ${MOVED_TX}#0), and that output is not spent yet: nothing is recorded. Run claim cleanup again after the output is spent`);
+    expect(claimOf(rig, ORDER).withdrawTx).toBeNull();
+    expect(rig.ledger.accepted).toHaveLength(5);
+    // The claim output moves on into the state Invalidated.
+    moveClaim(rig, refOfOutput(validated), 'Invalidated', MOVED_AGAIN_TX);
+    clearScreen(rig);
+    expect(await cleanup(rig)).toBe(4);
+    expect(rig.world.screen.lines).toContain(`the claim of the agent order-desk is Invalidated (its token is in ${MOVED_AGAIN_TX}#0), and that output is not spent yet: nothing is recorded. Run claim cleanup again after the output is spent`);
+    expect(claimOf(rig, ORDER).withdrawTx).toBeNull();
+    expect(stateOf(rig).notes['part.withdraw:order-desk']).toBeUndefined();
+    expect(rig.ledger.accepted).toHaveLength(5);
+  }, SLOW);
+
+  it('withdraws from the new output when the claim token is in an output in the state Open that the facts do not name, and withdraws only once', async () => {
+    const rig = await staged();
+    const order = claimOf(rig, ORDER);
+    // The claim output of the facts is spent, and the claim token is in a new output that is Open.
+    const next = moveClaim(rig, order.claimRef, 'Open', MOVED_TX);
+    later(rig, 25);
+    approve(rig, 10, 's2');
+    expect(await cleanup(rig)).toBe(0);
+    expect(rig.world.machine()).toMatchObject({ outcome: 'done', exit: 0 });
+    expect(rig.ledger.accepted).toHaveLength(6);
+    const withdrawn = claimOf(rig, ORDER);
+    expect(withdrawn.withdrawTx).toBe(rig.ledger.accepted[5]);
+    // The withdrawal spends the new output and burns the claim token. The facts keep the output that staked the claim.
+    const body = factsOf(rig.ledger.raw[5]!);
+    expect(body.inputs).toContain(refOfOutput(next));
+    expect(body.inputs).not.toContain(order.claimRef);
+    expect(body.mint).toEqual({ [`${MODULE1.claim.hash}${order.claimToken}`]: -1n });
+    expect(withdrawn.claimRef).toBe(order.claimRef);
+    expect(rig.world.evidence('claim', RUN).find((entry) => entry.step === 'withdraw:order-desk')).toMatchObject({
+      status: 'confirmed', tx_hash: withdrawn.withdrawTx, shows: { claim: refOfOutput(next), claim_token: order.claimToken },
+    });
+    expect(await openClaims(rig, AUDITOR_ID)).toEqual([]);
+    // Cleanup again: both claims are settled, and nothing is signed.
+    expect(await cleanup(rig)).toBe(0);
+    expect(rig.text()).toContain('the claim of the agent order-desk is settled already');
+    expect(rig.ledger.accepted).toHaveLength(6);
+  }, SLOW);
+
+  it('bounds the read of the live claims: a read that is not done within 20 seconds throws, a read that fails after that is not an unhandled error, and a read that answers gives its claims', async () => {
+    const answered: readonly ClaimView[] = [];
+    expect(await readLiveClaims({ readClaims: async () => answered })).toBe(answered);
+    vi.useFakeTimers();
+    try {
+      const silent = readLiveClaims({ readClaims: () => new Promise<never>(() => undefined) });
+      const failing = readLiveClaims({ readClaims: () => new Promise<never>((_, reject) => { setTimeout(() => reject(new Error('the node answered too late')), 30_000); }) });
+      const refused = Promise.all([expect(silent).rejects.toThrow('no answer came within 20000 ms'), expect(failing).rejects.toThrow('no answer came within 20000 ms')]);
+      await vi.advanceTimersByTimeAsync(30_000);
+      await refused;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   it('touches nothing for another run label, and for a run that the facts do not hold', async () => {
     const rig = await staged();
