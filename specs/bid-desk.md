@@ -96,3 +96,325 @@ Amounts are `lovelace` fields. The last column is the same amount divided by 1,0
 **The request limit.** The limit on a request counts the wire payload: the request JSON written as a string inside a one-message array. The manifest publishes it in `terms.input_limits.request_bytes`. The limit does not count the body of the call that a buyer makes to a runtime. The buyer puts the wire payload inside a second JSON object, and each quote mark and each backslash of the wire payload then gets one more byte. The runtime refuses a body above 1048576 bytes (1 MiB). So the limit of 900000 bytes is safe only below the limit of the runtime, on the escaped body, and a buyer must keep the body of its call at or below 1048576 bytes. The service reads at most 1000000 bytes of wire payload and refuses more with `request_too_large` (400).
 
 **The money.** A hire of an advert locks its price and both bonds: 3 units. The buyer pays the lock from a vault of its delegation, and the value limit of the delegation caps that payment. On Accept the Bid Desk receives the price and the supplier bond, and the buyer's bond returns to the buyer. If the buyer does not accept within 600 s of the Submit, the Bid Desk may Release the escrow and take the price and both bonds. If the Bid Desk never submits, the buyer reclaims after `deliver_by`. A request that the hook refuses, and a job that fails after the Claim, end that way: neither is paid. The service pays for its one model call from the service key.
+
+## Interface
+
+A buyer's agent hires a Bid Desk through its runtime. It posts an escrow on the advert of that Bid Desk, pays it from a vault of its delegation, and sends one request, the request for quotation of use case 3 (supplier bid evaluation). The runtime asks the service before it claims the escrow. After the Claim it posts the job to the service. The service answers with the quote, or with an error. The three Bid Desks have one interface, and this section gives it once.
+
+Two things are named apart on this page. The **request JSON** is what the buyer's agent writes: the message under Request below. The **wire payload** is the request JSON written as a string inside a one-message array: `[{"content": "<request JSON as a string>", "role": "user"}]`. The buyer's agent commits to the wire payload in the escrow, and a runtime posts it to the service as the body of `POST /` and of `POST /precheck`.
+
+| Route | Called by | Answer |
+|---|---|---|
+| `POST /precheck` | the runtime, before the Claim | the hook: 200 `{"go":true,"reserved_ms":120000}`, or a refusal with its code |
+| `POST /` | the runtime, after the Claim | the job: the quote, or an error |
+| `GET /price-list.json` | anyone | the price list of the Bid Desk |
+| `GET /agent.json` | anyone | the manifest |
+| `GET /healthz` | anyone | `{"ok":true}` while the service runs |
+
+`POST /` and `POST /precheck` need the token that only the runtime holds. A call without it gets 401 `{"error":"unauthorized"}`, before the body is read. `GET /price-list.json`, `GET /agent.json` and `GET /healthz` need no token. Any other route gets 404 `{"error":"not_found"}`. A buyer sends its job to the runtime of its advert, on the runtime route `/v1/job` of the manifest, and never to the service.
+
+### Request
+
+The request JSON is the request for quotation of use case 3 (supplier bid evaluation). It is one object with exactly the members of the first table. Its `rfq` is the request for quotation, and it has exactly the members of the second table. Each item of `items` has exactly the members of the third table. The order of the members does not matter. A request that breaks a rule is refused with `bad_shape` (400), before any check.
+
+Example. The tests of the job use this request. Its identifiers are made up, so none of them is of a real agent or delegation.
+
+```json
+{
+  "schema": "vector.usecase.rfq.v1",
+  "sender_did": "did:vector:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+  "delegation": "5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e",
+  "rfq": {
+    "rfq_id": "run1-rfq-1",
+    "items": [
+      {
+        "sku": "GLV-NIT-M",
+        "quantity": 100
+      },
+      {
+        "sku": "SYR-10ML",
+        "quantity": 250
+      },
+      {
+        "sku": "MSK-N95",
+        "quantity": 40
+      }
+    ],
+    "needed_by": "2026-12-20"
+  }
+}
+```
+
+| Member | Rule |
+|---|---|
+| `schema` | `vector.usecase.rfq.v1` |
+| `sender_did` | the DID of the buyer's agent: `did:vector:` and 64 lower-case hex characters |
+| `delegation` | the identifier of the delegation that names the sender as its delegate and paid for the job: 64 lower-case hex characters |
+| `rfq` | the request for quotation, with the members of the second table |
+
+| Member of the request for quotation | Rule |
+|---|---|
+| `rfq_id` | 1 to 64 characters: letters, digits, dots, hyphens and underscores, starting with a letter or a digit. The service counts it as written, so `RFQ-7` and `rfq-7` are two requests |
+| `items` | 1 to 20 items, with the members of the third table, and each SKU once |
+| `needed_by` | a date that exists, as `YYYY-MM-DD`, in the year 0100 or later |
+
+| Member of an item | Rule |
+|---|---|
+| `sku` | the same form as `rfq_id` |
+| `quantity` | a whole number from 1 to 1000000 |
+
+The service reads each text as it was written. An identifier or a SKU that is valid only after Unicode normalisation, such as the Kelvin sign in place of the letter K, is refused with `bad_shape`. The Bid Desk takes no approval, so a member that the tables do not list, `approval` included, is refused too.
+
+### What it checks before the Claim
+
+The runtime asks the service before it claims an escrow. The question is `POST /precheck`, and this page calls it the hook. The hook makes 7 checks, one after the other, in the order of the table. The first 6 are the shared checks of the use-case kit: the sender, the delegation and the payment from a vault. The last is the check of the Bid Desk. The Bid Desk takes no approval, so it has no check of one. The first check that fails ends the hook. Its answer is the refusal code of that check, with the status 403. A refusal comes before the Claim: the escrow stays open, nothing is claimed, nothing is paid, and the buyer reclaims the escrow after `deliver_by`.
+
+| # | Check | Refusal code | Status | The rule |
+|---|---|---|---|---|
+| 1 | `sender_active` | `sender_not_active` | 403 | the sender has a record at the identity gateway, the record has not ended, and its status is Active. A record that the gateway suspends because no Accountable Party covers it gets `sender_unaccountable` |
+| 2 | `sender_accountable` | `sender_unaccountable` | 403 | an Accountable Party covers the record of the sender now |
+| 3 | `sender_key` | `sender_key_mismatch` | 403 | the key that posted the escrow is a key that the record of the sender lists with the delegation purpose. The runtime reads that key from the escrow, and the body never gives it |
+| 4 | `delegation` | `delegation_invalid` | 403 | a live delegation has the identifier of the request, its delegate is the sender, and its delegate key is the key that posted the escrow |
+| 5 | `delegation_usable` | `delegation_ended` | 403 | the delegation and each of its parents can be used now to hire. The check does not wait for confirmations |
+| 6 | `vault_paid` | `not_vault_paid` | 403 | the escrow was paid from a vault of this delegation |
+| 7 | `not_duplicate` | `duplicate_rfq` | 403 | the rfq book holds no answer to this `rfq_id` from this sender. The identifier counts as it was written |
+
+When every check passes, the hook answers 200 `{"go":true,"reserved_ms":120000}`. The service keeps the record of the checks for 300 s, and it reserves the job slot for that escrow for 120 s. The record is for one escrow and one request body: the job takes it by the reference of its escrow, and a job with no record, or with the record of another body, makes no quote. A source that the hook cannot read (the identity gateway, the ledger or the rfq book) is never a pass: the hook answers 503 `check_unavailable`. The runtime waits 10000 ms for the hook, and reads silence as a refusal.
+
+The hook makes 4 timed reads, one after the other: the identity gateway once, for the DID of the sender, and the ledger three times (the delegation, its use and the payment from a vault). The read of the rfq book is local and has no budget. The hook reads the record of the sender and never the record of the Bid Desk itself.
+
+The runtime sends six headers of context with each call: `x-vector-escrow-ref`, `x-vector-advert-ref`, `x-vector-advert-model`, `x-vector-buyer-pkh`, `x-vector-payment-lovelace` and `x-vector-deliver-by-ms`. The hook needs all six, and a call with none, with some, or with a bad one gets 400 `bad_context`. The key that posted the escrow and the reference of the escrow come from these headers and never from the body: the checks `sender_key`, `delegation` and `vault_paid` read them there.
+
+The Bid Desk files no challenge. It takes no approval, so a request has no digest that the hook could refuse, and the service has no dispute code and no dispute setting. A refusal of the hook is the answer to the runtime and nothing more.
+
+The hook does not check the SKUs of the request against the price list. A request none of whose SKUs the list carries passes the hook and the Claim. The job then hires the model, and it ends with `model_output_invalid` (502), because a quote needs at least one line (see What it does).
+
+The check `not_duplicate` and the job both read the book of the Bid Desk. The book holds one entry for each request that the Bid Desk answered, by the DID of the sender and the `rfq_id` as it was written. It never drops an entry, so a Bid Desk refuses a repeated `rfq_id` of the same sender for ever. It holds at most 10000 entries. A book that is full cannot take a new entry: for a request that it lacks, the hook then answers 503 `check_unavailable` and the escrow stays open, and for a request that it holds, the hook still answers 403 `duplicate_rfq`.
+
+### What it does
+
+After the Claim the runtime posts the job to the service. The job has a deadline of 300000 ms after its request arrives, and it runs these steps in this order. A failure ends the job with an error, and no later step runs.
+
+1. The job takes the record of the checks that the hook kept for its escrow, and it compares the hash of its own body with the hash that the hook checked. A job with no record, with the record of another body, with a record that lacks one of the 7 checks, or with a fact in the record that it cannot read, fails with `precheck_missing` and makes no quote. It takes the sender and the 7 checks of the quote from that record.
+2. Decision `quote`: the service hires one model from the Vector marketplace. The model gets a fixed instruction, the date of today, the items and the date of the request, and the entries of the price list for the SKUs of the items. It answers `{ "lines": [ { "sku", "quantity", "unit_price", "lead_time_days" } ], "valid_until": "<date>", "notes": "..." }`, and its reasons. The model sets the unit price of each line from the price list. The hire ends at the job deadline, or 50000 ms before `deliver_by` when that is earlier, and it does not start with less than 60000 ms left for it.
+3. The job checks the choice against the request, in code: there is at least one line, each line has the SKU and the quantity of an item of the request, and each SKU stands in one line. A choice that breaks this rule ends the job with `model_output_invalid` (502). The decision is on record and no quote is made. The job does not check that every item has a line, and it never adds, removes or changes a line.
+4. When the fault switch is set, the job changes the unit price of one line (see Fault switch). Then it makes the line totals, the total and the longest lead time. These three are arithmetic, not decisions.
+5. It reads the book again. A request that the book holds ends the job with `duplicate_rfq` (403) after the Claim. The hook can pass two escrows of one request before the first job writes the book, and this read closes that gap.
+6. It gets the credential of the Bid Desk from the identity gateway. A failure of the gateway, and an answer that is not a compact JWS, end the job with `credential_failed` (502).
+7. It builds the quote and checks it with the parser of the kit. A quote that the parser refuses ends the job with `internal` (500).
+8. It checks the time. With less than 30000 ms left before `deliver_by`, the job ends with `deadline` (422) and records nothing. Otherwise it writes the book: the sender, the `rfq_id` and the hash of the quote. A book that cannot be written ends the job with `store_write_failed` (500). Then the job answers with the quote.
+
+The model sets the prices and the code does not check them. The code checks the SKU and the quantity of each line against the request, and it does not check a unit price against the price list. So a quote can hold a price that is not on the list. The buyer's agent must check it: the list and its hash are public, and the quote names the hash of the list that it was priced from. The Sourcing Agent asks its model to compare the unit price of each line of a quote with the price of the list before it accepts the quote. The one price off the list that this Bid Desk makes on purpose is the fault `quote_off_price_list`.
+
+A request none of whose SKUs the price list carries passes the hook and the Claim. The instruction to the model says to leave an item that the list does not carry out of the lines, and to name it in the notes. When no line is left, the job ends with `model_output_invalid` (502) after the Claim, and the service has paid for the model hire. A request with some SKUs on the list gets a quote with a line for each item that the model priced.
+
+A job whose caller hangs up before the decision, or before the book records the quote, stops there with `deadline` (422) and records nothing. A hire that has started is not stopped. A hang-up after the record does not stop the job: the quote is booked, the job gives it, and its log says that the caller hung up. The job calls no mock system, takes no approval and files no challenge.
+
+### Response
+
+`schema` is `vector.usecase.quote.v1`. A job that makes the quote answers with it, as the body of the answer, serialised once, with its members in the order of the table below. The signed receipt of the job is the signed quote: the receipt commits to the text of the quote. A job that does not make a quote answers with an error (see Errors) and no quote.
+
+Example. The test of the job gives exactly this quote for the request above, with the price list file of Bid Desk Alfa, the organisation of Bid Desk Alfa and stand-ins for the identity gateway, the book and the model supplier. It is an illustration and not a recorded run. Its desk DID, sender, credential, references, hashes and signature are made up, so none of them is of a real agent, escrow or key. Only the price list hash and the prices are those of the file of Bid Desk Alfa.
+
+```json
+{
+  "schema": "vector.usecase.quote.v1",
+  "outcome": "done",
+  "rfq_id": "run1-rfq-1",
+  "rfq_sha256": "42ca167e867b2e8df3a82b7dc4a5b1c2a3a96f523e1f56a3863936a5dceadf35",
+  "desk_did": "did:vector:b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+  "organisation": "alfa.vector.apexfusion.org",
+  "lines": [
+    {
+      "sku": "GLV-NIT-M",
+      "quantity": 100,
+      "unit_price": 125,
+      "line_total": 12500,
+      "lead_time_days": 14
+    },
+    {
+      "sku": "SYR-10ML",
+      "quantity": 250,
+      "unit_price": 28,
+      "line_total": 7000,
+      "lead_time_days": 10
+    },
+    {
+      "sku": "MSK-N95",
+      "quantity": 40,
+      "unit_price": 60,
+      "line_total": 2400,
+      "lead_time_days": 21
+    }
+  ],
+  "total": 21900,
+  "lead_time_days": 21,
+  "valid_until": "2026-12-15",
+  "notes": "All three items are on the price list.",
+  "price_list_sha256": "8398730303d1a13c26dc761d9d85f14a09a8ee0b495e584f132599a79f80ae1d",
+  "credential": "eyJhbGciOiJFZERTQSIsInR5cCI6InZjK2p3dCJ9.eyJpc3MiOiJkaWQ6dmVjdG9yOmdhdGV3YXkiLCJzdWIiOiJkaWQ6dmVjdG9yOmRlc2siLCJ2YyI6eyJ0eXBlIjpbIlZlcmlmaWFibGVDcmVkZW50aWFsIl19fQ.YSBzaWduYXR1cmUgdGhhdCBvbmx5IGEgdGVzdCB1c2Vz",
+  "sender": {
+    "did": "did:vector:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+    "organisation": "buyer.example",
+    "organisation_verified": true
+  },
+  "checks": {
+    "sender_active": true,
+    "sender_accountable": true,
+    "sender_key": true,
+    "delegation": true,
+    "delegation_usable": true,
+    "vault_paid": true,
+    "not_duplicate": true
+  },
+  "decisions": [
+    {
+      "name": "quote",
+      "choice": {
+        "lines": [
+          {
+            "sku": "GLV-NIT-M",
+            "quantity": 100,
+            "unit_price": 125,
+            "lead_time_days": 14
+          },
+          {
+            "sku": "SYR-10ML",
+            "quantity": 250,
+            "unit_price": 28,
+            "lead_time_days": 10
+          },
+          {
+            "sku": "MSK-N95",
+            "quantity": 40,
+            "unit_price": 60,
+            "lead_time_days": 21
+          }
+        ],
+        "valid_until": "2026-12-15",
+        "notes": "All three items are on the price list."
+      },
+      "reasoning": "The list gives 125 for 100 gloves, 28 for 250 syringes and 60 for 40 masks, so each line takes the unit price of its break and the lead time of its SKU.",
+      "inference": {
+        "path": "marketplace",
+        "sub_job": {
+          "capability_id": "llm.text.generate.v1",
+          "advert_ref": "b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3#0",
+          "escrow_ref": "4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c#0",
+          "supplier_pkh": "7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d",
+          "receipt": {
+            "escrow_ref": "4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c#0",
+            "supplier_pkh": "7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d",
+            "prompt_hash": "3333333333333333333333333333333333333333333333333333333333333333",
+            "response_hash": "4444444444444444444444444444444444444444444444444444444444444444",
+            "model": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 912,
+            "completion_tokens": 164,
+            "wallclock_ms": 3120
+          },
+          "receipt_signature": "8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e",
+          "verification": {
+            "escrow_ref_matches": true,
+            "response_hash_matches": true,
+            "supplier_key_matches": true,
+            "signature_valid": true,
+            "on_chain_hash_matches": true,
+            "prompt_hash_matches": true,
+            "model_matches": true,
+            "fields_match": true
+          }
+        },
+        "accepted": "confirmed"
+      }
+    }
+  ],
+  "fault_mode": ""
+}
+```
+
+| Member | Content |
+|---|---|
+| `schema` | `vector.usecase.quote.v1` |
+| `outcome` | always `done`: a refusal or a failure is an error, never a quote |
+| `rfq_id` | the identifier of the request |
+| `rfq_sha256` | the SHA-256 of the canonical text of the request for quotation that the Bid Desk received, with no salt |
+| `desk_did` | the DID of this Bid Desk (`AGENT_DID`) |
+| `organisation` | the organisation of this Bid Desk (`BID_DESK_ORGANISATION`) |
+| `lines` | the lines of the quote: each has `sku`, `quantity`, `unit_price`, `line_total` and `lead_time_days` |
+| `total` | the sum of the line totals |
+| `lead_time_days` | the longest lead time of the lines |
+| `valid_until` | the last day on which the quote holds, as the model gave it |
+| `notes` | the note of the model: at most 500 characters |
+| `price_list_sha256` | the SHA-256 of the price list file that this Bid Desk serves |
+| `credential` | the credential of this Bid Desk from the identity gateway, a compact JWS |
+| `sender` | the DID of the sender, the organisation that the covering Accountable Party names (or `null`), and whether the identity gateway verified it. The organisation is recorded, and it is never a reason to refuse |
+| `checks` | the 7 checks of the hook, each `true`, in the order of the table of the hook |
+| `decisions` | one decision, `quote`: its choice, its reasoning, and the hire of the model supplier with the sub-receipt that the service verified (`inference`) |
+| `fault_mode` | the setting of the fault switch: the empty text in a clean run. It is the last member |
+
+A line total is the quantity times the unit price, the total is the sum of the line totals, and `lead_time_days` is the longest lead time of the lines. The service makes these three numbers from the lines of the model. They are arithmetic and not decisions, and the parser of the kit refuses a quote with a number that is not the arithmetic of its lines. A quote can have fewer lines than the request has items, and its notes then say which items it leaves out.
+
+The quote names the hash of the request and the hash of the price list that it was priced from, so a buyer's agent can check each unit price against the public list.
+
+### The price list
+
+`GET /price-list.json` answers the price list file of the Bid Desk: its SKUs, each with a lead time and a unit price from each minimum quantity. It needs no token and takes no job slot. The answer is the exact bytes of the file, with the header `content-type: application/json`. The unit price of a quantity is the price of the break with the greatest minimum that is not above the quantity.
+
+The manifest holds the address of the file, `<public origin>/price-list.json`, and the SHA-256 of its bytes in `behaviour.price_list`. The advert holds the SHA-256 of the manifest. So a change of a list changes the manifest of its Bid Desk, and it is a new image and a new advert. The three tables below are the three files. The numbers are stand-in data of a demonstration: they carry no unit of account and no commercial value.
+
+**Bid Desk Alfa**
+
+| SKU | Lead time in days | Unit price from 1 | Unit price from 100 | Unit price from 500 |
+|---|---|---|---|---|
+| `GLV-NIT-M` | 14 | 140 | 125 | 110 |
+| `SYR-10ML` | 10 | 32 | 28 | 24 |
+| `MSK-N95` | 21 | 60 | 52 | 46 |
+
+SHA-256 of the file: `8398730303d1a13c26dc761d9d85f14a09a8ee0b495e584f132599a79f80ae1d`
+
+**Bid Desk Bravo**
+
+| SKU | Lead time in days | Unit price from 1 | Unit price from 100 | Unit price from 500 |
+|---|---|---|---|---|
+| `GLV-NIT-M` | 10 | 148 | 132 | 118 |
+| `SYR-10ML` | 8 | 34 | 30 | 26 |
+| `MSK-N95` | 18 | 64 | 56 | 50 |
+
+SHA-256 of the file: `60969045f9fc8f1d8371f864315e58a302d0100369559658fbba8c056e9fa6b0`
+
+**Bid Desk Charlie**
+
+| SKU | Lead time in days | Unit price from 1 | Unit price from 100 | Unit price from 500 |
+|---|---|---|---|---|
+| `GLV-NIT-M` | 21 | 130 | 115 | 102 |
+| `SYR-10ML` | 14 | 29 | 25 | 22 |
+| `MSK-N95` | 28 | 56 | 48 | 42 |
+
+SHA-256 of the file: `c78398a4f0276aca2980f78d0488c296e8159716228874e748d03243a077b22b`
+
+### Errors
+
+A refusal is `{ "error": "<code>", "message": "<words>" }` with the status in the table.
+
+- The 401, the 404, the 409 of a job and a plain 500 have the code and no message: `{"error":"unauthorized"}`, `{"error":"not_found"}`, `{"error":"busy"}` and `{"error":"internal"}`. A plain 500 is the answer to a fault that no code names, and its cause is in the log.
+- A refusal of status 500 or more gets a fixed message, `The service could not do this job (<code>). The operator's log has the detail.`, because the runtime copies the first 200 characters of a failure to the buyer, and the detail is the operator's. `shutting_down` has the fixed message `The service is stopping and takes no new job. Try again shortly.`, and the 409 `busy` of the hook has the fixed message `The service is working on another job. Try again shortly.`.
+- The messages of `duplicate_rfq` and `deadline` are fixed texts that hold no value of the request.
+- A refusal of the hook leaves the escrow open, and nothing is paid. A job that fails after the Claim leaves the escrow Claimed: the buyer reclaims it after `deliver_by`, and nothing is paid for work that was not done.
+- The Bid Desk calls no mock system, so a failed job can leave behind a model hire and nothing else. A job that fails after the service accepted the model hire has paid the model supplier from the service key. A hire that stays unfinished is in the stranded file of the service key, and the janitor settles it.
+- One job runs at a time. A job that arrives while a job runs, or while the slot is reserved for another escrow, gets 409 `{"error":"busy"}`, and nothing starts. A call of the hook gets 409 `busy` with a message while a job runs, whatever its escrow, and while the slot is reserved for another escrow. A new go of the hook for the escrow that holds the reservation reserves the slot again; a refusal of the hook reserves nothing.
+- While a job runs, the service writes an interim `102 Processing` line every 60 s, ahead of the answer, because the fetch of the runtime gives up after 300 s of silence.
+- A Bid Desk is the hired side. The service answers 200 only when it made a quote, and the 200 answer is the quote. Every code of the table is a refusal or a failure of the job or of the request, and the runtime turns it into the answer that the buyer reads.
+
+| Status | Codes |
+|---|---|
+| 400, the message | `bad_wire` (not the one-element message array), `request_too_large` (over 1000000 bytes) |
+| 400, the request | `bad_shape` (a request JSON that is not a request for quotation of use case 3), `bad_context` (the six headers of the context are missing, some are missing, or one is not well formed) |
+| 401, the caller | `unauthorized` (no message) |
+| 403, the hook, before the Claim | `sender_not_active`, `sender_unaccountable`, `sender_key_mismatch`, `delegation_invalid`, `delegation_ended`, `not_vault_paid`, `duplicate_rfq` |
+| 403, the job, after the Claim | `duplicate_rfq` (the book holds an answer to this request already: the hook passed two escrows of one request before the first job wrote the book) |
+| 404, no such route | `not_found` (no message) |
+| 409, the service is busy | `busy` (a job runs, or the slot is reserved for another escrow. The answer to a job has no message, and the answer of the hook has one) |
+| 422, the job | `deadline` (the caller hung up before the model hire or before the record in the book, or less than 30 s are left before the runtime stops waiting for the job) |
+| 500, the service | `precheck_missing` (the job has no record of passed checks for its body), `store_write_failed` (the rfq book or the record of the model hire cannot be written), `internal` (a fault of the service: a plain 500 with no message when nothing names it, and the fixed message when the job names it) |
+| 502, a third party | `credential_failed` (the identity gateway gave no credential that a quote can hold), `inference_failed` (the model hire failed, or it did not start because less than 60 s were left for it), `model_output_invalid` (the answer of the model cannot be used: it breaks the shape of the decision, or a line is not an item of the request, or there is no line) |
+| 503, the service cannot answer now | `check_unavailable` (the hook could not read a source), `shutting_down` (the service is stopping) |
