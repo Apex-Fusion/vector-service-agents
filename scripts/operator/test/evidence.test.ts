@@ -102,7 +102,7 @@ interface Scenario {
   reclaimWrongOwner?: boolean;
   reclaimParts?: RefundPart[];
   reclaimFlow?: ReclaimFlow;
-  vaultWalk?: { additionalPayments: number; invalid?: 'cycle' | 'width' | 'budget' };
+  vaultWalk?: { additionalPayments: number; invalid?: 'cycle' | 'width' | 'budget' | 'reopened' | 'wrong_transition' };
   receiptDiscovery?: 'missing' | 'wrong_escrow';
   release?: 'missing' | 'false_label' | 'early' | 'failed';
   receiptRevoked?: boolean;
@@ -268,10 +268,66 @@ async function go(s: Scenario, argv: string[] = ['run', '--run', s.label, '--num
   const owner = { type: 'PrincipalKey' as const, hash: 'cc'.repeat(28), organisation: null };
   const returned = encodeVaultDatum({ type: 'Returned', owner });
   const refund = { address: plutusAddressFromBech32(MAINNET.vault.address), datum: returned };
-  const vaultInput = (reference: string): TxIo => ({
-    ...input(reference, VAULT_CREDENTIAL),
-    inline_datum: { bytes: null, value: { constructor: 0, fields: [{ constructor: 0, fields: [{ bytes: 'cc'.repeat(28) }, { constructor: 1, fields: [] }] }, { bytes: s.delegations[0]!.id }, { int: 0 }, { int: 0 }] } },
+  const payment = 4_600_000n;
+  const fee = 200_000n;
+  const funding = (reference: string, amount = 10_000_000n): TxIo => ({
+    ...input(reference, owner.hash), payment_addr: { cred: owner.hash, bech32: keyAddressOf(owner.hash) }, value: String(amount), asset_list: [],
   });
+  const chainIo = (utxo: Utxo): TxIo => {
+    const snapshot = koiosRow(utxo);
+    return { tx_hash: snapshot.tx_hash, tx_index: snapshot.tx_index, value: snapshot.value, payment_addr: { cred: snapshot.payment_cred!, bech32: utxo.address },
+      inline_datum: snapshot.inline_datum ?? null, asset_list: snapshot.asset_list };
+  };
+  const delegationOutputs = s.delegations.map((d, i) => delegationUtxo(d.id, delegation({ delegator: owner, value: { perTx: 6_000_000n, total: 400_000_000n, periodMs: DAY } }),
+    { txHash: h(`delegation tx ${i}`) }));
+  type Live = { type: 'Live'; owner: typeof owner; delegation: string; spent: bigint; periodStart: number };
+  const archive = new Map<string, { utxo: Utxo; datum: Live; spent: boolean }>();
+  const createVault = (reference: string, value: bigint, datum: Live) => {
+    const utxo = vaultUtxo(datum, value, { txHash: reference.slice(0, 64), outputIndex: Number(reference.slice(65)) });
+    archive.set(reference, { utxo, datum, spent: false });
+    return chainIo(utxo);
+  };
+  const openVault = (reference: string, id: string, amount: bigint): void => {
+    const output = createVault(reference, amount, { type: 'Live', owner, delegation: id, spent: 0n, periodStart: 0 });
+    row(output.tx_hash, 0, [funding(ref(`funding ${reference}`), amount + fee)], { outputs: [output] });
+    confirmed.add(output.tx_hash);
+  };
+  const vaultInput = (reference: string): TxIo => {
+    const held = archive.get(reference);
+    if (held === undefined) return { ...input(reference, VAULT_CREDENTIAL), payment_addr: { cred: VAULT_CREDENTIAL, bech32: MAINNET.vault.address }, asset_list: [] };
+    const { datum, utxo } = held;
+    const io = chainIo(utxo);
+    return { ...io, inline_datum: { bytes: utxo.datum ?? null, value: { constructor: 0, fields: [
+      { constructor: 0, fields: [{ bytes: owner.hash }, { constructor: 1, fields: [] }] }, { bytes: datum.delegation }, { int: String(datum.spent) }, { int: datum.periodStart },
+    ] } } };
+  };
+  const addPay = (parent: string, child: string, minute: number, escrowIndex: number): void => {
+    const { utxo, datum } = archive.get(parent)!;
+    const stamp = S0 + minute * 60, slot = 10_000_000 + minute * 60;
+    const reset = (stamp - 1) * 1_000 >= datum.periodStart + DAY;
+    const successor = { ...datum, spent: reset ? payment : datum.spent + payment, periodStart: reset ? (stamp + 1) * 1_000 : datum.periodStart };
+    const isFinal = child === ref('extra vault payment 0');
+    const reopened = isFinal && s.vaultWalk?.invalid === 'reopened';
+    if (reopened) { successor.spent = 0n; successor.periodStart = 0; }
+    if (isFinal && s.vaultWalk?.invalid === 'wrong_transition') successor.spent += 1n;
+    const continuing = createVault(child, utxo.assets.lovelace - payment, successor);
+    const old = vaultInput(parent);
+    archive.get(parent)!.spent = true;
+    const hash = continuing.tx_hash;
+    const escrow = { ...input(`${hash}#${escrowIndex}`, ESCROW_CREDENTIAL), payment_addr: { cred: ESCROW_CREDENTIAL, bech32: MAINNET.escrow.address }, value: String(payment), asset_list: [] };
+    const delegateRef = delegationOutputs[s.delegations.findIndex(({ id }) => id === datum.delegation)]!;
+    row(hash, minute, [old, funding(ref(`pay fee ${hash}`), fee)], {
+      outputs: reopened ? [continuing, funding(`${hash}#1`, payment)] : [escrow, continuing],
+      plutus_contracts: [spend(VAULT_CREDENTIAL, old, reopened ? 1 : 0)],
+      absolute_slot: slot, invalid_before: String(slot - 1), invalid_after: String(slot + 1), reference_inputs: [chainIo(delegateRef)],
+    });
+    confirmed.add(hash);
+  };
+  const deskPays = s.payFromWallet ? 0 : s.hires.filter(({ role }) => role === 'order-desk').length;
+  for (const [i, v] of s.vaults.entries()) {
+    const pays = i === 0 ? deskPays + (s.vaultWalk?.additionalPayments ?? 0) : 0;
+    openVault(vaultRoot[i]!, s.delegations[i]?.id ?? s.delegations[0]!.id, (v.utxo?.assets.lovelace ?? 8_300_000n) + BigInt(pays) * payment);
+  }
   for (const one of s.hires) {
     const agent = one.role === 'order-desk' ? 'order-desk' : 'reorder-agent';
     const model = one.role === 'order-desk' ? 'lot-medium' : 'reorder-agent-v1';
@@ -303,16 +359,9 @@ async function go(s: Scenario, argv: string[] = ['run', '--run', s.label, '--num
     if (one.entryOver.report_file !== null) writeFileSync(join(dir, s.label, `${one.step}.report.json`), JSON.stringify(report));
     const claim = txOf(one.step, 'claim'); const submit = txOf(one.step, 'submit');
     if (one.role === 'order-desk' && !s.payFromWallet) {
-      const spent = vaultHead[0]!;
-      const out = (index: number, credential: string): TxIo => ({ tx_hash: post, tx_index: index, value: '5200000', payment_addr: { cred: credential, bech32: 'addr1test' }, inline_datum: null });
-      historic.push(koiosRow({ ...vaultUtxo({ type: 'Live', owner, delegation: s.delegations[0]!.id, spent: 0n, periodStart: 0 }, 20_000_000n),
-        txHash: spent.slice(0, 64), outputIndex: Number(spent.slice(65)) }, { is_spent: true }));
-      const pay: Contract = {
-        script_hash: VAULT_CREDENTIAL, spends_input: { tx_hash: spent.slice(0, 64), tx_index: Number(spent.slice(65)) }, valid_contract: true,
-        input: { redeemer: { purpose: 'spend', datum: { hash: h('pay redeemer'), value: { constructor: 0, fields: [] } } } },
-      };
-      row(post, one.minute, [input(ref('wallet', 1), WALLET_CREDENTIAL), vaultInput(spent)], { outputs: [out(0, ESCROW_CREDENTIAL), out(1, VAULT_CREDENTIAL)], plutus_contracts: [pay] });
-      vaultHead[0] = `${post}#1`;
+      const next = `${post}#1`;
+      addPay(vaultHead[0]!, next, one.minute, 0);
+      vaultHead[0] = next;
     } else {
       const escrowOutput: TxIo = { tx_hash: post, tx_index: 0, value: '5200000', payment_addr: { cred: ESCROW_CREDENTIAL, bech32: 'addr1test' }, inline_datum: null };
       row(post, one.minute, [input(ref('wallet', 1), WALLET_CREDENTIAL)], one.role === 'order-desk' ? { outputs: [escrowOutput] } : {});
@@ -393,51 +442,69 @@ async function go(s: Scenario, argv: string[] = ['run', '--run', s.label, '--num
     posted.push(escrow(post, datum));
   }
   // -- the delegations, the sub-delegation and the vaults: the transactions of the record, as the chain shows them
-  const movement = (hash: string, name: string, quantity: string): void => row(hash, 0, [input(ref('wallet', 2), WALLET_CREDENTIAL)], { assets_minted: [{ policy_id: MAINNET.delegation.hash, asset_name: name, quantity }] });
-  s.delegations.forEach((d, i) => { movement(h(`delegation tx ${i}`), d.id, '1'); if (!d.live) movement(h(`delegation end ${i}`), d.id, '-1'); });
+  const movement = (hash: string, name: string, quantity: string, liveOutput?: Utxo): void => {
+    const tx = { assets_minted: [{ policy_id: MAINNET.delegation.hash, asset_name: name, quantity }] };
+    if (liveOutput === undefined) row(hash, 0, [input(ref('wallet', 2), WALLET_CREDENTIAL)], tx);
+    else row(hash, 0, [funding(ref(`delegation funding ${hash}`))], { ...tx, outputs: [chainIo(liveOutput)],
+      plutus_contracts: [{ script_hash: MAINNET.delegation.hash, valid_contract: true, input: { redeemer: { purpose: 'mint', datum: { hash: h('delegation redeemer'), value: { constructor: 0, fields: [] } } } } }] });
+  };
+  s.delegations.forEach((d, i) => {
+    const output = delegationOutputs[i]!;
+    movement(output.txHash, d.id, '1', output);
+    historic.push(koiosRow(output, { is_spent: !d.live }));
+    if (!d.live) movement(h(`delegation end ${i}`), d.id, '-1');
+  });
   movement(h('sub delegate tx'), h('sub delegation'), '1');
   movement(h('sub undelegate tx'), h('sub delegation'), '-1');
+  const extend = (start: string, payments: number, label: string): string => {
+    let head = start;
+    for (let j = 0; j < payments; j++) {
+      const next = ref(`${label} ${j}`);
+      addPay(head, next, 60 + j, 1);
+      head = next;
+    }
+    return head;
+  };
   s.vaults.forEach((v, i) => {
-    row(h(`vault open ${i}`), 0, [input(ref('wallet', 3), WALLET_CREDENTIAL)]);
     if (v.utxo !== null) return;
     const more = i === 0 ? s.vaultWalk : undefined;
-    if (more === undefined) {
-      row(h(`vault close ${i}`), 0, [vaultInput(vaultHead[i]!)]);
-      return;
-    }
-    const extend = (start: string, payments: number, label: string): string => {
-      let head = start;
-      for (let j = 0; j < payments; j++) {
-        const next = ref(`${label} ${j}`);
-        const spent = vaultInput(head);
-        row(next.slice(0, 64), 60 + j, [spent], { outputs: [vaultInput(next)], plutus_contracts: [spend(VAULT_CREDENTIAL, spent, 0)] });
-        head = next;
-      }
-      return head;
-    };
-    const head = extend(vaultHead[i]!, more.additionalPayments, 'extra vault payment');
+    const head = extend(vaultHead[i]!, more?.additionalPayments ?? 0, 'extra vault payment');
     const other: string[] = [];
-    if (more.invalid === 'cycle') {
+    if (more?.invalid === 'cycle') {
       const a = ref('cyclic vault A'), b = ref('cyclic vault B');
-      row(a.slice(0, 64), 1, [vaultInput(b)]);
-      row(b.slice(0, 64), 2, [vaultInput(a)]);
+      const datum: Live = { type: 'Live', owner, delegation: s.delegations[0]!.id, spent: 1n, periodStart: CAPTURE_MS };
+      const outA = createVault(a, 8_000_000n, datum), outB = createVault(b, 8_000_000n, datum);
+      row(outA.tx_hash, 1, [outB], { outputs: [outA], plutus_contracts: [spend(VAULT_CREDENTIAL, outB, 0)] });
+      row(outB.tx_hash, 2, [outA], { outputs: [outB], plutus_contracts: [spend(VAULT_CREDENTIAL, outA, 0)] });
+      confirmed.add(outA.tx_hash); confirmed.add(outB.tx_hash);
       other.push(a);
-    } else if (more.invalid === 'width') {
+    } else if (more?.invalid === 'width') {
       for (let j = 0; j < 8; j++) other.push(ref(`other vault input ${j}`));
-    } else if (more.invalid === 'budget') {
-      for (let j = 0; j < 4; j++) {
+    } else if (more?.invalid === 'budget') {
+      for (let j = 0; j < 6; j++) {
         const open = ref(`other vault open ${j}`);
-        row(open.slice(0, 64), 0, [input(ref('wallet', j), WALLET_CREDENTIAL)]);
+        openVault(open, s.delegations[0]!.id, 8_300_000n + 8n * payment);
         other.push(extend(open, 8, `other vault ${j} payment`));
       }
     }
-    row(h(`vault close ${i}`), 160, [...other, head].map(vaultInput));
+    const refs = [...other, head];
+    const inputs = refs.map(vaultInput);
+    for (const ref of refs) { const held = archive.get(ref); if (held !== undefined) held.spent = true; }
+    const close = h(`vault close ${i}`);
+    const payout = inputs.reduce((sum, value) => sum + BigInt(value.value), 0n) - fee;
+    row(close, 160, inputs, { outputs: [funding(`${close}#0`, payout)], plutus_contracts: inputs.map((source) => spend(VAULT_CREDENTIAL, source, 1)) });
   });
+  for (const { utxo, spent } of archive.values()) historic.push(koiosRow(utxo, { is_spent: spent }));
   // -- the ledger: delegations, vaults, the approval, the record of the Order Desk
   const utxos = liveEscrows;
-  s.delegations.forEach((d, i) => { if (d.live) utxos.push(delegationUtxo(d.id, delegation(), { txHash: h(`delegation tx ${i}`) })); });
+  s.delegations.forEach(({ live }, i) => { if (live) utxos.push(delegationOutputs[i]!); });
   const vaults: Obj[] = [];
-  s.vaults.forEach((v) => { if (v.utxo !== null) { utxos.push(v.utxo); vaults.push({ ref: `${v.utxo.txHash}#${v.utxo.outputIndex}` }); } });
+  s.vaults.forEach((v) => {
+    if (v.utxo === null) return;
+    const ref = `${v.utxo.txHash}#${v.utxo.outputIndex}`;
+    utxos.push(archive.get(ref)?.utxo ?? v.utxo);
+    vaults.push({ ref });
+  });
   if (s.approvalVisible) {
     if ([s.approval, ...s.extraApprovals ?? []].some((entry) => (entry.datum as Obj | undefined)?.issuerId === APPROVAL_ISSUER)) {
       utxos.push(recordUtxo(APPROVAL_ISSUER, liveRecord({ controller: ISSUER_KEY.publicKey })));
@@ -1467,7 +1534,7 @@ describe('check 4: each ended or closed entry is tied to its id by a read of its
     const head = vaultUtxo({ type: 'Live', owner: { type: 'PrincipalKey', hash: 'cc'.repeat(28), organisation: null }, delegation: h('delegation c1'), spent: 0n, periodStart: CAPTURE_MS }, 8_300_000n, { txHash: txOf('order-desk', 'post') });
     s.vaults = [{ utxo: head }];
     s.record = { vaults: [{ ref: `${head.txHash}#${head.outputIndex}`, open_tx: h('vault open 0'), close_tx: h('vault close 0') }] };
-    await refuses(s, ['vaults[0].close_tx', 'does not spend the vault lineage of ref']);
+    await refuses(s, ['vaults[0].close_tx', 'the exact vault transaction is not confirmed']);
     expect((await go(decided())).exit).toBe(0);
   });
   it('refuses ids that never existed and the transactions of other steps, and names each member', async () => {
@@ -1501,7 +1568,7 @@ describe('check 4: each ended or closed entry is tied to its id by a read of its
   it('refuses a vault close that spends no output of the lineage of ref, and an open that did not make the lineage', async () => {
     const s = scenario('clean');
     s.record = { vaults: [{ ref: ref('another vault', 0), open_tx: h('vault open 0'), close_tx: h('vault close 0') }] };
-    await refuses(s, ['vaults[0].close_tx: does not spend the vault lineage of ref', 'vaults[0].open_tx: is not the transaction that opened']);
+    await refuses(s, ['vaults[0].close_tx: does not spend a proven vault lineage of ref', 'vaults[0].open_tx: is not the transaction that opened']);
     const late = decided();
     late.record = { vaults: [{ ref: `${txOf('order-desk-c', 'post')}#1`, open_tx: txOf('order-desk-c', 'post'), close_tx: null }, { ref: `${h('vault open 1')}#0`, open_tx: h('vault open 1'), close_tx: h('vault close 1') }] };
     await refuses(late, ['vaults[0].open_tx: is not the transaction that opened']);
@@ -1516,6 +1583,54 @@ describe('check 4: each ended or closed entry is tied to its id by a read of its
     s.record = { vaults: [{ ref: ref('extra vault payment 8'), open_tx: h('vault open 0'), close_tx: h('vault close 0') }] };
     expect((await go(s)).exit).toBe(0); // Walk back to the opening from the final payment.
   });
+  it('exposes the verified closing path and an exact historical Live payment input to the module', async () => {
+    const s = scenario('clean');
+    const rootRef = ref('vault open 0'), head = `${txOf('order-desk', 'post')}#1`;
+    const task = createEvidenceTask({ [data.name]: {
+      ...inventory,
+      async prepare(session, a) {
+        const root = await a.readVaultLineage(rootRef);
+        const original = { rootRef, openTx: h('vault open 0'), owner: { type: 'PrincipalKey', hash: 'cc'.repeat(28), organisation: null }, delegation: h('delegation c1') };
+        expect(root).toEqual({ ...original, ref: rootRef, path: [rootRef] });
+        expect(await a.readVaultLineage(head)).toEqual({ ...original, ref: head, path: [rootRef, head] });
+        expect(a.reads.vaults[0]?.lineage).toEqual({ ...original, ref: head, path: [rootRef, head] });
+        return inventory.prepare(session, a);
+      },
+    } });
+    const r = await go(s, undefined, { task });
+    expect(r.exit, r.err).toBe(0);
+    expect((JSON.parse(r.read(publicFile())!) as Obj).vault).toEqual([{ ref: rootRef, open_tx: h('vault open 0'), close_tx: h('vault close 0'), state: 'closed' }]);
+  });
+
+  it('does not attach a closed and reopened vault to the earlier branch', async () => {
+    const s = scenario('clean');
+    s.vaultWalk = { additionalPayments: 1, invalid: 'reopened' };
+    await refuses(s, ['vaults[0].close_tx', 'does not have an exact validated Pay redeemer']);
+    s.vaultWalk = { additionalPayments: 1 };
+    expect((await go(s)).exit).toBe(0);
+  });
+
+  it('does not match a close of a different root even with the same owner and delegation', async () => {
+    const s = scenario('clean');
+    s.vaults = [{ utxo: null }, { utxo: null }];
+    s.record = { vaults: [{ ref: ref('vault open 0'), open_tx: h('vault open 0'), close_tx: h('vault close 1') }] };
+    await refuses(s, ['vaults[0].close_tx', 'no exact Live input descends from it']);
+    s.record = {};
+    expect((await go(s)).exit).toBe(0);
+  });
+
+  it('refuses the wrong Pay spending-period value and duplicate declarations of one branch', async () => {
+    const s = scenario('clean');
+    s.vaultWalk = { additionalPayments: 1, invalid: 'wrong_transition' };
+    await refuses(s, ['vaults[0].close_tx', 'does not make the exact value and spending-period transition']);
+    s.vaultWalk = { additionalPayments: 1 };
+    const opening = { ref: ref('vault open 0'), open_tx: h('vault open 0'), close_tx: h('vault close 0') };
+    s.record = { vaults: [opening, { ...opening, ref: ref('extra vault payment 0') }] };
+    await refuses(s, ['vaults[1].open_tx', 'same vault branch more than once']);
+    s.record = { vaults: [opening] };
+    expect((await go(s)).exit).toBe(0);
+  });
+
   it('refuses a vault ancestry beyond the depth bound', async () => {
     const s = scenario('clean');
     s.vaultWalk = { additionalPayments: 32 };
