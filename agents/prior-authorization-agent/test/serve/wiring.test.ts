@@ -20,10 +20,11 @@ import { DEPLOYMENT } from '../../../../packages/buyer-core/test/fixtures/identi
 import { GUIDELINE, GUIDELINES_RESOURCE, KNEE_GUIDELINE, KNEE_RECORD_SET, ORDER_ID, RECORDS_RESOURCE, RECORD_SET, TENANT, hex, issued, systemAnswer } from '../evidence/support.ts';
 import { requestDocument, sideOf } from '../execute/fixtures.ts';
 import { said } from '../model/decide-support.ts';
+import { JOB_DEADLINE_MS as EXECUTE_DEADLINE_MS } from '../../src/execute/index.ts';
 import { PROPOSE_DEADLINE_MS } from '../../src/propose/index.ts';
 import { KEY_ROLES, keyOf } from '../../src/serve/keys.ts';
 import { manifestFromEnv } from '../../src/serve/manifest.ts';
-import { cosignSettingsOf } from '../../src/serve/settings.ts';
+import { JOB_DEADLINE_MS, cosignSettingsOf } from '../../src/serve/settings.ts';
 import { STATE_FILES } from '../../src/serve/wiring.ts';
 import type { InsurerSources, Wired } from '../../src/serve/wiring.ts';
 import { KEY_NUMBERS, KEY_VARIABLES, MODULE1_URL, PRINCIPAL, SUPPLIER, cleanDirs, messageOf, rawKey, secretsOf, startEnv, withModule1 } from './support.ts';
@@ -595,5 +596,16 @@ describe('the terms of the advert', () => {
     expect(plan.lockLovelace).toBe(5_000_000n);
     expect(plan.lockLovelace).toBe(BigInt(terms.price_lovelace + terms.supplier_bond_lovelace + terms.buyer_bond_lovelace));
     expect(plan.deliverBy).toBe(T0 + terms.max_processing_ms + DELIVER_BY_BUFFER_MS);
+  });
+});
+
+describe('the deadline of a job', () => {
+  test('is one value in the settings, in the job propose and in the job execute: 1,620,000 ms after the request arrived, and the decision of a job holds it', async () => {
+    expect([JOB_DEADLINE_MS, PROPOSE_DEADLINE_MS, EXECUTE_DEADLINE_MS]).toStrictEqual([1_620_000, 1_620_000, 1_620_000]);
+    const run = await setup();
+    run.m.llm.answer = said(CHOICE);
+    // A job that arrived exactly one deadline ago has no time left for a hire, and a job that arrived two minutes later has: a hire needs at least a minute, and the decision gets the deadline of its own job and no other.
+    expect(await run.wired.proposeDeps(T0 - JOB_DEADLINE_MS).justify(RECORD_SET, GUIDELINE)).toStrictEqual({ ok: false, code: 'llm_out_of_time' });
+    expect((await run.wired.proposeDeps(T0 - JOB_DEADLINE_MS + 120_000).justify(RECORD_SET, GUIDELINE)).ok).toBe(true);
   });
 });
