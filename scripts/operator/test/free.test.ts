@@ -128,6 +128,31 @@ describe('readRunningImages and readRunning', () => {
   it('take the good file that the shapes are cut from', () => {
     expect(readRunning(fileWith(body(GOOD_TIME, { runtime: image(1), 'a.b-c_d': image(2) })), NOW).size).toBe(2);
   });
+  it('refuse a file in which an object holds a member twice, so that a second images cannot hide a running container, and read the same file with each member once', () => {
+    const T = GOOD_TIME;
+    const IMG = image(1);
+    const secret = 'sekret-value-1234'.repeat(4);
+    const REPEATS: ReadonlyArray<readonly [string, string, string]> = [
+      ['a second empty images after the one that lists a container', `{"generated_at":"${T}","images":{"runtime":"${IMG}"},"images":{}}`, 'images'],
+      ['a second images that lists a container after an empty one', `{"generated_at":"${T}","images":{},"images":{"runtime":"${IMG}"}}`, 'images'],
+      ['a second generated_at', `{"generated_at":"${T}","generated_at":"${T}","images":{}}`, 'generated_at'],
+      ['a container that is listed twice', `{"generated_at":"${T}","images":{"runtime":"${IMG}","runtime":"${image(2)}"}}`, 'runtime'],
+      ['a second images that is written with an escape', `{"generated_at":"${T}","images":{},"\\u0069mages":{"runtime":"${IMG}"}}`, 'images'],
+      ['a second images in a text with white space and a new line', `{\n  "generated_at": "${T}",\n  "images": { "runtime": "${IMG}" } ,\n  "images" :\n {}\n}`, 'images'],
+    ];
+    for (const [what, text, name] of REPEATS) {
+      const error = refused(() => readRunningImages(fileWith(text), NOW));
+      expect(error.message, what).toContain(`member ${name} twice`);
+      expect(refused(() => readRunning(fileWith(text), NOW)).message, what).toMatch(/twice/);
+    }
+    // The twin: the same members once, and a name that two different objects hold is no repeat.
+    expect([...readRunning(fileWith(`{"generated_at":"${T}","images":{"runtime":"${IMG}"}}`), NOW)]).toEqual(['runtime']);
+    expect([...readRunning(fileWith(`{"generated_at":"${T}","images":{"images":"${IMG}","generated_at":"${image(2)}"}}`), NOW)]).toEqual(['images', 'generated_at']);
+    // A name that is no container name is not shown.
+    const hidden = refused(() => readRunning(fileWith(`{"generated_at":"${T}","images":{},"${secret}":1,"${secret}":2}`), NOW));
+    expect(hidden.message).toMatch(/twice/);
+    expect(hidden.message).not.toContain(secret);
+  });
   it('refuse a generated_at that is no time, and say which member it is', () => {
     for (const bad of ['yesterday', '', '2026-11-24', '2026-11-24T11:55:00', '2026-02-30T10:00:00Z', '2026-11-24 11:55:00Z', '2026-11-24T24:00:00Z', 'x'.repeat(40)]) {
       expect(refused(() => readRunning(fileWith(body(bad, {})), NOW)).message, bad).toMatch(/generated_at/);

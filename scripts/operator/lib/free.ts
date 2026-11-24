@@ -35,6 +35,37 @@ const realIo: ReadIo = { read: (path) => readFileSync(path, 'utf8') };
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 
+/**
+ * The name of the first member that an object of the JSON text holds twice, or null. `JSON.parse` keeps the last of two equal members and says nothing, so a second `images` could hide a container
+ * that the first one lists. The text must be valid JSON already: the scan follows strings and brackets only. (The approval file is read the same way.)
+ */
+function repeatedMember(json: string): string | null {
+  const open: (Set<string> | null)[] = [];
+  for (let i = 0; i < json.length; i++) {
+    const char = json[i];
+    if (char === '{') open.push(new Set());
+    else if (char === '[') open.push(null);
+    else if (char === '}' || char === ']') open.pop();
+    else if (char === '"') {
+      let end = i + 1;
+      while (end < json.length && json[end] !== '"') end += json[end] === '\\' ? 2 : 1;
+      let next = end + 1;
+      while (next < json.length && ' \t\n\r'.includes(json[next]!)) next++;
+      const members = open[open.length - 1];
+      if (members !== undefined && members !== null && json[next] === ':') {
+        const name: string = JSON.parse(json.slice(i, end + 1));
+        if (members.has(name)) return name;
+        members.add(name);
+      }
+      i = end;
+    }
+  }
+  return null;
+}
+
+/** A member name for a message: a member of the file, or a name that looks like a container name, and else a phrase that holds nothing of the name. */
+const shownMember = (name: string): string => (name === 'generated_at' || name === 'images' || (name.length <= 40 && CONTAINER.test(name)) ? name : 'a name that is no container name');
+
 /** The POSIX milliseconds of an ISO 8601 time with a zone (`Z` or an offset), with up to nine decimals, or null when the value is no such time or names a moment that does not exist. */
 function timeOf(value: unknown): number | null {
   const parts = typeof value === 'string' ? ISO_TIME.exec(value) : null;
@@ -74,6 +105,8 @@ export function readRunningImages(path: string, nowMs: number, io: Partial<ReadI
   if (text.length > MAX_FILE_CHARS) throw new PreconditionError(`${FILE} is longer than ${MAX_FILE_CHARS} characters, and a list of the running containers is not`);
   let parsed: unknown;
   try { parsed = JSON.parse(text); } catch { throw new PreconditionError(`${FILE} is not JSON`); }
+  const repeated = repeatedMember(text);
+  if (repeated !== null) throw new PreconditionError(`${FILE} has the member ${shownMember(repeated)} twice, so it can be read two ways`);
   if (!isRecord(parsed) || Object.keys(parsed).length !== 2 || !Object.hasOwn(parsed, 'generated_at') || !Object.hasOwn(parsed, 'images')) {
     throw new PreconditionError(`${FILE} does not have the shape that it must have: exactly the members generated_at and images`);
   }
