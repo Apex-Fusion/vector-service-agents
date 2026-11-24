@@ -8600,3 +8600,457 @@ test('use case 3 RUNBOOK: step 7 points to the runbooks of the packs of use case
   assert.ok(snippetFolder.includes('The packs of use case 3 do not fit this way either.'), 'the snippet folder is not for the packs of use case 3');
   assert.ok(markerBlock.includes('The packs of use case 3 use this way only.'), 'the marker block is for the packs of use case 3');
 });
+
+// ======================================================================================================================================
+// The documents of use case 3 that the kit, the two agents and the mock service read. The mock service is the system on the other side: the sourcing record takes a ranking with its salt and its approval, the vendor
+// master gives the vendors, and the seed of a tenant holds the catalogue and the vendors. One child process loads the real TypeScript of the mock service, of the kit and of the two agents, so that nothing here
+// re-implements a parser. The documents go in on the standard input. The rule of the kit holds one way: every ranking that its parser takes is a ranking that the sourcing record takes. The record reads only the members
+// that it needs, so it takes more than the kit does, and the table says where.
+// ======================================================================================================================================
+const BIDS_GOLDENS = 'packages/usecase-kit/test/bids/golden';
+const SOURCING_TESTS = 'agents/sourcing-agent/test';
+const RANKING_GOLDENS = [`${BIDS_GOLDENS}/ranking.json`, `${SOURCING_TESTS}/execute/golden/ranking.json`, `${SOURCING_TESTS}/propose/golden/ranking.json`];
+
+// The ranking, as the kit reads it and as the sourcing record reads it. The record reads the tenant, the request identifier, and the rank, the DID and the organisation of each ranked entry, and it keeps the rest of the
+// ranking as it came: the approval check hashes it. The tenant is the one of the URL, and the router takes a name of the form TENANT only. The builder of the kit makes each ranking from the parts that the agent has.
+const RANKING_DRIFT_CODE = String.raw`
+import { readFileSync } from 'node:fs';
+import { parseRanking as store } from './src/documents.ts';
+import { TENANT } from './src/validate.ts';
+import { buildRanking, parseRanking as kit } from '../../packages/usecase-kit/src/bids/index.ts';
+const SALT = '07'.repeat(32);
+const verdict = (run) => { try { return run(); } catch (error) { if (error?.name !== 'Invalid') throw error; return null; } };
+const mockRead = (ranking) => {
+  if (typeof ranking?.tenant !== 'string' || !TENANT.test(ranking.tenant)) return null;
+  return verdict(() => { const read = store({ ranking, salt: SALT, approval: null }, ranking.tenant); return { rfq_id: read.rfq_id, top: read.top, organisation: read.topOrganisation }; });
+};
+const { rankings, bodies, builds } = JSON.parse(readFileSync(0, 'utf8'));
+console.log(JSON.stringify({
+  rankings: rankings.map((ranking) => { const read = mockRead(ranking); return { kit: kit(ranking).ok, mock: read !== null, read }; }),
+  bodies: bodies.map(([body, tenant]) => verdict(() => { store(body, tenant); return true; }) === true),
+  builds: builds.map((input) => { const made = buildRanking(input); return made.ok ? { ok: true, ranking: made.value, mock: mockRead(made.value) !== null, again: kit(made.value).ok } : { ok: false, code: made.code }; }),
+}));
+`;
+
+test('use case 3 drift: the ranking is read in the same way by the parser of the kit and by the sourcing record of the mock service: each ranking that the kit builds or takes is a ranking that the record takes, a broken ranking is refused by both, and the body of the record needs its approval member', () => {
+  const golden = jsonOf(RANKING_GOLDENS[0]);
+  const rfq = jsonOf(`${BIDS_GOLDENS}/rfq.json`);
+  const weights = jsonOf(`${BIDS_GOLDENS}/weights.json`);
+  const edit = (changes) => ({ ...golden, ...changes });
+  const without = (member) => Object.fromEntries(Object.entries(golden).filter(([name]) => name !== member));
+  const did = (n) => `did:vector:${n.toString(16).padStart(2, '0').repeat(32)}`;
+  const entry = (rank, changes = {}) => ({ ...golden.ranked[0], rank, desk_did: did(rank), ...changes });
+  const withRanked = (ranked, excluded = []) => edit({ ranked, excluded });
+  const many = (count) => withRanked(Array.from({ length: count }, (_, i) => entry(i + 1)));
+  const withFirst = (changes) => edit({ ranked: [{ ...golden.ranked[0], ...changes }, ...golden.ranked.slice(1)] });
+  const domain = (organisation) => withFirst({ organisation });
+  const fill = (count, char = 'a') => char.repeat(count);
+  // [name, ranking, whether the kit takes it, whether the record takes it]
+  const cases = [
+    ...RANKING_GOLDENS.map((file) => [file, jsonOf(file), true, true]),
+    ['a request identifier of 64 characters', edit({ rfq_id: `a${fill(63, '0')}` }), true, true],
+    ['a request identifier of 65 characters', edit({ rfq_id: `a${fill(64, '0')}` }), false, false],
+    ['a request identifier with a dot, a hyphen and an underscore', edit({ rfq_id: 'rfq.1-a_b' }), true, true],
+    ['a request identifier that starts with a dot', edit({ rfq_id: '.rfq1' }), false, false],
+    ['a request identifier with a space', edit({ rfq_id: 'rfq 1' }), false, false],
+    ['a request identifier that is a number', edit({ rfq_id: 1 }), false, false],
+    ['a tenant of 48 characters', edit({ tenant: `a${fill(47, '0')}` }), true, true],
+    ['a tenant of 49 characters', edit({ tenant: `a${fill(48, '0')}` }), false, false],
+    ['a tenant in upper case', edit({ tenant: 'RUN1' }), false, false],
+    ['a tenant with an underscore', edit({ tenant: 'run_1' }), false, false],
+    ['another schema', edit({ schema: 'vector.usecase.ranking.v2' }), false, false],
+    ['one ranked entry', withRanked([entry(1)]), true, true],
+    ['20 ranked entries', many(20), true, true],
+    ['21 ranked entries', many(21), false, false],
+    ['no ranked entry', withRanked([]), false, false],
+    ['an entry with rank 0', withRanked([entry(0), entry(2)]), false, false],
+    ['two entries with rank 1', withRanked([entry(1), entry(2, { rank: 1 })]), false, false],
+    ['an organisation of 64 characters', domain(`${fill(31)}.${fill(32, 'b')}`), true, true],
+    ['an organisation of 65 characters', domain(`${fill(31)}.${fill(33, 'b')}`), false, false],
+    ['an organisation in upper case', domain('Alfa.example.org'), false, false],
+    ['an organisation with one label', domain('alfa'), false, false],
+    ['an organisation with a dot at the end', domain('alfa.example.org.'), false, false],
+    ['an organisation with an empty label', domain('alfa..org'), false, false],
+    ['an organisation with a label that starts with a hyphen', domain('-alfa.example.org'), false, false],
+    ['an organisation with a label that ends with a hyphen', domain('alfa-.example.org'), false, false],
+    ['an organisation with an underscore', domain('alfa_x.example.org'), false, false],
+    ['an organisation with a hyphen inside a label', domain('al-fa.example.org'), true, true],
+    ['an organisation that is null', domain(null), false, false],
+    ['an organisation that is an empty text', domain(''), false, false],
+    ['a desk DID of 63 hex digits', withFirst({ desk_did: `did:vector:${'a1'.repeat(32).slice(1)}` }), false, false],
+    ['a desk DID in upper case', withFirst({ desk_did: `did:vector:${'A1'.repeat(32)}` }), false, false],
+    ['a desk DID of another method', withFirst({ desk_did: `did:other:${'a1'.repeat(32)}` }), false, false],
+    // The record reads less than the kit: it takes each of these, and the kit refuses each of them.
+    ['ranks 1 and 3, in order', withRanked([entry(1), entry(2, { rank: 3 })]), false, true],
+    ['a member of the ranking that is not listed', edit({ carrier: 'x' }), false, true],
+    ['a ranking with no weights', without('weights'), false, true],
+    ['a score of 101', withFirst({ score: 101 }), false, true],
+    ['the same DID in two ranked entries', withRanked([entry(1), entry(2, { desk_did: entry(1).desk_did })]), false, true],
+  ];
+  // The builder of the kit: the golden ranking from its parts, with the rank of each entry given by its place, and two other rankings.
+  const parts = golden.ranked.map(({ rank, ...part }) => part);
+  const input = { rfq, tenant: golden.tenant, weights, entries: parts, excluded: golden.excluded };
+  const noOrganisation = (n) => { const { organisation, ...part } = parts[0]; return { ...part, desk_did: did(n) }; };
+  const builds = [
+    ['the golden of the kit', input],
+    ['one entry and no excluded bidder', { ...input, entries: parts.slice(0, 1), excluded: [] }],
+    ['20 entries, none with an organisation', { ...input, entries: Array.from({ length: 20 }, (_, i) => noOrganisation(i + 1)), excluded: [] }],
+  ];
+  // The body of the record: the mock service only. The ranking is the golden one, for the tenant of the URL.
+  const approval = { attestation: '22'.repeat(32), issuer_did: did(0xb2) };
+  const body = (changes = {}) => ({ ranking: golden, salt: '07'.repeat(32), approval, ...changes });
+  const bodyWithout = (member) => Object.fromEntries(Object.entries(body()).filter(([name]) => name !== member));
+  // [name, body, tenant of the URL, whether the record takes it]
+  const bodies = [
+    ['a body with an approval', body(), golden.tenant, true],
+    ['a body with a null approval', body({ approval: null }), golden.tenant, true],
+    ['a body with no approval member', bodyWithout('approval'), golden.tenant, false],
+    ['a body with no salt member', bodyWithout('salt'), golden.tenant, false],
+    ['a body with no ranking member', bodyWithout('ranking'), golden.tenant, false],
+    ['a body with a member that is not listed', body({ carrier: 'x' }), golden.tenant, false],
+    ['a salt of 63 hex digits', body({ salt: '07'.repeat(32).slice(1) }), golden.tenant, false],
+    ['a salt in upper case', body({ salt: 'AB'.repeat(32) }), golden.tenant, false],
+    ['an approval with an attestation in upper case', body({ approval: { ...approval, attestation: 'AB'.repeat(32) } }), golden.tenant, false],
+    ['an approval with no issuer', body({ approval: { attestation: approval.attestation } }), golden.tenant, false],
+    ['an approval with a member that is not listed', body({ approval: { ...approval, carrier: 'x' } }), golden.tenant, false],
+    ['an approval that is an empty object', body({ approval: {} }), golden.tenant, false],
+    ['an approval that is a text', body({ approval: 'yes' }), golden.tenant, false],
+    ['a ranking of another tenant than the one of the URL', body(), 'run2', false],
+  ];
+  const answers = inMockServiceStdin(RANKING_DRIFT_CODE, { rankings: cases.map(([, ranking]) => ranking), bodies: bodies.map(([, given, tenant]) => [given, tenant]), builds: builds.map(([, given]) => given) });
+  assert.deepEqual([answers.rankings.length, answers.bodies.length, answers.builds.length], [cases.length, bodies.length, builds.length]);
+  cases.forEach(([name, ranking, kit, mock], i) => {
+    const said = answers.rankings[i];
+    assert.equal(said.kit, kit, `${name}: the kit ${kit ? 'must take it' : 'must refuse it'}; found ${JSON.stringify(said)}`);
+    assert.equal(said.mock, mock, `${name}: the sourcing record ${mock ? 'must take it' : 'must refuse it'}; found ${JSON.stringify(said)}`);
+    // The rule of the kit: a ranking that its parser takes is a ranking that the record takes.
+    assert.ok(!said.kit || said.mock, `${name}: the kit takes a ranking that the record refuses`);
+    // The record picks the supplier of rank 1 and the request that the ranking names.
+    if (said.mock) {
+      const top = ranking.ranked.find((one) => one.rank === 1);
+      assert.deepEqual(said.read, { rfq_id: ranking.rfq_id, top: top.desk_did, organisation: top.organisation ?? null }, `${name}: the record reads the request and the entry of rank 1`);
+    }
+  });
+  builds.forEach(([name], i) => {
+    const built = answers.builds[i];
+    assert.deepEqual([built.ok, built.mock, built.again], [true, true, true], `${name}: the kit builds a ranking, its parser takes it, and the record takes it; found ${JSON.stringify(built)}`);
+  });
+  assert.deepEqual(answers.builds[0].ranking, golden, 'the builder of the kit makes the golden ranking from its parts');
+  bodies.forEach(([name, , , taken], i) => assert.equal(answers.bodies[i], taken, `${name}: the record ${taken ? 'must take it' : 'must refuse it'}`));
+  assert.ok(cases.filter(([, , kit, mock]) => kit && mock).length >= 10 && cases.filter(([, , kit, mock]) => !kit && !mock).length >= 20 && cases.filter(([, , kit, mock]) => !kit && mock).length >= 4, 'the table has the accepted twins, the refused copies and the cases that only the record takes');
+});
+
+// The identifiers and the domains of the documents of use case 3, through each parser that reads one. An identifier is read as the rule of the mock service says: the request identifier of a ranking (the kit and the sourcing
+// record), the identifier of a vendor (the vendor parser of the Sourcing Agent and the seed of the mock service), and the SKU of an item of a price list (the kit and the catalogue of the seed). A domain is read as the
+// organisation of a record: a lower-case name of at most 64 characters with at least two labels. It stands in a ranking (the kit and the record), in a vendor (the Sourcing Agent and the seed), in the file of a bidder
+// (`domainOf` of the Sourcing Agent) and in the setting of a Bid Desk. Each parser must say the same of each edge.
+const IDENTIFIER_DRIFT_CODE = String.raw`
+import { readFileSync } from 'node:fs';
+import { defaultSeed, parseSeed } from './src/seed.ts';
+import { parseRanking as store } from './src/documents.ts';
+import { parsePriceList, parseRanking as kit } from '../../packages/usecase-kit/src/bids/index.ts';
+import { parseVendors } from '../../agents/sourcing-agent/src/scoring/vendors.ts';
+import { domainOf } from '../../agents/sourcing-agent/src/bidders/lineage.ts';
+import { organisationOf } from '../../agents/bid-desk/src/serve/settings.ts';
+const accepted = (run) => { try { run(); return true; } catch (error) { if (error?.name !== 'Invalid') throw error; return false; } };
+const { ids, domains, ranking, priceList } = JSON.parse(readFileSync(0, 'utf8'));
+const seed = defaultSeed();
+const mockRanking = (document) => accepted(() => store({ ranking: document, salt: '07'.repeat(32), approval: null }, 'run1'));
+const vendor = (changes) => ({ ...seed.vendors[0], ...changes });
+const withFirst = (changes) => ({ ...ranking, ranked: [{ ...ranking.ranked[0], ...changes }, ...ranking.ranked.slice(1)] });
+const desk = (value) => { if (typeof value !== 'string') return null; try { organisationOf({ BID_DESK_ORGANISATION: value }); return true; } catch { return false; } };
+console.log(JSON.stringify({
+  ids: ids.map(([, value]) => ({
+    rfq: { kit: kit({ ...ranking, rfq_id: value }).ok, mock: mockRanking({ ...ranking, rfq_id: value }) },
+    vendor: { agent: parseVendors({ vendors: [vendor({ vendor_id: value })] }).ok, mock: accepted(() => parseSeed('seed', { vendors: [vendor({ vendor_id: value })] })) },
+    sku: { kit: parsePriceList({ ...priceList, items: [{ ...priceList.items[0], sku: value }, ...priceList.items.slice(1)] }).ok, mock: accepted(() => parseSeed('seed', { catalogue: [{ ...seed.catalogue[0], sku: value }] })) },
+  })),
+  domains: domains.map(([, value]) => ({
+    ranking: { kit: kit(withFirst({ organisation: value })).ok, mock: mockRanking(withFirst({ organisation: value })) },
+    vendor: { agent: parseVendors({ vendors: [vendor({ organisation: value })] }).ok, mock: accepted(() => parseSeed('seed', { vendors: [vendor({ organisation: value })] })) },
+    lineage: domainOf(value) !== null,
+    desk: desk(value),
+  })),
+}));
+`;
+
+test('use case 3 drift: an identifier and a domain have the same edges in every parser that reads them: the request identifier of a ranking, the identifier of a vendor, the SKU of a price list and the organisation of a bidder', () => {
+  const ranking = jsonOf(RANKING_GOLDENS[0]);
+  const priceList = jsonOf(BID_DESK_PRICE_LISTS[0]);
+  const fill = (count, char = 'a') => char.repeat(count);
+  // [name, value, whether the mock service and the kit take it, whether the vendor parser of the Sourcing Agent takes it when that differs]. The vendor parser turns the texts of the list into the NFC form before it checks the
+  // identifier, and the kit and the mock service check the text as it is written. So the parser reads the Kelvin sign as the capital K and takes a vendor that the seed of the mock service never gives. The rule that matters
+  // holds: a vendor identifier that the seed takes is one that the parser takes.
+  const ids = [
+    ['one character', 'a', true], ['64 characters', `a${fill(63, '0')}`, true], ['65 characters', `a${fill(64, '0')}`, false], ['a dot, a hyphen and an underscore inside', 'a.b-c_d', true], ['a digit first', '1a', true],
+    ['a dot first', '.a', false], ['a hyphen first', '-a', false], ['an underscore first', '_a', false], ['a space inside', 'a b', false], ['a space at the end', 'a ', false], ['a slash', 'a/b', false], ['a colon', 'a:b', false],
+    ['a letter that is not ASCII', 'a\u00e9', false], ['the Kelvin sign, which NFC turns into K', '\u212A-1', false, true], ['no character', '', false], ['a line break at the end', 'a\n', false], ['a number', 1, false], ['null', null, false],
+  ];
+  const domains = [
+    ['two labels', 'a.b', true], ['a domain of 64 characters', `${fill(31)}.${fill(32, 'b')}`, true], ['a domain of 65 characters', `${fill(31)}.${fill(33, 'b')}`, false], ['a label of 62 characters', `${fill(62)}.b`, true],
+    ['a label of 63 characters, and 65 characters in all', `${fill(63)}.b`, false], ['a hyphen inside a label', 'al-fa.example.org', true], ['digits only', '1.2', true], ['a label that starts with a hyphen', '-a.example.org', false],
+    ['a label that ends with a hyphen', 'a-.example.org', false], ['upper case', 'Alfa.example.org', false], ['one label', 'alfa', false], ['a dot at the end', 'alfa.example.org.', false], ['an empty label', 'alfa..org', false],
+    ['an underscore', 'a_b.example.org', false], ['a space', 'alfa .example.org', false], ['a letter that is not ASCII', 'alf\u00e9.example.org', false], ['the Kelvin sign, which NFC turns into the capital K', 'alf\u212A.example.org', false],
+    ['no character', '', false], ['null', null, false], ['a number', 1, false],
+  ];
+  const answers = inMockServiceStdin(IDENTIFIER_DRIFT_CODE, { ids: ids.map(([name, value]) => [name, value]), domains: domains.map(([name, value]) => [name, value]), ranking, priceList });
+  assert.deepEqual([answers.ids.length, answers.domains.length], [ids.length, domains.length]);
+  ids.forEach(([name, , taken, parserTakes = taken], i) => {
+    const said = answers.ids[i];
+    for (const [member, pair, expected] of [['the request identifier of a ranking', said.rfq, [taken, taken]], ['the identifier of a vendor', said.vendor, [parserTakes, taken]], ['the SKU of a price list', said.sku, [taken, taken]]]) {
+      assert.deepEqual(Object.values(pair), expected, `${name}, ${member}: the parsers must say ${JSON.stringify(expected)}; found ${JSON.stringify(pair)}`);
+      if (pair === said.vendor) assert.ok(!pair.mock || pair.agent, `${name}: the seed takes a vendor identifier that the vendor parser refuses`);
+    }
+  });
+  domains.forEach(([name, , taken], i) => {
+    const said = answers.domains[i];
+    // The setting of a Bid Desk takes a text only, so it says nothing of a value that is not one (null).
+    const readers = [said.ranking.kit, said.ranking.mock, said.vendor.agent, said.vendor.mock, said.lineage, ...(said.desk === null ? [] : [said.desk])];
+    assert.deepEqual(readers, readers.map(() => taken), `${name}: each reader ${taken ? 'must take it' : 'must refuse it'}; found ${JSON.stringify(said)}`);
+  });
+  for (const table of [ids, domains]) assert.ok(table.filter(([, , taken]) => taken).length >= 4 && table.filter(([, , taken]) => !taken).length >= 10, 'the table has the accepted twins and the refused copies');
+});
+
+// The body that the Sourcing Agent sends to the sourcing record. The real job `execute` runs in the world of its own tests, with a gateway that is a stub and a fake sourcing record that keeps each call, and the body
+// of that call goes to the reader of the real mock service. So the test does not build the body itself.
+const EXECUTE_DRIFT_CODE = String.raw`
+import { parseRanking as store } from './src/documents.ts';
+import { world } from '../../agents/sourcing-agent/test/execute/world.ts';
+import { APPROVAL, SALT } from '../../agents/sourcing-agent/test/execute/fixtures.ts';
+const read = (text) => { try { const found = store(JSON.parse(text), 'run1'); return { rfq_id: found.rfq_id, top: found.top, organisation: found.topOrganisation, salt: found.salt, approval: found.approval }; } catch (error) { if (error?.name !== 'Invalid') throw error; return null; } };
+const runs = [];
+for (const approval of [APPROVAL, null]) {
+  const w = world();
+  await w.run(w.request(w.document(), approval));
+  runs.push({ calls: w.record.calls.map((call) => ({ method: call.method, url: call.url, body: call.body })), read: w.record.calls.length === 1 ? read(w.record.calls[0].body) : null });
+}
+console.log(JSON.stringify({ runs, approval: APPROVAL, salt: SALT }));
+`;
+
+test('use case 3 drift: the body that the Sourcing Agent sends to the sourcing record is a body that the record reads: the job makes one call with the ranking as the hirer holds it, the salt and the approval, and the record takes the supplier, the request, the salt and the approval of it', () => {
+  const golden = jsonOf(`${SOURCING_TESTS}/execute/golden/ranking.json`);
+  const answer = inMockServiceStdin(EXECUTE_DRIFT_CODE, null);
+  assert.equal(answer.runs.length, 2, 'one run with an approval and one with none');
+  const top = golden.ranked.find((one) => one.rank === 1);
+  answer.runs.forEach(({ calls, read }, i) => {
+    const name = i === 0 ? 'a request with an approval' : 'a request with no approval';
+    assert.equal(calls.length, 1, `${name}: the job makes one call`);
+    assert.deepEqual([calls[0].method, calls[0].url], ['POST', 'https://mock.example/t/run1/sourcing/rankings'], `${name}: the route of the record`);
+    const sent = JSON.parse(calls[0].body);
+    assert.deepEqual(Object.keys(sent), ['ranking', 'salt', 'approval'], `${name}: the members of the body, in order`);
+    assert.equal(JSON.stringify(sent.ranking), JSON.stringify(golden), `${name}: the ranking is the document that the hirer approved, with its members in their order`);
+    assert.deepEqual(read, { rfq_id: golden.rfq_id, top: top.desk_did, organisation: top.organisation ?? null, salt: answer.salt, approval: i === 0 ? answer.approval : null }, `${name}: the record reads the request, the supplier of rank 1, the salt and the approval`);
+  });
+});
+
+// The price lists of the three Bid Desks against the default catalogue of the mock service: each SKU of a list is a SKU of the catalogue, the three lists together hold each SKU of it, and each unit price is at least
+// 10, so that the fault of a Bid Desk, which lowers the price of the first line by a fifth rounded up, gives a whole number of at least 1. The kit reads each list as a price list, and the manifest of each Bid Desk
+// holds the hash of the bytes of its list, so the three lists have three hashes.
+const CATALOGUE_DRIFT_CODE = String.raw`
+import { readFileSync } from 'node:fs';
+import { defaultSeed } from './src/seed.ts';
+import { parsePriceList, priceListSha256 } from '../../packages/usecase-kit/src/bids/index.ts';
+const { texts } = JSON.parse(readFileSync(0, 'utf8'));
+const read = (text) => {
+  const list = JSON.parse(text);
+  const found = parsePriceList(list);
+  return found.ok ? { ok: true, same: JSON.stringify(found.value) === JSON.stringify(list), skus: found.value.items.map((item) => item.sku), prices: found.value.items.flatMap((item) => item.breaks.map((step) => step.unit_price)) } : { ok: false };
+};
+console.log(JSON.stringify({
+  catalogue: defaultSeed().catalogue.map((entry) => entry.sku),
+  lists: Object.fromEntries(Object.entries(texts).map(([name, text]) => [name, { ...read(text), sha256: priceListSha256(text) }])),
+}));
+`;
+function priceListDriftProblems(lists, catalogue) {
+  const problems = [];
+  const held = new Set();
+  for (const [name, list] of Object.entries(lists)) {
+    if (!list.ok || !list.same) {
+      problems.push(`the price list of ${name} is not a price list that the kit reads and gives back as it is`);
+      continue;
+    }
+    for (const sku of list.skus) {
+      held.add(sku);
+      if (!catalogue.includes(sku)) problems.push(`the price list of ${name} holds ${sku}, and the catalogue of the mock service does not`);
+    }
+    for (const price of list.prices) if (price < 10) problems.push(`the price list of ${name} has a unit price of ${price}, and the least unit price is 10`);
+  }
+  for (const sku of catalogue) if (!held.has(sku)) problems.push(`the catalogue holds ${sku}, and no price list does`);
+  const hashes = Object.values(lists).map((list) => list.sha256);
+  if (new Set(hashes).size !== hashes.length) problems.push('two price lists have the same hash');
+  return problems;
+}
+
+test('use case 3 drift: each SKU of the three price lists is a SKU of the default catalogue of the mock service, the three lists together hold each SKU of it, each unit price is at least 10, and the three lists have three hashes; the guard refuses a SKU that the catalogue lacks, a SKU that no list holds, a low price and two lists with one hash', () => {
+  const texts = Object.fromEntries(BID_DESKS.map((name, i) => [name, read(BID_DESK_PRICE_LISTS[i])]));
+  const answer = inMockServiceStdin(CATALOGUE_DRIFT_CODE, { texts });
+  assert.ok(answer.catalogue.length >= 3, `the catalogue has the SKUs of the seed, found ${answer.catalogue.length}`);
+  assert.deepEqual(Object.keys(answer.lists), BID_DESKS, 'one list for each Bid Desk');
+  assert.deepEqual(priceListDriftProblems(answer.lists, answer.catalogue), [], 'the real lists pass');
+  for (const name of BID_DESKS) assert.equal(answer.lists[name].sha256, createHash('sha256').update(texts[name], 'utf8').digest('hex'), `${name}: the hash is the SHA-256 of the bytes of the file`);
+  const copy = () => JSON.parse(JSON.stringify(answer.lists));
+  const faults = [
+    ['a SKU that the catalogue lacks', (lists) => { lists.alfa.skus[0] = 'GLV-NIT-L'; }, /the price list of alfa holds GLV-NIT-L, and the catalogue of the mock service does not/],
+    ['a SKU of the catalogue that no list holds', (lists) => { for (const name of BID_DESKS) lists[name].skus = lists[name].skus.filter((sku) => sku !== answer.catalogue[0]); }, /the catalogue holds \S+, and no price list does/],
+    ['a unit price of 9', (lists) => { lists.bravo.prices[0] = 9; }, /the price list of bravo has a unit price of 9, and the least unit price is 10/],
+    ['a list that the kit does not read', (lists) => { lists.charlie = { ok: false }; }, /the price list of charlie is not a price list that the kit reads/],
+    ['a list that the kit reads and changes', (lists) => { lists.charlie.same = false; }, /the price list of charlie is not a price list that the kit reads and gives back as it is/],
+    ['two lists with one hash', (lists) => { lists.bravo.sha256 = lists.alfa.sha256; }, /two price lists have the same hash/],
+  ];
+  for (const [name, change, expected] of faults) {
+    const lists = copy();
+    change(lists);
+    const problems = priceListDriftProblems(lists, answer.catalogue);
+    assert.ok(problems.some((p) => expected.test(p)), `${name}: found ${JSON.stringify(problems)}`);
+  }
+  // The twins: the least price that the guard takes, the catalogue in another order, and a list that holds a SKU of the catalogue and no other.
+  const lists = copy();
+  lists.alfa.prices[0] = 10;
+  assert.deepEqual(priceListDriftProblems(lists, [...answer.catalogue].reverse()), [], 'a price of 10, and the catalogue in another order');
+});
+
+// The vendors of the default seed of the mock service, as the vendor parser of the Sourcing Agent reads them. The route of the vendors gives the vendors of the seed of the tenant, so each vendor list that the seed
+// takes must be a list that the parser takes, and the parser may take more. The organisation of each vendor is the key of the entry that a scorer reads: the entry whose organisation is the verified organisation of
+// the bidder. The default seed names three example domains, and the seed that the operator gives a tenant names the domains of the three Bid Desks, so a vendor with each of those domains must be read too.
+const VENDORS_DRIFT_CODE = String.raw`
+import { readFileSync } from 'node:fs';
+import { isDeepStrictEqual } from 'node:util';
+import { defaultSeed, parseSeed } from './src/seed.ts';
+import { parseVendors } from '../../agents/sourcing-agent/src/scoring/vendors.ts';
+const accepted = (run) => { try { run(); return true; } catch (error) { if (error?.name !== 'Invalid') throw error; return false; } };
+const { cases, desks } = JSON.parse(readFileSync(0, 'utf8'));
+const seed = defaultSeed();
+const base = seed.vendors[0];
+const others = (count) => Array.from({ length: count }, (_, i) => ({ ...base, vendor_id: 'V-' + (2000 + i) }));
+const vendorsOf = (op) => {
+  switch (op.kind) {
+    case 'default': return seed.vendors;
+    case 'count': return others(op.count);
+    case 'twice': return [base, { ...base }];
+    case 'rename': { const { [op.from]: value, ...rest } = base; return [{ ...rest, [op.to]: value }]; }
+    case 'drop': { const { [op.member]: gone, ...rest } = base; return [rest]; }
+    default: return [{ ...base, [op.member]: op.value }];
+  }
+};
+const both = (vendors) => ({ mock: accepted(() => parseSeed('seed', { vendors })), agent: parseVendors({ vendors: JSON.parse(JSON.stringify(vendors)) }).ok });
+const body = { vendors: JSON.parse(JSON.stringify(seed.vendors)) };
+const read = parseVendors(body);
+console.log(JSON.stringify({
+  seed: { ok: read.ok, same: read.ok && isDeepStrictEqual(JSON.parse(JSON.stringify(read.value)), body.vendors), organisations: seed.vendors.map((vendor) => vendor.organisation) },
+  cases: cases.map(([, op]) => both(vendorsOf(op))),
+  desks: desks.map((organisation) => ({ organisation, ...both([{ ...base, vendor_id: 'V-9999', organisation }]) })),
+}));
+`;
+
+test('use case 3 drift: the default vendors of the mock service are a vendor list that the vendor parser of the Sourcing Agent reads, each vendor list that the seed takes is read by the parser, and a vendor with the organisation of each Bid Desk is read by both', (t) => {
+  const desks = BID_DESKS.map((name) => parseYaml(read(`deploy/server/docker-compose.bid-desk-${name}.yml`)).services.service.environment.BID_DESK_ORGANISATION);
+  const fill = (count, char = 'a') => char.repeat(count);
+  const set = (member, value) => ({ kind: 'set', member, value });
+  // [name, what to change in the first vendor of the seed, whether the seed takes it, whether the parser takes it]
+  const cases = [
+    ['the vendors of the default seed', { kind: 'default' }, true, true],
+    ['one vendor', { kind: 'count', count: 1 }, true, true], ['50 vendors', { kind: 'count', count: 50 }, true, true], ['51 vendors', { kind: 'count', count: 51 }, false, false],
+    ['a vendor identifier two times', { kind: 'twice' }, false, false], ['a member that is renamed', { kind: 'rename', from: 'defect_rate', to: 'defects' }, false, false],
+    ['a member that is not listed', set('rating', 5), false, false], ['a member that is missing', { kind: 'drop', member: 'last_audit' }, false, false],
+    ['a rate of 1', set('on_time_delivery_rate', 1), true, true], ['a rate of 1.01', set('on_time_delivery_rate', 1.01), false, false], ['a negative rate', set('defect_rate', -0.1), false, false],
+    ['a rate as a text', set('defect_rate', '0.01'), false, false], ['200 years as a vendor', set('years_as_vendor', 200), true, true], ['201 years as a vendor', set('years_as_vendor', 201), false, false],
+    ['payment terms of 365 days', set('payment_terms_days', 365), true, true], ['payment terms of 366 days', set('payment_terms_days', 366), false, false], ['payment terms of 0 days', set('payment_terms_days', 0), true, true],
+    ['10 certifications', set('certifications', Array.from({ length: 10 }, (_, i) => `ISO ${i}`)), true, true], ['11 certifications', set('certifications', Array.from({ length: 11 }, (_, i) => `ISO ${i}`)), false, false],
+    ['no certification', set('certifications', []), true, true], ['a certification of 64 characters', set('certifications', [fill(64)]), true, true], ['a certification of 65 characters', set('certifications', [fill(65)]), false, false],
+    ['an empty certification', set('certifications', ['']), false, false], ['a date that does not exist', set('last_audit', '2026-02-30'), false, false], ['a date in the year 0099', set('last_audit', '0099-01-01'), false, false],
+    ['a date with a time', set('last_audit', '2026-03-14T00:00:00Z'), false, false], ['a name of 200 characters', set('name', fill(200)), true, true],
+    // The parser reads more than the seed takes: a name of 201 to 500 characters comes from no seed, and the parser takes it.
+    ['a name of 201 characters', set('name', fill(201)), false, true],
+  ];
+  const answer = inMockServiceStdin(VENDORS_DRIFT_CODE, { cases: cases.map(([name, op]) => [name, op]), desks });
+  assert.deepEqual(answer.seed, { ok: true, same: true, organisations: answer.seed.organisations }, `the vendors of the default seed are read by the parser and given back as they are; found ${JSON.stringify(answer.seed)}`);
+  // The set of the vendor organisations of the default seed is reported: the tenant seed of the operator replaces it with the domains of the three Bid Desks.
+  t.diagnostic(`vendor organisations of the default seed: ${answer.seed.organisations.join(', ')}; organisations of the three Bid Desks: ${desks.join(', ')}`);
+  assert.ok(answer.seed.organisations.length >= 3 && new Set(answer.seed.organisations).size === answer.seed.organisations.length, 'the default seed has at least three vendors, each with an organisation of its own');
+  assert.equal(answer.cases.length, cases.length);
+  cases.forEach(([name, , mock, agent], i) => {
+    assert.deepEqual(answer.cases[i], { mock, agent }, `${name}: the seed ${mock ? 'takes' : 'refuses'} it, and the parser ${agent ? 'takes' : 'refuses'} it; found ${JSON.stringify(answer.cases[i])}`);
+    assert.ok(!answer.cases[i].mock || answer.cases[i].agent, `${name}: the seed takes a vendor list that the parser refuses`);
+  });
+  assert.ok(cases.filter(([, , mock, agent]) => mock && agent).length >= 10 && cases.filter(([, , mock, agent]) => !mock && !agent).length >= 15, 'the table has the accepted twins and the refused copies');
+  assert.deepEqual(answer.desks, desks.map((organisation) => ({ organisation, mock: true, agent: true })), 'a vendor with the organisation of each Bid Desk is read by the seed and by the parser');
+});
+
+// The routes and the actions. A route that an agent calls with a token has an action, a system and a rule for the act chain of the token: one link for an agent, and two for a subagent. The kit holds the route table of
+// the agents, and the mock service holds the routes that it serves. A route of one is a route of the other, with the same action, the same system and the same callers. The manifest of an agent lists the routes of the
+// mock systems that it relies on: the Sourcing Agent relies on the vendor list and the sourcing record, and the Bid Desk on none.
+const ROUTES_DRIFT_CODE = String.raw`
+import { ROUTES as mock } from './src/routes.ts';
+import { ROUTES as kit } from '../../packages/usecase-kit/src/access/index.ts';
+console.log(JSON.stringify({ mock: mock.map((route) => ({ id: route.id, method: route.method, segments: route.segments, need: route.need })), kit }));
+`;
+// The faults of the routes: a route of the kit that the mock service lacks, a credential, an action, a system or a rule of callers that differ, a route of the mock service that the kit lacks, and a manifest that lists
+// other routes than the ones that its agent uses.
+function routeProblems({ mock, kit }, manifests) {
+  const problems = [];
+  const pathOf = (route) => `${route.method} /${route.segments.join('/')}`;
+  const specPath = (spec) => `${spec.method} ${spec.template.replace(/\{(\w+)\}/g, ':$1')}`;
+  const kinds = { token: 'token', 'x509-svid': 'x509', 'jwt-svid': 'jwt' };
+  for (const [id, spec] of Object.entries(kit)) {
+    const route = mock.find((one) => pathOf(one) === specPath(spec));
+    if (route === undefined) {
+      problems.push(`the route ${id} of the kit is no route of the mock service`);
+      continue;
+    }
+    if (route.need.kind !== kinds[spec.credential]) problems.push(`${id}: the kit takes a ${spec.credential}, and the mock service needs ${route.need.kind}`);
+    else if (spec.credential === 'token') {
+      if (route.need.action !== spec.action) problems.push(`${id}: the kit asks for the action ${spec.action}, and the mock service needs ${route.need.action}`);
+      if (route.need.system !== spec.system) problems.push(`${id}: the kit names the system ${spec.system}, and the mock service names ${route.need.system}`);
+      if (route.need.maxActors !== (spec.callers === 'agent' ? 1 : 2)) problems.push(`${id}: the kit lets ${spec.callers} call, and the mock service takes an act chain of ${route.need.maxActors}`);
+    }
+  }
+  for (const route of mock) {
+    if (['open', 'admin'].includes(route.need.kind)) continue;
+    if (!Object.values(kit).some((spec) => specPath(spec) === pathOf(route))) problems.push(`the route ${route.id} of the mock service is no route of the kit`);
+  }
+  for (const [agent, listed, ids] of manifests) {
+    const wanted = ids.map((id) => `${kit[id].method} /t/{tenant}${kit[id].template}`);
+    if (!isDeepStrictEqual([...listed].sort(), [...wanted].sort())) problems.push(`the manifest of the ${agent} lists ${JSON.stringify(listed)}, and its routes are ${JSON.stringify(wanted)}`);
+  }
+  return problems;
+}
+
+test('use case 3 drift: the route table of the kit and the routes of the mock service name the same routes, actions, systems and callers, and the manifests of the Sourcing Agent and of the Bid Desk list the routes that they use; the guard refuses each difference', () => {
+  const answer = inMockServiceStdin(ROUTES_DRIFT_CODE, null);
+  const manifestOf = (agent) => JSON.parse(read(`agents/${agent}/agent.json.template`)).behaviour.relying_on.mock_systems;
+  const manifests = [['Sourcing Agent', manifestOf('sourcing-agent'), ['vendors.list', 'sourcing.rankings']], ['Bid Desk', manifestOf('bid-desk'), []]];
+  assert.ok(Object.keys(answer.kit).length >= 11 && answer.mock.length >= 13, `both tables have their routes, found ${Object.keys(answer.kit).length} and ${answer.mock.length}`);
+  // The two routes of the Sourcing Agent: the vendor list for a scorer (an agent or a subagent), and the write of the ranking for the agent only.
+  assert.deepEqual([answer.kit['vendors.list'].action, answer.kit['vendors.list'].callers, answer.kit['sourcing.rankings'].action, answer.kit['sourcing.rankings'].callers], ['vendor.read', 'agent-or-subagent', 'sourcing.award.write', 'agent'], 'the actions of the Sourcing Agent');
+  assert.deepEqual(routeProblems(answer, manifests), [], 'the real tables and manifests pass');
+  const copy = () => JSON.parse(JSON.stringify(answer));
+  const mockRoute = (data, id) => data.mock.find((route) => route.id === id);
+  const faults = [
+    ['an action of the vendor list that differs', (data) => { mockRoute(data, 'GET /vendors').need.action = 'vendor.view'; }, /vendors\.list: the kit asks for the action vendor\.read, and the mock service needs vendor\.view/],
+    ['a system of the sourcing record that differs', (data) => { mockRoute(data, 'POST /sourcing/rankings').need.system = 'vendors'; }, /sourcing\.rankings: the kit names the system sourcing, and the mock service names vendors/],
+    ['an act chain of the vendor list that is too short for a scorer', (data) => { mockRoute(data, 'GET /vendors').need.maxActors = 1; }, /vendors\.list: the kit lets agent-or-subagent call, and the mock service takes an act chain of 1/],
+    ['an act chain of the sourcing record that takes a subagent', (data) => { mockRoute(data, 'POST /sourcing/rankings').need.maxActors = 2; }, /sourcing\.rankings: the kit lets agent call, and the mock service takes an act chain of 2/],
+    ['a route of the kit that the mock service lacks', (data) => { data.mock = data.mock.filter((route) => route.id !== 'POST /sourcing/rankings'); }, /the route sourcing\.rankings of the kit is no route of the mock service/],
+    ['a credential that differs', (data) => { mockRoute(data, 'POST /supplier/orders').need = { kind: 'jwt' }; }, /supplier\.orders: the kit takes a x509-svid, and the mock service needs jwt/],
+    ['a route of the mock service that the kit lacks', (data) => { data.mock.push({ id: 'GET /x', method: 'GET', segments: ['x'], need: { kind: 'token', action: 'x.read', system: 'erp', maxActors: 1 } }); }, /the route GET \/x of the mock service is no route of the kit/],
+  ];
+  for (const [name, change, expected] of faults) {
+    const data = copy();
+    change(data);
+    const problems = routeProblems(data, manifests);
+    assert.ok(problems.some((p) => expected.test(p)), `${name}: found ${JSON.stringify(problems)}`);
+  }
+  const manifestFaults = [
+    ['a manifest of the Sourcing Agent that lists one route only', [['Sourcing Agent', manifests[0][1].slice(0, 1), manifests[0][2]]], /the manifest of the Sourcing Agent lists/],
+    ['a manifest of the Sourcing Agent that lists a route of the kit that it does not use', [['Sourcing Agent', [...manifests[0][1], 'GET /t/{tenant}/erp/stock/{sku}'], manifests[0][2]]], /the manifest of the Sourcing Agent lists/],
+    ['a manifest of the Bid Desk that lists a route', [['Bid Desk', manifests[0][1], []]], /the manifest of the Bid Desk lists/],
+  ];
+  for (const [name, given, expected] of manifestFaults) {
+    const problems = routeProblems(answer, given);
+    assert.ok(problems.some((p) => expected.test(p)), `${name}: found ${JSON.stringify(problems)}`);
+  }
+  // The twins: the routes of the mock service in another order, and the routes of a manifest in another order.
+  const reversed = copy();
+  reversed.mock.reverse();
+  assert.deepEqual(routeProblems(reversed, [['Sourcing Agent', [...manifests[0][1]].reverse(), manifests[0][2]], manifests[1]]), [], 'another order');
+});
