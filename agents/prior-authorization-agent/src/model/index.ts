@@ -3,5 +3,8 @@
 // and it does not import the folders of the flows (`evidence`, `propose`, `execute`, `insurer`, `counter` and `serve`).
 //
 //   intake     the two fields of a `propose` request
+//   decisions  the decision `accept_delivery`: the fixed text, the input and the parser of the choice
 export { parseProposeFields } from './intake.ts';
 export type { ProposeFields } from './intake.ts';
+export { ACCEPT_DECISION, acceptInput } from './decisions.ts';
+export type { AcceptChoice } from './decisions.ts';
