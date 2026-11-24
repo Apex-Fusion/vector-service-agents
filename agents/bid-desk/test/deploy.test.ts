@@ -1549,7 +1549,7 @@ describe('deploy/server/RUNBOOK-bid-desk.md', () => {
     const blocks = blocksOf(rule).filter((block) => block.includes('sleep 120'));
     expect(blocks, 'one command for each Bid Desk').toHaveLength(3);
     for (const bid of BIDS) {
-      const own = blocks.filter((block) => block.includes(`http://127.0.0.1:${bid.runtimeHostPort}/status`));
+      const own = blocks.filter((block) => block.includes(`:${bid.runtimeHostPort}/status`));
       expect(own, `${bid.name}: one command`).toHaveLength(1);
       expect(own[0].startsWith('sleep 120; if curl'), `${bid.name}: the wait comes first`).toBe(true);
       expect(own[0].indexOf('sleep 120')).toBeLessThan(own[0].indexOf('/status'));
