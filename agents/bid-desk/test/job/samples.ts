@@ -1,10 +1,14 @@
 // agents/bid-desk/test/job/samples.ts
-// The values that the tests of the job share and that need no gateway and no book: the price list that a Bid Desk serves, a request for quotation, the date of today, the choice of the model decision
-// `quote` as a model that follows the price list gives it, the decision as the kit records it, and a quote that holds a choice. Every value has the form that the protocol names. No value is a key.
+// The values that the tests of the job share and that need no gateway and no book: the price list that a Bid Desk serves, a request for quotation and the message that carries it, the date of today, the
+// choice of the model decision `quote` as a model that follows the price list gives it, the decision as the kit records it, the record of the checks that passed, and a quote that holds a choice. Every value
+// has the form that the protocol names. No value is a key.
 import { QUOTE_CHECKS, QUOTE_SCHEMA, parsePriceList, parseRfqDocument, priceListSha256, quoteTotals, rfqSha256 } from '@vsa/usecase-kit/bids';
 import type { PriceList, RfqDocument } from '@vsa/usecase-kit/bids';
-import type { Decision, Digest, Document, SubJob } from '@vsa/usecase-kit/protocol';
+import type { DecisionFailure } from '@vsa/usecase-kit/decision';
+import { RFQ_SCHEMA, canonicalSha256, parseRfq } from '@vsa/usecase-kit/protocol';
+import type { Decision, Digest, Document, JsonValue, RfqMessage, SubJob } from '@vsa/usecase-kit/protocol';
 import type { QuoteChoice } from '../../src/job/decision.ts';
+import type { TakenChecks } from '../../src/job/ports.ts';
 
 /** The date of today for the model, and the date of the request. */
 export const TODAY = '2026-11-24';
@@ -13,6 +17,14 @@ export const TODAY = '2026-11-24';
 export const DESK_DID = `did:vector:${'b2'.repeat(32)}`;
 export const DESK_ORGANISATION = 'supplier-alfa.example';
 export const SENDER_DID = `did:vector:${'a1'.repeat(32)}`;
+
+/** The advert that the escrow was posted on, the escrow, the key hash of the buyer and the delegation of the sender. */
+export const ADVERT_REF = `${'d4'.repeat(32)}#1`;
+export const ESCROW_REF = `${'e7'.repeat(32)}#0`;
+export const BUYER_PKH = '0b'.repeat(28);
+export const DELEGATION = '5e'.repeat(32);
+/** The time of the clock when a job arrives: 10:00 UTC on the date of today. */
+export const T0 = Date.UTC(2026, 10, 24, 10, 0, 0);
 
 /**
  * The price list of the samples, as the object that the file holds: three SKUs with quantity breaks and a lead time each. At 100 units the first SKU costs 125 with a lead time of 14 days, as the
@@ -139,4 +151,36 @@ export function quoteOf(choice: QuoteChoice): Record<string, unknown> | null {
     decisions: [decisionOf(choice)],
     fault_mode: '',
   };
+}
+
+// --- the request and the record of the checks that passed ------------------------------------------------------------------------------------------
+
+/** What the checks of the hook learn: the organisation of the sender. A Bid Desk takes no approval, so the facts hold nothing else. */
+export const FACTS: Readonly<Record<string, JsonValue>> = { organisation: 'buyer.example', organisation_verified: true };
+
+/** The canonical SHA-256 of any JSON value as the kit makes it. */
+export function hashOf(value: unknown): Digest {
+  const hash = canonicalSha256(value);
+  if (!hash.ok) throw new Error(hash.detail);
+  return hash.value;
+}
+
+/** The message that the sender sends, as the server of the Bid Desk parses it from its JSON text: `over` replaces members of the wire message. */
+export function messageOf(rfq: Document = RFQ_VALUE, over: Readonly<Record<string, JsonValue>> = {}): RfqMessage {
+  const parsed = parseRfq({ schema: RFQ_SCHEMA, sender_did: SENDER_DID, delegation: DELEGATION, rfq, ...over });
+  if (!parsed.ok) throw new Error(parsed.detail);
+  return parsed.value;
+}
+
+/** The record that the hook keeps for `request`: the 7 checks, the facts and the hash of the request. `over` replaces a member. */
+export function recordFor(
+  request: RfqMessage,
+  over: { checks?: Readonly<Record<string, true>>; facts?: Readonly<Record<string, JsonValue>>; request_sha256?: string } = {},
+): TakenChecks {
+  return { record: { checks: over.checks ?? CHECKS, facts: over.facts ?? FACTS }, request_sha256: over.request_sha256 ?? hashOf(request) };
+}
+
+/** A failed decision, as `decide` of the kit gives it. */
+export function failureOf(code: DecisionFailure['code'], over: Partial<DecisionFailure> = {}): DecisionFailure {
+  return { ok: false, code, reason: 'llm_timeout', detail: 'the model hire for the decision quote ended with llm_timeout at poll', delivery: null, escrow_ref: null, stage: 'poll', ...over };
 }
