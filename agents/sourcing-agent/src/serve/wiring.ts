@@ -16,26 +16,36 @@
 //
 // One deadline for each job. A decision hires a model, and a hire needs the deadline of its job. The deps of a job are made when the job arrives (`proposeDeps`, `executeDeps`): the decision of that job holds the
 // deadline of that job, and no other job can change it. The scoring gets the deadline of the job less the time of the ranking decision, from the input that the job gives it.
+//
+// One co-sign route for the process. The route signs a Delegate for one of the two delegation keys. It refuses a Delegate that spends an output of any other key of the agent: the service key, the supplier key and the six
+// keys of the scorers. Its register of the signed bodies is a file of the state directory, so a restart does not free a delegation key that signed a body. The route reads the validity window of a transaction against the
+// start time of the chain, and the start asks the node for that time one time, with a bound.
+//
+// Two kinds of janitor. One janitor works on the stranded escrows of each of the three paying keys, and one works on the left sub-delegations. They start together and stop together. Each has its own bound at a stop: a pass
+// that hangs on a call to the node is abandoned, and its entries stay in the state directory for the next start.
 import { join } from 'node:path';
 import { OgmiosProvider, READ_BUDGET_MS, createRealChain, fetchSuppliers, listAttestations, module1FromManifest, readAdvert, readDelegation, readManifest, MODULE1_MANIFEST_ENV } from '@vsa/buyer-core';
 import type { AttestationPage, AttestationQuery, IdentityDeployment, LedgerEnv, Module1Deployment, RealChainOptions, VaultChain } from '@vsa/buyer-core';
-import { PayingKeys } from '@vsa/hire-kit';
+import { PayingKeys, stopJanitorWithin } from '@vsa/hire-kit';
 import type { HireLedger, PayingKey } from '@vsa/hire-kit';
 import { createGatewayClient } from '@vsa/id-kit/client';
 import type { GatewayClient } from '@vsa/id-kit/client';
 import { createVerifier } from '@vsa/id-kit/verify';
+import { within } from '@vsa/service-kit';
 import { safeFetch } from '@vsa/vector-read';
 import type { KoiosUtxo } from '@vsa/vector-read';
 import { systemClock } from '@vsa/usecase-kit/access';
 import type { Clock, MockBases } from '@vsa/usecase-kit/access';
 import { ledgerReadsFrom } from '@vsa/usecase-kit/buyer';
 import type { HireLimits } from '@vsa/usecase-kit/buyer';
+import { FileKeyRegister, createCosignRoute, providerLedger } from '@vsa/usecase-kit/cosign';
+import type { CosignRoute, CosignSettings } from '@vsa/usecase-kit/cosign';
 import { decide } from '@vsa/usecase-kit/decision';
 import type { DecisionDeps, ModelLimits } from '@vsa/usecase-kit/decision';
 import { Dispute, FileJournal, createModule1Port } from '@vsa/usecase-kit/dispute';
 import type { DisputeSettings, Module1Port, Module1PortDeps, Module1Provider } from '@vsa/usecase-kit/dispute';
 import type { FaultSwitch } from '@vsa/usecase-kit/fault';
-import { FileLeftStore } from '@vsa/usecase-kit/janitor';
+import { FileLeftStore, startJanitor } from '@vsa/usecase-kit/janitor';
 import type { JanitorDeps } from '@vsa/usecase-kit/janitor';
 import { delegationChainOf, tipSlotOf } from '@vsa/usecase-kit/live';
 import { agentIdOf, refused } from '@vsa/usecase-kit/protocol';
@@ -52,7 +62,7 @@ import { runQuotes } from '../quotes/index.ts';
 import type { BidderStatus, QuotesDeps } from '../quotes/index.ts';
 import { runScoring } from '../scoring/index.ts';
 import type { Scorer, ScoringDeps } from '../scoring/index.ts';
-import { keyClashOf } from './keys.ts';
+import { KEY_ROLES, keyClashOf } from './keys.ts';
 import type { KeyMaterial, KeyRole } from './keys.ts';
 import type { Endpoints, SupplierKey } from './settings.ts';
 
@@ -60,12 +70,14 @@ import type { Endpoints, SupplierKey } from './settings.ts';
 export const LEDGER_BUDGET_MS = 20_000;
 /** The most time that one read of the tip of the node may take, for the janitor. */
 export const TIP_TIMEOUT_MS = 10_000;
+/** The most time that the start waits for the node to give the start time of the chain. */
+export const SYSTEM_START_TIMEOUT_MS = 15_000;
 /** The most bytes that the read of the catalog of the gateway takes. A catalog above it is a catalog that could not be read. */
 export const CATALOG_MAX_BYTES = 4_000_000;
 /** The most time that the read of the catalog of the gateway takes. */
 export const CATALOG_TIMEOUT_MS = 10_000;
-/** The state files of the service, inside the state directory. */
-export const STATE_FILES = { dispute: 'dispute', left: 'left' } as const;
+/** The state files of the service, inside the state directory. The stranded store of each paying key is in the folder `keys/<key hash>`. */
+export const STATE_FILES = { dispute: 'dispute', left: 'left', register: 'cosign-register.json' } as const;
 
 /**
  * What the wiring needs, as values: the state directory, the identities of the agent and of its three scorers, the nine keys, the public values (the supplier key and the issuer of the compliance attestations), the
@@ -145,6 +157,8 @@ export interface DelegationKeyEntry {
 
 /** The wired service: what `startService` and the server use. */
 export interface Wired {
+  /** The start time of the chain in POSIX milliseconds, as the node gave it at the start. */
+  readonly systemStartMs: number;
   readonly provider: Module1Provider;
   readonly ledger: LedgerEnv;
   readonly gateway: GatewayClient;
@@ -162,12 +176,33 @@ export interface Wired {
   executeDeps(arrivedAt: number): ExecuteDeps;
   /** The deps of the janitor of left sub-delegations. */
   janitorDeps(stopWaitMs: number): JanitorDeps;
+  /** The co-sign route, over the two delegation keys and the register file of the state directory. A setting or a route that the kit refuses throws an Error with the detail. */
+  cosignRoute(settings: CosignSettings): CosignRoute;
+  /**
+   * The janitor of the stranded escrows of each paying key and the janitor of left sub-delegations. `stop` waits at most `stopWaitMs` for each. An interval or a stop bound that a janitor refuses throws an Error, and no
+   * janitor has started then.
+   */
+  startJanitors(intervalMs: number, stopWaitMs: number): { stop(): Promise<void> };
+  /** The line that a stop logs when it abandons the job that runs: the stranded escrows of the three paying keys that the state directory holds for the janitors of the next start. */
+  abandonedLine(waitMs: number): string;
 }
 
 /** The key hash that the chain of a key gives must be the key hash of the key: a chain made from another key is a fault of the wiring, and a transaction of it would be signed by the wrong key. */
 function checkPaying(key: PayingKey, material: KeyMaterial, what: string): PayingKey {
   if (key.keyHash !== material.pkh) throw new Error(`the chain of the ${what} key does not belong to that key: its key hash is not the key hash of the key`);
   return key;
+}
+
+/** The start time of the chain from the node. A node that gives none, gives a time that is not a whole number of milliseconds, or does not answer in time stops the start. */
+async function systemStartOf(provider: Module1Provider): Promise<number> {
+  let ms: number;
+  try {
+    ms = await within(provider.getSystemStartMs(), SYSTEM_START_TIMEOUT_MS);
+  } catch {
+    throw new Error('the node gave no start time of the chain: the co-sign route needs it to read the validity window of a transaction, so the service does not start without it');
+  }
+  if (!Number.isSafeInteger(ms) || ms <= 0) throw new Error('the node gave a start time of the chain that is not a time: the co-sign route needs it, so the service does not start with it');
+  return ms;
 }
 
 /**
@@ -187,9 +222,9 @@ async function assetUtxosAt(koiosUrl: string, policy: string, name: string, fetc
 }
 
 /**
- * Builds everything that the jobs and the janitors use. It reaches out for two things, and each can fail the start: the Module-1 manifest (an https address, pinned to a commit: the one file that the start
- * fetches) and the wallet of each of the three paying keys (the registry reads the wallet to learn the key hash). The rest is made with no call. A clash among the keys, and a bound of the dispute reads that the
- * quote hires do not assume, are refused first, before a chain is made.
+ * Builds everything that the jobs, the route and the janitors use. It reaches out for three things, and each can fail the start: the Module-1 manifest (an https address, pinned to a commit: the one file that the start
+ * fetches), the start time of the chain from the node, and the wallet of each of the three paying keys (the registry reads the wallet to learn the key hash). The rest is made with no call. A clash among the keys, and a
+ * bound of the dispute reads that the quote hires do not assume, are refused first, before a chain is made.
  */
 export async function wire(settings: WiringSettings, options: WiringOptions = {}): Promise<Wired> {
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
@@ -227,6 +262,8 @@ export async function wire(settings: WiringSettings, options: WiringOptions = {}
       throw new Error(`the Module-1 manifest (${MODULE1_MANIFEST_ENV}) names another identity registry than IDENTITY_POLICY_ID: it is the manifest of another deployment, so the service does not start with it`);
     }
   }
+  // The start time of the chain comes before any chain is made: a node that gives none stops the start with nothing built.
+  const systemStartMs = await systemStartOf(provider);
 
   // The three paying keys. A chain is made from the key and the identity deployment that pays from a vault. The registry reads the wallet of each chain for its key hash.
   const chainOf = (role: KeyRole): Promise<VaultChain> => keys[role].withKey((privateKeyHex) => (options.createChain ?? createRealChain)({
@@ -241,6 +278,9 @@ export async function wire(settings: WiringSettings, options: WiringOptions = {}
   const delegationKeys: readonly KeyMaterial[] = [keys.delegation1, keys.delegation2];
   const entries: readonly DelegationKeyEntry[] = [{ paying: delegation1, material: keys.delegation1 }, { paying: delegation2, material: keys.delegation2 }];
   const entryOf = (keyHash: string): DelegationKeyEntry | null => entries.find((entry) => entry.material.pkh === keyHash) ?? null;
+  // The key hashes of every other key of the agent: the service key, the six keys of the scorers and the supplier key. The co-sign route refuses a Delegate that spends an output of one of them. The list is every key that is
+  // not a delegation key, so a key that the service holds later is in it without a change here.
+  const otherKeyHashes: readonly string[] = [...KEY_ROLES.map((role) => keys[role]).filter((material) => !delegationKeys.includes(material)).map((material) => material.pkh), settings.supplier.pkh];
 
   const gateway = createGatewayClient({ baseUrl: endpoints.gatewayUrl, fetch: fetchImpl, now });
   // One verifier for every credential that the readers check: it keeps the key set and the status list that it read. Its options are those of the verifier of the mock service that this reader needs. The depth of
@@ -421,7 +461,7 @@ export async function wire(settings: WiringSettings, options: WiringOptions = {}
   });
 
   return {
-    provider, ledger, gateway, service, delegations, dispute, leftStore, inFlight: ids,
+    systemStartMs, provider, ledger, gateway, service, delegations, dispute, leftStore, inFlight: ids,
     proposeDeps: (arrivedAt) => ({
       agent: { did: settings.agentDid },
       reads,
@@ -447,5 +487,32 @@ export async function wire(settings: WiringSettings, options: WiringOptions = {}
       log: note,
     }),
     janitorDeps,
+    cosignRoute: (cosign) => {
+      const made = createCosignRoute({
+        agentDid: settings.agentDid,
+        deployment: identityDeployment,
+        delegationKeys: delegationKeys.map((material) => ({ publicKey: material.publicKeyHex, sign: (bodyHash: Uint8Array) => material.signBodyHash(bodyHash) })),
+        otherKeyHashes,
+        settings: cosign,
+        ledger: providerLedger(provider, identityDeployment),
+        register: new FileKeyRegister(join(settings.stateDir, STATE_FILES.register)),
+        systemStartMs,
+        now,
+        log: note,
+      });
+      if (!made.ok) throw new Error(`the co-sign route is refused: ${made.detail}`);
+      return made.value;
+    },
+    startJanitors: (intervalMs, stopWaitMs) => {
+      // The janitor of the left sub-delegations starts first. It refuses an interval that no janitor takes, and then no janitor of the stranded escrows has started.
+      const left = startJanitor(janitorDeps(stopWaitMs), intervalMs);
+      const stranded = registry.startJanitors(intervalMs, { clock: now, log: note });
+      return { stop: async () => { await Promise.all([stopJanitorWithin(stranded, stopWaitMs, note), left.stop()]); } };
+    },
+    abandonedLine: (waitMs) => {
+      const refs = registry.list().flatMap((key) => key.stranded.list().map((entry) => entry.escrow_ref));
+      return `stopping: the job that is running did not finish within ${waitMs} ms and is abandoned; the state directory holds ${refs.length} ${refs.length === 1 ? 'escrow' : 'escrows'} `
+        + `for the janitors of the next start${refs.length === 0 ? '' : `: ${refs.join(', ')}`}`;
+    },
   };
 }

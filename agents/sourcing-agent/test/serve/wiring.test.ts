@@ -2,25 +2,29 @@
 // The wiring joins the folders of the agent to the real parts. The tests run it over the stub marketplace of the hire kit (a FakeChain, an indexer and a model supplier behind one fetch), the stub gateway of the
 // id-kit, the offline node of the fixture world, the key hashes of the fixture world and a scripted Module-1 port. They show what the wiring decides and nothing of what the jobs decide: one queue for each key, one
 // set of delegation ids, one Module-1 port, one verifier, one list of left sub-delegations, the deadline of a decision from the job that asks it, the signal of the caller in both paid steps, a key kept out of every
-// log line, and the readers of the bidder file joined to their sources. The readers of the bidders run for real over fake sources.
+// log line, the readers of the bidder file joined to their sources, the start time of the chain, the co-sign route with its register, and the janitors with the line of an abandoned job. The readers of the bidders run for real over fake sources.
 import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { afterEach, describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 import { READ_BUDGET_MS } from '@vsa/buyer-core';
 import type { AttestationQuery, VaultChain } from '@vsa/buyer-core';
 import { ALLOWLIST, INDEXER, LLM_ADVERT, T0, marketplace, vaultChainWith } from '@vsa/hire-kit/testing';
 import type { Marketplace } from '@vsa/hire-kit/testing';
 import { createStubGateway, ed25519Key } from '@vsa/id-kit/testing';
 import type { StubGateway } from '@vsa/id-kit/testing';
+import { systemClock } from '@vsa/usecase-kit/access';
 import type { Clock } from '@vsa/usecase-kit/access';
 import { BID_CAPABILITIES, SOURCING_CLAIM } from '@vsa/usecase-kit/bids';
 import type { ModelLimits } from '@vsa/usecase-kit/decision';
 import type { Module1PortDeps, Module1Provider } from '@vsa/usecase-kit/dispute';
+import type { LeftEntry } from '@vsa/usecase-kit/janitor';
 import { agentIdOf, isPlainObject } from '@vsa/usecase-kit/protocol';
 import type { Decision } from '@vsa/usecase-kit/protocol';
 import { KOIOS_URL, REPUTATION_SCRIPT_HASH, stakeTokenName } from '@vsa/vector-read';
 import type { KoiosUtxo } from '@vsa/vector-read';
-import { DELEG_A, DEPLOYMENT, liveDelegation, world } from '../../../../packages/usecase-kit/test/cosign/support.ts';
+import {
+  AGENT_DID as KIT_AGENT_DID, DELEG_A, DELEG_B, DEPLOYMENT, NOW, STRANGER, SYSTEM_START_MS, agentWallet, build, hostedToolTakes, keyOf as testKeyOf, liveDelegation, requestOf, withInput, world,
+} from '../../../../packages/usecase-kit/test/cosign/support.ts';
 import { ScriptedPort } from '../../../../packages/usecase-kit/test/dispute/support.ts';
 import { addDesk, deskOf, emptyWorld } from '../bidders/support.ts';
 import type { Desk, World } from '../bidders/support.ts';
@@ -36,10 +40,10 @@ import type { QuotesDeps } from '../../src/quotes/index.ts';
 import { SCORERS_NEED_MS } from '../../src/scoring/index.ts';
 import type { ScoringDeps, VendorEntry } from '../../src/scoring/index.ts';
 import { KEY_ROLES, keyOf } from '../../src/serve/keys.ts';
-import { GATEWAY_DEFAULT } from '../../src/serve/settings.ts';
-import { CATALOG_MAX_BYTES, CATALOG_TIMEOUT_MS, STATE_FILES, wire } from '../../src/serve/wiring.ts';
+import { GATEWAY_DEFAULT, cosignSettingsOf } from '../../src/serve/settings.ts';
+import { CATALOG_MAX_BYTES, CATALOG_TIMEOUT_MS, STATE_FILES, SYSTEM_START_TIMEOUT_MS, wire } from '../../src/serve/wiring.ts';
 import type { BidderSources, DelegationKeyEntry, Runners, Wired, WiringOptions, WiringSettings } from '../../src/serve/wiring.ts';
-import { AGENT_DID, ISSUER, KEY_NUMBERS, KEY_VARIABLES, MODULE1_URL, cleanDirs, completeEnv, rawKey, secretsOf, tempDir, withModule1, wiringSettingsOf } from './support.ts';
+import { AGENT_DID, ISSUER, KEY_NUMBERS, KEY_VARIABLES, MODULE1_URL, cleanDirs, completeEnv, messageOf, rawKey, secretsOf, tempDir, withModule1, wiringSettingsOf } from './support.ts';
 
 afterEach(cleanDirs);
 
@@ -144,6 +148,8 @@ interface Over {
   readonly spy?: boolean;
   /** Gets the key hash of each chain that the wiring makes, in order. It is the record of a start that fails. */
   readonly chains?: string[];
+  /** Replaces members of every chain that the wiring makes: a read that hangs, or a state that does not change. A call of a replaced member is recorded too. */
+  readonly chain?: Partial<VaultChain>;
 }
 
 /** The chain of each key is the FakeChain of the stub marketplace, with the wallet of the key. A chain is made once for each key, and the test reads which key made each call. */
@@ -166,7 +172,7 @@ async function setup(over: Over = {}): Promise<Setup> {
     createChain: async (options) => {
       const pkh = keyOf(options.privateKeyHex).pkh;
       chains.push(pkh);
-      const chain = vaultChainWith(m, { wallet: async () => ({ ...(await m.chain.wallet()), buyerPkh: pkh }) });
+      const chain = vaultChainWith(m, { wallet: async () => ({ ...(await m.chain.wallet()), buyerPkh: pkh }), ...over.chain });
       // The chain that the service gets has each member of the chain, and each function records its call with the key hash of its key, so a test reads which key paid.
       const recording: VaultChain = Object.fromEntries(Object.entries(chain).map(([method, member]) => [method, typeof member === 'function' ? (...args: unknown[]) => { used.push({ pkh, method }); return member.apply(chain, args); } : member])) as unknown as VaultChain;
       return recording;
@@ -298,6 +304,7 @@ describe('one queue for each key, one set of ids, one port and one list for the 
     expect(readdirSync(join(dir, 'keys')).sort()).toStrictEqual([settings.keys.service.pkh, settings.keys.delegation1.pkh, settings.keys.delegation2.pkh].sort());
     expect(existsSync(join(dir, STATE_FILES.dispute))).toBe(true);
     expect(wired.service.dir).toBe(join(dir, 'keys', settings.keys.service.pkh));
+    expect(STATE_FILES).toStrictEqual({ dispute: 'dispute', left: 'left', register: 'cosign-register.json' });
   });
 });
 
@@ -940,6 +947,303 @@ describe('the start', () => {
     expect(failed.message).not.toContain(registry);
     expect(chains).toStrictEqual([]);
     await expect(setup({ fetch: answering(() => new Response(fixture, { status: 200 })) })).resolves.toBeDefined();
+  });
+
+  test('is the time that the node gives', async () => {
+    const { wired } = await setup();
+    expect(wired.systemStartMs).toBe(SYSTEM_START_MS);
+  });
+
+  /** The starts of the two messages of a start that the node stops: no time, and a time that is no time. */
+  const NO_TIME = /^the node gave no start time of the chain/;
+  const BAD_TIME = /^the node gave a start time of the chain that is not a time/;
+  /** What the node can give as the start time of the chain, and the message that the start stops with. */
+  const START_TIMES: readonly (readonly [what: string, give: () => Promise<number>, message: RegExp])[] = [
+    ['a node that fails', async () => { throw new Error('the node does not answer'); }, NO_TIME],
+    ['a node that throws at the call', () => { throw new Error('the node is closed'); }, NO_TIME],
+    ['NaN', async () => Number.NaN, BAD_TIME],
+    ['0', async () => 0, BAD_TIME],
+    ['a negative time', async () => -5, BAD_TIME],
+    ['a time with a fraction', async () => 1.5, BAD_TIME],
+    ['infinity', async () => Number.POSITIVE_INFINITY, BAD_TIME],
+    ['a text', async () => 'x' as unknown as number, BAD_TIME],
+  ];
+
+  test.each(START_TIMES)('stops the start for %s as the start time of the chain, before any chain is made', async (_what, give, message) => {
+    const provider = world();
+    provider.getSystemStartMs = give;
+    const chains: string[] = [];
+    const error = await startError(setup({ provider, chains }));
+    expect(error.message).toMatch(message);
+    expect(chains).toStrictEqual([]);
+  });
+
+  test('waits for the start time of the chain 15,000 ms and no longer: an answer at 14,999 ms is taken, and no answer stops the start at 15,000 ms', async () => {
+    expect(SYSTEM_START_TIMEOUT_MS).toBe(15_000);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      // A node that answers 1 ms before the bound. The start waits for it.
+      const slow = world();
+      const slowAsked = deferred();
+      const slowAnswer = deferred();
+      slow.getSystemStartMs = async () => {
+        slowAsked.resolve();
+        await slowAnswer.promise;
+        return SYSTEM_START_MS;
+      };
+      const taken = setup({ provider: slow });
+      await slowAsked.promise;
+      await vi.advanceTimersByTimeAsync(SYSTEM_START_TIMEOUT_MS - 1);
+      slowAnswer.resolve();
+      expect((await taken).wired.systemStartMs).toBe(SYSTEM_START_MS);
+      // A node that never answers. The start stops at the bound, with no chain made.
+      const hung = world();
+      const hungAsked = deferred();
+      hung.getSystemStartMs = () => {
+        hungAsked.resolve();
+        return new Promise<number>(() => undefined);
+      };
+      const chains: string[] = [];
+      let ended = false;
+      const stopped = startError(setup({ provider: hung, chains })).then((error) => {
+        ended = true;
+        return error;
+      });
+      await hungAsked.promise;
+      await vi.advanceTimersByTimeAsync(SYSTEM_START_TIMEOUT_MS - 1);
+      expect(ended).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect((await stopped).message).toMatch(/^the node gave no start time of the chain/);
+      expect(chains).toStrictEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+/** The body of a request as one chunk, as a stream of chunks that the handler of the route reads. */
+async function* chunksOf(text: string): AsyncGenerator<string> {
+  yield text;
+}
+
+describe('the co-sign route', () => {
+  /** The wiring over the fixture world of the route: the agent is the agent of that world, `extra` outputs stand on the node, and the clock stands at the time that the world builds its Delegate. */
+  const routeOf = async (extra: Parameters<typeof world>[0] = [], over: Over = {}) => {
+    const run = await setup({ ...over, env: { AGENT_DID: KIT_AGENT_DID, ...over.env }, provider: world(extra), options: { clock: { now: () => NOW, sleep: async () => undefined }, ...over.options } });
+    return { ...run, route: run.wired.cosignRoute(cosignSettingsOf(run.env)) };
+  };
+
+  test('is made over the two delegation keys: it signs a Delegate for each of them with that key, and a setting that the kit refuses stops the start with its detail', async () => {
+    const { route, wired, env, settings } = await routeOf();
+    expect(route.path).toBe('/cosign/delegate');
+    expect(wired.systemStartMs).toBe(SYSTEM_START_MS);
+    for (const [role, key] of [['delegation1', DELEG_A], ['delegation2', DELEG_B]] as const) {
+      const { hex } = await build({ delegateKey: key.keyHash });
+      const signed = await route.cosign(requestOf(hex));
+      if (!signed.ok) throw new Error(`the route refused the key of ${role} with ${signed.code}`);
+      expect(signed.value.keyHash).toBe(settings.keys[role].pkh);
+      expect(hostedToolTakes(hex, signed.value.transaction, key.keyHash)).toMatchObject({ ok: true });
+    }
+    const given = cosignSettingsOf(env);
+    const refused = messageOf(() => wired.cosignRoute({ ...given, maxConcurrent: 0 }));
+    expect(refused).toMatch(/^the co-sign route is refused: /);
+    expect(refused).toContain('COSIGN_MAX_CONCURRENT');
+    for (const secret of secretsOf(env)) expect(refused.toLowerCase()).not.toContain(secret.toLowerCase());
+    expect(given.maxConcurrent).toBe(4);
+  });
+
+  test('refuses a Delegate that spends an output of any key of the agent: the two delegation keys and the eight other keys, and the wallet of a stranger is the twin', async () => {
+    const settings = wiringSettingsOf(completeEnv());
+    const scorerRoles = KEY_ROLES.filter((role) => role.startsWith('scorer'));
+    expect(scorerRoles).toHaveLength(6);
+    // The eight other keys by the number of the fixture world: the service key, the supplier key and the six keys of the scorers. Each number is tied to the key hash that the settings hold.
+    const others = [KEY_NUMBERS.service, 23, ...scorerRoles.map((role) => KEY_NUMBERS[role])].map((n) => testKeyOf(n));
+    expect(others).toHaveLength(8);
+    expect(others.map((key) => key.keyHash)).toStrictEqual([settings.keys.service.pkh, settings.supplier.pkh, ...scorerRoles.map((role) => settings.keys[role].pkh)]);
+    // The node holds the wallets of the two delegation keys, of the service key and of the supplier key. This test adds an output for each of the six keys of the scorers.
+    const { route } = await routeOf(others.slice(2).map((key) => agentWallet(key, 1)));
+    const { hex: transaction } = await build();
+    for (const key of [DELEG_A, DELEG_B, ...others]) {
+      expect(await route.cosign(requestOf(withInput(transaction, agentWallet(key, 1)))), `the key ${key.n}`).toMatchObject({ ok: false, code: 'spends_agent_funds' });
+    }
+    const stranger = await routeOf([agentWallet(STRANGER, 1)]);
+    expect(await stranger.route.cosign(requestOf(withInput(transaction, agentWallet(STRANGER, 1))))).toMatchObject({ ok: true });
+  });
+
+  test('keeps its register in a file of the state directory: a second route on that file answers 409 key_in_use for a key that signed another body, in this process and after a restart, and a new state directory is the twin', async () => {
+    const post = (hex: string) => ({ method: 'POST', headers: { 'content-type': 'application/json' }, body: chunksOf(requestOf(hex)) });
+    const signed = await build();
+    const other = await build({ validMinutes: 20 });
+    expect(other.hex).not.toBe(signed.hex);
+    const first = await routeOf();
+    expect((await first.route.handle(post(signed.hex))).status).toBe(200);
+    expect(existsSync(join(first.settings.stateDir, STATE_FILES.register))).toBe(true);
+    // A second route of this process makes a second register on the same file. The same body gets its answer again, and another body for the same key is refused.
+    const second = first.wired.cosignRoute(cosignSettingsOf(first.env));
+    const busy = await second.handle(post(other.hex));
+    expect(busy.status).toBe(409);
+    expect(JSON.parse(busy.body)).toMatchObject({ error: 'key_in_use' });
+    expect((await second.handle(post(signed.hex))).status).toBe(200);
+    // A restart: a new wiring over the same state directory still holds the key.
+    const restarted = await routeOf([], { env: { SOURCING_STATE_DIR: first.settings.stateDir } });
+    expect((await restarted.route.handle(post(other.hex))).status).toBe(409);
+    expect((await restarted.route.handle(post(signed.hex))).status).toBe(200);
+    // A new state directory has an empty register, so the body that the first one refused is signed.
+    const fresh = await routeOf();
+    expect((await fresh.route.handle(post(other.hex))).status).toBe(200);
+  });
+});
+
+/**
+ * Lets the event loop run until `done` is true. A janitor reads its files through the event loop, so a test waits for that and for nothing else. It uses `setImmediate`, which no fake timer of a test replaces, and it
+ * looks after one turn at least, so the microtasks that follow an event have run when it looks. It fails after 20 s of the real clock.
+ */
+async function until(done: () => boolean): Promise<void> {
+  const end = Date.now() + 20_000;
+  for (;;) {
+    await new Promise<void>((resolve) => { setImmediate(resolve); });
+    if (done()) return;
+    if (Date.now() > end) throw new Error('the janitors did not do their work');
+  }
+}
+
+describe('the janitors', () => {
+  afterEach(() => { vi.useRealTimers(); });
+
+  const INTERVAL_MS = 20;
+  const STOP_WAIT_MS = 50;
+  /** A call of a node that never answers. */
+  const hang = <T>(): Promise<T> => new Promise<T>(() => undefined);
+  /** The refs of the three stranded escrows: one for each paying key, in the order of the service key, the first delegation key and the second delegation key. */
+  const REFS = [`${'a1'.repeat(32)}#0`, `${'b2'.repeat(32)}#0`, `${'c3'.repeat(32)}#0`];
+  const leftEntry = (signerKeyHash: string): LeftEntry => ({
+    left: {
+      id: 'cc'.repeat(32), parent: DELEGATION, action: 'example.action.v1', resource: 'https://mock.example/t/tenant/system', delegateTxHash: 'ee'.repeat(32), delegateValidTo: T0 + 600_000, delegateTtlSlot: 1_000_000, notAfter: T0 + 3_600_000, endTxHash: null,
+    },
+    signer_key_hash: signerKeyHash,
+  });
+  /** The lines that the janitor of one key logged for its escrow. Each line of a key starts with the first 8 characters of its key hash. */
+  const keptLines = (log: readonly string[], keyHash: string, ref: string): string[] => log.filter((line) => line.startsWith(`key ${keyHash.slice(0, 8)}: janitor: kept ${ref}: Submitted`));
+  /** The timers that a test fakes: the waits of the janitors and the bounds of a stop. The files, the event loop and the promises stay real. */
+  const fakeTimers = (): void => { vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] }); };
+
+  /**
+   * The wiring with the clock of the system over the start time of the marketplace (its waits are timers, which a test fakes after the setup), one stranded escrow in the store of each paying key that a Submitted read
+   * keeps, one left sub-delegation that the ledger does not show, and a count of the reads of the tip. `over` can replace the members of the chains and the reader of the tip.
+   */
+  async function janitoring(over: Over = {}) {
+    const tips = { count: 0 };
+    const run = await setup({
+      ...over,
+      chain: { escrowState: async () => 'Submitted', ...over.chain },
+      options: { clock: { now: () => T0, sleep: systemClock.sleep }, tipSlot: async () => { tips.count += 1; return 0; }, ...over.options },
+    });
+    const keys = [run.wired.service, ...run.wired.delegations];
+    keys.forEach((key, at) => {
+      key.stranded.add({ escrow_ref: REFS[at]!, deliver_by: T0 - 1_000_000, posted_at: T0 - 2_000_000, kind: 'agent' });
+    });
+    await run.wired.leftStore.put(leftEntry(run.settings.keys.delegation1.pkh));
+    /** True when each key logged its own escrow `n` times at least. */
+    const kept = (n: number): boolean => keys.every((key, at) => keptLines(run.log, key.keyHash, REFS[at]!).length >= n);
+    /** True when each key logged its own escrow `n` times at least, and the janitor of the left sub-delegations read the tip `n` times at least. */
+    const passes = (n: number): boolean => kept(n) && tips.count >= n;
+    const escrowReads = (): string[] => run.used.filter((call) => call.method === 'escrowState').map((call) => call.pkh);
+    return { ...run, keys, tips, kept, passes, escrowReads };
+  }
+
+  test('start one janitor for each of the three paying keys on its own store, and one for the left sub-delegations, and a stop ends all four', async () => {
+    const { wired, log, keys, passes, escrowReads } = await janitoring();
+    fakeTimers();
+    const running = wired.startJanitors(INTERVAL_MS, 5_000);
+    // The first pass of each janitor starts with the call: each key reads the state of its own escrow at once.
+    expect(escrowReads()).toStrictEqual(keys.map((key) => key.keyHash));
+    await until(() => passes(1));
+    for (const [at, key] of keys.entries()) {
+      for (const other of REFS.filter((ref) => ref !== REFS[at])) expect(keptLines(log, key.keyHash, other), `the key ${at} and the escrow ${other}`).toStrictEqual([]);
+    }
+    // The four janitors wait for their next pass, and each makes it after the interval.
+    expect(vi.getTimerCount()).toBe(4);
+    await vi.advanceTimersByTimeAsync(INTERVAL_MS);
+    await until(() => passes(2));
+    await vi.advanceTimersByTimeAsync(INTERVAL_MS);
+    await until(() => passes(3));
+    expect(vi.getTimerCount()).toBe(4);
+    // A stop ends all four: no timer is left that could start another pass. A second stop is no error.
+    await running.stop();
+    expect(vi.getTimerCount()).toBe(0);
+    const after = log.length;
+    await vi.advanceTimersByTimeAsync(10 * INTERVAL_MS);
+    expect(log.length).toBe(after);
+    await running.stop();
+  });
+
+  test('a stop abandons a pass of the janitors of the paying keys that hangs on the node when the bound is over, and logs it', async () => {
+    const { wired, log, tips, escrowReads, keys } = await janitoring({ chain: { escrowState: () => hang() } });
+    fakeTimers();
+    const running = wired.startJanitors(60_000, STOP_WAIT_MS);
+    // The passes of the three keys began at once and hang on the node. The pass of the left janitor ends.
+    expect(escrowReads()).toStrictEqual(keys.map((key) => key.keyHash));
+    await until(() => tips.count >= 1);
+    let ended = false;
+    const stopping = running.stop().then(() => { ended = true; });
+    await vi.advanceTimersByTimeAsync(STOP_WAIT_MS - 1);
+    expect(ended).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await stopping;
+    const abandoned = log.filter((line) => line.startsWith('stopping: the janitor'));
+    expect(abandoned).toHaveLength(1);
+    expect(abandoned[0]).toContain('did not end within 0.05 s');
+    expect(log.filter((line) => line.includes('janitor: stop:'))).toStrictEqual([]);
+  });
+
+  test('a stop abandons a pass of the janitor of the left sub-delegations that hangs on the node when the bound is over, and logs it', async () => {
+    const asked = { count: 0 };
+    const { wired, log, kept } = await janitoring({ options: { tipSlot: () => { asked.count += 1; return hang(); } } });
+    fakeTimers();
+    const running = wired.startJanitors(60_000, STOP_WAIT_MS);
+    // The pass of the left janitor reached the node and hangs. The passes of the three keys end.
+    await until(() => asked.count === 1 && kept(1));
+    let ended = false;
+    const stopping = running.stop().then(() => { ended = true; });
+    await vi.advanceTimersByTimeAsync(STOP_WAIT_MS - 1);
+    expect(ended).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await stopping;
+    const abandoned = log.filter((line) => line.includes('janitor: stop:'));
+    expect(abandoned).toHaveLength(1);
+    expect(abandoned[0]).toContain(`did not end within ${STOP_WAIT_MS} ms`);
+    expect(log.filter((line) => line.startsWith('stopping: the janitor'))).toStrictEqual([]);
+  });
+
+  test('a stop with no pass in flight ends at once, with no timer to wait for, and logs no abandoned pass', async () => {
+    const { wired, log, passes } = await janitoring();
+    fakeTimers();
+    const running = wired.startJanitors(60_000, 30_000);
+    await until(() => passes(1));
+    await running.stop();
+    expect(vi.getTimerCount()).toBe(0);
+    expect(log.filter((line) => line.startsWith('stopping:') || line.includes('janitor: stop:'))).toStrictEqual([]);
+  });
+
+  test.each([[0, 50], [-1, 50], [1.5, 50], [Number.NaN, 50], [20, 0], [20, 1.5]] as const)('refuses the interval %s with the stop bound %s, and starts no janitor', async (interval, stopWait) => {
+    const { wired, escrowReads } = await janitoring();
+    fakeTimers();
+    expect(() => wired.startJanitors(interval, stopWait)).toThrow();
+    // The first pass of a janitor of a key starts with its call, so a janitor that had started would have read its escrow by now. No timer waits.
+    expect(escrowReads()).toStrictEqual([]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  test('the line of an abandoned job names the stranded escrows of the three paying keys, in the order of the keys', async () => {
+    const { wired } = await setup();
+    const [service, first, second] = [wired.service, ...wired.delegations];
+    const entry = (escrowRef: string) => ({ escrow_ref: escrowRef, deliver_by: T0 + 1_000_000, posted_at: T0, kind: 'agent' } as const);
+    expect(wired.abandonedLine(300_000)).toBe('stopping: the job that is running did not finish within 300000 ms and is abandoned; the state directory holds 0 escrows for the janitors of the next start');
+    first!.stranded.add(entry(REFS[1]!));
+    expect(wired.abandonedLine(1)).toBe(`stopping: the job that is running did not finish within 1 ms and is abandoned; the state directory holds 1 escrow for the janitors of the next start: ${REFS[1]}`);
+    second!.stranded.add(entry(REFS[2]!));
+    service!.stranded.add(entry(REFS[0]!));
+    expect(wired.abandonedLine(1)).toBe(`stopping: the job that is running did not finish within 1 ms and is abandoned; the state directory holds 3 escrows for the janitors of the next start: ${REFS[0]}, ${REFS[1]}, ${REFS[2]}`);
   });
 });
 
