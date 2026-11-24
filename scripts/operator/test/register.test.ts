@@ -46,11 +46,11 @@ const DID_PREFIX = 'did:vector:';
 
 // ---- what the tool is asked for, and what it builds ----
 
-interface PartyArgs { role: PartySpec['role']; signer: string; organisation?: string; rights?: string[] }
+interface PartyArgs { role: PartySpec['role']; signer: string; organisation?: string; rights?: string[]; not_before?: number; not_after?: number; removal_after?: number }
 interface KeyArgs { key: string; purposes: string[] }
 interface RegisterArgs {
   changeAddress: string; controller: string; name: string; description?: string; endpoint?: string; capabilities?: string[]; keys: KeyArgs[]; parties: PartyArgs[];
-  guardian_threshold?: number; parent?: string; deposit?: number; valid_minutes?: number;
+  guardian_threshold?: number; parent?: string; deposit?: number; valid_minutes?: number; framework?: string;
 }
 
 const PURPOSE_BITS: Record<string, number> = { authentication: 1, assertion: 2, transaction: 8, delegation: 16 };
@@ -61,12 +61,13 @@ function paramsOf(args: RegisterArgs, nowMs: number): RegisterParams {
   const party = (one: PartyArgs): PartySpec => ({
     role: one.role,
     signer: one.signer === 'controller' ? { type: 'ControllerSet' } : one.signer === 'module1' ? { type: 'Script', hash: M1 } : { type: 'KeyHash', hash: one.signer },
-    organisation: one.organisation === undefined ? null : utf8Hex(one.organisation), notAfter: null, rights: rightsBits(one.role, one.rights), removalAfter: null,
+    organisation: one.organisation === undefined ? null : utf8Hex(one.organisation), notBefore: one.not_before, notAfter: one.not_after ?? null, rights: rightsBits(one.role, one.rights), removalAfter: one.removal_after ?? null,
   });
   return {
     changeAddress: args.changeAddress, nowMs, validMinutes: args.valid_minutes, controller: args.controller,
     keys: args.keys.map((key) => ({ keyType: 'Ed25519' as const, key: key.key, purposes: key.purposes.reduce((sum, name) => sum + PURPOSE_BITS[name]!, 0), pop: null })),
     parties: args.parties.map(party), guardianThreshold: args.guardian_threshold, name: utf8Hex(args.name), description: utf8Hex(args.description ?? ''), endpoint: utf8Hex(args.endpoint ?? ''),
+    ...(args.framework === undefined ? {} : { framework: utf8Hex(args.framework) }),
     capabilities: (args.capabilities ?? []).map(utf8Hex), ...(args.parent === undefined ? {} : { parent: args.parent.slice(DID_PREFIX.length) }),
     depositLovelace: BigInt(Math.round((args.deposit ?? 10) * 1_000_000)),
   };
@@ -694,10 +695,15 @@ describe('register: the wallet of the key fee', () => {
   });
 });
 
-// ---- the check of the record that landed ----
+// ---- the record in the build, before any signature ----
 
-describe('register: the check of the record on the node', () => {
-  const TAMPERS: Array<[string, (args: RegisterArgs) => RegisterArgs, string]> = [
+describe('register: the record in the build is the record of the data, before any signature', () => {
+  type Tamper = (args: RegisterArgs, keys: Fixture['w']['keys']['registry']) => RegisterArgs;
+  const swapped: Tamper = (args, keys) => ({
+    ...args,
+    parties: args.parties.map((party) => (party.role === 'Accountable' ? { ...party, signer: keys.hashOf('provider') } : party.role === 'Provider' ? { ...party, signer: keys.hashOf('accountable-echo') } : party)),
+  });
+  const TAMPERS: Array<[string, Tamper, string]> = [
     ['the endpoint', (args) => ({ ...args, endpoint: 'https://elsewhere.example' }), 'the endpoint of the record'],
     ['the capabilities', (args) => ({ ...args, capabilities: [...(args.capabilities ?? []), 'extra.capability.v1'] }), 'the capabilities of the record'],
     ['the name', (args) => ({ ...args, name: 'Another Name' }), 'the name of the record'],
@@ -706,23 +712,79 @@ describe('register: the check of the record on the node', () => {
     ['the rights of a party', (args) => ({ ...args, parties: args.parties.map((party) => (party.role === 'Provider' ? { ...party, rights: ['suspend'] } : party)) }), 'Provider'],
     ['the organisation of a party', (args) => ({ ...args, parties: args.parties.map((party) => (party.role === 'Accountable' ? { ...party, organisation: 'other.example' } : party)) }), 'organisation'],
     ['the guardian threshold', (args) => ({ ...args, guardian_threshold: 1 }), 'guardian threshold'],
+    ['the controller: the key reorder-service in place of the controller key', (args, keys) => ({ ...args, controller: keys.publicKeyOf('reorder-service') }), 'the controller of the record'],
+    ['the signers of the Accountable and the Provider party swapped', swapped, 'has another signer'],
   ];
-  for (const [label, change, name] of TAMPERS) {
-    it(`fails with the name of what differs when the tool built another record than the data: ${label}`, async () => {
+  for (const [label, change, phrase] of TAMPERS) {
+    it(`refuses a build with another record than the data (${label}), in a dry run with no note and in a submit run before any signature, and lands the honest twin`, async () => {
       const f = await fixture();
+      f.hosted.change = (args) => change(args, registry(f));
+      expect(await f.run()).toBe(2);
+      expect(errorText(f)).toContain(phrase);
+      expect(f.w.state('register').notes).toEqual({});
+      expect(f.w.machine().result).toEqual({});
+      // The honest dry run writes the note, and the value is published. The same build with the other record is then refused in a submit run before any signature.
+      f.hosted.change = (args) => args;
       const shown = await dry(f);
       publish(f, shown);
-      f.hosted.change = change;
-      expect(await f.run('--submit')).toBe(1);
-      expect(errorText(f)).toContain(name);
-      expect(errorText(f)).toContain(shown.did);
-      expect(f.w.machine()).toMatchObject({ outcome: 'failed', exit: 1, step: 'reorder-agent' });
-      // The transaction landed and the step is confirmed, and it stays unverified, so every run verifies it again and fails again.
-      expect(f.w.state('register').steps['reorder-agent']).toMatchObject({ verified_at: null });
-      expect(await f.run('--submit')).toBe(1);
-      expect(f.w.state('register').steps['reorder-agent']).toMatchObject({ verified_at: null });
+      f.hosted.change = (args) => change(args, registry(f));
+      f.refuseSigning = true;
+      expect(await f.run('--submit')).toBe(2);
+      expect(errorText(f)).toContain(phrase);
+      untouched(f);
+      f.hosted.change = (args) => args;
+      f.refuseSigning = false;
+      expect(await f.run('--submit')).toBe(0);
     });
   }
+  it('refuses a subagent that the tool built as a root record with no parent, before any signature, and lands the honest twin', async () => {
+    const f = await fixture();
+    await registered(f);
+    const signed = f.signs.length;
+    f.hosted.change = ({ parent: _parent, ...rest }) => rest;
+    f.refuseSigning = true;
+    expect(await f.run('--submit')).toBe(2);
+    expect(errorText(f)).toContain('as its parent');
+    expect(f.signs).toHaveLength(signed);
+    expect(f.world.chain.applied).toHaveLength(1);
+    expect(steps(f)).toEqual(['reorder-agent']);
+    f.hosted.change = (args) => args;
+    f.refuseSigning = false;
+    expect(await f.run('--submit')).toBe(0);
+    expect(steps(f)).toEqual(['reorder-agent', 'stock-reader']);
+  });
+  it('prints the members of the record that the build holds in a dry run, and the parent link of a subagent', async () => {
+    const f = await fixture();
+    const first = await dry(f);
+    for (const line of [
+      'record controller: controller', `record name: ${REORDER.name}`, `record endpoint: ${REORDER.endpoint}`, `record capabilities: ${REORDER.capability}`,
+      'record key 1: reorder-supplier with the purposes authentication and transaction', 'record key 3: reorder-delegation-1 with the purposes delegation',
+      `record party 1: Accountable, key accountable-echo, organisation ${ECHO.domain}, rights suspend and revoke`, 'record party 2: Responsible, Module-1, organisation none, rights suspend',
+      'record party 3: Provider, key provider, organisation none, rights none', 'record party 5: Guardian, key controller, organisation none, rights recover',
+      'record guardian threshold: 2', 'record lineage: root',
+    ]) expect(f.w.screen.lines, line).toContain(line);
+    publish(f, first);
+    expect(await f.run('--submit')).toBe(0);
+    expect(await f.run()).toBe(0);
+    for (const line of ['record controller: controller', 'record endpoint: none', 'record party 1: Accountable, the controller, organisation none, rights suspend and revoke', `record lineage: subagent of ${first.did}`]) {
+      expect(f.w.screen.lines, line).toContain(line);
+    }
+  });
+  it('fails after the landing, with the name of what differs, when the node shows another record than the build, and the step stays unverified', async () => {
+    const f = await fixture();
+    const shown = await dry(f);
+    publish(f, shown);
+    const unit = `${DEPLOYMENT.identity.hash}${idOf(shown.did)}`;
+    const read = f.world.chain.getUtxos.bind(f.world.chain);
+    f.world.chain.getUtxos = async (address) => (await read(address)).map((utxo) => (
+      utxo.assets[unit] === 1n ? { ...utxo, datum: encodeIdentityDatum({ ...decodeIdentityDatum(utxo.datum!), endpoint: utf8Hex('https://elsewhere.example') }) } : utxo
+    ));
+    expect(await f.run('--submit')).toBe(1);
+    expect(errorText(f)).toContain('the endpoint of the record');
+    expect(errorText(f)).toContain(shown.did);
+    expect(f.w.state('register').steps['reorder-agent']).toMatchObject({ verified_at: null });
+    expect(await f.run('--submit')).toBe(1);
+  });
   it('verifies at the next run when the node did not show the record at the first read, and the facts that were written first are not written twice', async () => {
     const f = await fixture();
     const shown = await dry(f);

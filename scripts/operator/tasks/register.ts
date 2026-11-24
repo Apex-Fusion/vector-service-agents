@@ -19,13 +19,15 @@ import type { StepRecord } from '../../checks/lib/state.ts';
 import type { OutputFacts, TxFacts } from '../../checks/lib/txfacts.ts';
 // The entry of buyer-core gives neither of these two tables of the identity rules, so they come by the path of their file: the rights of each party role by default, and the bit of each right.
 import { RIGHT, ROLE_MAX_RIGHTS } from '../../../packages/buyer-core/src/vendored/mcp/identity-rules.ts';
+// The entry of vector-read gives no codec of the identity datums either: `decodeIdentityDatum` reads the inline datum of a record output, as `findRecord` does.
+import { decodeIdentityDatum } from '../../../packages/vector-read/src/identity-codec.ts';
 import { checkConsentWithdrawal } from '../lib/consent.ts';
 import type { HostedBuild, HostedLandSpec, KeyPurpose, KeyUse, OrganisationSpec, PartySpec, TaskDefinition, TaskSession, UseCase } from '../lib/contract.ts';
 import { checkTxt } from '../lib/dns.ts';
 import { landHosted } from '../lib/land-hosted.ts';
 import type { Landed } from '../lib/land-hosted.ts';
 import { planOf } from '../lib/plan.ts';
-import { PURPOSE, createGatewayClient, effectiveStatus, findRecord } from '../lib/platform.ts';
+import { PURPOSE, createGatewayClient, effectiveStatus, findRecord, keyHashOf } from '../lib/platform.ts';
 import type { RecordUtxo } from '../lib/platform.ts';
 import type { Registry } from '../lib/registry.ts';
 import { runSteps } from '../lib/runner.ts';
@@ -201,11 +203,14 @@ async function requireFeeWallet(session: Session): Promise<void> {
   if (held < needed) throw new PreconditionError(`The fee wallet ${address} holds ${units(held)}, and a registration needs ${units(needed)} for the deposit and the fee limit.`);
 }
 
+/** The parent of a subagent: its DID from the facts file, and its record from the node. */
+interface Parent { did: string; record: RecordUtxo }
+
 /**
- * The DID of the parent of a subagent, or the outcome that ends the step. The parent must be in the facts file and Active on the node. A parent that the node does not show yet (its registration is
- * not confirmed there) is a wait. A parent that is in no fact, is not a root record, or is not Active, is a precondition that fails.
+ * The parent of a subagent, or the outcome that ends the step. The parent must be in the facts file and Active on the node. A parent that the node does not show yet (its registration is not
+ * confirmed there) is a wait. A parent that is in no fact, is not a root record, or is not Active, is a precondition that fails.
  */
-async function parentOf(session: Session, subject: Subject): Promise<string | StepOutcome> {
+async function parentOf(session: Session, subject: Subject): Promise<Parent | StepOutcome> {
   const parentId = subject.parent!;
   const held = session.facts.read().records[parentId];
   if (held === undefined) throw new PreconditionError(`the parent ${parentId} is not in the facts file: register it first, and keep the facts file of the session`);
@@ -217,19 +222,20 @@ async function parentOf(session: Session, subject: Subject): Promise<string | St
   if (found.record.lineage.type !== 'Root') throw new PreconditionError(`the parent ${parentId} (${held.did}) is a subagent: a subagent of this task has a root record as its parent`);
   const status = effectiveStatus(found.record, new Map(), now, now);
   if (status !== 'Active') throw new PreconditionError(`the parent ${parentId} (${held.did}) is ${status}: only an Active record can start a subagent`);
-  return held.did;
+  return { did: held.did, record: found };
 }
 
 // ---- the landing of a record ----
 
-function landSpec(session: Session, subject: Subject, parentDid: string | null): HostedLandSpec {
+function landSpec(session: Session, subject: Subject, parent: Parent | null): HostedLandSpec {
   const deployment = session.chain.deployment;
   const module1 = holdsModule1(subject);
   return {
-    step: subject.id, tool: TOOL, args: argsOf(session, subject, parentDid), expectSigners: signersOf(subject), irreversible: 'record',
+    step: subject.id, tool: TOOL, args: argsOf(session, subject, parent === null ? null : parent.did), expectSigners: signersOf(subject), irreversible: 'record',
+    // The plan runs in a dry run too: a record that is not the record of the data stops the run here, before any note and before any signature.
     plan: (build, facts) => {
       const { id } = identityOf(build);
-      recordOutputOf(subject.id, deployment, id, facts);
+      requireBuiltRecord(session, subject, build, recordOutputOf(subject.id, deployment, id, facts), parent === null ? null : parent.record);
       return planOf(session, {
         outflow: { fee: DEPOSIT_LOVELACE + session.settings.maxFeeLovelace }, destinations: [deployment.identity.address], mint: { [`${deployment.identity.hash}${id}`]: 1n }, withdrawals: module1 ? 1 : 0,
         labels: { [deployment.identity.address]: 'the identity registry' },
@@ -261,10 +267,11 @@ function showDry(session: Session, subject: Subject, landed: Landed): void {
   if (build === null) throw new Error(`the landing of the step ${subject.id} gave no answer of the tool`);
   const { did, id } = identityOf(build);
   const txt = txtOf(subject, did);
-  const deposit = recordOutputOf(subject.id, session.chain.deployment, id, landed.facts).lovelace;
+  const record = recordOutputOf(subject.id, session.chain.deployment, id, landed.facts);
   const lines = [
     `record ${subject.id} (${subject.name})`, `DID: ${did}`, ...(txt === null ? ['no TXT for this record'] : [`TXT name: ${txt.name}`, `TXT value: ${txt.value}`]),
-    `valid until: ${iso(build.validTo)}`, `signers: ${signersOf(subject).join(', ')}`, `deposit: ${units(deposit)}`, `fee: ${units(build.feeLovelace)}`,
+    `valid until: ${iso(build.validTo)}`, `signers: ${signersOf(subject).join(', ')}`, `deposit: ${units(record.lovelace)}`, `fee: ${units(build.feeLovelace)}`,
+    ...(record.inlineDatum === null ? [] : describeRecord(session, decodeIdentityDatum(record.inlineDatum))),
   ];
   for (const line of lines) session.out.out(line);
   if (txt !== null) {
@@ -335,11 +342,39 @@ function differences(session: Session, subject: Subject, datum: Datum, parent: R
     if (datum.lineage.type !== 'Root') problems.push('the record is a subagent, and the data says a root record');
   } else if (datum.lineage.type !== 'Subagent' || parent === null || datum.lineage.parent !== parent.id) {
     problems.push(`the record does not name the record of ${subject.parent} as its parent`);
+  } else if (datum.lineage.parentEpoch !== parent.record.subagentEpoch || datum.lineage.depth !== 1) {
+    problems.push(`the record names the epoch ${datum.lineage.parentEpoch} and the depth ${datum.lineage.depth} of its parent, and the data needs the epoch ${parent.record.subagentEpoch} and the depth 1`);
   }
-  const now = session.clock.now();
-  const status = effectiveStatus(datum, parent === null ? new Map() : new Map([[parent.id, parent.record]]), now, now);
-  if (status !== 'Active') problems.push(`the record is ${status}, and it must be Active`);
   return problems;
+}
+
+/** The members of a record in words, for a dry run: what the record will say. The names are the names of the registry. */
+function describeRecord(session: Session, datum: Datum): string[] {
+  const nameOf = (hash: string): string => session.registry.nameOfHash(hash.toLowerCase()) ?? `a key that is not in the registry (${hash})`;
+  const signerText = (signer: Datum['parties'][number]['signer']): string => (signer.type === 'ControllerSet' ? 'the controller' : signer.type === 'Script' ? 'Module-1' : `key ${nameOf(signer.hash)}`);
+  return [
+    `record controller: ${nameOf(keyHashOf(datum.controller))}`, `record name: ${textOfHex(datum.name)}`, `record endpoint: ${textOfHex(datum.endpoint) || 'none'}`,
+    `record capabilities: ${datum.capabilities.map(textOfHex).join(', ') || 'none'}`,
+    ...datum.keys.map((key, index) => `record key ${index + 1}: ${nameOf(keyHashOf(key.key))} with the purposes ${purposeText(key.purposes)}`),
+    ...datum.parties.map((party, index) => `record party ${index + 1}: ${party.role}, ${signerText(party.signer)}, organisation ${party.organisation === null ? 'none' : textOfHex(party.organisation)}, rights ${rightsText(party.rights)}`),
+    `record guardian threshold: ${datum.guardianThreshold}`,
+    `record lineage: ${datum.lineage.type === 'Root' ? 'root' : `subagent of ${DID_PREFIX}${datum.lineage.parent}`}`,
+  ];
+}
+
+/**
+ * The record that the build holds, read from its bytes and compared with the data before any signature. The guards read the signers, the destinations, the mint, the withdrawals and the outflow,
+ * and none of them reads the datum, so a tool that built another record (another controller, no parent, other keys or parties) would be signed. A record that differs, or that was not created at
+ * the end of the validity of the build, is a refusal with the guard `body`. The plan runs in a dry run too, so a dry run stops here and writes no note.
+ */
+function requireBuiltRecord(session: Session, subject: Subject, build: HostedBuild, output: OutputFacts, parent: RecordUtxo | null): void {
+  const refuse = (message: string): GuardRefusal => new GuardRefusal(subject.id, [{ guard: 'body', ok: false, message }]);
+  if (output.inlineDatum === null) throw refuse('the record output of the build has no inline datum, so the record cannot be read');
+  let datum: Datum;
+  try { datum = decodeIdentityDatum(output.inlineDatum); } catch (err) { throw refuse(`the inline datum of the record output does not decode (${errorText(err)})`); }
+  const problems = differences(session, subject, datum, parent);
+  if (datum.createdAt !== build.validTo) problems.push(`the record says that it was created at ${iso(datum.createdAt)}, and the build is valid until ${iso(build.validTo)}`);
+  if (problems.length > 0) throw refuse(`the record in the build is not the record of the data: ${problems.join('; ')}`);
 }
 
 // ---- the steps ----
@@ -354,7 +389,7 @@ function recordStep(subject: Subject): StepHandler<Extra> {
       requireOrganisationParty(subject);
       await requireFeeWallet(session);
       const parent = subject.parent === null ? null : await parentOf(session, subject);
-      if (parent !== null && typeof parent !== 'string') return parent;
+      if (parent !== null && !('record' in parent)) return parent;
       const landed = await landHosted(session, landSpec(session, subject, parent));
       if (landed.kind === 'dry') {
         showDry(session, subject, landed);
@@ -375,6 +410,9 @@ function recordStep(subject: Subject): StepHandler<Extra> {
       const parentId = subject.parent === null ? null : session.facts.read().records[subject.parent]?.id;
       const parent = parentId === null || parentId === undefined ? null : await findRecord(session.chain.provider, session.chain.deployment, parentId);
       const problems = differences(session, subject, found.record, parent);
+      const now = session.clock.now();
+      const status = effectiveStatus(found.record, parent === null ? new Map() : new Map([[parent.id, parent.record]]), now, now);
+      if (status !== 'Active') problems.push(`the record is ${status}, and it must be Active`);
       if (problems.length > 0) throw new Error(`the record ${did} on the node is not the record of the data: ${problems.join('; ')}`);
       session.evidence.add({ step: subject.id, status: 'info', shows: { verification: 'the record on the node is the record of the data', did } });
     },
