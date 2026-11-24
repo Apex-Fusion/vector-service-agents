@@ -9,7 +9,7 @@ import { withFaultGap } from '@vsa/usecase-kit/manifest';
 export const SYNTHETIC_GAP = 'Every record is synthetic. Nothing here has been run against a real records system or a real insurer.';
 export const JUSTIFICATION_GAP = 'The model writes the justification. Nothing in this agent checks it against the guideline.';
 export const SIGN_OFF_GAP = 'This agent does not check the sign-off of the hirer. The Insurer Intake Agent does.';
-export const RECORD_SET_GAP = 'The subagent drafter is given the whole record set, but nothing forces the model to use all of it. The request carries the hash of the set so that a reviewer can compare.';
+export const RECORD_SET_GAP = 'The model is given the whole record set, but nothing forces the model to use all of it. The request carries the hash of the set so that a reviewer can compare.';
 export const CHALLENGE_GAP = `A challenge puts a hold on the identity of the Insurer Intake Agent if the jury finds for this agent. It does not return what the escrow locked: a delivery that this agent refuses can still be released to the Insurer Intake Agent ${ACCEPT_WINDOW_MS / 1000} s after its Submit.`;
 export const MODEL_GAP = 'A model call that fails ends the job. There is no second provider.';
 export const INSURER_GAP = 'The insurer side is operated by the same foundation as this agent.';

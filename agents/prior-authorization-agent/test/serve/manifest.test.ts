@@ -436,7 +436,7 @@ describe('the behaviour', () => {
     expect(Object.keys(claim)).toStrictEqual(['statements']);
     expect(claim.statements.map((statement) => statement.text)).toStrictEqual([
       'A request this agent submits is byte-identical to the document whose digest its hirer approved.',
-      'The record set hash in a request is the hash of the set its drafter was given.',
+      'The record set hash in a request is the hash of the set that its model was given.',
       'This agent reads records and guidelines only through its subagents, each with its own token under its own sub-delegation.',
     ]);
   });
@@ -471,7 +471,7 @@ describe('the gaps', () => {
       'Every record is synthetic. Nothing here has been run against a real records system or a real insurer.',
       'The model writes the justification. Nothing in this agent checks it against the guideline.',
       'This agent does not check the sign-off of the hirer. The Insurer Intake Agent does.',
-      'The subagent drafter is given the whole record set, but nothing forces the model to use all of it. The request carries the hash of the set so that a reviewer can compare.',
+      'The model is given the whole record set, but nothing forces the model to use all of it. The request carries the hash of the set so that a reviewer can compare.',
       'A model call that fails ends the job. There is no second provider.',
       'The insurer side is operated by the same foundation as this agent.',
     ]);

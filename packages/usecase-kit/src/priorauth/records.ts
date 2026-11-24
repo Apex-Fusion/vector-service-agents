@@ -173,7 +173,7 @@ export function parseRecordSet(value: unknown): ProtocolResult<RecordSet> {
 }
 
 /**
- * The hash that a request carries for the record set that its drafter was given: the SHA-256 of the canonical text of the checked copy of the set, as 64 lower-case hex characters. The canonical text has
+ * The hash that a request carries for the record set that its model was given: the SHA-256 of the canonical text of the checked copy of the set, as 64 lower-case hex characters. The canonical text has
  * the members of each object in the order of their keys, and each text in the NFC form. So two sets with the same data and a different order of the members have one hash, and a text in the NFD form and
  * the same text in the NFC form have one hash. The list of the records keeps its order, so a set with the records in another order has another hash. A value that `parseRecordSet` refuses is a TypeError,
  * and the message names the field and never repeats the value.

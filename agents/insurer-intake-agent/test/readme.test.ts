@@ -431,18 +431,23 @@ describe('agents/insurer-intake-agent/README.md: the routes, the checks and the 
     expect([MAX_BODY, MAX_REQUEST_BYTES, RUNTIME_BODY_LIMIT_BYTES]).toStrictEqual([1_000_000, 900_000, 1_048_576]);
     const published = JSON.parse(loadConfig(startEnvWith()).manifest.text) as { terms: { input_limits: { request_bytes: number } }; interface: { request_schema: { properties: Record<string, unknown> } } };
     expect(published.terms.input_limits.request_bytes).toBe(MAX_REQUEST_BYTES);
-    expect(routes).toContain(`\`terms.input_limits.request_bytes\`: ${MAX_REQUEST_BYTES} bytes of request JSON.`);
+    expect(routes).toContain(`\`terms.input_limits.request_bytes\`: ${MAX_REQUEST_BYTES} bytes of wire payload.`);
     expect(Object.keys(published.interface.request_schema.properties)).toStrictEqual(['schema', 'use_case', 'sender_did', 'delegation', 'document', 'salt', 'approval']);
     expect(routes).toContain('The manifest publishes this schema under `interface.request_schema`.');
     expect(routes).toContain(`{ "schema": "${HANDOFF_SCHEMA}", "use_case": "prior-authorization", "sender_did": "..."`);
     expect(routes).toContain(`The \`document\` is an authorization request (\`${PRIORAUTH_REQUEST_SCHEMA}\`).`);
-    // The wire message holds the request JSON as a string: each quote mark and each backslash of the request gets one more byte there, so the request limit counts less than the body.
+    // The wire payload is the wire message: the request JSON is written as a string inside it, so each quote mark and each backslash of the request JSON counts two bytes in the limit of the request.
     const request = JSON.stringify({ a: 'say "hi" \\ twice' });
     const wrapper = JSON.stringify([{ content: '', role: 'user' }]);
     const marks = [...request].filter((char) => char === '"' || char === '\\').length;
     expect(marks).toBeGreaterThan(4);
     expect(wire(request)).toHaveLength(wrapper.length + request.length + marks);
-    expect(routes).toContain('each quote mark and each backslash of the request gets one more byte there');
+    expect(routes).toContain('each quote mark and each backslash of the request JSON counts two bytes');
+    // The service counts the wire message against MAX_BODY and not against the limit of the request. A buyer that uses the kit checks the wire payload against the limit of the request before the Pay.
+    expect(routes).toContain(`The service itself does not count this limit: it refuses a body only above ${MAX_BODY} bytes, with \`request_too_large\` (400).`);
+    expect(routes).toContain('A buyer that uses the kit of this repository checks the limit of 900000 bytes before it pays.');
+    expect(textOf('../../../packages/usecase-kit/src/buyer/hire.ts')).toContain('const wire = checkWirePayload(text);');
+    expect(routes).toContain('The buyer then writes the wire payload again inside a second JSON object for the runtime, and each quote mark and each backslash of the wire payload gets one more byte there.');
     expect(routes).toContain(`The runtime takes at most ${RUNTIME_BODY_LIMIT_BYTES} bytes of body.`);
     expect(routes).toContain(`safe only while the escaped body stays below ${RUNTIME_BODY_LIMIT_BYTES} bytes`);
     expect(Object.values(CONTEXT_HEADERS)).toHaveLength(6);
@@ -506,6 +511,11 @@ describe('agents/insurer-intake-agent/README.md: the routes, the checks and the 
       }
       const big = await send('x'.repeat(MAX_BODY + 1));
       expect([big.status, big.json?.error]).toStrictEqual([statusOf('request_too_large'), 'request_too_large']);
+      // The limit of the request is not the limit of the service: a wire message of more than 900000 bytes and no more than 1000000 bytes is read, and the request in it is refused for its shape and not for its size.
+      const between = wire('x'.repeat(MAX_REQUEST_BYTES + 50_000));
+      expect([Buffer.byteLength(between) > MAX_REQUEST_BYTES, Buffer.byteLength(between) <= MAX_BODY]).toStrictEqual([true, true]);
+      const read = await send(between);
+      expect([read.status, read.json?.error]).toStrictEqual([statusOf('bad_shape'), 'bad_shape']);
       // The request: another use case, a member that the schema does not list, a document that is no authorization request, and no JSON. The same handoff for use case 2 is taken.
       for (const bad of [{ ...world.handoff, use_case: 'inventory-reorder' }, { ...world.handoff, extra: 1 }, { ...world.handoff, document: { schema: 'vector.usecase.po.v1' } }, 'not json']) {
         for (const path of ['/', '/precheck']) {

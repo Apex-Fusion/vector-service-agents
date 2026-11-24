@@ -17,7 +17,7 @@ import { expectRefused, must } from './support.ts';
 
 const PRIORAUTH_TEXTS = [
   'A request this agent submits is byte-identical to the document whose digest its hirer approved.',
-  'The record set hash in a request is the hash of the set its drafter was given.',
+  'The record set hash in a request is the hash of the set that its model was given.',
   'This agent reads records and guidelines only through its subagents, each with its own token under its own sub-delegation.',
 ] as const;
 
