@@ -3,6 +3,7 @@
 import { koiosPostList } from '../../../packages/buyer-core/src/vendored/mcp/marketplace-indexer.ts';
 import { itemEnd } from '../../../packages/usecase-kit/src/cosign/layout.ts';
 import { MAX_CBOR_DEPTH, assertCborDepth } from '../../../packages/vector-read/src/cbor-depth.ts';
+import { addressDetails } from '../../../packages/vector-read/src/guarded-decode.ts';
 import { decodePlutusDataHex } from '../../../packages/vector-read/src/identity.ts';
 import { VerificationError } from '../../checks/lib/verify.ts';
 import type { LandHost } from './contract.ts';
@@ -14,6 +15,8 @@ const POLICY_ID = /^[0-9a-f]{56}$/;
 const ASSET_NAME = /^(?:[0-9a-f]{2}){0,32}$/;
 const HEX_BYTES = /^(?:[0-9a-f]{2})*$/i;
 const MAX_DATUM_HEX = 32_768;
+// Constructor 2 with no fields, in the canonical ledger encoding.
+const ADVERT_RETIRE_HASH = blake2b256Hex(Buffer.from('d87b80', 'hex'));
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 
@@ -93,18 +96,25 @@ function archivedDatumHash(hash: unknown): string | null | undefined {
   return hash;
 }
 
-function archivedDatum(datum: unknown): RecordSpendDatum | null | undefined {
+function archivedDatum(datum: unknown, outputHash?: string | null): RecordSpendDatum | null | undefined {
   if (datum === null || datum === undefined) return datum;
   const bad = () => new VerificationError('The confirmed transaction contains unreadable Plutus data.');
   if (!isObject(datum)) throw bad();
   const { bytes, value } = datum;
   const hash = archivedDatumHash(datum.hash);
+  if (hash != null && outputHash != null && hash !== outputHash) {
+    throw new VerificationError('The confirmed transaction gives contradictory hashes for one datum.');
+  }
   if (value != null && !isPlutusData(value)) throw bad();
   if (bytes != null) {
     if (typeof bytes !== 'string' || bytes === '' || bytes.length > MAX_DATUM_HEX || !HEX_BYTES.test(bytes)) throw bad();
     const raw = Buffer.from(bytes, 'hex');
     try { assertCborDepth(raw); } catch { throw bad(); }
     if (itemEnd(raw, 0) !== raw.length) throw bad();
+    const expected = hash ?? outputHash;
+    if (expected != null && blake2b256Hex(raw) !== expected) {
+      throw new VerificationError('The confirmed transaction datum bytes do not match their hash.');
+    }
   } else if (value == null && hash == null) {
     throw bad();
   }
@@ -148,14 +158,24 @@ function archivedRows(value: unknown, withDetails: boolean, txHash?: string): Re
     if (ref === null || (txHash !== undefined && item.tx_hash !== txHash) || typeof address !== 'string' || address.length === 0 || amount === null || amount <= 0n) {
       throw new VerificationError('The confirmed transaction has an unreadable output reference, address or amount.');
     }
+    const reportedCredential = isObject(payment) ? payment.cred : undefined;
+    if (reportedCredential != null) {
+      let actualCredential: string | undefined;
+      try { actualCredential = addressDetails(address).paymentCredential?.hash; }
+      catch { throw new VerificationError('The confirmed transaction has an unreadable payment address.'); }
+      if (typeof reportedCredential !== 'string' || actualCredential !== reportedCredential) {
+        throw new VerificationError('The confirmed transaction payment credential does not match its address.');
+      }
+    }
     if (seen.has(ref)) throw new VerificationError('The confirmed transaction lists the same output reference more than once.');
     seen.add(ref);
+    if (!withDetails) return { ref, address, lovelace: amount };
+    const datumHash = archivedDatumHash(item.datum_hash);
+    const inline = archivedDatum(item.inline_datum, datumHash);
     return {
       ref, address, lovelace: amount,
-      ...(withDetails ? {
-        inline_datum: archivedDatum(item.inline_datum), asset_list: archivedAssets(item.asset_list),
-        ...(item.datum_hash === undefined ? {} : { datum_hash: archivedDatumHash(item.datum_hash) }),
-      } : {}),
+      inline_datum: inline, asset_list: archivedAssets(item.asset_list),
+      ...(datumHash === undefined ? {} : { datum_hash: datumHash }),
     };
   });
 }
@@ -224,12 +244,14 @@ export async function readConfirmedSpend(
 }
 
 /** The identity advert validator uses constructor 2 with no fields for RetireAdvert. */
-export function isAdvertRetireRedeemer({ bytes, value }: RecordSpendDatum): boolean {
-  if (bytes == null && value == null) return false;
-  if (bytes != null) {
+export function isAdvertRetireRedeemer({ bytes, value, hash }: RecordSpendDatum): boolean {
+  if (bytes == null) {
+    if (hash == null ? value == null : hash !== ADVERT_RETIRE_HASH) return false;
+  } else {
     try {
       const data = decodePlutusDataHex(bytes);
       if (data.kind !== 'constr' || data.index !== 2n || data.fields.length !== 0) return false;
+      if (hash != null && blake2b256Hex(Buffer.from(bytes, 'hex')) !== hash) return false;
     } catch { return false; }
   }
   return value == null || ('fields' in value && value.constructor === 2 && value.fields.length === 0);
@@ -248,7 +270,7 @@ export function proveAdvertRetirement(flow: RecordSpendValueFlow, want: AdvertRe
   const { advertRef, advertAddress, advertScriptHash, supplierAddress, depositLovelace } = want;
   const input = flow.inputs.find(({ ref }) => ref === advertRef);
   const script = flow.spends?.[0];
-  if (input?.address !== advertAddress || input.lovelace !== depositLovelace || (input.asset_list?.length ?? 0) !== 0
+  if (input?.address !== advertAddress || input.lovelace !== depositLovelace || input.asset_list?.length !== 0
     || flow.spends?.length !== 1 || script?.scriptHash !== advertScriptHash || script.inputRef !== advertRef || !isAdvertRetireRedeemer(script.redeemer)) {
     throw new VerificationError('The confirmed spend does not show RetireAdvert for the exact advert input and deposit.');
   }
