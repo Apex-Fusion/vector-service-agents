@@ -11,6 +11,7 @@ import { recordLanded } from '../../../checks/lib/inflight.ts';
 import type { HostedTools } from '../../../checks/lib/hosted.ts';
 import type { LandIo, LandRequest } from '../../../checks/lib/land.ts';
 import { lucidForAddress } from '../../../checks/lib/platform.ts';
+import type { Utxo } from '../../../checks/lib/platform.ts';
 import type { NetworkFacts, TxStatus } from '../../../checks/lib/ports.ts';
 import { commitStep, landFor } from '../../../checks/lib/session.ts';
 import type { ChainAccess } from '../../../checks/lib/session.ts';
@@ -39,13 +40,27 @@ afterAll(() => {
 /** A hash made of a text: 64 lower-case hex characters, the same each time. */
 export const hashOf = (text: string): string => createHash('sha256').update(`operator test ${text}`).digest('hex');
 
-/** A node over the world that answers the status of a transaction from a list first, counts the reads, and counts the questions about its network. */
+/**
+ * A node over the world that answers the status of a transaction from a list first, counts the reads, and counts the questions about its network. It keeps the lists of references that it was asked to
+ * resolve, and it throws `inputsError` when a test sets one. A test that models a transaction that was lost, which never reached the ledger, signs it and lets `submitError` fail the submit, so that the
+ * world does not apply it: its inputs stay unspent.
+ */
 export class ScriptedNode extends FakeNode {
   /** The hashes that a status was read for, in order. */
   readonly reads: string[] = [];
   /** The next answers of `txStatus`: a status, or an error to throw. When the list is empty the node answers as a FakeNode does. */
   readonly script: Array<TxStatus | Error> = [];
+  /** The lists of references that `resolveInputs` was asked for, in order. A landing asks too, so a test that looks at a run empties the list before it. */
+  readonly inputReads: string[][] = [];
+  /** When set, `resolveInputs` throws it. */
+  inputsError: Error | null = null;
   networkReads = 0;
+
+  override async resolveInputs(refs: readonly string[]): Promise<Utxo[]> {
+    this.inputReads.push([...refs]);
+    if (this.inputsError !== null) throw this.inputsError;
+    return super.resolveInputs(refs);
+  }
 
   override async networkFacts(): Promise<NetworkFacts> {
     this.networkReads += 1;
@@ -217,7 +232,8 @@ export function recordingStep<Extra = unknown>(name: string, ran: string[], over
 
 /**
  * A step that lands a real payment of `lovelace` from the wallet of the key `from` to the wallet of the key `to`, with the landing of the checks: the guards, the signature of the registry ring,
- * the reserve of the cap before the submit, the state file, and the wait for the confirmation. It stands in for the landing helpers of the tasks.
+ * the reserve of the cap before the submit, the state file, and the wait for the confirmation. It stands in for the landing helpers of the tasks. As the real builders do, it sets the end of the validity
+ * in the body, 30 minutes after the clock, so a transaction that is built again at another time is another transaction, also when it spends the same inputs.
  */
 export function landingStep<Extra = unknown>(name: string, ran: string[], from: string, to: string, lovelace: bigint): StepHandler<Extra> {
   return {
@@ -225,12 +241,13 @@ export function landingStep<Extra = unknown>(name: string, ran: string[], from: 
     async run(session) {
       ran.push(name);
       const { lucid } = await session.chain.context(session.registry.addressOf(from));
-      const built = await lucid.newTx().pay.ToAddress(session.registry.addressOf(to), { lovelace }).complete();
+      const validTo = session.clock.now() + 30 * 60_000;
+      const built = await lucid.newTx().pay.ToAddress(session.registry.addressOf(to), { lovelace }).validTo(validTo).complete();
       const cbor = built.toCBOR();
       const facts = factsOf(cbor);
       const request: LandRequest = {
         step: name,
-        built: { unsignedCbor: cbor, txHash: built.toHash(), feeLovelace: facts.feeLovelace, validTo: session.clock.now() + 30 * 60_000 },
+        built: { unsignedCbor: cbor, txHash: built.toHash(), feeLovelace: facts.feeLovelace, validTo },
         plan: {
           maxFeeLovelace: session.settings.maxFeeLovelace, maxOutflow: { [session.registry.hashOf(from)]: lovelace + facts.feeLovelace },
           maxCollateralLossLovelace: session.settings.maxCollateralLossLovelace, explained: new Set(), destinations: new Set(), mint: {},

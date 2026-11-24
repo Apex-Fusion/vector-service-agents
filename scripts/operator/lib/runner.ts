@@ -24,6 +24,7 @@ import { recordLanded, settleInFlight } from '../../checks/lib/inflight.ts';
 import { KeyFileError } from '../../checks/lib/keys.ts';
 import { GuardRefusal, LandRefused } from '../../checks/lib/land.ts';
 import { TxNotConfirmedError } from '../../checks/lib/platform.ts';
+import type { Utxo } from '../../checks/lib/platform.ts';
 import type { Clock, NodeAccess, Output } from '../../checks/lib/ports.ts';
 import { PreconditionError } from '../../checks/lib/session.ts';
 import type { ChainAccess, Mode, StepOutcome } from '../../checks/lib/session.ts';
@@ -31,6 +32,7 @@ import { SettingsError } from '../../checks/lib/settings.ts';
 import type { Env } from '../../checks/lib/settings.ts';
 import { StateError, StateFile } from '../../checks/lib/state.ts';
 import type { CheckState, InFlight, StepRecord } from '../../checks/lib/state.ts';
+import { factsOf } from '../../checks/lib/txfacts.ts';
 import type { HostedTools } from '../../checks/lib/hosted.ts';
 import { TASK_NAMES } from '../tasks/names.ts';
 import { ApprovalError, Exposure, loadGo, requireGo } from './approval.ts';
@@ -477,15 +479,39 @@ function firstOpenStep<Extra>(def: TaskDefinition<Extra>, session: TaskSession<E
   try { return def.steps(session.use, session.flags).find((step) => recordOf(session.state, step) === undefined) ?? null; } catch { return null; }
 }
 
+/** The references of the inputs that a transaction needs on the chain: its inputs, and its collateral inputs. A transaction that landed has spent the first. A script that failed spends the second. Each is named once. */
+export function inputsToCheck(facts: { readonly inputs: readonly string[]; readonly collateralInputs: readonly string[] }): string[] {
+  return [...new Set([...facts.inputs, ...facts.collateralInputs])];
+}
+
+/** What the node says of the inputs of a signed transaction: all unspent, some spent (how many of how many), or not to be told. */
+type InputsCheck = { readonly kind: 'unspent' } | { readonly kind: 'spent'; readonly spent: number; readonly total: number } | { readonly kind: 'unreadable'; readonly why: string };
+
+/**
+ * Asks the node, and not the indexer, which inputs of the signed bytes are still unspent. A transaction that landed has spent its inputs, so when all of them are unspent it did not land, however far
+ * the indexer is behind. A node that does not answer, bytes that cannot be read and a transaction with no input tell nothing: they are `unreadable`, never `unspent`.
+ */
+async function checkInputs(node: NodeAccess, signedCbor: string): Promise<InputsCheck> {
+  let refs: string[];
+  try { refs = inputsToCheck(factsOf(signedCbor)); } catch (err) { return { kind: 'unreadable', why: `the bytes of the transaction cannot be read: ${errorText(err)}` }; }
+  if (refs.length === 0) return { kind: 'unreadable', why: 'the transaction has no input' };
+  let held: Utxo[];
+  try { held = await node.resolveInputs(refs); } catch (err) { return { kind: 'unreadable', why: `the node did not answer: ${errorText(err)}` }; }
+  const unspent = new Set(held.map((utxo) => `${utxo.txHash}#${utxo.outputIndex}`));
+  const spent = refs.filter((ref) => !unspent.has(ref)).length;
+  return spent === 0 ? { kind: 'unspent' } : { kind: 'spent', spent, total: refs.length };
+}
+
 /**
  * Reads the status of the transaction of a flight that `settleInFlight` let go, a second time (a read that failed makes `settleInFlight` let a transaction go too), and says what to do. The record goes
  * back into the state file first, before the read: while the read waits for the indexer, the file holds the transaction, so a run that is stopped in that time loses nothing. Then:
  *   - a number of confirmations, 0 included (the indexer counts the blocks on top of the block of the transaction, so 0 is the newest block): the transaction is on the chain. The step is recorded
  *     and its reserve of the cap stays.
  *   - a read that fails: nobody knows. The transaction stays in flight and the run stops, so that no step is built that may have landed.
- *   - a read that works and does not know the transaction: it cannot land any more, because its validity ended. A dry run leaves it in flight and goes on, so that the summary shows the step as it would
- *     be built again. A run with --submit gives its reserve back
- *     (when the approval is loaded) and lets it go, and the run goes on.
+ *   - a read that works and does not know the transaction: the indexer can be behind the node, so the transaction may have landed after its validity ended. The runner asks the node for the inputs of the
+ *     signed bytes (`checkInputs`). When one of them is spent, or the node cannot tell, the transaction stays in flight with its reserve and the run stops: the operator checks the chain. When all of
+ *     them are unspent, the transaction did not land, and it cannot land any more because its validity ended. A dry run then leaves it in flight and goes on, so that the summary shows the step as it
+ *     would be built again. A run with --submit gives its reserve back (when the approval is loaded) and lets it go, and the run goes on.
  * It gives the reason to stop, or null when the run goes on.
  */
 async function reconcile(flight: InFlight, parts: { node: NodeAccess; state: StateFile; clock: Clock; exposure: Exposure; go: GoFile | null; mode: Mode; out: Output }): Promise<string | null> {
@@ -500,6 +526,15 @@ async function reconcile(flight: InFlight, parts: { node: NodeAccess; state: Sta
     recordLanded(state, { step: flight.step, tx_hash: flight.tx_hash, refs: flight.refs, facts: flight.facts }, clock.now());
     out.out(`${where} ${confirmations >= 1 ? 'is confirmed' : 'is in the newest block'}: the step is recorded, and its reserve of the cap stays`);
     return null;
+  }
+  const unknown = `${where} is not known to the indexer, and its validity ended at ${iso(flight.valid_to)}`;
+  const inputs = await checkInputs(node, flight.signed_cbor);
+  if (inputs.kind === 'spent') {
+    return `${unknown}, but its inputs are spent (${inputs.spent} of ${inputs.total}). It may have landed, or another transaction may have spent them. It stays in flight, its reserve stays, and nothing is built. `
+      + 'The operator must check the chain for the transaction and for its inputs before the next run.';
+  }
+  if (inputs.kind === 'unreadable') {
+    return `${unknown}, but its inputs cannot be checked (${inputs.why}). It stays in flight, its reserve stays, and nothing is built. Run again when the inputs can be checked.`;
   }
   const lost = `${where} is not on the chain, and its validity ended at ${iso(flight.valid_to)}: it cannot land any more`;
   if (mode === 'dry') {
