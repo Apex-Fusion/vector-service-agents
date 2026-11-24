@@ -14,6 +14,7 @@
 import type { Server } from 'node:http';
 import { createJobServer } from '@vsa/service-kit';
 import type { JobSlot, OpenRoute, Refusal } from '@vsa/service-kit';
+import { checkWirePayload } from '@vsa/usecase-kit/buyer';
 import type { CosignRoute } from '@vsa/usecase-kit/cosign';
 import { withFaultModeJob } from '@vsa/usecase-kit/fault';
 import type { FaultSwitch, WithFaultMode } from '@vsa/usecase-kit/fault';
@@ -56,8 +57,8 @@ export type JobAnswer = WithFaultMode<SourcingResult | ExecuteResult, 'sourcing-
 const TENANT_FORM = new RegExp(REQUEST_SCHEMA.oneOf[0].properties.tenant.pattern);
 
 /** The request JSON of a job as a request of the agent. It throws `RequestRefusal` for a text that is too large, that is not JSON, or that breaks a rule of the intake, the tenant form of the schema among them. */
-export function parseJob(requestJson: string): JobRequest {
-  const size = checkRequestSize(requestJson);
+export function parseJob(requestJson: string, wirePayload?: string): JobRequest {
+  const size = wirePayload === undefined ? checkWirePayload(requestJson) : checkRequestSize(wirePayload);
   if (!size.ok) throw new RequestRefusal(size.code === 'request_too_large' ? 'request_too_large' : 'bad_shape', size.detail);
   const json = parseJsonText(requestJson, 'request');
   if (!json.ok) throw new RequestRefusal('bad_shape', json.detail);

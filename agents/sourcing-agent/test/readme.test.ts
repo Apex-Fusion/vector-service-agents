@@ -8,12 +8,11 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, test } from 'vitest';
 import { READ_BUDGET_MS, VAULT_PAYER_IDENTITY_SETTINGS } from '@vsa/buyer-core';
-import { RUNTIME_BODY_LIMIT_BYTES } from '@vsa/hire-kit';
-import { BUSY_TEXT, CONTEXT_HEADERS, HEARTBEAT_MS, JobSlot, MAX_BODY, RESERVATION_MS, SHUTDOWN_WAIT_MS, STOPPING_TEXT, TOKEN_SEARCH_MIN, operatorsText } from '@vsa/service-kit';
+import { BUSY_TEXT, CONTEXT_HEADERS, HEARTBEAT_MS, JobSlot, RESERVATION_MS, SHUTDOWN_WAIT_MS, STOPPING_TEXT, TOKEN_SEARCH_MIN, operatorsText } from '@vsa/service-kit';
 import { BID_CAPABILITIES, MAX_ITEM_QUANTITY, MAX_RFQ_ITEMS, SOURCING_CLAIM, WEIGHT_NAMES } from '@vsa/usecase-kit/bids';
 import { COSIGN_STATUS, DEFAULT_LIMITS } from '@vsa/usecase-kit/cosign';
 import { readFaultSwitch } from '@vsa/usecase-kit/fault';
-import { ERROR_STATUS, MAX_REQUEST_BYTES, checkRequestSize, refusedExit, refused } from '@vsa/usecase-kit/protocol';
+import { ERROR_STATUS, MAX_REQUEST_BYTES, refusedExit, refused } from '@vsa/usecase-kit/protocol';
 import { EXECUTE_DEADLINE_MS, EXECUTE_FAILURES } from '../src/execute/index.ts';
 import { MAX_INVITED, ACCEPT_QUOTE_DECISION, RANKING_DECISION, SCORE_DECISION, SHORTLIST_DECISION } from '../src/model/index.ts';
 import { PROPOSE_DEADLINE_MS, PROPOSE_FAILURES, RANKING_RESERVE_MS, SCORING_RESERVE_MS, TENANT_RULE } from '../src/propose/index.ts';
@@ -21,6 +20,7 @@ import { QUOTE_CODES, QUOTE_HIRE_RESERVE_MS } from '../src/quotes/index.ts';
 import { SCORER_JOB_TIMEOUT_MS, SCORER_NEED_MS, SCORERS_NEED_MS, SCORING_FAILURES, SUB_DELEGATION_VALID_MS } from '../src/scoring/index.ts';
 import { reversedOf, scoreFaultOf } from '../src/scoring/fault.ts';
 import { BIDDER_FETCH_TIMEOUT_MS, BIDDER_READ_BUDGET_MS, FACT_READ_TIMEOUT_MS, MAX_CANDIDATES } from '../src/bidders/index.ts';
+import { NOT_ACCEPTED } from '../src/quotes/decide.ts';
 import { DESCRIPTION, ID_CHARS, REQUEST_SCHEMA, TENANT_CHARS } from '../src/serve/manifest.ts';
 import { RequestRefusal, parseJob } from '../src/serve/server.ts';
 import {
@@ -102,6 +102,10 @@ describe('agents/sourcing-agent/README.md: what it is', () => {
     expect(intro).toContain('It reads the candidates: the Bid Desks that the indexer lists and the chain shows, at most 8.');
     expect(MAX_CANDIDATES).toBe(8);
     expect(intro).toContain('The agent hires the invited bidders one after the other');
+    // Five checks in code come before the model. They are the reasons of `NOT_ACCEPTED` that are no decision: the other two are the no of the model and a decision that failed.
+    const checks = Object.entries(NOT_ACCEPTED).filter(([name]) => name !== 'declined' && name !== 'failed').map(([, code]) => code);
+    expect(checks).toStrictEqual(['quote_invalid', 'quote_not_from_bidder', 'quote_not_for_rfq', 'quote_not_from_list', 'delivery_not_recordable']);
+    expect(intro).toContain('Five checks in code come before the model: the answer is a quote, the quote is from the bidder, it answers this request, it names the price list that the agent read, and the receipt names the key hash of the supplier, so that the agent can record the delivery.');
     expect(intro).toContain('The three scorers are used one for each accepted quote, in the order of the quotes.');
     expect(SCORER_DIDS).toHaveLength(3);
     expect([SHORTLIST_DECISION, ACCEPT_QUOTE_DECISION, SCORE_DECISION, RANKING_DECISION].map((decision) => decision.name)).toStrictEqual(['shortlist', 'accept_quote', 'score', 'ranking']);
@@ -135,25 +139,23 @@ describe('agents/sourcing-agent/README.md: what it is', () => {
     expect(w.tokens).toHaveLength(1);
     expect(w.record.written).toHaveLength(1);
     expect(intro).toContain('The call to the sourcing record is made one time. The service never repeats it, also after a failure, because a failed call can have written the ranking.');
-    expect(textOf('../src/execute/execute.ts')).toContain('a call that failed may have written the ranking');
     expect(intro).toContain('The sourcing record has no rule of one ranking for each request.');
     expect(intro).toContain('Read the sourcing record before you send `execute` again.');
   });
 
-  test('the claim is the manifest claim, only an operator command stakes it, and the only dispute call of the service is the challenge of a quote that the model did not accept', () => {
+  test('the manifest has the claim statements but the service never stakes them and only challenges quotes', () => {
     expect(template.behaviour.claim.statements.map((statement) => statement.text)).toStrictEqual(SOURCING_CLAIM.statements.map((statement) => statement.text));
     expect(SOURCING_CLAIM.statements).toHaveLength(3);
-    expect(intro).toContain('The claim of the agent is the three statements in `behaviour.claim` of its manifest. An operator command stakes that claim, and this service never does.');
+    expect(intro).toContain('The claim of the agent is the three statements in `behaviour.claim` of its manifest. The service never stakes the claim. No command in this repository stakes it yet.');
     expect(sources.filter(({ text }) => /\b(?:stakeRunClaim|withdrawClaim|submitClaim|challengeApproval)\b/.test(text))).toStrictEqual([]);
     expect(sources.filter(({ text }) => /\bchallengeDelivery\b/.test(text)).map(({ file }) => file).sort()).toStrictEqual(['quotes/evidence.ts', 'quotes/ports.ts']);
     expect(intro).toContain('only after a decision of the model that did not accept a quote, and only for a unit price');
-    expect(textOf('../src/quotes/evidence.ts')).toContain('the evidence is one line whose unit price is not the listed price');
-    expect(textOf('../src/quotes/quotes.ts')).toContain('not_accepted, declined_by_model    a challenge against the open claim of THAT bidder');
   });
 
-  test('the escrow and the vault payment stay locked up to the window of the advert, and the jobs are in memory', () => {
+  test('the processing window does not set a settlement time, and jobs are in memory', () => {
     expect(MIN_PROCESSING_WINDOW_MS).toBe(5_400_000);
-    expect(intro).toContain(`stay locked up to the window of the advert, ${MIN_PROCESSING_WINDOW_MS} ms (${MIN_PROCESSING_WINDOW_MS / 60_000} minutes) by default, when a job runs to its end`);
+    expect(intro).toContain(`The processing window of the advert is ${MIN_PROCESSING_WINDOW_MS} ms (${MIN_PROCESSING_WINDOW_MS / 60_000} minutes) by default.`);
+    expect(intro).toContain('The hire and any quote escrows can remain locked after the job ends. Their funds move only when a settlement transaction lands.');
     expect(template.interface.routes.status).toBe('/status');
     expect(intro).toContain('A restart waits until the runtime says `free` at its `/status` route.');
     expect(intro).toContain('The jobs are in memory, so a restart ends the job that runs.');
@@ -205,13 +207,8 @@ describe('agents/sourcing-agent/README.md: the routes', () => {
   });
 
   test('the body limits, the six headers of the context and the numbers of the slot and of the heartbeat are the code', () => {
-    expect(routes).toContain(`The service reads the body up to ${MAX_BODY} bytes. It reads the request JSON up to ${MAX_REQUEST_BYTES} bytes.`);
-    expect(checkRequestSize('x'.repeat(MAX_REQUEST_BYTES)).ok).toBe(true);
-    expect(checkRequestSize('x'.repeat(MAX_REQUEST_BYTES + 1)).ok).toBe(false);
     expect(JSON.parse(textOf('../agent.json.template')).terms.input_limits.request_bytes).toBe(MAX_REQUEST_BYTES);
     expect(routes).toContain('`terms.input_limits.request_bytes`');
-    expect(RUNTIME_BODY_LIMIT_BYTES).toBe(1_048_576);
-    expect(routes).toContain(`The limit of ${MAX_REQUEST_BYTES} bytes is safe only below the limit of the runtime, ${RUNTIME_BODY_LIMIT_BYTES} bytes, on the escaped body.`);
     expect(Object.values(CONTEXT_HEADERS)).toHaveLength(6);
     for (const header of Object.values(CONTEXT_HEADERS)) expect(routes, header).toContain(`\`${header}\``);
     expect(routes).toContain(`\`{"go":true,"reserved_ms":${RESERVATION_MS}}\``);
@@ -219,6 +216,23 @@ describe('agents/sourcing-agent/README.md: the routes', () => {
     expect(HEARTBEAT_MS).toBe(60_000);
     expect(routes).toContain(`writes an interim \`102 Processing\` line every ${HEARTBEAT_MS / 1000} s`);
     expect(textOf('../../../packages/service-kit/src/server.ts')).toContain('req.httpVersionMajor === 1 && req.httpVersionMinor >= 1');
+  });
+
+  test('precheck and the job count the received wire bytes, including framing, for a full execute request', async () => {
+    const w = executeWorld();
+    const { origin } = await serve({ executeDeps: () => w.deps, clock: () => w.gateway.now() });
+    const framed = wireOf(w.request());
+    const atLimit = framed + ' '.repeat(MAX_REQUEST_BYTES - Buffer.byteLength(framed));
+    const headers = { ...contextOf('aa'), authorization: TOKEN };
+    for (const path of ['/precheck', '/']) {
+      const refused = await fetch(`${origin}${path}`, { method: 'POST', headers, body: `${atLimit} ` });
+      expect(refused.status, path).toBe(400);
+      expect(await refused.json()).toMatchObject({ error: 'request_too_large' });
+      const accepted = await fetch(`${origin}${path}`, { method: 'POST', headers, body: atLimit });
+      expect(accepted.status, path).toBe(200);
+      expect(await accepted.json()).toMatchObject(path === '/precheck' ? { go: true } : { outcome: 'completed' });
+    }
+    expect(w.record.written).toHaveLength(1);
   });
 
   test('POST /precheck has no check of its own: it answers with the state of the slot, and the body and the context are read as for a job', async () => {

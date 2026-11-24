@@ -83,7 +83,7 @@ The work of a use case goes in this order. A task that has a dry run shows its s
 
 1. `keys` makes the keys and prints the address of the run wallet. The owner of the funds sends units to that address. No task does it.
 2. `fund` sends the collateral output and the float to each wallet. `fund` with `--member` sends units to a member, one label at a time.
-3. `register` makes the records. A dry run prints the DID and the TXT value of each organisation. The operator publishes the value. A run with `--submit` registers the record when three public resolvers show it. Then `register` waits for the gateway to verify the organisation. A record of a subagent follows the record of its parent.
+3. `register` makes the records. A dry run prints the DID and the TXT value of each organisation. The operator publishes the value. Before it signs, `register --submit` checks the exact TXT value at Cloudflare, Google and Quad9. It uses authenticated HTTP/2 on port 443 for each resolver. The check stops if any resolver does not show the value. Then `register` waits for the gateway to verify the organisation. A record of a subagent follows the record of its parent.
 4. `stake` makes the stake of each agent.
 5. `env` makes the env files. The agent services start with them. The start is outside the pack.
 6. `advert` posts the adverts, after the services run and serve their manifest and before the runtimes start. `env` writes the reference of each advert into the env file of its runtime. The runtimes start then.
