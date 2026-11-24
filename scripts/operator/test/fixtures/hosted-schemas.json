@@ -3,7 +3,7 @@
     "date": "2026-11-24",
     "server": "vector-mcp-server 3.0.0",
     "tools_listed": 87,
-    "note": "One tools/list of the hosted MCP server of Vector mainnet. Only the input schemas of the tools that the operator pack calls. The ledger unit is written as units in the descriptions."
+    "note": "One tools/list of the hosted MCP server of Vector mainnet. Only the input schemas of the tools that the operator pack calls. The ten tools that end the subagents of a record, revoke, retire, reclaim, change the controller, recover and set a successor, and that revoke and contest an attestation, were added from a second read on the same date. The ledger unit is written as units in the descriptions."
   },
   "tools": {
     "vector_build_identity_register": {
@@ -1073,6 +1073,403 @@
           "maxLength": 256
         }
       },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "vector_build_identity_end_subagents": {
+      "type": "object",
+      "properties": {
+        "changeAddress": {
+          "description": "Your wallet address: it pays the fee and any deposit, gives the collateral, and receives the change. Get it from vector_signer_get_address.",
+          "type": "string"
+        },
+        "did": {
+          "description": "The DID of the agent whose subagents end: did:vector:<64 hex> (the bare 64-hex identifier also works)",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "valid_minutes": {
+          "description": "Minutes from now until the transaction expires (default 30, at most 59): every key holder must sign and the transaction must be submitted before then",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 59
+        }
+      },
+      "required": [
+        "changeAddress",
+        "did"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "vector_build_identity_revoke": {
+      "type": "object",
+      "properties": {
+        "changeAddress": {
+          "description": "Your wallet address: it pays the fee and any deposit, gives the collateral, and receives the change. Get it from vector_signer_get_address.",
+          "type": "string"
+        },
+        "did": {
+          "description": "The DID of the agent to revoke: did:vector:<64 hex> (the bare 64-hex identifier also works)",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "actor": {
+          "description": "Who acts: 'controller' (the default), or a party of the record that has the right, covers the validity window and signs, named as { party_index } or { role, signer }. Module-1 acts only through its dispute verdicts, which anybody applies with the verdict token (Part 2 Section 3.8); no tool acts in its name.",
+          "anyOf": [
+            {
+              "type": "string",
+              "const": "controller"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "party_index": {
+                  "description": "The party's position in the record's party list, from 0",
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 7
+                },
+                "role": {
+                  "description": "Accountable, Responsible, Provider, Distributor or Guardian",
+                  "type": "string",
+                  "enum": [
+                    "Accountable",
+                    "Responsible",
+                    "Provider",
+                    "Distributor",
+                    "Guardian"
+                  ]
+                },
+                "signer": {
+                  "description": "Who signs for the party: 'controller' (whoever is the record's controller), 'module1' (the approved dispute contract; Accountable or Responsible only), or a key hash (56 hex characters)",
+                  "type": "string"
+                }
+              }
+            }
+          ]
+        },
+        "reason": {
+          "description": "Why the agent is revoked. A reason code or its name (Part 2 Appendix A): unspecified (0), keyCompromise (1), affiliationChanged (3), superseded (4), cessationOfOperation (5), privilegeWithdrawn (9), legalOrder (65). Code 64 (disputeVerdict) belongs to Module-1",
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 40
+            }
+          ]
+        },
+        "invalid_from": {
+          "description": "From when signatures by the keys of the record are invalid: from one hour before the record's created_at (the end of the validity window of its registration or adoption) up to the start of the validity window. A keyCompromise (1) needs it (POSIX milliseconds)",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "successor": {
+          "description": "The DID of the successor: another live, independent agent whose controller signs too (controller only): did:vector:<64 hex> (the bare 64-hex identifier also works)",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "valid_minutes": {
+          "description": "Minutes from now until the transaction expires (default 30, at most 59): every key holder must sign and the transaction must be submitted before then",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 59
+        }
+      },
+      "required": [
+        "changeAddress",
+        "did",
+        "reason"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "vector_build_identity_change_controller": {
+      "type": "object",
+      "properties": {
+        "changeAddress": {
+          "description": "Your wallet address: it pays the fee and any deposit, gives the collateral, and receives the change. Get it from vector_signer_get_address.",
+          "type": "string"
+        },
+        "did": {
+          "description": "The DID of the agent whose controller changes: did:vector:<64 hex> (the bare 64-hex identifier also works)",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "new_controller": {
+          "description": "The new controller key: an Ed25519 public key, 64 hex characters (vector_signer_get_public_key shows yours)",
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{64}$"
+        },
+        "valid_minutes": {
+          "description": "Minutes from now until the transaction expires (default 30, at most 59): every key holder must sign and the transaction must be submitted before then",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 59
+        }
+      },
+      "required": [
+        "changeAddress",
+        "did",
+        "new_controller"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "vector_build_identity_recovery_start": {
+      "type": "object",
+      "properties": {
+        "changeAddress": {
+          "description": "Your wallet address: it pays the fee and any deposit, gives the collateral, and receives the change. Get it from vector_signer_get_address.",
+          "type": "string"
+        },
+        "did": {
+          "description": "The DID of the agent to recover: did:vector:<64 hex> (the bare 64-hex identifier also works)",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "new_controller": {
+          "description": "The new controller key: an Ed25519 public key, 64 hex characters (vector_signer_get_public_key shows yours)",
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{64}$"
+        },
+        "guardians": {
+          "description": "The guardians that act, each by its key hash (56 hex characters) or by its position in the party list (from 0): at least the guardian threshold of them. Each one signs",
+          "minItems": 1,
+          "maxItems": 8,
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 7
+              },
+              {
+                "description": "A guardian: a key hash, 56 hex characters",
+                "type": "string",
+                "pattern": "^[0-9a-fA-F]{56}$"
+              }
+            ]
+          }
+        },
+        "valid_minutes": {
+          "description": "Minutes from now until the transaction expires (default 30, at most 59): every key holder must sign and the transaction must be submitted before then",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 59
+        }
+      },
+      "required": [
+        "changeAddress",
+        "did",
+        "new_controller",
+        "guardians"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "vector_build_identity_recovery_complete": {
+      "type": "object",
+      "properties": {
+        "changeAddress": {
+          "description": "Your wallet address: it pays the fee and any deposit, gives the collateral, and receives the change. Get it from vector_signer_get_address.",
+          "type": "string"
+        },
+        "did": {
+          "description": "The DID of the agent to recover: did:vector:<64 hex> (the bare 64-hex identifier also works)",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "valid_minutes": {
+          "description": "Minutes from now until the transaction expires (default 30, at most 59): every key holder must sign and the transaction must be submitted before then",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 59
+        }
+      },
+      "required": [
+        "changeAddress",
+        "did"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "vector_build_identity_retire": {
+      "type": "object",
+      "properties": {
+        "changeAddress": {
+          "description": "Your wallet address: it pays the fee and any deposit, gives the collateral, and receives the change. Get it from vector_signer_get_address.",
+          "type": "string"
+        },
+        "did": {
+          "description": "The DID of the agent to retire: did:vector:<64 hex> (the bare 64-hex identifier also works)",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "successor": {
+          "description": "The DID of the successor: another live, independent agent whose controller signs too: did:vector:<64 hex> (the bare 64-hex identifier also works)",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "take_deposit": {
+          "description": "Return the deposit above the ledger minimum to the wallet in the same transaction (default false; vector_build_identity_reclaim can do it later)",
+          "type": "boolean"
+        },
+        "valid_minutes": {
+          "description": "Minutes from now until the transaction expires (default 30, at most 59): every key holder must sign and the transaction must be submitted before then",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 59
+        }
+      },
+      "required": [
+        "changeAddress",
+        "did"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "vector_build_identity_set_successor": {
+      "type": "object",
+      "properties": {
+        "changeAddress": {
+          "description": "Your wallet address: it pays the fee and any deposit, gives the collateral, and receives the change. Get it from vector_signer_get_address.",
+          "type": "string"
+        },
+        "did": {
+          "description": "The DID of the ended agent: did:vector:<64 hex> (the bare 64-hex identifier also works)",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "successor": {
+          "description": "The DID of the successor: did:vector:<64 hex> (the bare 64-hex identifier also works)",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "valid_minutes": {
+          "description": "Minutes from now until the transaction expires (default 30, at most 59): every key holder must sign and the transaction must be submitted before then",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 59
+        }
+      },
+      "required": [
+        "changeAddress",
+        "did",
+        "successor"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "vector_build_identity_reclaim": {
+      "type": "object",
+      "properties": {
+        "changeAddress": {
+          "description": "Your wallet address: it pays the fee and any deposit, gives the collateral, and receives the change. Get it from vector_signer_get_address.",
+          "type": "string"
+        },
+        "did": {
+          "description": "The DID of the ended agent: did:vector:<64 hex> (the bare 64-hex identifier also works)",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "valid_minutes": {
+          "description": "Minutes from now until the transaction expires (default 30, at most 59): every key holder must sign and the transaction must be submitted before then",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 59
+        }
+      },
+      "required": [
+        "changeAddress",
+        "did"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "vector_build_attestation_revoke": {
+      "type": "object",
+      "properties": {
+        "changeAddress": {
+          "description": "Your wallet address: it pays the fee and any deposit, gives the collateral, and receives the change. Get it from vector_signer_get_address.",
+          "type": "string"
+        },
+        "attestation": {
+          "description": "The attestation: its identifier (the token name, 64 hex) that the attest build returned",
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{64}$"
+        },
+        "reason": {
+          "description": "The reason code (default 0, unspecified). Common codes: 1 keyCompromise, 3 affiliationChanged, 4 superseded, 5 cessationOfOperation, 9 privilegeWithdrawn. The contract takes any whole number",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "by": {
+          "description": "Who signs for the issuer of a registered issuer's attestation: 'issuer' (the issuer key, while the issuer record lists it with the assertion purpose) or 'controller' (the controller of the issuer record). Default: the issuer key while it is listed, else the controller. Without an issuer record only the issuer key can sign.",
+          "type": "string",
+          "enum": [
+            "issuer",
+            "controller"
+          ]
+        },
+        "valid_minutes": {
+          "description": "Minutes from now until the transaction expires (default 30, at most 59): every key holder must sign and the transaction must be submitted before then",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 59
+        }
+      },
+      "required": [
+        "changeAddress",
+        "attestation"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "vector_build_attestation_contest": {
+      "type": "object",
+      "properties": {
+        "changeAddress": {
+          "description": "Your wallet address: it pays the fee and any deposit, gives the collateral, and receives the change. Get it from vector_signer_get_address.",
+          "type": "string"
+        },
+        "attestation": {
+          "description": "The attestation: its identifier (the token name, 64 hex) that the attest build returned",
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{64}$"
+        },
+        "uri": {
+          "description": "Where the subject's reply is, e.g. an https URL: 1 to 256 bytes of UTF-8",
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "description": "The SHA-256 of the reply (64 hex)",
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{64}$"
+        },
+        "valid_minutes": {
+          "description": "Minutes from now until the transaction expires (default 30, at most 59): every key holder must sign and the transaction must be submitted before then",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 59
+        }
+      },
+      "required": [
+        "changeAddress",
+        "attestation",
+        "uri",
+        "sha256"
+      ],
       "$schema": "http://json-schema.org/draft-07/schema#"
     }
   }
