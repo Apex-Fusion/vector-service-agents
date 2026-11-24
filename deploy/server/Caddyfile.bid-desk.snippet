@@ -1,0 +1,61 @@
+# deploy/server/Caddyfile.bid-desk.snippet - the host blocks of the three Bid Desks, one block for each Bid Desk, each block between its own pair of markers.
+#
+# The three Bid Desks are three compose projects. Each one starts, joins its network and retires on its own, so the file holds three pairs of markers and a command works on one pair only.
+# Each Bid Desk has a runtime in front of a service, and a host name of its own:
+#   mp-suppliers-bids-alfa.vector.apexfusion.org      bids-alfa-runtime:8080      bids-alfa-service:9106
+#   mp-suppliers-bids-bravo.vector.apexfusion.org     bids-bravo-runtime:8080     bids-bravo-service:9106
+#   mp-suppliers-bids-charlie.vector.apexfusion.org   bids-charlie-runtime:8080   bids-charlie-service:9106
+# Every block sends two paths to the service of its own Bid Desk: /agent.json (the manifest of that Bid Desk) and /price-list.json (its price list, the file that the manifest hashes).
+# The runtime serves neither file. Every other path goes to the runtime of the host name. The service gets no other public path:
+# POST / and POST /precheck of the service need the token that only the runtime of the same Bid Desk holds.
+# All upstream names are container names of the compose project of the Bid Desk (docker-compose.bid-desk-alfa.yml, docker-compose.bid-desk-bravo.yml and docker-compose.bid-desk-charlie.yml). The Caddy container of the host must join the network of each project, so that it resolves the names.
+# Join it after the first start of THAT Bid Desk, with the command of that Bid Desk:
+#   docker network connect bid-desk-alfa_default <caddy container>
+#   docker network connect bid-desk-bravo_default <caddy container>
+#   docker network connect bid-desk-charlie_default <caddy container>
+# A new Caddy container joins again, to each network that exists. The network of a project exists after the first start of its service.
+# Every host name is a DNS-only name. Caddy ends TLS itself and gets its own certificate for each name. A proxy in front of a name would end TLS first, and it would replace the body of an error answer. A job that fails answers with its status and a JSON body, and the buyer needs that body.
+#
+# How a block gets in. The host has one Caddyfile, and the Caddy container mounts that one file. Add the lines from the marker BEGIN to the marker END of one Bid Desk to the end of that file, in place:
+# append to the file, so that it keeps its inode. A mounted file does not follow a new file that replaces it. Then validate the whole file in the Caddy container, and reload Caddy. Never restart it.
+# The six markers are exact lines, three pairs. A command finds the pair of one Bid Desk to replace its block or to remove it, and it leaves the other two blocks as they are, so keep the markers as they are.
+# RUNBOOK-bid-desk.md, "The Caddy block", gives the commands and the way back.
+# bid-desk-alfa vhosts (BEGIN)
+mp-suppliers-bids-alfa.vector.apexfusion.org {
+    handle /agent.json {
+        reverse_proxy bids-alfa-service:9106
+    }
+    handle /price-list.json {
+        reverse_proxy bids-alfa-service:9106
+    }
+    handle {
+        reverse_proxy bids-alfa-runtime:8080
+    }
+}
+# bid-desk-alfa vhosts (END)
+# bid-desk-bravo vhosts (BEGIN)
+mp-suppliers-bids-bravo.vector.apexfusion.org {
+    handle /agent.json {
+        reverse_proxy bids-bravo-service:9106
+    }
+    handle /price-list.json {
+        reverse_proxy bids-bravo-service:9106
+    }
+    handle {
+        reverse_proxy bids-bravo-runtime:8080
+    }
+}
+# bid-desk-bravo vhosts (END)
+# bid-desk-charlie vhosts (BEGIN)
+mp-suppliers-bids-charlie.vector.apexfusion.org {
+    handle /agent.json {
+        reverse_proxy bids-charlie-service:9106
+    }
+    handle /price-list.json {
+        reverse_proxy bids-charlie-service:9106
+    }
+    handle {
+        reverse_proxy bids-charlie-runtime:8080
+    }
+}
+# bid-desk-charlie vhosts (END)
