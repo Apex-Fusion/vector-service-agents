@@ -629,7 +629,7 @@ describe('the status and the cleanup', () => {
 });
 
 describe('the real data of use case 1', () => {
-  it('shows the table of section 8 in a dry run: 45 units of collateral and 460 units of float to the nine wallets, 505 units in all', async () => {
+  it('shows the table of the funding of use case 1 in a dry run: 45 units of collateral and 460 units of float to the nine wallets, 505 units in all', async () => {
     const names = realUseCase.keys.map((spec) => spec.name);
     const w = await taskWorld({
       keys: names, shared: realUseCase.keys.filter((spec) => spec.scope === 'shared').map((spec) => spec.name), use: realUseCase,

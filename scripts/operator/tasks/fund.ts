@@ -157,10 +157,10 @@ function tableLines(rows: readonly Row[]): string[] {
  * Builds the payment, runs the checks of the landing, and in submit mode signs and lands it. The run wallet must hold the outputs and one unit for the fee (a refusal before any build: exit 2).
  * The plan is the plan of `planOfTransfers`. The step is recorded by the landing with its transaction and `record`.
  */
-async function pay(session: TaskSession<FundExtra>, step: string, transfers: readonly Transfer[], record: Record<string, unknown>): Promise<StepOutcome> {
+async function pay(session: TaskSession<FundExtra>, step: string, transfers: readonly Transfer[], where: string, record: Record<string, unknown>): Promise<StepOutcome> {
   const total = transfers.reduce((sum, transfer) => sum + transfer.lovelace, 0n);
   const balance = lovelaceIn(await session.chain.provider.getUtxos(session.registry.addressOf(RUN)));
-  session.out.out(`the step ${step} sends ${units(total)} to ${transfers.length} ${plural(transfers.length)} in one transaction`);
+  session.out.out(`the step ${step} sends ${units(total)} to ${where} in one transaction`);
   session.out.out(`the run wallet holds ${units(balance)}; after this step it holds ${units(balance - total)} before the fee`);
   if (balance < total + FEE_RESERVE) {
     throw new PreconditionError(`the run wallet holds ${units(balance)}, and the step ${step} needs ${units(total)} for its outputs and ${units(FEE_RESERVE)} for the fee`);
@@ -189,10 +189,11 @@ function recordNothing(session: TaskSession<FundExtra>, step: FundStep): StepOut
 async function fundStep(session: TaskSession<FundExtra>, step: FundStep): Promise<StepOutcome> {
   const rows = rowsOf(await readWallets(session), step);
   for (const text of tableLines(rows)) session.out.out(text);
-  const sending = rows.filter((row) => (step === 'collateral' ? row.collateral : row.float) > 0n);
+  const sendOf = (row: Row): bigint => (step === 'collateral' ? row.collateral : row.float);
+  const sending = rows.filter((row) => sendOf(row) > 0n);
   if (sending.length === 0) return recordNothing(session, step);
-  const transfers = sending.map((row) => ({ address: row.wallet.address, lovelace: step === 'collateral' ? row.collateral : row.float }));
-  return pay(session, step, transfers, { to: Object.fromEntries(sending.map((row) => [row.wallet.name, (step === 'collateral' ? row.collateral : row.float).toString()])) });
+  const transfers = sending.map((row) => ({ address: row.wallet.address, lovelace: sendOf(row) }));
+  return pay(session, step, transfers, `${sending.length} ${plural(sending.length)}`, { to: Object.fromEntries(sending.map((row) => [row.wallet.name, sendOf(row).toString()])) });
 }
 
 // ---- the verification after a landing ----
@@ -267,7 +268,7 @@ function memberStep(label: string): StepHandler<FundExtra> {
       requireExternal(session, label, entry.address);
       const lovelace = lovelaceOfUnits(entry.units);
       session.out.out(`the member ${label}: ${units(lovelace)} to ${entry.address}`);
-      return pay(session, step, [{ address: entry.address, lovelace }], { label, lovelace: lovelace.toString() });
+      return pay(session, step, [{ address: entry.address, lovelace }], 'the external address of the approval', { label, lovelace: lovelace.toString() });
     },
   };
 }
