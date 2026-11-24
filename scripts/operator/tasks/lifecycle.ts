@@ -590,7 +590,7 @@ const task: TaskDefinition<Target> = {
       throw new PreconditionError('The pending transaction is not the next checked spend of this lifecycle run.');
     }
     const tag = tagOf(step);
-    const checkApproval = () => requireGo(session.go, { task: session.task, runWallet: session.registry.addressOf('run'), nowMs: session.clock.now(),
+    const checkApproval = () => requireGo(session.go, { useCase: session.use.name, task: session.task, runWallet: session.registry.addressOf('run'), nowMs: session.clock.now(),
       irreversible: tag === undefined ? [] : [tag] });
     checkApproval();
     requireNetwork(session);

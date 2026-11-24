@@ -41,7 +41,7 @@ import { factsOf } from '../../checks/lib/txfacts.ts';
 import type { TxFacts } from '../../checks/lib/txfacts.ts';
 import type { HostedTools } from '../../checks/lib/hosted.ts';
 import { TASK_NAMES } from '../tasks/names.ts';
-import { ApprovalError, Exposure, loadGo, requireGo } from './approval.ts';
+import { ApprovalError, Exposure, loadGo, requireGo, requireGoUseCase } from './approval.ts';
 import type { GoFile } from './approval.ts';
 import type { OperatorSettings, TaskDefinition, TaskFlags, TaskSession, UseCase } from './contract.ts';
 import { FactsError, FactsFile } from './facts.ts';
@@ -809,15 +809,14 @@ async function execute<Extra>(def: TaskDefinition<Extra>, argv: readonly string[
       throw new PreconditionError(`the step ${flight.step} has a transaction in flight, and the network guard failed: the answers of the node cannot be trusted, so nothing is settled and nothing is built`);
     }
   }
-  // The approval and the transaction in flight, before anything is built. A run that needs the approval loads it and checks it in full here, before the status of any transaction is read: a file that does
-  // not load, or that no longer allows the task or the run wallet, stops the run with the state as it is, and the transaction in flight is not submitted again. A run with --submit of a task that needs no
-  // approval loads the file only when a transaction is in flight and the file is there: the release of a reserve names the cap file of the session of the approval. A dry run lets no transaction go and
-  // releases no reserve, so it reads no approval file.
+  // Check the approval before settling a transaction in flight. A missing approval or one that does not allow this use case, task or wallet stops the run before it reads the transaction status.
+  // An existing approval can identify the reserve of a task that does not need approval. A dry run never reads it.
   let go: GoFile | null = null;
   if (approvalNeeded) {
-    go = requireGo(loadGo(settings.goFile, clock.now()), { task: def.name, runWallet: registry.has('run') ? registry.addressOf('run') : null, nowMs: clock.now(), irreversible: [] });
+    go = requireGo(loadGo(settings.goFile, clock.now()), { useCase: use.name, task: def.name,
+      runWallet: registry.has('run') ? registry.addressOf('run') : null, nowMs: clock.now(), irreversible: [] });
   } else if (submit && flight !== null && existsSync(settings.goFile)) {
-    try { go = loadGo(settings.goFile, clock.now()); } catch (err) {
+    try { go = requireGoUseCase(loadGo(settings.goFile, clock.now()), use.name); } catch (err) {
       if (!(err instanceof ApprovalError)) throw err;
       out.out(`the approval file could not be used (${err.message}): the reserve of a transaction that cannot land stays in its cap file`);
     }

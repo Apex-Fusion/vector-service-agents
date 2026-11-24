@@ -458,6 +458,14 @@ describe('the step of a member', () => {
     expect(await run(w, '--member', 'stand-in')).toBe(2);
     expect(w.screen.errorText).toContain('the approval file does not exist');
     untouched(w);
+    const address = w.world.addressOf(90);
+    approve(w, { useCase: 'other-case', external: [{ label: 'stand-in', address, units: 60 }] });
+    reset(w);
+    expect(await run(w, '--member', 'stand-in')).toBe(2);
+    expect(w.screen.errorText).toContain('useCase');
+    expect(w.screen.errorText).not.toContain('other-case');
+    expect(w.screen.text).not.toContain(address);
+    untouched(w);
     const to = member(w);
     reset(w);
     const { signed, deps } = counting(w, true);

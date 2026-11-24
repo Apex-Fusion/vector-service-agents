@@ -121,7 +121,8 @@ const settingsOf = (maxFeeLovelace: bigint): OperatorSettings => ({
 });
 
 const goOf = (runWallet: string, over: Partial<GoFile> = {}): GoFile => ({
-  approvedBy: 'a test approver', at: iso(NOW - 3_600_000), session: 'test-session', runWallet, capUnits: 100, tasks: ['fund'], irreversible: ['record'], expiresAt: iso(NOW + 86_400_000), ...over,
+  approvedBy: 'a test approver', at: iso(NOW - 3_600_000), session: 'test-session', useCase: USE_CASE, runWallet,
+  capUnits: 100, tasks: ['fund'], irreversible: ['record'], expiresAt: iso(NOW + 86_400_000), ...over,
 });
 
 interface Ctx {
@@ -185,7 +186,8 @@ async function context(over: ContextOver = {}): Promise<Ctx> {
     context: async (address) => ({ lucid: await lucidForAddress(world.chain, address), provider: world.chain, deployment: DEPLOYMENT }), liveVaultsOf: async () => [],
   };
   const host: LandHost = {
-    mode: over.mode ?? 'submit', settings: settingsOf(over.maxFee ?? FEE_LIMIT), registry, state, evidence, clock, out: screen, node, network: new NetworkGate(node, VECTOR_MAINNET),
+    mode: over.mode ?? 'submit', use: { name: USE_CASE }, settings: settingsOf(over.maxFee ?? FEE_LIMIT), registry, state, evidence, clock,
+    out: screen, node, network: new NetworkGate(node, VECTOR_MAINNET),
     networkResult: () => null, chain, hosted, go, exposure, task: 'fund', awaitMs: WAIT_MS, pollMs: 5_000,
   };
   return { world, node, clock, screen, registry, hosted, state, evidence, exposure, host, events, atSubmit, signer, exposurePath };
@@ -924,6 +926,7 @@ describe('landHosted', () => {
     ['no approval', null, 'needs an approval file'],
     ['an approval that has expired', { expiresAt: iso(NOW - 1_000) }, 'has expired'],
     ['an approval for another run wallet', { runWallet: OUTSIDE }, 'another run wallet'],
+    ['an approval for another use case', { useCase: 'other-case' }, 'useCase'],
     ['an approval that does not list the task', { tasks: ['keys'] }, 'does not list the task fund'],
     ['an approval that does not list the irreversible tag of the step', { irreversible: [] }, 'irreversible tag record'],
   ];

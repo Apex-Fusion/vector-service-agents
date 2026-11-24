@@ -269,6 +269,26 @@ describe('a run with --submit', () => {
     expect(w.screen.lines).toContain('approval: session s1, cap 100.000000 units, 0.000000 units reserved');
     expect(w.machine()).toMatchObject({ mode: 'submit', outcome: 'done' });
   });
+  it('checks the approval against the loaded use case, not the default, before a ledger step runs', async () => {
+    const chosen = 'prior-authorization';
+    const w = await taskWorld({ use: { name: chosen }, env: { OPERATOR_USE_CASE: USE_CASE } });
+    const ran: string[] = [];
+    const def = toyTask(landing(ran));
+    const args = ['--use-case', chosen, '--submit'];
+    w.writeGo({ useCase: USE_CASE });
+    expect(await w.run(def, ...args)).toBe(2);
+    expect(w.screen.errorText).toContain('useCase');
+    expect(w.screen.errorText).not.toContain(USE_CASE);
+    expect(ran).toEqual([]);
+    expect(w.node.submitted).toEqual([]);
+    expect(w.state('toy').in_flight).toBeNull();
+    expect(w.exposure()).toEqual([]);
+    w.writeGo();
+    reset(w);
+    expect(await w.run(def, ...args), w.screen.errorText).toBe(0);
+    expect(ran).toEqual(['one']);
+    expect(w.node.submitted).toHaveLength(1);
+  });
   it('runs a task that needs no approval with --submit and no file, and does not read a file that is there', async () => {
     const w = await taskWorld();
     const ran: string[] = [];
@@ -1333,6 +1353,7 @@ describe('a transaction in flight', () => {
   }
   it('stops a submit run with exit 2 before the settle when the approval file no longer lists the task: the bytes are not submitted again', () => stopsBeforeTheSettle(() => ({ tasks: ['other'] }), 'does not list the task toy'));
   it('stops a submit run with exit 2 before the settle when the approval file names another run wallet: the bytes are not submitted again', () => stopsBeforeTheSettle((w) => ({ runWallet: w.keys.registry.addressOf('fee') }), 'another run wallet'));
+  it('stops before the settle when the approval names another use case', () => stopsBeforeTheSettle(() => ({ useCase: 'prior-authorization' }), 'useCase'));
 });
 
 describe('the rule for the inputs of a lost transaction', () => {
