@@ -6,6 +6,7 @@ import { describe, expect, expectTypeOf, it } from 'vitest';
 import type { ProtocolResult } from '@vsa/usecase-kit/protocol';
 import { checkQuoteAnswersRfq, checkQuoteFromList, lineChecks, parsePriceList, parseQuote, parseRfqDocument, priceListSha256, quoteTotals, rfqSha256 } from '@vsa/usecase-kit/bids';
 import type { LineCheck, PriceList, Quote, RfqDocument } from '@vsa/usecase-kit/bids';
+import * as bids from '@vsa/usecase-kit/bids';
 import { change, golden as inputGolden, goldenText as inputGoldenText, listAt, must, withPrototype } from './support.ts';
 import type { Json } from './support.ts';
 
@@ -417,5 +418,12 @@ describe('lineChecks', () => {
     expect(lineChecks(deepFreeze(quoteOf()), deepFreeze(goldenList()))).toHaveLength(2);
     expectTypeOf(lineChecks).returns.toEqualTypeOf<readonly LineCheck[]>();
     expectTypeOf<LineCheck>().toEqualTypeOf<{ readonly sku: string; readonly quantity: number; readonly quoted_unit_price: number; readonly listed_unit_price: number | null }>();
+  });
+});
+
+describe('the names of the rules', () => {
+  it('are exported from the folder, and the helper of the file is not: the folder gives the three functions and the type of a line check', () => {
+    for (const name of ['checkQuoteAnswersRfq', 'checkQuoteFromList', 'lineChecks']) expect(Object.keys(bids), name).toContain(name);
+    expect(Object.keys(bids)).not.toContain('own');
   });
 });
