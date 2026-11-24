@@ -1506,7 +1506,7 @@ describe('deploy/server/RUNBOOK-bid-desk.md', () => {
   test('the three adverts have three hashes and the terms of the code: the capability, the model, the price, the bonds, the lock and the window; each reference goes into the env file of its own Bid Desk', () => {
     const adverts = sectionOf(runbookText, 'The adverts');
     for (const part of [BID_CAPABILITIES.quote, BID_DESK_MODEL, 'three hashes', 'detail_hash', 'detail_uri', 'endpoint_url', 'ADVERT_REF', 'advert_not_active', 'up -d --no-deps --force-recreate runtime', 'so the lock is 3 units', '480,000 ms',
-      'never with the hash of another', 'its own manifest', 'AGENT_ID', 'retired advert and a new one']) expect(adverts, part).toContain(part);
+      'never with the hash of another', 'its own manifest', 'AGENT_ID', 'needs retirement and a new advert for that desk', 'confirm retirement of the old advert before you post again']) expect(adverts, part).toContain(part);
     expect(adverts).toContain(`the price ${PRICE_LOVELACE / 1_000_000} unit, with a supplier bond of ${BOND_LOVELACE / 1_000_000} unit and a buyer bond of ${BOND_LOVELACE / 1_000_000} unit`);
   });
 
@@ -1637,18 +1637,17 @@ describe('deploy/server/RUNBOOK-bid-desk.md', () => {
     for (const part of ['bid-desk-<name>-state', 'rfq-book.json']) expect(out).toContain(part);
   });
 
-  test('the operator claim task uses the key of each Bid Desk and the CLI does not enable bid evaluation', () => {
+  test('the operator claim task uses the separate service key of each Bid Desk', () => {
     const note = sectionOf(runbookText, 'The operator pack');
     for (const part of [
       '`claim` task of the operator pack supports one Module-1 claim for each Bid Desk',
       'before each clean or failure run', 'signs with the service key of that Bid Desk',
       `${CLAIM_STAKE_LOVELACE / 1_000_000n} units (${CLAIM_STAKE_LOVELACE.toLocaleString('en-US')} lovelace)`,
       `challenge window is ${CLAIM_WINDOW_MS / 3_600_000} hours`, '`claim cleanup` withdraws the claim if nobody challenged it',
-      'The operator CLI does not enable use case 3 yet.',
       'the claim document transaction and then the stake transaction, one Bid Desk at a time',
       'The service has no claim code and no dispute code', 'Sourcing Agent', 'It never makes a stake, a claim or a record', 'behaviour.claim',
     ]) expect(note).toContain(part);
-    expect(USE_CASE_NAMES).not.toContain('bid-evaluation');
+    expect(USE_CASE_NAMES).toContain('bid-evaluation');
   });
 
   const faults: readonly Fault[] = [

@@ -14,7 +14,7 @@ import { CONFIRMATIONS_REQUIRED, GATEWAY_FAILURES, MIN_SUB_DELEGATION_MS, SUB_DE
 import {
   BID_CAPABILITIES, BID_DESK_CLAIM, BID_DESK_MODEL, EXCLUDED_REASONS, MAX_ITEM_QUANTITY, MAX_RFQ_ITEMS, QUOTE_SCHEMA, SCORE_COMPONENTS, SOURCING_CLAIM, SOURCING_MODEL, WEIGHT_NAMES, buildRanking, parsePriceList, parseQuote,
   parseRanking, priceFor,
-  priceListSha256, quoteTotals, receiptSha256, rfqSha256,
+  priceListSha256, quoteTotals, receiptSha256, reversedOf, rfqSha256,
 } from '@vsa/usecase-kit/bids';
 import type { ExcludedEntry, PriceList, Quote, RankedEntry } from '@vsa/usecase-kit/bids';
 import { COUNTERPARTY_REFUSED, EARLIER_PAY_MAY_LAND, INCONSISTENT_OUTCOME, INTERRUPTION_REASONS, PAY_UNCONFIRMED, checkRuntimeBody, checkWirePayload } from '@vsa/usecase-kit/buyer';
@@ -44,7 +44,7 @@ import { BID_DESK_REFUSALS, CHALLENGE_CODES, CODE, NOT_ACTIVE_STATUSES } from '.
 import { judgeQuote } from '../src/quotes/decide.ts';
 import { QUOTE_CODES, QUOTE_HIRE_RESERVE_MS } from '../src/quotes/index.ts';
 import { SCORER_JOB_TIMEOUT_MS, SCORER_NEED_MS, SCORERS_NEED_MS, SCORING_FAILURES, SUB_DELEGATION_VALID_MS } from '../src/scoring/index.ts';
-import { reversedOf, scoreFaultOf } from '../src/scoring/fault.ts';
+import { scoreFaultOf } from '../src/scoring/fault.ts';
 import { ADVERT_GAP, CANDIDATES_GAP, CHALLENGE_GAP, KEYS_GAP, NOT_SHOWN_GAP, QUOTE_TEXT_GAP, gapsFor } from '../src/serve/gaps.ts';
 import { DESCRIPTION, ID_CHARS, REQUEST_SCHEMA, TEMPLATE_ENV, manifestFromEnv } from '../src/serve/manifest.ts';
 import { RequestRefusal, parseJob } from '../src/serve/server.ts';
@@ -79,7 +79,6 @@ const manifest = manifestFromEnv({ ...TEMPLATE_ENV });
 
 const CLAIM_SUPPORT = [
   '`claim` task of the operator pack supports one Module-1 claim for the Sourcing Agent per clean or failure run',
-  'The operator CLI does not enable use case 3 yet.',
   "stakes the claim before the run and signs with the agent's service key",
   'After the window, the operator can withdraw an unchallenged claim with `claim cleanup`.',
   'The service stakes no claim.',
@@ -189,7 +188,7 @@ describe('specs/sourcing-agent.md', () => {
     const sources = (readdirSync(sourceDir, { recursive: true }) as string[]).map(String).filter((file) => file.endsWith('.ts'));
     expect(sources.length).toBeGreaterThan(30);
     expect(sources.filter((file) => readFileSync(new URL(file, sourceDir), 'utf8').includes('stakeRunClaim'))).toStrictEqual([]);
-    expect(USE_CASE_NAMES).toStrictEqual(['inventory-reorder']);
+    expect(USE_CASE_NAMES).toContain('bid-evaluation');
   });
 
   test('the public URL of the identity table is the origin of the runtime in the compose file of the pack', () => {
@@ -1559,11 +1558,9 @@ describe('specs/sourcing-agent.md, the receipt, the claim and the fault switch',
     for (const part of [
       '`FAULT_MODE=invert_scores`: the scorer of the first accepted quote returns each of its four component scores and its score as 100 minus the value. The subtraction is made on the decimal text of the number, so 80.2 gives 19.8. The other scorers are not changed.',
       'The decision that the model made stays on record as the model gave it: the reversal is made on the answer of the scorer, after the job checked that answer.',
-      'The planned failure run sets the switch on this agent to show that an approver can find a wrong score from the quote that it cites. No command of this repository runs use case 3 yet. The switch changes what the job writes and never a check.',
+      'The planned failure run sets the switch on this agent to show that an approver can find a wrong score from the quote that it cites. The switch changes what the job writes and never a check.',
       'The switch is empty in a clean run. Any other value than `invert_scores` stops the start of the service. The service reads the switch one time, at start. It is declared in the manifest, in `behaviour.fault_modes`, and the manifest is the same for every value. Each result returns the active value as `fault_mode`, its last member.',
     ]) expect(fault, part).toContain(part);
-    // The CLI enables only inventory reorder, even when the pack has data for another use case.
-    expect(USE_CASE_NAMES).toStrictEqual(['inventory-reorder']);
   });
 });
 

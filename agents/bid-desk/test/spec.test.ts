@@ -66,7 +66,6 @@ function memberNames(value: unknown): string[] {
 
 const CLAIM_SUPPORT = [
   '`claim` task of the operator pack supports one Module-1 claim for each Bid Desk per clean or failure run',
-  'The operator CLI does not enable use case 3 yet.',
   "stakes the claim before the run and signs with that Bid Desk's service key",
   'After the window, the operator can withdraw an unchallenged claim with `claim cleanup`.',
   'The service stakes no claim.',
@@ -1084,9 +1083,7 @@ describe('specs/bid-desk.md: the receipt, the claim and the fault switch', () =>
     expect(await refusalOf(none.run())).toMatchObject({ code: 'internal', status: 500 });
     expect(none.booked).toHaveLength(0);
     expect(fault).toContain('When no line can take the new price, the job ends with `internal` (500): a run never says that a fault was on when it changed nothing.');
-    // The CLI enables only inventory reorder, even when the pack has data for another use case.
-    expect([...USE_CASE_NAMES]).toStrictEqual(['inventory-reorder']);
-    expect(fault).toContain('The planned failure run sets the switch on one Bid Desk only, Bid Desk Charlie, to test whether the Sourcing Agent\'s model identifies the off-list price. No command of this repository runs use case 3 yet. The switch of one Bid Desk never changes another: each Bid Desk reads an env file of its own.');
+    expect(fault).toContain('The planned failure run sets the switch on one Bid Desk only, Bid Desk Charlie, to test whether the Sourcing Agent\'s model identifies the off-list price. The switch of one Bid Desk never changes another: each Bid Desk reads an env file of its own.');
   });
 
   test('the switch is empty in a clean run, any other value stops the start, the hook does not know the switch, and the manifest is the same for every value', () => {
@@ -1205,7 +1202,7 @@ describe('specs/bid-desk.md: the receipt, the claim and the fault switch', () =>
     expect(known).toContain('The Sourcing Agent reads it. The Bid Desk does not.');
     expect(TASK_NAMES).toContain('compliance');
     expect(bidEvaluation.compliance?.subjects).toEqual(INSTANCES.map((instance) => `bid-desk-${instance}`));
-    expect(USE_CASE_NAMES).not.toContain(bidEvaluation.name);
+    expect(USE_CASE_NAMES).toContain(bidEvaluation.name);
     for (const part of [
       "`compliance` task supports one attestation for each Bid Desk",
       'checks the exact bytes of the published statement',
@@ -1213,7 +1210,6 @@ describe('specs/bid-desk.md: the receipt, the claim and the fault switch', () =>
       "The demonstration registry's key signs the issue and can revoke it.",
       'The current controller of the Bid Desk signs a `Contest` after the task verifies the revocation.',
       'The reply on the ledger records the URI and SHA-256 digest, not the text.',
-      'The operator CLI does not enable use case 3 yet.',
       'This task support does not show that any of these attestations exist on mainnet.',
     ]) expect(known, part).toContain(part);
     expect(sources.filter(([, text]) => /attestation/i.test(text)).map(([file]) => file)).toStrictEqual(['serve/gaps.ts']);

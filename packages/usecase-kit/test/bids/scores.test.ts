@@ -2,10 +2,14 @@
 // finite number from 0 to 100. The parsers check the form and never compute a score: the model decides the numbers, and no code checks that the score follows from the components and the weights. Each
 // refusal has an accepted twin.
 import { describe, expect, it } from 'vitest';
-import { SCORE_COMPONENTS, WEIGHT_NAMES, parseComponents, parseScoreValue } from '@vsa/usecase-kit/bids';
+import { SCORE_COMPONENTS, WEIGHT_NAMES, parseComponents, parseScoreValue, reversedChoice, reversedOf } from '@vsa/usecase-kit/bids';
+import type { ScoreChoice } from '@vsa/usecase-kit/bids';
 import { FAULT_EFFECTS, faultGap } from '@vsa/usecase-kit/manifest';
 import { MARKER, change, expectRefused, must, objectAt, withPrototype } from './support.ts';
 import type { Json } from './support.ts';
+
+const CHOICE: ScoreChoice = { components: { price: 87.5, lead_time: 82.5, reliability: 85, compliance: 100 }, score: 88.5 };
+const REVERSED: ScoreChoice = { components: { price: 12.5, lead_time: 17.5, reliability: 15, compliance: 0 }, score: 11.5 };
 
 const NAMES = ['price', 'lead_time', 'reliability', 'compliance'] as const;
 type Four = readonly [number, number, number, number];
@@ -211,6 +215,65 @@ describe('a prototype that was changed', () => {
     const components = must(PLAIN);
     for (const name of NAMES) expect(Object.hasOwn(components, name)).toBe(true);
     expect(Object.keys(objectAt(sample(), []))).toStrictEqual([...NAMES]);
+  });
+});
+
+describe('the reversal of a score', () => {
+  it('is exact in decimals where a subtraction of floats is not: 80.2 gives 19.8', () => {
+    expect(100 - 80.2).toBe(19.799999999999997);
+    expect(reversedOf(80.2)).toBe(19.8);
+    expect(JSON.stringify(reversedOf(80.2))).toBe('19.8');
+  });
+
+  it.each([
+    [0, 100],
+    [100, 0],
+    [50, 50],
+    [7, 93],
+    [87.5, 12.5],
+    [0.1, 99.9],
+    [0.01, 99.99],
+    [99.99, 0.01],
+    [99.9, 0.1],
+    [33.33, 66.67],
+    [12.345, 87.655],
+    [70.1, 29.9],
+    [61.7, 38.3],
+    [0.07, 99.93],
+    [1e-7, 99.9999999],
+    [1.5e-7, 99.99999985],
+    [0.30000000000000004, 99.7],
+  ])('gives 100 minus %s as %s', (value, expected) => {
+    expect(reversedOf(value)).toBe(expected);
+    expect(JSON.stringify(reversedOf(value))).toBe(JSON.stringify(expected));
+  });
+
+  it('is exact for every score with up to 4 decimals that a sample of 4,000 numbers holds, and it is its own inverse', () => {
+    for (let at = 0; at < 4_000; at += 1) {
+      const units = (at * 7_919) % 1_000_001;
+      const value = units / 10_000;
+      expect(reversedOf(value)).toBe((1_000_000 - units) / 10_000);
+      expect(reversedOf(reversedOf(value))).toBe(value);
+    }
+  });
+
+  it('reads the number minus zero as 0', () => {
+    expect(reversedOf(-0)).toBe(100);
+  });
+
+  it.each([-1, -0.0001, 100.0001, 101, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, '5', null, undefined, 5n])('refuses %s: a caller reverses a score that it checked', (value) => {
+    expect(() => reversedOf(value as number)).toThrow(RangeError);
+  });
+
+  it('reverses the four components and the score of a choice, and changes nothing of the choice that it was given', () => {
+    const given = Object.freeze({ components: Object.freeze({ ...CHOICE.components }), score: CHOICE.score });
+    const reversed = reversedChoice(given);
+    expect(reversed).toStrictEqual(REVERSED);
+    expect(reversed).not.toBe(given);
+    expect(reversed.components).not.toBe(given.components);
+    expect(given).toStrictEqual(CHOICE);
+    const decimals = reversedChoice({ components: { price: 80.2, lead_time: 70.1, reliability: 99.9, compliance: 0.3 }, score: 61.7 });
+    expect(decimals).toStrictEqual({ components: { price: 19.8, lead_time: 29.9, reliability: 0.1, compliance: 99.7 }, score: 38.3 });
   });
 });
 

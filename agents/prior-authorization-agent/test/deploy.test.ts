@@ -1203,16 +1203,15 @@ describe('deploy/server/RUNBOOK-prior-authorization-agent.md', () => {
     expect(file).toMatch(/eight keys, and all eight are different/);
   });
 
-  test('the operator claim task uses the service key and the CLI does not enable prior authorization', () => {
+  test('the operator claim task uses the agent service key and withdraws an unchallenged claim', () => {
     const what = sectionOf(runbookText, 'What it is');
     for (const part of [
       '`claim` task of the operator pack supports one Module-1 claim',
       'before each clean or failure run', 'signs with the service key', 'The service does not stake its own claim.',
       `${CLAIM_STAKE_LOVELACE / 1_000_000n} units (${CLAIM_STAKE_LOVELACE.toLocaleString('en-US')} lovelace)`,
       `challenge window is ${CLAIM_WINDOW_MS / 3_600_000} hours`, '`claim cleanup` withdraws the claim if nobody challenged it',
-      'The operator CLI does not enable use case 2 yet.',
     ]) expect(what).toContain(part);
-    expect(USE_CASE_NAMES).not.toContain('prior-authorization');
+    expect(USE_CASE_NAMES).toContain('prior-authorization');
     const env = sectionOf(runbookText, 'The env file');
     expect(env).toContain('`PRIORAUTH_SERVICE_PRIV_KEY_HEX` pays the model hires and signs the challenges.');
     expect(env).toContain("The operator pack uses this key to sign the agent's claim.");

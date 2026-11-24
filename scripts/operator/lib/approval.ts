@@ -1,7 +1,7 @@
 // scripts/operator/lib/approval.ts - the approval file of a session, the cap that it sets, and the net outflow that counts against the cap.
-// `GO.json` is the approval of one session: the tasks that may run, the wallet that pays, the cap on what the keys of the pack move out in the session, the steps that cannot be undone, and the
-// end of the approval. The cap is cumulative. `Exposure` keeps one file for the session: the landing reserves the net outflow of a transaction in it before the transaction is submitted, and a
-// transaction that cannot land any more gives its reserve back. A message of this file names a task, a tag or a field. It never shows a value of the approval file.
+// `GO.json` approves one session for one use case. It names the tasks, the run wallet, the net outflow cap, the irreversible steps, and the end of the approval.
+// The cap is cumulative. `Exposure` reserves each outflow before submit and releases the reserve when the transaction cannot land any more.
+// A refusal names a task, a tag or a field. It never shows a value of the approval file.
 import { closeSync, lstatSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync } from 'node:fs';
 import type { Stats } from 'node:fs';
 import { dirname } from 'node:path';
@@ -21,6 +21,7 @@ export interface GoFile {
   approvedBy: string;
   at: string;
   session: string;
+  useCase: string;
   /** The address of the run key, or the text `unset` before that key exists. */
   runWallet: string;
   /** The cap on the net outflow of the registry in the session, in units: 0 to 1000, at most 6 decimals. 0 is valid: a session of tasks that make no transaction. */
@@ -42,7 +43,7 @@ export class ApprovalError extends Error {
 const TAGS: readonly string[] = [
   'record', 'stake', 'attestation', 'end-subagents', 'attestation-revoke', 'record-revoke', 'controller-change', 'recovery-complete', 'retire', 'successor',
 ] satisfies readonly IrreversibleTag[];
-const GO_MEMBERS = ['approvedBy', 'at', 'session', 'runWallet', 'capUnits', 'tasks', 'irreversible', 'expiresAt', 'external'];
+const GO_MEMBERS = ['approvedBy', 'at', 'session', 'useCase', 'runWallet', 'capUnits', 'tasks', 'irreversible', 'expiresAt', 'external'];
 const EXTERNAL_MEMBERS = ['label', 'address', 'units'];
 const EXPOSURE_MEMBERS = ['format', 'session', 'entries'];
 const ENTRY_MEMBERS = ['step', 'tx_hash', 'net_lovelace', 'at'];
@@ -52,6 +53,7 @@ const MAX_STEP = 200;
 const FILE_MODE = 0o600;
 const CHECK_MODES = process.platform !== 'win32';
 const SESSION = /^[a-z0-9][a-z0-9-]{0,47}$/;
+const USE_CASE = /^[a-z][a-z0-9-]{0,47}$/;
 const TASK = /^[a-z][a-z0-9-]{0,31}$/;
 const LABEL = /^[a-z0-9][a-z0-9-]{0,31}$/;
 const ADDRESS = /^addr1[0-9a-z]{1,200}$/;
@@ -142,12 +144,13 @@ export function loadGo(path: string, nowMs: number, io: Partial<GoIo> = {}): GoF
   const extra = Object.keys(file).find((member) => !GO_MEMBERS.includes(member));
   if (extra !== undefined) throw new ApprovalError(`the approval file has a member that it does not take: ${named(extra)}`);
 
-  const { approvedBy, at, session, runWallet, capUnits, tasks, irreversible, expiresAt, external } = file;
+  const { approvedBy, at, session, useCase, runWallet, capUnits, tasks, irreversible, expiresAt, external } = file;
   if (typeof approvedBy !== 'string' || approvedBy.trim() === '') throw bad('approvedBy', 'is text that is not empty');
   if (typeof at !== 'string' || parseIso(at) === null) throw bad('at', TIME_RULE);
   const end = typeof expiresAt === 'string' ? parseIso(expiresAt) : null;
   if (typeof expiresAt !== 'string' || end === null) throw bad('expiresAt', TIME_RULE);
   if (typeof session !== 'string' || !SESSION.test(session)) throw bad('session', 'is 1 to 48 lower-case letters, digits and hyphens, and starts with a letter or a digit');
+  if (typeof useCase !== 'string' || !USE_CASE.test(useCase)) throw bad('useCase', 'is 1 to 48 lower-case letters, digits and hyphens, and starts with a letter');
   if (typeof runWallet !== 'string' || (runWallet !== 'unset' && !ADDRESS.test(runWallet))) throw bad('runWallet', 'is an address that starts with addr1, or the text unset');
   if (typeof capUnits !== 'number' || unitsToLovelace(capUnits) === null) throw bad('capUnits', `is a number from 0 to ${MAX_UNITS} with at most 6 decimals`);
   if (!Array.isArray(tasks) || tasks.length < 1 || tasks.length > MAX_LIST || !tasks.every((task) => typeof task === 'string' && TASK.test(task))) {
@@ -159,7 +162,7 @@ export function loadGo(path: string, nowMs: number, io: Partial<GoIo> = {}): GoF
   if (!(end > nowMs)) throw new ApprovalError('the approval file has expired: its expiresAt is not after the time now');
   // The approval is authority: no code can widen it after it is read.
   return Object.freeze({
-    approvedBy, at, session, runWallet, capUnits, tasks: Object.freeze([...tasks]), irreversible: Object.freeze([...irreversible]), expiresAt,
+    approvedBy, at, session, useCase, runWallet, capUnits, tasks: Object.freeze([...tasks]), irreversible: Object.freeze([...irreversible]), expiresAt,
     ...(external === undefined ? {} : { external: externalOf(external) }),
   });
 }
@@ -182,13 +185,19 @@ function externalOf(value: unknown): readonly { label: string; address: string; 
   }));
 }
 
-/** What a run needs from the approval: the task, the run wallet (null before the run key exists), the time now, and the irreversible tags of the step (an empty list when the step has none). */
-export interface GoNeed { task: string; runWallet: string | null; nowMs: number; irreversible: readonly IrreversibleTag[] }
+/** What a run needs from the approval: the loaded use case, the task, the run wallet, the time now, and the irreversible tags of the step. */
+export interface GoNeed { useCase: string; task: string; runWallet: string | null; nowMs: number; irreversible: readonly IrreversibleTag[] }
+
+/** Match the loaded use case before using the approval or its payment details. */
+export function requireGoUseCase(go: GoFile, useCase: string): GoFile {
+  if (go.useCase !== useCase) throw bad('useCase', 'does not name the use case of this run');
+  return go;
+}
 
 /**
- * Gives the approval back when it allows this run, and refuses when it does not: no approval, an approval that has expired, another run wallet, a task that it does not list, or a tag of an
- * irreversible step that it does not list. Before the run key exists (`runWallet` is null) only the task `keys` may run, with an approval that says `unset` and lists that task. When the key
- * exists, an approval that says `unset` is refused. A message names the task, the tag or the field, and never a value of the file.
+ * Gives the approval back when it allows this use case, task, run wallet and every irreversible tag, and has not expired. Before the run key exists (`runWallet` is null),
+ * only the task `keys` may run, with an approval that says `unset` and lists that task. When the key exists, an approval that says `unset` is refused.
+ * A message names the task, the tag or the field. It never shows a value of the approval file.
  */
 export function requireGo(go: GoFile | null, need: GoNeed): GoFile {
   if (go === null) throw new ApprovalError(`the task ${need.task} needs an approval file, and none is loaded`);
@@ -197,6 +206,7 @@ export function requireGo(go: GoFile | null, need: GoNeed): GoFile {
   if (end === null) throw bad('expiresAt', 'is not an ISO 8601 time with a zone');
   if (!Number.isFinite(need.nowMs)) throw new ApprovalError('the clock gave no valid time, so the approval cannot be checked');
   if (!(end > need.nowMs)) throw new ApprovalError('the approval has expired');
+  requireGoUseCase(go, need.useCase);
   if (need.runWallet === null) {
     if (need.task !== 'keys' || go.runWallet !== 'unset' || !go.tasks.includes('keys')) {
       throw new ApprovalError(`no run key exists yet, so the task ${need.task} cannot run: only the task keys may run, with an approval that says unset for runWallet and lists the task keys`);

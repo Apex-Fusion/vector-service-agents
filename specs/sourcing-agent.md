@@ -28,7 +28,7 @@ The table gives the design of the record. A value that the registration fixes re
 | Subagents | `scorer-1`, `scorer-2` and `scorer-3`: each has its own record, with this agent as its parent. Each has its own authentication key and its own delegation key, which are the other six keys of the service. The delegation key of a scorer signs the proof of its token request. It also signs the Delegate of its sub-delegation, together with the live delegation key of the agent. A scorer has no endpoint, and nobody can hire it. `SCORER_1_DID`, `SCORER_2_DID` and `SCORER_3_DID` name them. The service does not start when a scorer is this agent or when two scorers are one agent |
 | Public URL | planned: `https://mp-suppliers-sourcing.vector.apexfusion.org`, the origin of the runtime in the pack. The agent has no advert yet |
 | Reputation stake | a Module-3 self-stake on the capability, owned by the service key |
-| Claim | The `claim` task of the operator pack supports one Module-1 claim for the Sourcing Agent per clean or failure run. The operator CLI does not enable use case 3 yet. The task stakes the claim before the run and signs with the agent's service key. The stake is 50 units (50,000,000 lovelace). The challenge window is 24 hours. After the window, the operator can withdraw an unchallenged claim with `claim cleanup`. The service stakes no claim. If the challenge lookup finds no eligible open claim, it returns `no_open_claim`. See Claim statements |
+| Claim | The `claim` task of the operator pack supports one Module-1 claim for the Sourcing Agent per clean or failure run. The task stakes the claim before the run and signs with the agent's service key. The stake is 50 units (50,000,000 lovelace). The challenge window is 24 hours. After the window, the operator can withdraw an unchallenged claim with `claim cleanup`. The service stakes no claim. If the challenge lookup finds no eligible open claim, it returns `no_open_claim`. See Claim statements |
 
 ## Capability id
 
@@ -989,7 +989,7 @@ The signature is Ed25519 over the canonical JSON of the receipt. The sha256 of t
 
 ## Claim statements
 
-The `claim` task of the operator pack supports one Module-1 claim for the Sourcing Agent per clean or failure run. The operator CLI does not enable use case 3 yet. The task stakes the claim before the run and signs with the agent's service key. The stake is 50 units (50,000,000 lovelace). The challenge window is 24 hours. After the window, the operator can withdraw an unchallenged claim with `claim cleanup`. The service stakes no claim. If the challenge lookup finds no eligible open claim, it returns `no_open_claim`.
+The `claim` task of the operator pack supports one Module-1 claim for the Sourcing Agent per clean or failure run. The task stakes the claim before the run and signs with the agent's service key. The stake is 50 units (50,000,000 lovelace). The challenge window is 24 hours. After the window, the operator can withdraw an unchallenged claim with `claim cleanup`. The service stakes no claim. If the challenge lookup finds no eligible open claim, it returns `no_open_claim`.
 
 A claim has these three statements. The manifest holds them in `behaviour.claim`, with no reference to a claim. A challenge names the text of a statement.
 
@@ -1005,7 +1005,7 @@ The job builds the `quote` member of each ranked entry from the quote that it ho
 
 `FAULT_MODE=invert_scores`: the scorer of the first accepted quote returns each of its four component scores and its score as 100 minus the value. The subtraction is made on the decimal text of the number, so 80.2 gives 19.8. The other scorers are not changed. The decision that the model made stays on record as the model gave it: the reversal is made on the answer of the scorer, after the job checked that answer. The ranking holds the reversed numbers, and its `quote` members still cite the right quotes, so an approver who opens the quote behind a score can see that the score does not fit it.
 
-The planned failure run sets the switch on this agent to show that an approver can find a wrong score from the quote that it cites. No command of this repository runs use case 3 yet. The switch changes what the job writes and never a check.
+The planned failure run sets the switch on this agent to show that an approver can find a wrong score from the quote that it cites. The switch changes what the job writes and never a check.
 
 The switch is empty in a clean run. Any other value than `invert_scores` stops the start of the service. The service reads the switch one time, at start. It is declared in the manifest, in `behaviour.fault_modes`, and the manifest is the same for every value. Each result returns the active value as `fault_mode`, its last member.
 

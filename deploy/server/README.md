@@ -166,7 +166,7 @@ Publish a candidate image before you open the pull request that moves the pin. U
    docker buildx imagetools inspect --format '{{json .Image}}' "$image@$digest"
    ```
 
-3. Change `AGENT_RUNTIME_TEMPLATE_COMMIT` and `AGENT_RUNTIME_DIGEST` in `.github/workflows/ci.yml`. Set each runtime build context in `deploy/host` to the same template commit. Set `runtimeCommit` in `scripts/operator/usecases/inventory-reorder.ts` to that commit.
+3. Change `AGENT_RUNTIME_TEMPLATE_COMMIT` and `AGENT_RUNTIME_DIGEST` in `.github/workflows/ci.yml`. Set each runtime build context in `deploy/host` to the same template commit. Set `RUNTIME_COMMIT` in `scripts/operator/usecases/shared.ts` to that commit for all three use cases.
 
 Keep the template tag while the image is in use. Only CI sets `:latest` and the full service commit tag. The compose files of `deploy/host` still build the runtime on their own host from the pinned template commit.
 
@@ -181,7 +181,7 @@ The operator pack (`scripts/operator`) makes the keys, the agent records, the st
 | Tags | `:latest` and `:<full git commit sha>`, as for every image of this repository. |
 | Memory limit | 768 MiB. |
 | Gate | The agents host starts a run only while `MemAvailable` is at least 1,792 MiB: the gate of 1,024 MiB plus the 768 MiB of the image. |
-| Mounts | `/keys`: the keys folder, read-only, and read-write for the task `keys` only. `/state`: the state folder, read-write. `/agents/<agent>`: the folders of the agents, for the tasks `env`, `allowlist` and `fault` only. The task `env` plans both agents of use case 1 in one run, so it needs both folders and both records, and it runs again after `advert`, to write `ADVERT_REF`. `/mock-env/.env.mock-systems`: one file, read-only, for the task `tenant` only. |
+| Mounts | `/keys`: the keys folder, read-only, and read-write for the task `keys` only. `/state`: the state folder, read-write. Use a separate state folder for each use case. `/agents/<agent>`: the folders of the agents, for the tasks `env`, `allowlist` and `fault` only. The task `env` plans every agent of the selected use case before it writes. Give it all of their folders and the required records. Run it again after `advert`, to write `ADVERT_REF`. `/mock-env/.env.mock-systems`: one file, read-only, for the task `tenant` only. |
 
 The agents host never mounts `/srv/agents` as a whole: that would give a task write access to the keys folder and to the file of the mock operator token. The container has no docker socket. No task prints a key or a token: the screen, the evidence and the machine line hold names, hashes and addresses only.
 

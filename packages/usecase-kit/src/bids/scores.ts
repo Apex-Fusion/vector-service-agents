@@ -13,12 +13,15 @@ import { noNegativeZero } from './ids.ts';
 export const SCORE_COMPONENTS = ['price', 'lead_time', 'reliability', 'compliance'] as const;
 
 /** The component scores of one quote, each from 0 to 100. */
-export interface Components {
+export type Components = {
   readonly price: number;
   readonly lead_time: number;
   readonly reliability: number;
   readonly compliance: number;
-}
+};
+
+/** The four component scores and the total for one quote. The type alias can also be used as JSON data. */
+export type ScoreChoice = { readonly components: Components; readonly score: number };
 
 /**
  * A score or a component score: a finite number from 0 to 100, or a refusal with the code `bad_shape`. A text, NaN, infinity, a bigint and a number outside the range are refused. The number minus zero
@@ -46,4 +49,28 @@ export function parseComponents(value: unknown, field = 'components'): ProtocolR
   const compliance = parseScoreValue(copy.value.compliance, `${field}.compliance`);
   if (!compliance.ok) return compliance;
   return accepted({ price: price.value, lead_time: leadTime.value, reliability: reliability.value, compliance: compliance.value });
+}
+
+/** The shortest decimal text of a number from 0 to 100 reads as: digits, a fraction, and for a number below 0.000001 a negative exponent. */
+const DECIMAL = /^(\d+)(?:\.(\d+))?(?:e-(\d+))?$/;
+
+/**
+ * 100 minus a score, exact in decimals. The score is read as its shortest decimal text (the text that `JSON.stringify` writes), the subtraction is made on the whole units of that text, and the result is the
+ * number that its decimal text names: 80.2 gives 19.8, 0.1 gives 99.9, 0 gives 100 and 100 gives 0. A value that is not a number from 0 to 100 is a RangeError: a caller reverses a score that it checked.
+ */
+export function reversedOf(value: number): number {
+  if (typeof value !== 'number' || !(value >= 0 && value <= 100)) throw new RangeError('a score is a number from 0 to 100');
+  const parts = DECIMAL.exec(String(value));
+  if (parts === null) throw new RangeError('a score has the decimal form of a number from 0 to 100');
+  const [, whole = '', fraction = '', exponent = '0'] = parts;
+  const places = fraction.length + Number(exponent);
+  const rest = 100n * 10n ** BigInt(places) - BigInt(whole + fraction);
+  const digits = rest.toString().padStart(places + 1, '0');
+  return Number(places === 0 ? digits : `${digits.slice(0, digits.length - places)}.${digits.slice(digits.length - places)}`);
+}
+
+/** The choice with each of its four component scores and its score reversed. The members of the result are new, and the choice that it was given is not changed. */
+export function reversedChoice(choice: ScoreChoice): ScoreChoice {
+  const { price, lead_time: leadTime, reliability, compliance } = choice.components;
+  return { components: { price: reversedOf(price), lead_time: reversedOf(leadTime), reliability: reversedOf(reliability), compliance: reversedOf(compliance) }, score: reversedOf(choice.score) };
 }

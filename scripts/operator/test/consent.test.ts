@@ -359,7 +359,8 @@ async function landing(throwing: boolean): Promise<Landing> {
   const state = StateFile.open(join(dir, 'state.json'), identity);
   const evidence = EvidenceFile.open(join(dir, 'evidence.json'), identity);
   const go: GoFile = {
-    approvedBy: 'a test approver', at: iso(NOW - 3_600_000), session: 'test-session', runWallet: keyOf(N.run).address, capUnits: 100, tasks: ['register'], irreversible: ['record'], expiresAt: iso(NOW + 86_400_000),
+    approvedBy: 'a test approver', at: iso(NOW - 3_600_000), session: 'test-session', useCase: USE_CASE, runWallet: keyOf(N.run).address,
+    capUnits: 100, tasks: ['register'], irreversible: ['record'], expiresAt: iso(NOW + 86_400_000),
   };
   const node = new FakeNode(w);
   const signer = throwing ? new ThrowingSigner() : null;
@@ -370,7 +371,8 @@ async function landing(throwing: boolean): Promise<Landing> {
   };
   const hosted = new PackHosted({});
   const host: LandHost = {
-    mode: 'submit', settings, registry, state, evidence, clock: new FakeClock(NOW), out: new MemoryOutput(), node, network: new NetworkGate(node, VECTOR_MAINNET), networkResult: () => null, chain, hosted,
+    mode: 'submit', use: { name: USE_CASE }, settings, registry, state, evidence, clock: new FakeClock(NOW), out: new MemoryOutput(),
+    node, network: new NetworkGate(node, VECTOR_MAINNET), networkResult: () => null, chain, hosted,
     go, exposure: new Exposure(join(dir, 'exposure.json'), go), task: 'register', awaitMs: 10_000, pollMs: 5_000,
   };
   return { w, account, node, registry, host, signer, state, hosted };

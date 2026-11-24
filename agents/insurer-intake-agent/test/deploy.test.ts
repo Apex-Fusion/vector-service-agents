@@ -1189,21 +1189,21 @@ describe('deploy/server/RUNBOOK-insurer-intake-agent.md', () => {
     expect(what, 'the status word, in lower case, until the first live run').toContain('stays `proposed` until the first live run');
   });
 
-  test('the operator claim task uses the service key and the CLI does not enable prior authorization', () => {
+  test('the operator claim task uses the agent service key and withdraws an unchallenged claim', () => {
     const what = sectionOf(runbookText, 'What it is');
     for (const part of [
       '`claim` task of the operator pack supports one Module-1 claim',
       'before each clean or failure run', 'signs with the service key', 'The service does not stake its own claim.',
       `${CLAIM_STAKE_LOVELACE / 1_000_000n} units (${CLAIM_STAKE_LOVELACE.toLocaleString('en-US')} lovelace)`,
       `challenge window is ${CLAIM_WINDOW_MS / 3_600_000} hours`, '`claim cleanup` withdraws the claim if nobody challenged it',
-      'The operator CLI does not enable use case 2 yet.', 'no eligible open claim', '`no_open_claim`',
+      'no eligible open claim', '`no_open_claim`',
     ]) expect(what).toContain(part);
-    expect(USE_CASE_NAMES).not.toContain('prior-authorization');
+    expect(USE_CASE_NAMES).toContain('prior-authorization');
     const env = sectionOf(runbookText, 'The env file');
     expect(env).toContain('it signs the challenges of the dispute code and the request for the JWT-SVID.');
     expect(env).toContain("The operator pack uses this key to sign the agent's claim.");
-    // The tenant is made with the call of RUNBOOK.md, in its step 6.
-    expect(what).toContain('The operator makes the tenant with the call of RUNBOOK.md (step 6, "Make or reset a tenant").');
+    expect(what).toContain('Use the task `claim` and the task `tenant` of the operator pack.');
+    expect(what).toContain('For a manual tenant setup, use RUNBOOK.md, step 6, "Make or reset a tenant".');
     const host = readPack('RUNBOOK.md');
     expect(host.slice(host.indexOf('\n## 6. '), host.indexOf('\n## 7. '))).toContain('\n### Make or reset a tenant\n');
   });

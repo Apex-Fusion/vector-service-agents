@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, test } from 'vitest';
 import { READ_BUDGET_MS, VAULT_PAYER_IDENTITY_SETTINGS } from '@vsa/buyer-core';
 import { BUSY_TEXT, CONTEXT_HEADERS, HEARTBEAT_MS, JobSlot, RESERVATION_MS, SHUTDOWN_WAIT_MS, STOPPING_TEXT, TOKEN_SEARCH_MIN, operatorsText } from '@vsa/service-kit';
-import { BID_CAPABILITIES, MAX_ITEM_QUANTITY, MAX_RFQ_ITEMS, SOURCING_CLAIM, WEIGHT_NAMES } from '@vsa/usecase-kit/bids';
+import { BID_CAPABILITIES, MAX_ITEM_QUANTITY, MAX_RFQ_ITEMS, SOURCING_CLAIM, WEIGHT_NAMES, reversedOf } from '@vsa/usecase-kit/bids';
 import { COSIGN_STATUS, DEFAULT_LIMITS } from '@vsa/usecase-kit/cosign';
 import { readFaultSwitch } from '@vsa/usecase-kit/fault';
 import { ERROR_STATUS, MAX_REQUEST_BYTES, refusedExit, refused } from '@vsa/usecase-kit/protocol';
@@ -18,7 +18,7 @@ import { MAX_INVITED, ACCEPT_QUOTE_DECISION, RANKING_DECISION, SCORE_DECISION, S
 import { PROPOSE_DEADLINE_MS, PROPOSE_FAILURES, RANKING_RESERVE_MS, SCORING_RESERVE_MS, TENANT_RULE } from '../src/propose/index.ts';
 import { QUOTE_CODES, QUOTE_HIRE_RESERVE_MS } from '../src/quotes/index.ts';
 import { SCORER_JOB_TIMEOUT_MS, SCORER_NEED_MS, SCORERS_NEED_MS, SCORING_FAILURES, SUB_DELEGATION_VALID_MS } from '../src/scoring/index.ts';
-import { reversedOf, scoreFaultOf } from '../src/scoring/fault.ts';
+import { scoreFaultOf } from '../src/scoring/fault.ts';
 import { BIDDER_FETCH_TIMEOUT_MS, BIDDER_READ_BUDGET_MS, FACT_READ_TIMEOUT_MS, MAX_CANDIDATES } from '../src/bidders/index.ts';
 import { NOT_ACCEPTED } from '../src/quotes/decide.ts';
 import { DESCRIPTION, ID_CHARS, REQUEST_SCHEMA, TENANT_CHARS } from '../src/serve/manifest.ts';

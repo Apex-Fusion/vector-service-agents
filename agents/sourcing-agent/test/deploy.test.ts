@@ -1268,20 +1268,19 @@ describe('deploy/server/RUNBOOK-sourcing-agent.md', () => {
     for (const ms of [MIN_PROCESSING_WINDOW_MS, SERVICE_TIMEOUT_MS, JOB_DEADLINE_MS]) expect(what, String(ms)).toContain(ms.toLocaleString('en-US'));
     expect(what, 'the window in minutes').toContain(`${MIN_PROCESSING_WINDOW_MS / 60_000} minutes`);
     for (const part of [SERVICE_CONTAINER, String(SERVICE_HOST_PORT), '/cosign/delegate', 'does one job at a time', 'scorer-1', 'scorer-2', 'scorer-3', 'use case 3 (supplier bid evaluation)', 'locked up to the window',
-      'the stake and the claim of the agent', 'never makes a stake and never makes a claim', 'it files a challenge only', 'COMPLIANCE_ISSUER_PKH']) expect(what, part).toContain(part);
+      'The Module-3 stake of the agent, under its service key.', 'never makes a stake and never makes a claim', 'it files a challenge only', 'COMPLIANCE_ISSUER_PKH']) expect(what, part).toContain(part);
     expect(what, 'the status word, in lower case, until the first live run').toContain('stays `proposed` until the first live run');
   });
 
-  test('the operator claim task uses the service key and the CLI does not enable bid evaluation', () => {
+  test('the operator claim task uses the agent service key and withdraws an unchallenged claim', () => {
     const what = sectionOf(runbookText, 'What it is');
     for (const part of [
       '`claim` task of the operator pack supports one Module-1 claim',
       'before each clean or failure run', 'signs with the service key',
       `${CLAIM_STAKE_LOVELACE / 1_000_000n} units (${CLAIM_STAKE_LOVELACE.toLocaleString('en-US')} lovelace)`,
       `challenge window is ${CLAIM_WINDOW_MS / 3_600_000} hours`, '`claim cleanup` withdraws the claim if nobody challenged it',
-      'The operator CLI does not enable use case 3 yet.',
     ]) expect(what).toContain(part);
-    expect(USE_CASE_NAMES).not.toContain('bid-evaluation');
+    expect(USE_CASE_NAMES).toContain('bid-evaluation');
     expect(sectionOf(runbookText, 'The env file')).toContain("The operator pack uses this key to sign the agent's claim.");
   });
 

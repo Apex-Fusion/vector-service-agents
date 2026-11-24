@@ -28,9 +28,20 @@ The service is the container `sourcing-service`, on `127.0.0.1:9105`. The lock o
 
 The deadline of a job is inside the timeout of the runtime, and the timeout is inside the window with 120 seconds to spare. The runtime refuses to boot with less than 60 seconds to spare. The escrow and the vault payment of a hirer stay locked up to the window, 90 minutes, when a job runs to its end. A job runs up to 5,220,000 ms. So every restart, every container that you create again and the back out wait until the runtime says `free` (section "The restart rule").
 
-The operator makes four things outside this pack: the keys, the agent records (the record of the agent and the records of its three scorers), the stake and the claim of the agent, and the advert (with the hosted tools of the Vector marketplace). This runbook says when each one is needed and where its result goes. The Module-3 stake uses the service key. This service never makes a stake and never makes a claim: it files a challenge only. The service does not start without its nine keys, `AGENT_DID`, the three DIDs of the scorers and `COMPLIANCE_ISSUER_PKH`. The runtime does not start without its advert.
+The operator pack (`scripts/operator`) makes the keys, the records, the stakes, the env files and the advert. It is not part of this deploy pack. Use its tasks in this order:
 
-The `claim` task of the operator pack supports one Module-1 claim for this agent before each clean or failure run. The task signs with the service key. The stake is 50 units (50,000,000 lovelace). The challenge window is 24 hours. After the window, `claim cleanup` withdraws the claim if nobody challenged it. The operator CLI does not enable use case 3 yet.
+| Task | Result | When |
+|---|---|---|
+| `keys` | The keys of the use case. | First. |
+| `fund` | Collateral and float for the wallets of the use case. | After key setup. |
+| `register` | The agent record and the three scorer records, `scorer-1`, `scorer-2` and `scorer-3`. Register the other subjects of the use case in the same task. | Before the first start. Publish the required organisation TXT first. |
+| `stake` | The Module-3 stake of the agent, under its service key. | After registration. |
+| `env` | The env files of the Sourcing Agent and the three Bid Desks. It uses the configured folders and records of the whole use case. | Before service start and after advert posting. |
+| `advert` | One advert for the Sourcing Agent. | When the service serves its final manifest and before the runtime starts. |
+
+This service never makes a stake and never makes a claim: it files a challenge only. The service does not start without its nine keys, `AGENT_DID`, the three scorer DIDs and `COMPLIANCE_ISSUER_PKH`. The runtime needs its confirmed advert reference. See the [operator pack guide](../../scripts/operator/README.md) for the tasks.
+
+The `claim` task of the operator pack supports one Module-1 claim for this agent before each clean or failure run. The task signs with the service key. The stake is 50 units (50,000,000 lovelace). The challenge window is 24 hours. After the window, `claim cleanup` withdraws the claim if nobody challenged it.
 
 The status word of the agent is `proposed`, in lower case. It stays `proposed` until the first live run. `AGENT_STATUS_CHIP` in the env file holds it.
 
@@ -108,6 +119,8 @@ umask 077
 cp .env.sourcing-agent.example .env.sourcing-agent
 ```
 
+The task `env` makes this file from its example and fills the managed lines. The commands of this section are the manual way.
+
 The keys come from the operator pack, and the key rules of RUNBOOK.md (section "Keys") hold for them. A key is never typed in a shell, and no command here prints one. There are ten keys, and all ten are different:
 
 - The supplier key goes in the four `SUPPLIER_` lines. It is the key of the runtime. The service reads only the two public lines, `SUPPLIER_PKH` and `SUPPLIER_PUB_KEY_HEX`: the compose file blanks `SUPPLIER_PRIV_KEY_HEX` for the service.
@@ -124,7 +137,7 @@ sed -i "s|^SERVICE_AUTH_HEADER=.*|SERVICE_AUTH_HEADER=\"Bearer $(od -An -N32 -tx
 
 Fill the other lines with an editor:
 
-- `OPERATOR_CONTACT` (a role address, never a person), `AGENT_DID`, `SCORER_1_DID`, `SCORER_2_DID`, `SCORER_3_DID`, `COMPLIANCE_ISSUER_PKH`, `MOCK_PUBLIC_BASE` and `MOCK_MTLS_BASE`. The four DIDs are four different agents: the agent and its three scorers. `COMPLIANCE_ISSUER_PKH` is the key hash of the compliance registry, the issuer of the attestations that the agent counts: 56 lowercase hex characters, a public value. The placeholder stays until you know the value, and the service does not start with it.
+- `OPERATOR_CONTACT` (the contact address that the live agents publish; the operator types it, and no file of the repository holds it), `AGENT_DID`, `SCORER_1_DID`, `SCORER_2_DID`, `SCORER_3_DID`, `COMPLIANCE_ISSUER_PKH`, `MOCK_PUBLIC_BASE` and `MOCK_MTLS_BASE`. The task `env` takes the contact from the setting `OPERATOR_CONTACT`. Use the four different DIDs of the agent and its scorers. `COMPLIANCE_ISSUER_PKH` is the public key hash of the compliance registry, the issuer of the attestations that the agent counts. The service requires its value.
 - `VECTOR_MODULE1_MANIFEST`: replace `<commit>` with the 40 hex digits of the commit that the hosted MCP server uses for its own `VECTOR_MODULE1_MANIFEST`.
 - `AGENT_ID`: the 64 hex characters of the agent record, the part of `AGENT_DID` after `did:vector:`. `ADVERT_REF` stays empty until the advert exists (section "The start order", step 5).
 - `COSIGN_ALLOWLIST`: the key hashes of the principals whose delegation the co-sign route may co-sign, separated by commas. The empty line holds nobody, and the route then signs for nobody. A change to this line needs the service created again (section "The restart rule").
@@ -258,7 +271,7 @@ Run each `docker compose` command as the service user, in `/srv/agents/sourcing-
 
 3. Join the Caddy container to the network, and add the block of the host name (section "The Caddy block"). The DNS record must resolve to the host first.
 4. Check the public name, and take the hash of the manifest (section "The checks"). It is the `manifest` value of the line of step 2, and it is the `detail_hash` of the advert.
-5. Post the advert. This pack does not post it: the operator posts it with the hosted tools of the Vector marketplace. Post it for the supplier key of the runtime, with the `AGENT_ID` of the agent record. The terms of the advert are:
+5. Post the advert with the task `advert` of the operator pack. It uses the served manifest and the supplier key of the runtime, with the `AGENT_ID` of the agent record. This advert comes before the three Bid Desk adverts in the same state stream. Omit `--all` to post only the next advert. The manual way is the hosted tools of the Vector marketplace. The terms of the advert are:
    - the capability `supplychain.rfq.evaluate.v1`;
    - the model `sourcing-agent-v1`;
    - the price 3 units, with a supplier bond of 1 unit and a buyer bond of 1 unit;
@@ -268,8 +281,11 @@ Run each `docker compose` command as the service user, in `/srv/agents/sourcing-
    - `detail_hash`: the hash of step 4.
 
    Keep the Post transaction hash in the deployment record before waiting for confirmation. Verify its output on the ledger. If confirmation is unknown, stop here and check the same hash. Do not post another advert.
-   Write the reference of the advert, `<transaction hash>#<output index>`, into `ADVERT_REF` of `.env.sourcing-agent`. A change to the manifest after this step means a retired advert and a new one. After you post a new advert, write its reference into `ADVERT_REF`, and create the runtime again with `up -d --no-deps --force-recreate runtime`, as section "The restart rule" says. A runtime that holds the reference of a retired advert refuses every job with 503 `advert_not_active`.
-   Set the existing `ADVERT_REF` entry. Do not append a second entry or print the rest of the env file.
+   After a confirmed pack post, run `env` again to set `ADVERT_REF`. In the manual flow, set the existing `ADVERT_REF` in `.env.sourcing-agent` to the confirmed `<transaction hash>#<output index>`. Do not append a second `ADVERT_REF` or print the rest of the file.
+
+   A change to the manifest needs retirement and a new advert. The pack does not replace one selected listing. `env --replace-advert` copies only the reference that `advert` already recorded in the facts after a confirmed post. See [Advert replacement](../../scripts/operator/README.md#advert-replacement) for the limits of the default stream and a new run label.
+
+   To replace this listing manually, confirm retirement of the old advert before you post again. Post with the new manifest hash. Verify the new output on the ledger. Set the confirmed reference in the existing `ADVERT_REF` line. Create the runtime again with `up -d --no-deps --force-recreate runtime` under the restart rule. A runtime with a retired reference refuses with 503 `advert_not_active`.
 6. Start the runtime. Pass the memory gate first. After the start, wait 30 seconds, and check that the runtime is up and says `free`:
 
    ```sh

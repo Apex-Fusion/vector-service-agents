@@ -34,12 +34,13 @@ import {
 } from '@vsa/usecase-kit/access';
 import type { RouteTokenResult, SubDelegationEnd, SubDelegationHandle, TokenTarget } from '@vsa/usecase-kit/access';
 import { parseComponents, parseScoreValue } from '@vsa/usecase-kit/bids';
+import type { ScoreChoice } from '@vsa/usecase-kit/bids';
 import { DamagedLeftEntriesError } from '@vsa/usecase-kit/janitor';
 import { canonicalJson, checkMembers, isPlainObject } from '@vsa/usecase-kit/protocol';
 import type { Decision, DelegationId, JsonValue } from '@vsa/usecase-kit/protocol';
 import { scoreFaultOf } from './fault.ts';
 import type { ScoreFault } from './fault.ts';
-import type { LeftEntry, ScoreChoice, ScoreSubject, ScoredQuote, Scorer, ScoringDeps, ScoringInput, ScoringResult } from './ports.ts';
+import type { LeftEntry, ScoreSubject, ScoredQuote, Scorer, ScoringDeps, ScoringInput, ScoringResult } from './ports.ts';
 import { parseVendors, vendorFor } from './vendors.ts';
 
 /** How long a sub-delegation of a scorer stays valid, in milliseconds. The end step ends it earlier. The kit takes 300,000 to 86,400,000. */

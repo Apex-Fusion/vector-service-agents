@@ -17,7 +17,7 @@
 // One run lock file in the state folder keeps two runs from writing the state, the facts and the cap file at the same time.
 // Exit: 0 the step is done, shown or finished; 1 a step failed, or an error came after the run signed a transaction; 2 a flag, a setting, a key, a file, an approval, a guard or a precondition stopped the
 // run before a signature; 3 the hosted tools cannot be used; 4 a wait is open: the output says how long is left. The last line of stdout is the machine line.
-import { closeSync, existsSync, openSync, statSync, unlinkSync, writeSync } from 'node:fs';
+import { closeSync, openSync, statSync, unlinkSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 import { collateralAdvice, isCollateralOutput } from '../../checks/lib/collateral.ts';
 import { EvidenceError, EvidenceFile } from '../../checks/lib/evidence.ts';
@@ -603,8 +603,7 @@ export async function checkEndOfValidity(flight: Pick<InFlight, 'valid_to'>, end
  *     signed bytes (`checkInputs`), but only when the tip of the node is past the end of the validity: a node that is behind answers from a ledger before the landing. `judgeInputs` says that the transaction
  *     did not land when one input is unspent and, if it has collateral inputs, one of them is unspent too. When the node cannot tell, or the inputs say that it may have landed, the transaction stays in
  *     flight with its reserve and the run stops: the operator checks the chain, and lets it go with `cleanup --release=<hash>` when it is not there. When it did not land, it cannot land any more because its
- *     validity ended. A dry run then leaves it in flight and goes on, so that the summary shows the step as it would be built again. A run with --submit gives its reserve back (when the approval is loaded)
- *     and lets it go, and the run goes on.
+ *     validity ended. A dry run leaves it in flight for the preview. A submit run with approval gives its reserve back, clears the record, and continues.
  * It gives the reason to stop, or null when the run goes on.
  */
 async function reconcile(flight: InFlight, parts: { node: NodeAccess; state: StateFile; clock: Clock; exposure: Exposure; go: GoFile | null; mode: Mode; out: Output }): Promise<string | null> {
@@ -633,11 +632,7 @@ async function reconcile(flight: InFlight, parts: { node: NodeAccess; state: Sta
     out.out(`${lost}. A dry run does not let it go: the record and the reserve stay. A run with --submit lets it go and builds the step again, as the summary below shows.`);
     return null;
   }
-  if (go === null) {
-    state.clearInFlight();
-    out.out(`${lost}. No approval file is loaded, so its reserve stays in the cap file of its session.`);
-    return null;
-  }
+  if (go === null) throw new ApprovalError('the submit run needs an approval to settle a transaction in flight');
   // The reserve goes first and the record second: a stop between them leaves the record, and the next run lets it go again.
   const released = exposure.release(flight.tx_hash);
   state.clearInFlight();
@@ -710,13 +705,16 @@ async function letGo(hash: string, flight: InFlight | null, parts: { node: NodeA
     out.out(`${where} would be let go, and its reserve of the cap would be given back. A dry run lets nothing go. Check the chain for the transaction and for its inputs first, and run again with --submit.`);
     return { exit: 0, outcome: 'dry' };
   }
+  if (go === null) throw new ApprovalError('the submit run needs an approval to release a transaction in flight');
   out.out(`the operator says that the chain was checked and that ${where} is not there: it is let go.`);
-  evidence.add({ step: flight.step, status: 'info', shows: { note: 'the operator lets the transaction go, and says that the chain was checked', transaction: flight.tx_hash, session: go === null ? null : go.session } });
-  const released = go === null ? null : exposure.release(flight.tx_hash);
+  evidence.add({ step: flight.step, status: 'info', shows: { note: 'the operator lets the transaction go, and says that the chain was checked', transaction: flight.tx_hash, session: go.session } });
+  const released = exposure.release(flight.tx_hash);
   state.clearInFlight();
-  out.out(go === null ? 'No approval file is loaded, so its reserve stays in the cap file of its session.' : released ? 'Its reserve of the cap is released.' : `The cap file of the session ${go.session} holds no reserve for it.`);
+  out.out(released ? 'Its reserve of the cap is released.' : `The cap file of the session ${go.session} holds no reserve for it.`);
   return { exit: 0, outcome: 'done' };
 }
+
+const neverFlight = (task: string): PreconditionError => new PreconditionError(`the task ${task} does not allow transactions, but its state holds a transaction in flight`);
 
 /** Opens the files and the connections of a run, settles a transaction in flight, checks the network and the approval, and runs the task. It fills `ctx` as it goes. */
 async function execute<Extra>(def: TaskDefinition<Extra>, argv: readonly string[], deps: RunDeps, ctx: Context<Extra>): Promise<Ended> {
@@ -736,23 +734,28 @@ async function execute<Extra>(def: TaskDefinition<Extra>, argv: readonly string[
   const factsIdentity = { useCase: use.name, network: settings.network.name };
   if (inspect !== undefined) {
     if (args.run === null) throw new FlagError(`${def.name} needs --run <label>`);
-    const lines = await inspect({
-      run: args.run, use, clock,
-      readFacts: () => initialized ? FactsFile.open(factsPath, factsIdentity).read() : null,
-      readState: () => {
-        const path = `${base}.state.json`;
-        const snapshot = initialized ? StateFile.peek(path, identity) : null;
-        const steps = snapshot?.steps ?? {};
-        return { steps, lines: statusStateLines(path, def.steps(use, args.flags), snapshot, (step) => steps[step]) };
-      },
-      readEvidence: () => initialized ? EvidenceFile.peek(`${base}.evidence.json`, identity) ?? [] : [],
-      async readChain() {
-        const connections = ctx.connections ??= connect(def, settings, deps);
-        const gate = await connections.network.guard();
-        if (!gate.ok) throw new PreconditionError(`the node is not shown to be on the network of the run (${gate.message})`);
-        return connections.chain;
-      },
-    });
+    const path = `${base}.state.json`;
+    const peek = () => initialized ? StateFile.peek(path, identity) : null;
+    const saved = def.needs.approval === 'never' ? peek() : undefined;
+    // A task that cannot submit must show a saved flight before it reads any other source.
+    const lines = saved?.in_flight != null
+      ? statusStateLines(path, def.steps(use, args.flags), saved, (step) => saved.steps[step])
+      : await inspect({
+        run: args.run, use, clock,
+        readFacts: () => initialized ? FactsFile.open(factsPath, factsIdentity).read() : null,
+        readState: () => {
+          const snapshot = saved === undefined ? peek() : saved;
+          const steps = snapshot?.steps ?? {};
+          return { steps, lines: statusStateLines(path, def.steps(use, args.flags), snapshot, (step) => steps[step]) };
+        },
+        readEvidence: () => initialized ? EvidenceFile.peek(`${base}.evidence.json`, identity) ?? [] : [],
+        async readChain() {
+          const connections = ctx.connections ??= connect(def, settings, deps);
+          const gate = await connections.network.guard();
+          if (!gate.ok) throw new PreconditionError(`the node is not shown to be on the network of the run (${gate.message})`);
+          return connections.chain;
+        },
+      });
     out.out(`task ${def.name}: ${def.title}`);
     out.out(`use case ${use.name}, network ${settings.network.name}`);
     if (!initialized) out.out('the state folder is not initialized; there are no saved observations');
@@ -763,7 +766,10 @@ async function execute<Extra>(def: TaskDefinition<Extra>, argv: readonly string[
   if (def.offline?.matches(extra)) {
     if (args.command !== 'run' || args.mode !== 'dry') throw new FlagError('the local document writer takes only run without --submit');
     const flight = StateFile.peek(`${base}.state.json`, identity)?.in_flight;
-    if (flight != null) throw new PreconditionError(`the step ${flight.step} has a transaction in flight; settle it with the normal command before writing documents`);
+    if (flight != null) {
+      if (def.needs.approval === 'never') throw neverFlight(def.name);
+      throw new PreconditionError(`the step ${flight.step} has a transaction in flight; settle it with the normal command before writing documents`);
+    }
     const facts = FactsFile.open(factsPath, factsIdentity).read();
     const { message, result } = await def.offline.run({ extra, use, facts, stateDir: settings.stateDir, out });
     out.out(message);
@@ -775,6 +781,16 @@ async function execute<Extra>(def: TaskDefinition<Extra>, argv: readonly string[
   const registry = loadKeys(deps.readRegistry ?? ((options) => loadRegistry(options)), { dir: settings.keysDir, useCase: use.name, specs: use.keys }, named, approvalNeeded);
   const state = StateFile.open(`${base}.state.json`, identity);
   ctx.state = state;
+  const snapshot = state.snapshot();
+  const flight = snapshot.in_flight;
+  if (flight !== null && def.needs.approval === 'never') {
+    if (args.command !== 'status') throw neverFlight(def.name);
+    // Show the saved state without opening any other journal or asking the node to settle the transaction.
+    out.out(`task ${def.name}: ${def.title}`);
+    out.out(`use case ${use.name}, network ${settings.network.name}`);
+    for (const line of statusStateLines(state.path, def.steps(use, args.flags), snapshot, (step) => recordOf(state, step))) out.out(line);
+    return { exit: 0, outcome: 'done' };
+  }
   const evidence = EvidenceFile.open(`${base}.evidence.json`, identity);
   ctx.evidence = evidence;
   const facts = FactsFile.open(factsPath, factsIdentity);
@@ -799,7 +815,6 @@ async function execute<Extra>(def: TaskDefinition<Extra>, argv: readonly string[
   out.out(`${args.command} in ${args.mode} mode${args.all ? ', all steps' : ''}, use case ${use.name}, network ${settings.network.name}${args.run === null ? '' : `, run ${args.run}`}`);
   // The network guard runs first, once. A transaction in flight is settled with what the node says, and a node of another network says wrong things: so a run that has a transaction in flight stops
   // when the guard failed, and the state stays as it is. A run with none goes on, and the landing refuses to sign on a failed guard.
-  const flight = state.snapshot().in_flight;
   ctx.flightAtStart = flight === null ? null : flight.tx_hash;
   if (args.release === null && (def.needs.chain || flight !== null)) {
     const guard = await connections.network.guard();
@@ -809,18 +824,11 @@ async function execute<Extra>(def: TaskDefinition<Extra>, argv: readonly string[
       throw new PreconditionError(`the step ${flight.step} has a transaction in flight, and the network guard failed: the answers of the node cannot be trusted, so nothing is settled and nothing is built`);
     }
   }
-  // The approval and the transaction in flight, before anything is built. A run that needs the approval loads it and checks it in full here, before the status of any transaction is read: a file that does
-  // not load, or that no longer allows the task or the run wallet, stops the run with the state as it is, and the transaction in flight is not submitted again. A run with --submit of a task that needs no
-  // approval loads the file only when a transaction is in flight and the file is there: the release of a reserve names the cap file of the session of the approval. A dry run lets no transaction go and
-  // releases no reserve, so it reads no approval file.
+  // Check the approval before settling a transaction in flight. A missing approval or one that does not allow this use case, task or wallet stops the run before it reads the transaction status.
   let go: GoFile | null = null;
   if (approvalNeeded) {
-    go = requireGo(loadGo(settings.goFile, clock.now()), { task: def.name, runWallet: registry.has('run') ? registry.addressOf('run') : null, nowMs: clock.now(), irreversible: [] });
-  } else if (submit && flight !== null && existsSync(settings.goFile)) {
-    try { go = loadGo(settings.goFile, clock.now()); } catch (err) {
-      if (!(err instanceof ApprovalError)) throw err;
-      out.out(`the approval file could not be used (${err.message}): the reserve of a transaction that cannot land stays in its cap file`);
-    }
+    go = requireGo(loadGo(settings.goFile, clock.now()), { useCase: use.name, task: def.name,
+      runWallet: registry.has('run') ? registry.addressOf('run') : null, nowMs: clock.now(), irreversible: [] });
   }
   const exposure = new Exposure(join(settings.stateDir, `exposure.${go === null ? 'none' : go.session}.json`), go);
   // `cleanup --release=<hash>`: the operator lets the transaction in flight go. The network guard above and the settle below are skipped: the release asks the guard and the tip of the node itself, and only

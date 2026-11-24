@@ -4,7 +4,7 @@
 // decision `score` comes in as a function. The kit gives the types of the rest.
 import type { KeyInput } from '@vsa/id-kit/client';
 import type { CallDeps, Clock, LeftSubDelegation, SerialQueue, SubDelegationDeps, TokenDeps, TxSigner } from '@vsa/usecase-kit/access';
-import type { Components, Quote, RfqDocument, Weights } from '@vsa/usecase-kit/bids';
+import type { Quote, RfqDocument, ScoreChoice, Weights } from '@vsa/usecase-kit/bids';
 import type { FaultSwitch } from '@vsa/usecase-kit/fault';
 import type { Decision, DelegationId, Did, OutputRef, TenantId } from '@vsa/usecase-kit/protocol';
 import type { VendorEntry } from './vendors.ts';
@@ -122,12 +122,6 @@ export interface ScoreRequest {
   readonly quote: Quote;
   readonly file: BidderFile;
   readonly vendor: VendorEntry | null;
-}
-
-/** The choice of the decision `score`: the four component scores and the score of the quote, each from 0 to 100. */
-export interface ScoreChoice {
-  readonly components: Components;
-  readonly score: number;
 }
 
 /**

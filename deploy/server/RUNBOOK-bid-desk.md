@@ -41,7 +41,18 @@ The deadline of a job is inside the timeout of the runtime, and the timeout is i
 
 Each runtime asks its service before it claims an escrow. That check before the Claim is required: a runtime with no check claims every escrow. The compose file of each Bid Desk sets `SERVICE_PRECHECK_URL` to the service of the same Bid Desk.
 
-The operator makes three things outside this pack: the keys, the agent records, and the three adverts (with the hosted tools of the Vector marketplace). This runbook says when each one is needed and where its result goes. The claim of each Bid Desk is the operator's too (section "The operator pack"). A service does not start without its keys and `AGENT_DID`. A runtime does not start without its advert.
+The operator pack (`scripts/operator`) makes the keys, the records, the stakes, the env files and the three adverts. It is not part of this deploy pack. Use its tasks in this order:
+
+| Task | Result | When |
+|---|---|---|
+| `keys` | The keys of the use case, with a separate supplier and service key for each Bid Desk. | First. |
+| `fund` | Collateral and float for the wallets of the use case. | After key setup. |
+| `register` | One record for each of the three Bid Desks. Register the other subjects of the use case in the same task. | Before the first start. Publish the required organisation TXT first. |
+| `stake` | One Module-3 stake for each Bid Desk. | After registration. |
+| `env` | One env file per Bid Desk and the Sourcing Agent's files. It uses the configured folders and records of the whole use case. | Before service start and after advert posting. |
+| `advert` | Three adverts, each with its own manifest hash. | After the corresponding service serves its manifest and before its runtime starts. |
+
+See the [operator pack guide](../../scripts/operator/README.md) for the tasks. The claim of each Bid Desk is the operator's too (section "The operator pack"). A service needs its keys and `AGENT_DID` to start. A runtime needs its own confirmed advert reference.
 
 The status word of each Bid Desk is `proposed`, in lower case. It stays `proposed` until the first live run. `AGENT_STATUS_CHIP` in each env file holds it.
 
@@ -121,6 +132,8 @@ umask 077
 for name in alfa bravo charlie; do cp "/srv/agents/bid-desk-$name/.env.bid-desk.example" "/srv/agents/bid-desk-$name/.env.bid-desk-$name"; done
 ```
 
+The task `env` makes the three files from the example and fills the managed lines. The commands of this section are the manual way.
+
 The keys come from the operator pack, and the key rules of RUNBOOK.md (section "Keys") hold for them. A key is never typed in a shell, and no command here prints one. There are six keys, and all six are different: for each Bid Desk, the supplier key of its runtime and its service key. No two Bid Desks share a key, a wallet or a token.
 
 - The supplier key of a Bid Desk goes in the four `SUPPLIER_` lines of its file. It is the key of its runtime. The service reads only the two public lines, `SUPPLIER_PKH` and `SUPPLIER_PUB_KEY_HEX`: the compose file blanks `SUPPLIER_PRIV_KEY_HEX` for the service.
@@ -136,7 +149,7 @@ for name in alfa bravo charlie; do sed -i "s|^SERVICE_AUTH_HEADER=.*|SERVICE_AUT
 
 Fill the other lines of each file with an editor:
 
-- `OPERATOR_CONTACT` (a role address, never a person) and `AGENT_DID`. The three DIDs are three different agents.
+- `OPERATOR_CONTACT` (the contact address that the live agents publish; the operator types it, and no file of the repository holds it) and `AGENT_DID`. The three DIDs are three different agents. The task `env` takes the contact from the setting `OPERATOR_CONTACT`.
 - `AGENT_ID`: the 64 hex characters of the agent record, the part of `AGENT_DID` after `did:vector:`. `ADVERT_REF` stays empty until the advert of that Bid Desk exists (section "The start order", step 5).
 - `AGENT_STATUS_CHIP` stays `proposed` until the first live run. `FAULT_MODE` stays empty (section "The fault switch").
 - Leave every other line as it is. The comments in the example say what each line does. A file never holds the three lines that name its Bid Desk: the compose file sets them.
@@ -250,7 +263,7 @@ done
 
 ## The adverts
 
-Each Bid Desk has an advert of its own, and the three adverts have three hashes. The manifest of a Bid Desk names that Bid Desk, its agent record, its keys and its price list, so the three manifests differ. Post each advert with the hash of its own manifest, and never with the hash of another. This pack does not post the adverts: the operator posts them with the hosted tools of the Vector marketplace. Post each advert for the supplier key of its runtime, with the `AGENT_ID` of its agent record. The terms of each advert are:
+Each Bid Desk needs an advert of its own. The three adverts need three hashes, one for each manifest. The manifest names the desk, its record, its keys and its price list. Post each advert with its own manifest hash, never with the hash of another. Use that desk's supplier key and `AGENT_ID`. The operator pack's task `advert` posts them. The manual way is the hosted tools of the Vector marketplace. The terms of each advert are:
 
 - the capability `supplychain.rfq.quote.v1`;
 - the model `bid-desk-v1`;
@@ -260,7 +273,11 @@ Each Bid Desk has an advert of its own, and the three adverts have three hashes.
 - `detail_uri`: that origin and `/agent.json`;
 - `detail_hash`: the hash of its own manifest (section "The checks", check 5).
 
-Write the reference of each advert, `<transaction hash>#<output index>`, into `ADVERT_REF` of the env file of its own Bid Desk. A change to the manifest after its advert is posted means a retired advert and a new one for that Bid Desk. A change to a price list is a new image, and it changes the manifest of that Bid Desk only when the list of that Bid Desk changed. After you post a new advert, write its reference into `ADVERT_REF`, and create the runtime again with `up -d --no-deps --force-recreate runtime`, as section "The restart rule" says. A runtime that holds the reference of a retired advert refuses every job with 503 `advert_not_active`.
+After a confirmed pack post, run `env` again to set `ADVERT_REF`. In the manual flow, set the existing `ADVERT_REF` of the same Bid Desk to the confirmed `<transaction hash>#<output index>`.
+
+A change to a price list needs a new image. It changes only the manifest of the Bid Desk whose list changed. A change to a manifest after posting needs retirement and a new advert for that desk. The pack does not replace one selected listing. `env --replace-advert` copies only the reference that `advert` already recorded in the facts after a confirmed post. See [Advert replacement](../../scripts/operator/README.md#advert-replacement) for the limits of the default stream and a new run label.
+
+To replace this listing manually, confirm retirement of the old advert before you post again. Post with the new manifest hash. Verify the new output on the ledger. Set the confirmed reference in the existing `ADVERT_REF` line. Create the runtime again with `up -d --no-deps --force-recreate runtime` under the restart rule. A runtime with a retired reference refuses with 503 `advert_not_active`.
 
 ## The start order
 
@@ -283,7 +300,7 @@ Start the Bid Desks one after the other, `alfa` first, then `bravo`, then `charl
 
 3. Join the Caddy container to the network of this Bid Desk, and add its block (section "The Caddy block"). Its DNS record must resolve to the host first.
 4. Check the public names of this Bid Desk, and take the hash of its manifest (section "The checks"). It is the `detail_hash` of its advert.
-5. Post the advert of this Bid Desk (section "The adverts"). Keep the Post transaction hash in the deployment record. Verify its output on the ledger. If confirmation is unknown, check the same hash and stop; do not post again. Write its confirmed reference into the existing `ADVERT_REF` entry of this desk's env file. Do not append a second entry or print the file.
+5. Post the advert of this Bid Desk with the task `advert` (section "The adverts"). The task posts in the order of the use-case data: Sourcing Agent, then Bid Desks Alfa, Bravo and Charlie. Confirm each preceding post in the same state stream before you submit. The task has no selector for posting. Use `--agent` for cleanup only. Omit `--all` to post only the next advert. Keep the Post transaction hash and verify its output. If confirmation is unknown, stop and check the same hash. Do not post again. Run `env` again for the confirmed `ADVERT_REF`. In the manual flow, set the existing entry for this desk only. Do not append a second entry or print the file.
 6. Start the runtime. Pass the memory gate first. After the start, wait 30 seconds, and check that the runtime is up and says `free`. Write the port of its runtime in place of `<runtime port>`:
 
    ```sh
@@ -563,7 +580,7 @@ To take one Bid Desk out of service, retire its listing first. An escrow that al
 
 ## The operator pack
 
-The `claim` task of the operator pack supports one Module-1 claim for each Bid Desk before each clean or failure run. The task signs with the service key of that Bid Desk. The stake is 50 units (50,000,000 lovelace). The challenge window is 24 hours. After the window, `claim cleanup` withdraws the claim if nobody challenged it. The operator CLI does not enable use case 3 yet.
+The `claim` task of the operator pack supports one Module-1 claim for each Bid Desk before each clean or failure run. The task signs with the service key of that Bid Desk. The stake is 50 units (50,000,000 lovelace). The challenge window is 24 hours. After the window, `claim cleanup` withdraws the claim if nobody challenged it.
 
 The claim holds the three statements in `behaviour.claim` of the manifest. The task signs the claim document transaction and then the stake transaction, one Bid Desk at a time. The service has no claim code and no dispute code, and it never challenges. A challenge against the claim of a Bid Desk comes from the Sourcing Agent, and never from this service.
 

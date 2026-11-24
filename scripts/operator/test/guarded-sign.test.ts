@@ -80,7 +80,8 @@ function registryOf(seeds: Partial<Record<KeyName, string>> = {}, need?: readonl
 }
 
 const goFor = (registry: Registry, over: Partial<GoFile> = {}): GoFile => ({
-  approvedBy: 'the test', at: '2026-11-15T11:00:00Z', session: 'test-session', runWallet: registry.addressOf(registry.has('run') ? 'run' : 'service'), capUnits: 100, tasks: ['claim'], irreversible: [], expiresAt: '2026-11-16T12:00:00Z', ...over,
+  approvedBy: 'the test', at: '2026-11-15T11:00:00Z', session: 'test-session', useCase: USE_CASE,
+  runWallet: registry.addressOf(registry.has('run') ? 'run' : 'service'), capUnits: 100, tasks: ['claim'], irreversible: [], expiresAt: '2026-11-16T12:00:00Z', ...over,
 });
 
 const HOST_SETTINGS: OperatorSettings = {
@@ -131,7 +132,8 @@ function makeHost(registry: Registry, options: HostOptions = {}): HostParts {
   const network: GuardResult | null = options.network === undefined ? { guard: 'network', ok: true, message: 'the node is on vector-mainnet' } : options.network;
   const systemStartMs = options.systemStartMs === undefined ? VECTOR_MAINNET.systemStartMs : options.systemStartMs;
   const host: LandHost = {
-    mode: options.mode ?? 'submit', settings: { ...HOST_SETTINGS, network: { ...VECTOR_MAINNET, systemStartMs } }, registry, state, evidence, clock, out, node: unused('node'), network: unused('network gate'),
+    mode: options.mode ?? 'submit', use: { name: USE_CASE }, settings: { ...HOST_SETTINGS, network: { ...VECTOR_MAINNET, systemStartMs } },
+    registry, state, evidence, clock, out, node: unused('node'), network: unused('network gate'),
     networkResult: () => network, chain: unused('chain'), hosted: unused('hosted tools'), go, exposure, task: 'claim', awaitMs: 30_000, pollMs: 5_000,
   };
   return { host, registry, state, evidence, exposure, out, clock, signs, dir };
@@ -594,6 +596,7 @@ describe('guardedSign: the submit mode', () => {
     ['no approval', () => null, /needs an approval file/],
     ['an approval that has expired', (registry) => goFor(registry, { expiresAt: '2026-11-15T11:59:59Z' }), /has expired/],
     ['an approval for another run wallet', (registry) => goFor(registry, { runWallet: registry.addressOf('other') }), /another run wallet/],
+    ['an approval for another use case', (registry) => goFor(registry, { useCase: 'other-case' }), /useCase/],
     ['an approval that does not list the task', (registry) => goFor(registry, { tasks: ['fund'] }), /does not list the task claim/],
   ];
   for (const [what, go, message] of BAD_APPROVALS) {

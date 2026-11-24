@@ -7778,9 +7778,7 @@ test('use case 2 RUNBOOK: step 7 points to the runbooks of the two packs of use 
 });
 
 // ======================================================================================================================================
-// The operator pack (scripts/operator) and the deploy packs of use case 1. The tests of the pack hold the pack to its own code. These tests read more than one place: the files of the pack against the tracked files and
-// the rules of the public text, the two runbooks and the two env examples of use case 1 against the list of the tasks of the pack, and the README and the runbook of the agents host. Each guard has refused copies
-// and an accepted twin.
+// The operator pack and the deploy packs of its use cases. Check the tracked files and the common setup contract between each runbook and its example.
 // ======================================================================================================================================
 
 const OPERATOR_FOLDER = 'scripts/operator';
@@ -7802,7 +7800,9 @@ function operatorFileProblems(files, tracked, textOf) {
 
 test('operator pack files: the README, the Dockerfile and the sources are tracked by git, and none names the host, a person or a home folder; the README and the Dockerfile hold no em or en dash and no name of the unit; the guard refuses each copy', { skip: TRACKED ? false : 'needs a git checkout' }, () => {
   assert.ok(OPERATOR_FILES.length > 80 && new Set(OPERATOR_FILES).size === OPERATOR_FILES.length, `the list reaches the files of the pack, found ${OPERATOR_FILES.length}`);
-  for (const must of ['README.md', 'Dockerfile', 'cli.ts', 'lib/registry.ts', 'tasks/env.ts', 'usecases/inventory-reorder.ts', 'test/integration.test.ts']) assert.ok(OPERATOR_FILES.includes(`${OPERATOR_FOLDER}/${must}`), `${must} is in the list`);
+  const required = ['README.md', 'Dockerfile', 'cli.ts', 'lib/registry.ts', 'lib/record-spend.ts', 'lib/evidence/index.ts', 'tasks/env.ts', 'tasks/lifecycle.ts',
+    'usecases/inventory-reorder.ts', 'usecases/prior-authorization.ts', 'usecases/bid-evaluation.ts', 'test/integration.test.ts', 'test/use-cases.test.ts'];
+  for (const must of required) assert.ok(OPERATOR_FILES.includes(`${OPERATOR_FOLDER}/${must}`), `${must} is in the list`);
   assert.deepEqual(operatorFileProblems(OPERATOR_FILES, TRACKED, read), [], 'the real files pass');
   const [readme, dockerfile] = OPERATOR_FILES;
   const source = `${OPERATOR_FOLDER}/cli.ts`;
@@ -7820,20 +7820,31 @@ test('operator pack files: the README, the Dockerfile and the sources are tracke
   assert.deepEqual(operatorFileProblems(OPERATOR_FILES, TRACKED, twin), [], 'the names that the pack holds on purpose');
 });
 
-// The six tasks that make the results that the runbooks of use case 1 name, in the order of the work. The contact is the address that the live agents publish: the operator types it, and no file holds it.
+const OPERATOR_PACKS = ['reorder-agent', 'order-desk', 'prior-authorization-agent', 'insurer-intake-agent', 'sourcing-agent', 'bid-desk'];
 const PACK_TASKS = ['keys', 'fund', 'register', 'stake', 'env', 'advert'];
 const CONTACT_SENTENCE = '`OPERATOR_CONTACT` (the contact address that the live agents publish; the operator types it, and no file of the repository holds it)';
 const CONTACT_COMMENT = 'OPERATOR_CONTACT is required and is published. It is the contact address that the live agents of the operator publish. The operator types it, and no file of the repository holds it.';
-// The faults of a runbook of use case 1: it does not say that the operator pack makes the results, it says that the operator makes them outside the pack, its first table has not the six tasks in the order of the work,
-// a task of its table is no task of the pack, or it gives the contact as a role address.
+/** Check the setup path and contact rule once, for each pack. */
 function runbookPackProblems(text, tasks) {
   const problems = [];
   const what = section(text, 'What it is');
-  if (!what.includes('The operator pack (`scripts/operator`) makes the keys, ')) problems.push('the first section does not say that the operator pack makes the keys');
+  const introduction = what.split('\n').find((line) => line.startsWith('The operator pack (`scripts/operator`) makes the keys, ')) ?? '';
+  if (introduction === '') problems.push('the first section does not say that the operator pack makes the keys');
+  else if (!['record', 'stake', 'env files', 'advert', 'not part of this deploy pack'].every((part) => introduction.includes(part))) {
+    problems.push('the operator pack must own the record, stake, env files and advert, separately from the deploy pack');
+  }
   if (/outside this pack/.test(text)) problems.push('the text says that the operator makes something outside this pack');
-  const listed = [...what.matchAll(/^\| `([a-z-]+)` \|/gm)].map((hit) => hit[1]);
+  const table = /^\| Task \| Result \| When \|\n\|---\|---\|---\|\n((?:\|[^\n]+\n)+)/m.exec(what)?.[1] ?? '';
+  const listed = [...table.matchAll(/^\| `([a-z-]+)` \|/gm)].map((hit) => hit[1]);
   if (listed.join(',') !== PACK_TASKS.join(',')) problems.push(`the first table lists the tasks ${listed.join(', ')}, and it must list ${PACK_TASKS.join(', ')} in this order`);
   for (const task of listed) if (!tasks.includes(task)) problems.push(`${task} is no task of the pack`);
+  const env = section(text, 'The env file') || section(text, 'The env files');
+  if (!env.includes('The task `env`') || !env.includes('manual way')) problems.push('the env section does not give the task and the manual way');
+  const start = section(text, 'The start order');
+  if (!/^5\. Post\b[^\n]*`advert`/m.test(start) || !`${start}\n${section(text, 'The adverts')}`.includes('manual way is the hosted tools')) {
+    problems.push('the advert step does not give the task and the manual way');
+  }
+  if (/The operator CLI does not enable|No command of this repository stakes a claim/i.test(text)) problems.push('the runbook gives an obsolete restriction on the operator tasks');
   if (text.split(CONTACT_SENTENCE).length !== 2) problems.push('the runbook does not give the rule of the contact once');
   if (/role address|never a person/.test(text)) problems.push('the runbook still calls the contact a role address');
   return problems;
@@ -7850,18 +7861,25 @@ function exampleContactProblems(text) {
   return problems;
 }
 
-test('use case 1 runbooks and examples: the operator pack makes the keys, the records, the stakes, the env files and the adverts, the six tasks are named in the order of the work, and the contact is the address that the live agents publish, typed by the operator and held by no file; the guards refuse each copy that breaks a rule', () => {
+test('operator packs: runbooks and examples agree on setup, ownership and the contact placeholder', () => {
   const tasks = [...read(`${OPERATOR_FOLDER}/tasks/names.ts`).matchAll(/'([a-z-]+)'/g)].map((hit) => hit[1]);
-  assert.ok(tasks.length >= 17 && PACK_TASKS.every((task) => tasks.includes(task)), 'the six tasks are tasks of the pack');
-  const [reorder, orders] = ['RUNBOOK-reorder-agent.md', 'RUNBOOK-order-desk.md'].map((file) => srvRead(file));
-  const [reorderExample, ordersExample] = ['.env.reorder-agent.example', '.env.order-desk.example'].map((file) => srvRead(file));
-  for (const text of [reorder, orders]) assert.deepEqual(runbookPackProblems(text, tasks), [], 'the real runbook passes');
-  for (const text of [reorderExample, ordersExample]) assert.deepEqual(exampleContactProblems(text), [], 'the real example passes');
+  assert.equal(new Set(tasks).size, 21);
+  const linked = [...section(srvRead('RUNBOOK.md'), '7. Add an agent').matchAll(/`RUNBOOK-([a-z-]+)\.md`/g)].map((hit) => hit[1]);
+  assert.deepEqual([...OPERATOR_PACKS].sort(), [...new Set(linked)].sort(), 'each linked pack has a guard');
+  const packs = OPERATOR_PACKS.map((slug) => ({ slug, runbook: srvRead(`RUNBOOK-${slug}.md`), example: srvRead(`.env.${slug}.example`) }));
+  for (const { slug, runbook, example } of packs) {
+    assert.deepEqual(runbookPackProblems(runbook, tasks), [], `RUNBOOK-${slug}.md`);
+    assert.deepEqual(exampleContactProblems(example), [], `.env.${slug}.example`);
+  }
+  const [reorder, orders] = packs.map(({ runbook }) => runbook);
+  const [reorderExample, ordersExample] = packs.map(({ example }) => example);
   const faults = [
     ['the old sentence', runbookPackProblems(`${reorder}\nThe operator makes three things outside this pack: the keys.\n`, tasks), /outside this pack/],
     ['a task row that is left out', runbookPackProblems(reorder.split('\n').filter((line) => !line.startsWith('| `fund` |')).join('\n'), tasks), /lists the tasks keys, register/],
     ['a task that is no task of the pack', runbookPackProblems(orders.split('| `fund` |').join('| `fond` |'), tasks), /fond is no task of the pack/],
     ['the rows in another order', runbookPackProblems(reorder.split('| `keys` |').join('| `stake` |').split('| `stake` | The Module-3').join('| `keys` | The Module-3'), tasks), /in this order/],
+    ['no manual env path', runbookPackProblems(reorder.split('manual way').join('other way'), tasks), /env section/],
+    ['no posting task in start order', runbookPackProblems(orders.split('5. Post the three adverts with the task `advert`').join('5. Post the three adverts'), tasks), /advert step/],
     ['the old rule of the contact', runbookPackProblems(reorder.split(CONTACT_SENTENCE).join('`OPERATOR_CONTACT` (a role address, never a person)'), tasks), /does not give the rule of the contact once/],
     ['the rule of the contact twice', runbookPackProblems(`${orders}\n- ${CONTACT_SENTENCE}\n`, tasks), /does not give the rule of the contact once/],
     ['a role address in the text', runbookPackProblems(`${reorder}\nThe contact is a role address.\n`, tasks), /still calls the contact a role address/],
@@ -7885,7 +7903,7 @@ test('the README of the agents host has a section about the operator image: its 
   for (const part of [
     `${image}@sha256:<digest>`, '`docker run --rm`', 'by its digest, never by a tag', '`/keys`', '`/state`', '`/agents/<agent>`', '`/mock-env/.env.mock-systems`', 'read-only', 'for the task `keys` only', 'for the task `tenant` only',
     'for the tasks `env`, `allowlist` and `fault` only', '768 MiB', '1,792 MiB', 'No task prints a key or a token', 'scripts/operator/README.md', 'The agents host never mounts `/srv/agents` as a whole',
-    'The task `env` plans both agents of use case 1 in one run, so it needs both folders and both records', 'and it runs again after `advert`, to write `ADVERT_REF`',
+    'The task `env` plans every agent of the selected use case before it writes', 'Run it again after `advert`, to write `ADVERT_REF`', 'Use a separate state folder for each use case.',
   ]) assert.ok(text.includes(part), part);
   const gate = /at least ([\d,]+) MiB: the gate of ([\d,]+) MiB plus the ([\d,]+) MiB of the image/.exec(text);
   assert.ok(gate, 'the sentence of the gate');
@@ -7896,10 +7914,11 @@ test('the README of the agents host has a section about the operator image: its 
   assert.doesNotMatch(text, HOST_WORDS, 'no host, no proxy stack, no provider');
   assert.doesNotMatch(text, DASHES, 'no em or en dash');
   const runbook = srvRead('RUNBOOK.md');
-  assert.ok(section(runbook, '7. Add an agent').includes('The runbook of each pack of use case 1 says which tasks of the operator pack make the keys, the records, the stakes, the env files and the advert.'), 'step 7 says which tasks make the results');
-  assert.equal(runbook.includes('The runbook of an agent gives the keys, the registration and the advert.'), false, 'step 7 does not say that the runbook of every agent gives them');
-  assert.ok(section(runbook, '7. Add an agent').includes('The runbooks of the other packs give the keys, the registration and the advert.'), 'step 7 says that the runbooks of the other packs still give them');
-  assert.ok(section(runbook, 'Keys').includes('The task `keys` of the operator pack makes the keys on this host. It never prints a key.'), 'the keys are made by the task keys');
+  const addAgent = section(runbook, '7. Add an agent');
+  for (const slug of OPERATOR_PACKS) assert.ok(addAgent.includes(`RUNBOOK-${slug}.md`), slug);
+  assert.ok(addAgent.includes('which tasks of the operator pack make the keys, the records, the stakes, the env files and the advert.'));
+  assert.doesNotMatch(addAgent, /The runbooks? of (?:an agent|the other packs) give/);
+  assert.ok(section(runbook, 'Keys').includes('the task `keys` of the operator pack makes the keys. It never prints a key.'));
 });
 
 // ======================================================================================================================================

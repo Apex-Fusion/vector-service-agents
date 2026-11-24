@@ -1,0 +1,213 @@
+{
+  "run": "use-case-3-lifecycle",
+  "kind": "lifecycle",
+  "date": "2026-11-08",
+  "capability_id": "supplychain.rfq.quote.v1",
+  "builder": "https://lifecycle-tool.test/mcp",
+  "steps": [
+    {
+      "id": "l1-01",
+      "status": "shown",
+      "refs": [
+        {
+          "kind": "transaction",
+          "value": "cfa06d4ff0763ad883bfedfa5c67a2bd1e76f4426b1ab6eae84ef060b22e4dc1"
+        },
+        {
+          "kind": "record",
+          "value": "cfa06d4ff0763ad883bfedfa5c67a2bd1e76f4426b1ab6eae84ef060b22e4dc1#2"
+        }
+      ],
+      "note": ""
+    },
+    {
+      "id": "l1-02",
+      "status": "shown",
+      "refs": [
+        {
+          "kind": "transaction",
+          "value": "0b70ccd178680681dce19a417b29811df50081eed957ce0404b239bcc4eaf47d"
+        },
+        {
+          "kind": "record",
+          "value": "0b70ccd178680681dce19a417b29811df50081eed957ce0404b239bcc4eaf47d#2"
+        }
+      ],
+      "note": ""
+    },
+    {
+      "id": "l1-03",
+      "status": "shown",
+      "refs": [
+        {
+          "kind": "transaction",
+          "value": "0b70ccd178680681dce19a417b29811df50081eed957ce0404b239bcc4eaf47d"
+        },
+        {
+          "kind": "transaction",
+          "value": "02db230cb9f790639fab2994f39100d1fef530bde4c3e4d91a4bfdd33859af6f"
+        }
+      ],
+      "note": ""
+    },
+    {
+      "id": "l1-04",
+      "status": "shown",
+      "refs": [
+        {
+          "kind": "transaction",
+          "value": "02db230cb9f790639fab2994f39100d1fef530bde4c3e4d91a4bfdd33859af6f"
+        },
+        {
+          "kind": "record",
+          "value": "02db230cb9f790639fab2994f39100d1fef530bde4c3e4d91a4bfdd33859af6f#2"
+        }
+      ],
+      "note": ""
+    },
+    {
+      "id": "l1-05",
+      "status": "shown",
+      "refs": [
+        {
+          "kind": "transaction",
+          "value": "7f21d19aee779bb6f49783bdb0e83a6e04542075bb413876ee1a5b1d15af1977"
+        },
+        {
+          "kind": "record",
+          "value": "7f21d19aee779bb6f49783bdb0e83a6e04542075bb413876ee1a5b1d15af1977#2"
+        }
+      ],
+      "note": ""
+    },
+    {
+      "id": "l1-06",
+      "status": "shown",
+      "refs": [
+        {
+          "kind": "transaction",
+          "value": "7fdf177388cfcdd8f33c5046307b999e445d118b78520746e9b47af36043bffa"
+        },
+        {
+          "kind": "record",
+          "value": "7fdf177388cfcdd8f33c5046307b999e445d118b78520746e9b47af36043bffa#2"
+        }
+      ],
+      "note": ""
+    },
+    {
+      "id": "l1-07",
+      "status": "shown",
+      "refs": [
+        {
+          "kind": "transaction",
+          "value": "1dee324c25eb478e972ed9f32ed1008fa0b8836c189659cde412c5f7f95cafe9"
+        },
+        {
+          "kind": "record",
+          "value": "1dee324c25eb478e972ed9f32ed1008fa0b8836c189659cde412c5f7f95cafe9#2"
+        }
+      ],
+      "note": ""
+    }
+  ],
+  "refusals": [
+    {
+      "step": "l1-03",
+      "kind": "tool",
+      "message_sha256": "425a8df570ab341cf62c867248a9e8fc594bedd28de88c3ba0dcd4315806e1e3"
+    }
+  ],
+  "resolutions": [
+    {
+      "did": "did:vector:beb9f36658dcff3979b64ca01f80f130fd6ba4ea732f4d8e14ca5831bd7f5aeb",
+      "status": "retired",
+      "deactivated": true,
+      "successor": "did:vector:2c1dc120a65914ce8f3ae4f3012c3cde95e8e8264e5ac8aadac9865a55f701da"
+    },
+    {
+      "did": "did:vector:2c1dc120a65914ce8f3ae4f3012c3cde95e8e8264e5ac8aadac9865a55f701da",
+      "status": "active",
+      "deactivated": false,
+      "verification_methods": 2
+    }
+  ],
+  "lifecycle": {
+    "did": "did:vector:beb9f36658dcff3979b64ca01f80f130fd6ba4ea732f4d8e14ca5831bd7f5aeb",
+    "successor": "did:vector:2c1dc120a65914ce8f3ae4f3012c3cde95e8e8264e5ac8aadac9865a55f701da",
+    "effective_after": 1794141180000,
+    "completed_at": 1794141360000,
+    "transitions": [
+      {
+        "step": "l1-01",
+        "action": "ChangeController",
+        "tx": "cfa06d4ff0763ad883bfedfa5c67a2bd1e76f4426b1ab6eae84ef060b22e4dc1",
+        "spent_output": "60c700ed4457af54f8a3d741bcbdec4c62f342f1f885548407377ef77c398ef7#2",
+        "record_output": "cfa06d4ff0763ad883bfedfa5c67a2bd1e76f4426b1ab6eae84ef060b22e4dc1#2",
+        "block_at": 1793534460000
+      },
+      {
+        "step": "l1-02",
+        "action": "RecoverInit",
+        "tx": "0b70ccd178680681dce19a417b29811df50081eed957ce0404b239bcc4eaf47d",
+        "spent_output": "cfa06d4ff0763ad883bfedfa5c67a2bd1e76f4426b1ab6eae84ef060b22e4dc1#2",
+        "record_output": "0b70ccd178680681dce19a417b29811df50081eed957ce0404b239bcc4eaf47d#2",
+        "block_at": 1793534580000
+      },
+      {
+        "step": "l1-04",
+        "action": "RecoverFinalize",
+        "tx": "02db230cb9f790639fab2994f39100d1fef530bde4c3e4d91a4bfdd33859af6f",
+        "spent_output": "0b70ccd178680681dce19a417b29811df50081eed957ce0404b239bcc4eaf47d#2",
+        "record_output": "02db230cb9f790639fab2994f39100d1fef530bde4c3e4d91a4bfdd33859af6f#2",
+        "block_at": 1794141360000
+      },
+      {
+        "step": "l1-05",
+        "action": "Retire",
+        "tx": "7f21d19aee779bb6f49783bdb0e83a6e04542075bb413876ee1a5b1d15af1977",
+        "spent_output": "02db230cb9f790639fab2994f39100d1fef530bde4c3e4d91a4bfdd33859af6f#2",
+        "record_output": "7f21d19aee779bb6f49783bdb0e83a6e04542075bb413876ee1a5b1d15af1977#2",
+        "block_at": 1794141660000
+      },
+      {
+        "step": "l1-06",
+        "action": "SetSuccessor",
+        "tx": "7fdf177388cfcdd8f33c5046307b999e445d118b78520746e9b47af36043bffa",
+        "spent_output": "7f21d19aee779bb6f49783bdb0e83a6e04542075bb413876ee1a5b1d15af1977#2",
+        "record_output": "7fdf177388cfcdd8f33c5046307b999e445d118b78520746e9b47af36043bffa#2",
+        "block_at": 1794141780000
+      },
+      {
+        "step": "l1-07",
+        "action": "Reclaim",
+        "tx": "1dee324c25eb478e972ed9f32ed1008fa0b8836c189659cde412c5f7f95cafe9",
+        "spent_output": "7fdf177388cfcdd8f33c5046307b999e445d118b78520746e9b47af36043bffa#2",
+        "record_output": "1dee324c25eb478e972ed9f32ed1008fa0b8836c189659cde412c5f7f95cafe9#2",
+        "block_at": 1794141900000
+      }
+    ],
+    "advert_closeouts": [
+      {
+        "advert_ref": "92ec742e390a4186075c1b153d84edd653d242783a1c4a66876918ecba836bfc#1",
+        "retirement_tx": "ec0b2c210b87a949d17960b3d70241160111ac8c5dedb58e961089d407d2a33a",
+        "deposit_lovelace": "2500000",
+        "fee_lovelace": "250000",
+        "supplier_credit_lovelace": "2250000"
+      }
+    ],
+    "claim_closeouts": [
+      {
+        "claim_ref": "f47adf58427046fb899957b26c256aadb35b57e17201e819c38adb7f4c2285e8#0",
+        "terminal_tx": "0636eaef22ca6206c4dffb0d2948ca6b75cef8eda1a21f7cc47bc120546077d8",
+        "outcome": "withdrawn"
+      }
+    ],
+    "reclaim": {
+      "retained_lovelace": "1736930",
+      "released_lovelace": "8263070",
+      "fee_lovelace": "250000",
+      "wallet_credit_lovelace": "8013070"
+    }
+  }
+}

@@ -1,15 +1,23 @@
 // scripts/operator/test/integration.test.ts - the tests of the operator pack that read more than one place: the list of the tasks, the files of the pack, the README, the settings, the root scripts, the
 // example env files and the guide. A test of one task stays in the file of the task. Each check is a function that returns its problems. One test shows that the real files have none, and other
 // tests show that a copy with one fault has that problem and that a harmless change has none. No test uses the network or a clock.
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { iso } from '../../checks/lib/format.ts';
 import { CLAIM_STAKE_LOVELACE, CLAIM_WINDOW_MS, RUN_APPROVAL_VALIDITY_MS } from '../lib/claim-constants.ts';
-import type { TaskDefinition } from '../lib/contract.ts';
+import type { AgentSpec, TaskDefinition, UseCase } from '../lib/contract.ts';
+import { FactsFile } from '../lib/facts.ts';
 import { loadTask } from '../lib/load.ts';
+import { publicManifestFile } from '../lib/registry.ts';
 import { TASK_NAMES } from '../tasks/names.ts';
+import bids from '../usecases/bid-evaluation.ts';
 import data from '../usecases/inventory-reorder.ts';
+import { USE_CASE_NAMES } from '../usecases/names.ts';
+import prior from '../usecases/prior-authorization.ts';
+import { hashOf, NOW, taskWorld } from './support/task-world.ts';
 
 const PACK = fileURLToPath(new URL('../', import.meta.url));
 const ROOT = fileURLToPath(new URL('../../../', import.meta.url));
@@ -17,6 +25,7 @@ const readPack = (path: string): string => readFileSync(join(PACK, path), 'utf8'
 const readRoot = (path: string): string => readFileSync(join(ROOT, path), 'utf8');
 const HOUR_MS = 3_600_000;
 const UNIT = 1_000_000n;
+const CASES = [data, prior, bids] as const;
 
 /** The flags that every task has: the runner reads them, and a task never lists them. */
 const GLOBAL_FLAGS: readonly string[] = ['submit', 'all', 'run', 'use-case', 'release'];
@@ -125,7 +134,7 @@ describe('the README of the pack', () => {
     const lines = README.split('\n');
     const isRow = (line: string, name: string): boolean => line.startsWith(`| \`${name}\` |`);
     const change = (name: string, edit: (line: string) => string): string => lines.map((line) => (isRow(line, name) ? edit(line) : line)).join('\n');
-    expect(taskTableProblems(lines.filter((line) => !isRow(line, 'keys')).join('\n'), definitions)).toEqual(['the table has no row for the task keys']);
+    expect(taskTableProblems(lines.filter((line) => !isRow(line, 'lifecycle')).join('\n'), definitions)).toEqual(['the table has no row for the task lifecycle']);
     const ghost = `| \`ghost\` | Does nothing. | none | Needs no approval. | Nothing. |`;
     expect(taskTableProblems(lines.flatMap((line) => (isRow(line, 'keys') ? [line, ghost] : [line])).join('\n'), definitions)).toEqual(['the row ghost is no task']);
     expect(taskTableProblems(change('fund', (line) => line.split('--member').join('')), definitions)).toEqual(['the row of fund lacks the flag --member']);
@@ -189,13 +198,39 @@ describe('the README of the pack', () => {
     for (const word of named) expect(['submit', 'all', 'run', 'cleanup', 'status', 'clean', 'failure'], word).toContain(word);
   });
 
+  it('lists the case data, irreversible tags and sections of a fresh facts file', () => {
+    const cases = rowsOf(README.split('\n## The command\n', 1)[0]!);
+    const names = cases.map(({ name }) => name);
+    expect(names).toEqual(CASES.map(({ name }) => name));
+    expect(USE_CASE_NAMES.filter((name) => !names.includes(name))).toEqual([]);
+    for (const { name, cells } of cases) {
+      const file = `usecases/${name}.ts`;
+      expect(cells[2]).toBe(`[\`${file}\`](${file})`);
+      expect(existsSync(join(PACK, file))).toBe(true);
+    }
+
+    const files = sectionOf(README, 'The files').split('\n');
+    const words = (text: string, quote: string): string[] => text.split(quote).filter((_, index) => index % 2 !== 0);
+    const tags = /const TAGS:[^=]+=\s*\[([\s\S]*?)\]/.exec(readPack('lib/approval.ts'))?.[1];
+    const tagRow = files.find((line) => line.startsWith('- Irreversible tags:'));
+    expect(words(tags ?? '', "'").length).toBeGreaterThan(0);
+    expect(words(tagRow ?? '', '`').sort()).toEqual(words(tags ?? '', "'").sort());
+    const name = 'facts.json';
+    const sections = files.find((line) => line.startsWith(`- \`${name}\` keeps`));
+    const fields = Object.keys(FactsFile.open(join(PACK, 'test', name), { useCase: data.name, network: 'vector-mainnet' }).read());
+    expect(words(sections ?? '', '`').slice(1).sort()).toEqual(fields.sort());
+  });
+
   it('names each file of the pack, and the code names the same file', () => {
     const files = sectionOf(README, 'The files');
     const code = ['lib', 'tasks'].flatMap((folder) => readdirSync(join(PACK, folder)).filter((file) => file.endsWith('.ts')).map((file) => readPack(`${folder}/${file}`))).join('\n');
-    for (const name of ['GO.json', 'keys-public.json', 'facts.json', 'running-images.json', 'seen-services.json', 'run.lock', 'attestation-documents', 'exposure.']) {
+    for (const name of ['GO.json', 'facts.json', 'running-images.json', 'seen-services.json', 'run.lock', 'attestation-documents', 'exposure.']) {
       expect(files, `the README names ${name}`).toContain(name);
       expect(code, `the code names ${name}`).toContain(name);
     }
+    const template = 'keys-public.<use case>.json';
+    expect(files).toContain(`\`<keys>/${template}\``);
+    for (const { name } of CASES) expect(publicManifestFile(name)).toBe(template.replace('<use case>', name));
     for (const part of ['.state.json', '.evidence.json']) {
       expect(files, part).toContain(part);
       expect(code, part).toContain(part);
@@ -248,60 +283,94 @@ describe('the root scripts', () => {
 
 // ---- the env names of the task env ----
 
-/** The example that each env file of the data is made from. The three runtime files of the Order Desk share one example. */
-const EXAMPLE_OF: Readonly<Record<string, string>> = {
-  '.env.reorder-agent': '.env.reorder-agent.example',
-  '.env.order-desk': '.env.order-desk.example',
-  '.env.order-desk-small': '.env.order-desk-runtime.example',
-  '.env.order-desk-medium': '.env.order-desk-runtime.example',
-  '.env.order-desk-large': '.env.order-desk-runtime.example',
-};
-const exampleNames = (file: string): Set<string> => new Set(readRoot(`deploy/server/${EXAMPLE_OF[file]!}`).split('\n').flatMap((line) => {
-  const name = /^([A-Z][A-Z0-9_]*)=/.exec(line)?.[1];
-  return name === undefined ? [] : [name];
-}));
-
-/** The names that the source of the task env writes besides the key lines of the data: the lines of the layout of a file, and the two names that it keeps in constants. */
-function fixedNamesOf(source: string): string[] {
-  return [
-    ...[...source.matchAll(/\{ name: '([A-Z][A-Z0-9_]*)', source:/g)].map((hit) => hit[1]!),
-    ...[...source.matchAll(/^const (?:MANIFEST|ADVERT)_LINE = '([A-Z][A-Z0-9_]*)';$/gm)].map((hit) => hit[1]!),
-  ];
+/** Use the real dry-run writer and the examples that the case deploys. */
+async function previewEnv(use: UseCase, editExample: (text: string, agent: AgentSpec, service: boolean) => string = (text) => text) {
+  const dir = mkdtempSync(join(tmpdir(), 'pack-env-preview-'));
+  try {
+    const labels = use.agents.flatMap((agent) => {
+      const folder = join(dir, agent.folder);
+      mkdirSync(folder);
+      const service = agent.serviceEnvFile;
+      const runtimes = [...new Set(agent.adverts.map((advert) => advert.runtimeEnvFile).filter((file) => file !== service))];
+      const names = [agent.exampleEnvFile ?? `${service}.example`, ...(runtimes.length > 0 ? [`${service}-runtime.example`] : [])];
+      for (const [index, name] of names.entries()) {
+        writeFileSync(join(folder, name), editExample(readRoot(`deploy/server/${name}`), agent, index === 0));
+      }
+      return [service, ...runtimes].map((file) => `${agent.folder}/${file}`);
+    });
+    const w = await taskWorld({ use, keys: use.keys.map(({ name }) => name), shared: use.keys.filter(({ scope }) => scope === 'shared').map(({ name }) => name),
+      env: { OPERATOR_USE_CASE: data.name, OPERATOR_AGENTS_DIR: dir, OPERATOR_CONTACT: 'fixture contact', OPERATOR_MODULE1_COMMIT: hashOf('manifest').slice(0, 40) } });
+    mkdirSync(w.stateDir, { mode: 0o700 });
+    const facts = FactsFile.open(join(w.stateDir, 'facts.json'), { useCase: use.name, network: 'vector-mainnet' });
+    for (const { id } of [...use.agents, ...use.subagents]) {
+      const hash = hashOf(id), tx = hashOf(`${id} registration`);
+      facts.put('records', [id], { did: `did:vector:${hash}`, id: hash, tx, recordRef: `${tx}#0`, depositLovelace: '10000000', registeredAt: iso(NOW) });
+    }
+    for (const agent of use.agents) for (const { model, origin } of agent.adverts) {
+      const tx = hashOf(`${agent.id} ${model} advert`);
+      facts.put('adverts', [agent.id, model], { ref: `${tx}#0`, tx, detailUri: `${origin}/agent.json`, detailHash: hashOf(`${agent.id} ${model} manifest`), endpoint: origin, postedAt: iso(NOW) });
+    }
+    const exit = await w.run(definitions.get('env')!, 'run');
+    for (const label of labels) expect(existsSync(join(dir, label))).toBe(false);
+    return { exit, labels, result: w.machine().result, text: w.screen.text, errors: w.screen.errorText };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
-describe('the env names of the task env', () => {
-  const fixed = fixedNamesOf(readPack('tasks/env.ts'));
-  it('reads the names that the source writes: the token, the contact, the DID, the two mock origins, the identity address, the manifest, the agent id and the advert reference', () => {
-    expect([...fixed].sort()).toEqual(['ADVERT_REF', 'AGENT_DID', 'AGENT_ID', 'IDENTITY_ADDRESS', 'MOCK_MTLS_BASE', 'MOCK_PUBLIC_BASE', 'OPERATOR_CONTACT', 'SERVICE_AUTH_HEADER', 'VECTOR_MODULE1_MANIFEST']);
-  });
-  it('writes only lines that the example of its file holds: the lines of a service file in the example of the service, the agent id and the advert reference in the example of each runtime file', () => {
-    for (const agent of data.agents) {
-      const service = exampleNames(agent.serviceEnvFile);
-      const own = fixed.filter((name) => name !== 'AGENT_ID' && name !== 'ADVERT_REF');
-      const subagents = data.subagents.filter((sub) => sub.parent === agent.id).map((sub) => `${sub.id.toUpperCase().split('-').join('_')}_DID`);
-      for (const name of [...own, ...subagents]) expect(service.has(name), `${name} is a line of the example of ${agent.serviceEnvFile}`).toBe(true);
-      for (const advert of agent.adverts) for (const name of ['AGENT_ID', 'ADVERT_REF']) expect(exampleNames(advert.runtimeEnvFile).has(name), `${name} is a line of the example of ${advert.runtimeEnvFile}`).toBe(true);
+describe('the env examples', () => {
+  it.each(CASES)('hold all managed lines for $name', async (use) => {
+    // Extra lines can exist in an example without being managed by the task.
+    const result = await previewEnv(use, (text, agent, service) => {
+      if (!service) return text;
+      const unmanaged = [...(agent.envManaged.mock ? [] : ['MOCK_PUBLIC_BASE', 'MOCK_MTLS_BASE']),
+        ...(agent.envManaged.module1 ? [] : ['VECTOR_MODULE1_MANIFEST'])];
+      const sentinel = unmanaged.filter((name) => !text.split('\n').some((line) => line.startsWith(`${name}=`)));
+      return `${text.trimEnd()}\n${sentinel.map((name) => `${name}=`).join('\n')}\n`;
+    });
+    expect(result.exit, result.errors).toBe(0);
+    expect(result.result).toMatchObject({ files: result.labels, made: result.labels });
+    for (const agent of use.agents) {
+      const label = `${agent.folder}/${agent.serviceEnvFile}: would be made from the example\n`;
+      const start = result.text.indexOf(label);
+      expect(start, label).toBeGreaterThanOrEqual(0);
+      const lines = result.text.slice(start + label.length).split('\n');
+      const end = lines.findIndex((line) => !line.startsWith('  would set '));
+      const names = new Set(lines.slice(0, end < 0 ? undefined : end).flatMap((line) => /^  would set ([A-Z0-9_]+)/.exec(line)?.[1] ?? []));
+      expect(names.has('MOCK_PUBLIC_BASE')).toBe(agent.envManaged.mock);
+      expect(names.has('MOCK_MTLS_BASE')).toBe(agent.envManaged.mock);
+      expect(names.has('VECTOR_MODULE1_MANIFEST')).toBe(agent.envManaged.module1);
     }
   });
-  it('refuses a name that an example lacks', () => {
-    const service = exampleNames(data.agents[0]!.serviceEnvFile);
-    expect(['SERVICE_AUTH_HEADER', 'NOT_A_LINE_OF_THE_EXAMPLE'].filter((name) => !service.has(name))).toEqual(['NOT_A_LINE_OF_THE_EXAMPLE']);
+
+  it('refuses an example that lacks a managed public key line', async () => {
+    const agent = bids.agents.find(({ publicKeyLines }) => publicKeyLines.length > 0)!;
+    const name = agent.publicKeyLines[0]!.lines[0]!.name;
+    const result = await previewEnv(bids, (text) => text.split('\n').filter((line) => !line.startsWith(`${name}=`)).join('\n'));
+    expect(result.exit).toBe(2);
+    expect(result.errors).toContain(`has no line ${name}`);
   });
 });
 
 // ---- the guide ----
 
-// The guide of use case 1 is one section of docs/HIRE.md. It is checked as soon as it is there, and until then the checks are skipped.
 const GUIDE = readRoot('docs/HIRE.md');
-const GUIDE_HEADING = '### Use case 1 (inventory reorder): the Reorder Agent and the Order Desk';
-const guideText = sectionUnder(GUIDE, GUIDE_HEADING);
+const guides = [
+  ['### Use case 1 (inventory reorder): the Reorder Agent and the Order Desk', 'valid until'],
+  ['### Use case 2 (prior authorization): the Prior Authorization Agent and the Insurer Intake Agent', 'approval end'],
+  ['### Use case 3 (supplier bid evaluation): the Sourcing Agent and the Bid Desks', 'valid until'],
+] as const;
 
-describe.skipIf(guideText === '')('the guide of use case 1 in docs/HIRE.md', () => {
-  it('says four hours for the approval, as the constant says', () => {
-    expect(guideText).toMatch(new RegExp(`<valid until>[^.]*\\b${RUN_APPROVAL_VALIDITY_MS / HOUR_MS} hours\\b`));
+for (const [heading, deadline] of guides) {
+  const guideText = sectionUnder(GUIDE, heading);
+  describe.skipIf(guideText === '')(heading, () => {
+    it('holds the approval window to the run constant', () => {
+      const hours = RUN_APPROVAL_VALIDITY_MS / HOUR_MS;
+      expect(guideText).toMatch(new RegExp(`<${deadline}>[^\\n]*\\b${hours}\\s+(?:hours\\b|\\*\\s*${HOUR_MS}\\b)`));
+    });
+    it('uses units outside its main key funding section', () => {
+      expect(guideText).toMatch(/\bunits\b/);
+      expect(guideText).not.toMatch(new RegExp(['AP', '3X'].join(''), 'i'));
+    });
   });
-  it('says units, and never the name of the ledger unit, which only section 3 of the guide holds', () => {
-    expect(guideText).toMatch(/\bunits\b/);
-    expect(guideText).not.toMatch(new RegExp(['AP', '3X'].join(''), 'i'));
-  });
-});
+}
