@@ -4,8 +4,9 @@
 // cites the signed quote that it was computed from, and the ranking holds only bidders whose signed quote the agent holds and accepted.
 //
 // The organisation of a bidder is a member of its entry only when its file says that the gateway verified it. Every function here is pure: it reads its arguments and nothing else.
-import { buildRanking, receiptSha256 } from '@vsa/usecase-kit/bids';
+import { buildRanking, parseQuote, receiptSha256 } from '@vsa/usecase-kit/bids';
 import type { Components, ExcludedEntry, Quote, RankedQuote, Ranking, RfqDocument, Weights } from '@vsa/usecase-kit/bids';
+import { canonicalJson } from '@vsa/usecase-kit/protocol';
 import type { Did, ProtocolResult } from '@vsa/usecase-kit/protocol';
 import type { AcceptedQuote, BidderFile, ExcludedQuote } from './ports.ts';
 
@@ -35,13 +36,20 @@ export function verifiedOrganisation(file: BidderFile): string | null {
 
 /**
  * The quote that the agent holds for an accepted outcome, or null when the outcome is not one that the ranking may cite. The quote, the record of its job and its sub-job are the job of ONE bidder: the quote
- * and the record name the bidder, the record names the escrow of the sub-job, the vault paid, the Accept was made (`confirmed` or `pending`), and the record holds a receipt and its signature. The member of
- * the ranking is made from the record and the quote: the escrow, the hash of the signed receipt, and the two numbers of the quote.
+ * and the record name the bidder, the record names the escrow of the sub-job, the vault paid, the Accept was made (`confirmed` or `pending`), and the record holds a receipt and its signature. The quote
+ * answers the request of the job: it names `rfqHash`, the hash of that request. It is also the signed result: the record holds the result of the job, and the kit reads that result as the quote that was given,
+ * with the same canonical form. The member of the ranking is made from the record and the quote: the escrow, the hash of the signed receipt, and the two numbers of the quote.
  */
-export function heldQuoteOf(outcome: AcceptedQuote): HeldQuote | null {
+export function heldQuoteOf(outcome: AcceptedQuote, rfqHash: string): HeldQuote | null {
   const { did, quote, record, sub_job: subJob } = outcome;
   if (quote.desk_did !== did || record.desk_did !== did || record.escrow_ref !== subJob.escrow_ref || record.paid_from_vault !== true) return null;
   if (record.accepted !== 'confirmed' && record.accepted !== 'pending') return null;
+  if (quote.rfq_sha256 !== rfqHash) return null;
+  const signed = parseQuote(record.result);
+  if (!signed.ok) return null;
+  const given = canonicalJson(quote, 'quote');
+  const result = canonicalJson(signed.value, 'record.result');
+  if (given.ok !== true || result.ok !== true || given.value !== result.value) return null;
   const hash = receiptSha256(record.receipt, record.receipt_signature);
   if (!hash.ok) return null;
   return { did, quote, ranked: { escrow_ref: record.escrow_ref, receipt_sha256: hash.value, total: quote.total, lead_time_days: quote.lead_time_days } };

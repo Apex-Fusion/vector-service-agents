@@ -33,7 +33,7 @@
 //
 // Time. Every wait of the job is bounded by the deadline: `PROPOSE_DEADLINE_MS` after the arrival of the job. A call of a port that would start after it is not made. A caller that hangs up stops the job before
 // its next step: no step starts after that, and what the job paid for stays in the result.
-import { buildRanking, parseComponents, parseRfqDocument, parseScoreValue, parseWeights } from '@vsa/usecase-kit/bids';
+import { buildRanking, parseComponents, parseRfqDocument, parseScoreValue, parseWeights, rfqSha256 } from '@vsa/usecase-kit/bids';
 import type { Components, RfqDocument, Weights } from '@vsa/usecase-kit/bids';
 import { checkAuthority } from '@vsa/usecase-kit/buyer';
 import { ERROR_STATUS, canonicalJson, isPlainObject, parseDid, parseJsonValue, parseOutputRef } from '@vsa/usecase-kit/protocol';
@@ -131,6 +131,8 @@ function timeOf(clock: () => number): number | null {
 export class Job<K> {
   readonly deps: ProposeDeps<K>;
   readonly rfq: RfqDocument;
+  /** The hash of the request. A quote that the job ranks names it. */
+  readonly rfqHash: string;
   readonly weights: Weights;
   readonly tenant: TenantId;
   readonly delegation: DelegationId;
@@ -152,8 +154,11 @@ export class Job<K> {
     if (!weights.ok) throw new ProposeRefusal('bad_shape', weights.detail);
     const trial = buildRanking({ rfq: rfq.value, tenant: request.tenant, weights: weights.value, entries: [STAND_IN_ENTRY], excluded: [] });
     if (!trial.ok) throw new ProposeRefusal('bad_shape', TENANT_RULE);
+    const rfqHash = rfqSha256(rfq.value);
+    if (!rfqHash.ok) throw new ProposeRefusal('bad_shape', rfqHash.detail);
     this.deps = deps;
     this.rfq = rfq.value;
+    this.rfqHash = rfqHash.value;
     this.weights = weights.value;
     this.tenant = request.tenant;
     this.delegation = request.authority.delegation;
@@ -420,7 +425,7 @@ function takeFan<K>(job: Job<K>, answer: unknown, invite: readonly Did[]): Fan |
     if (outcome.record !== null) job.quotes.push(outcome.record);
     if (outcome.kind === 'accepted') {
       job.subJobs.push(outcome.sub_job);
-      const quote = heldQuoteOf(outcome);
+      const quote = heldQuoteOf(outcome, job.rfqHash);
       if (quote === null) sound = false;
       else held.push(quote);
     } else {

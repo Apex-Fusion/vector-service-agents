@@ -8,7 +8,7 @@ import type { QuotesInput, QuoteOutcome, SourcingFailed, SourcingResult } from '
 import { failedSourcing, proposedSourcing } from '../../src/propose/result.ts';
 import {
   ALFA, BRAVO, CHARLIE, DELTA, NOW, acceptedOf, arrivedWith, decisionOf, excludedOf, expectFailed, fanOf, fileOf, goldenQuotes, goldenScoring, namesOf, proposed, quoteOf, rankAnswer, recordOf, scoredOf,
-  shortlistAnswer, viewOf, world,
+  shortlistAnswer, subJobOf, viewOf, world,
 } from './support.ts';
 import type { World } from './support.ts';
 
@@ -105,6 +105,12 @@ describe('the quotes', () => {
     ['a record of a hire that the wallet paid', () => fanOf([alfa({ record: recordOf(ALFA, 1, quoteOf(ALFA, 'alfa.example'), { paid_from_vault: false }) }), quoted()[1]!, quoted()[2]!])],
     ['a record with no receipt', () => fanOf([alfa({ record: recordOf(ALFA, 1, quoteOf(ALFA, 'alfa.example'), { receipt: null }) }), quoted()[1]!, quoted()[2]!])],
     ['a record with no signature', () => fanOf([alfa({ record: recordOf(ALFA, 1, quoteOf(ALFA, 'alfa.example'), { receipt_signature: null }) }), quoted()[1]!, quoted()[2]!])],
+    ['a quote for another request', () => {
+      const other = { ...quoteOf(ALFA, 'alfa.example'), rfq_sha256: 'd7'.repeat(32) };
+      return fanOf([alfa({ quote: other, record: recordOf(ALFA, 1, other) }), quoted()[1]!, quoted()[2]!]);
+    }],
+    ['a quote that is not the signed result of its record', () => fanOf([alfa({ quote: { ...quoteOf(ALFA, 'alfa.example'), total: 1 } }), quoted()[1]!, quoted()[2]!])],
+    ['a record with no result', () => fanOf([alfa({ record: recordOf(ALFA, 1, null) }), quoted()[1]!, quoted()[2]!])],
   ];
   it.each(WRONG)('fails with internal when the fan-out gives %s, and scores nothing', async (_name, answer) => {
     const w = world();
@@ -124,9 +130,10 @@ describe('the quotes', () => {
     expect(result.quotes).toHaveLength(3);
   });
 
-  it('fails with ranking_invalid before it pays for a scorer when the ranking cannot hold an accepted quote: the kit refuses the total, and the quotes stay', async () => {
+  it('fails with ranking_invalid before it pays for a scorer when the ranking cannot cite an accepted quote: the kit refuses the escrow reference, and the quotes stay', async () => {
     const w = world();
-    const broken = alfa({ quote: { ...quoteOf(ALFA, 'alfa.example'), total: 1.5 } });
+    const reference = 'not a reference';
+    const broken = alfa({ record: recordOf(ALFA, 1, quoteOf(ALFA, 'alfa.example'), { escrow_ref: reference }), sub_job: { ...subJobOf('supplychain.rfq.quote.v1', 1), escrow_ref: reference } });
     w.script.quotes = async () => fanOf([broken, quoted()[1]!, quoted()[2]!]);
     const result = await w.run();
     expectFailed(result, 'ranking_invalid');

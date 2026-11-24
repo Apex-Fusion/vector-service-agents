@@ -4,9 +4,10 @@
 import { describe, expect, it } from 'vitest';
 import type { JsonValue } from '@vsa/usecase-kit/protocol';
 import type { BidderView, QuoteOutcome } from '../../src/propose/index.ts';
+import { heldQuoteOf, isPermutation } from '../../src/propose/ranking.ts';
 import {
   ALFA, BRAVO, CHARLIE, DELTA, FIFTH, SIXTH, acceptedOf, candidates, decisionOf, excludedOf, fanOf, fileOf, goldenQuotes, goldenScoring, hex32, namesOf, proposed, quoteOf, rankAnswer, rankingOf,
-  readGolden, receiptHash, recordOf, scoredOf, shortlistAnswer, viewOf, world,
+  readGolden, receiptHash, recordOf, rfqHash, scoredOf, shortlistAnswer, viewOf, world,
 } from './support.ts';
 
 const NAMES = ['alfa', 'bravo', 'charlie'];
@@ -294,5 +295,64 @@ describe('the excluded list', () => {
       { desk_did: SIXTH, reason: 'not_invited', code: null },
     ]);
     expect(result.bidders).toHaveLength(6);
+  });
+
+  it('lists the excluded bidders in the order of the candidates and not in the order of the invitation: the model invites the fourth candidate first', async () => {
+    const refused = excludedOf(DELTA, 'refused', 'duplicate_rfq', { record: recordOf(DELTA, 4, null, { receipt: null, receipt_signature: null, verification: null, result: null, accepted: null }) });
+    const { result } = await mixed([DELTA, ALFA], [refused, acceptedOf(ALFA, 1, 'alfa')]);
+    expect(rankingOf(result).excluded).toStrictEqual([
+      { desk_did: BRAVO, reason: 'not_invited', code: null },
+      { desk_did: CHARLIE, reason: 'not_invited', code: null },
+      { desk_did: DELTA, reason: 'refused', code: 'duplicate_rfq' },
+    ]);
+  });
+});
+
+describe('the quote that the agent holds', () => {
+  const held = (over: Parameters<typeof acceptedOf>[3] = {}, hash = rfqHash()) => heldQuoteOf(acceptedOf(ALFA, 1, 'alfa', over), hash);
+
+  it('is the accepted quote of the bidder, cited by the escrow of its record, the hash of its signed receipt and the numbers of its quote: the twin of every refusal below', () => {
+    const outcome = acceptedOf(ALFA, 1, 'alfa');
+    expect(heldQuoteOf(outcome, rfqHash())).toStrictEqual({
+      did: ALFA,
+      quote: outcome.quote,
+      ranked: { escrow_ref: outcome.record.escrow_ref, receipt_sha256: receiptHash(outcome.record), total: outcome.quote.total, lead_time_days: outcome.quote.lead_time_days },
+    });
+  });
+
+  it('is none when the quote names another request, or the job holds the hash of another request: a quote of another list of items is never cited', () => {
+    const other = { ...quoteOf(ALFA, 'alfa.example'), rfq_sha256: hex32(7) };
+    expect(held({ quote: other, record: recordOf(ALFA, 1, other) })).toBeNull();
+    expect(held({}, hex32(7))).toBeNull();
+  });
+
+  it('is none when the quote is not the signed result of its record: another total, another unit price, the quote of another bidder, or no result', () => {
+    const quote = quoteOf(ALFA, 'alfa.example');
+    expect(held({ quote: { ...quote, total: quote.total - 1 } })).toBeNull();
+    expect(held({ quote: { ...quote, lines: quote.lines.map((line, index) => (index === 0 ? { ...line, unit_price: line.unit_price - 1 } : line)) } })).toBeNull();
+    expect(held({ record: recordOf(ALFA, 1, quoteOf(BRAVO, 'bravo.example')) })).toBeNull();
+    expect(held({ record: recordOf(ALFA, 1, null) })).toBeNull();
+  });
+});
+
+describe('the order check', () => {
+  const scored = [ALFA, BRAVO, CHARLIE];
+
+  it('takes each scored bidder once, in any sequence', () => {
+    expect(isPermutation([ALFA, BRAVO, CHARLIE], scored)).toBe(true);
+    expect(isPermutation([CHARLIE, ALFA, BRAVO], scored)).toBe(true);
+  });
+
+  it.each([
+    ['a bidder two times and another one missing', [ALFA, ALFA, CHARLIE]],
+    ['the first bidder three times', [ALFA, ALFA, ALFA]],
+    ['a bidder missing', [ALFA, BRAVO]],
+    ['a bidder too many', [ALFA, BRAVO, CHARLIE, DELTA]],
+    ['a bidder that was not scored in place of a scored one', [ALFA, BRAVO, DELTA]],
+    ['entries that are no texts', [ALFA, BRAVO, 3]],
+    ['a text in place of a list', ALFA],
+    ['nothing', undefined],
+  ])('refuses %s', (_name, order) => {
+    expect(isPermutation(order, scored)).toBe(false);
   });
 });
