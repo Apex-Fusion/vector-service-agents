@@ -1,4 +1,4 @@
-# Build context for agents/agent-history/Dockerfile, agents/document-pipeline/Dockerfile, agents/audio-snippets/Dockerfile, agents/advocate/Dockerfile, agents/reorder-agent/Dockerfile, agents/order-desk/Dockerfile and services/mock-systems/Dockerfile is the repo root.
+# Build context for agents/agent-history/Dockerfile, agents/document-pipeline/Dockerfile, agents/audio-snippets/Dockerfile, agents/advocate/Dockerfile, agents/reorder-agent/Dockerfile, agents/order-desk/Dockerfile, services/mock-systems/Dockerfile and scripts/operator/Dockerfile is the repo root.
 # node_modules is the entry that matters. A copy installed on the host carries host-specific pnpm links, and COPY would lay it over
 # the image's own install. The image installs its own from the lockfile.
 # Env files are ignored at any depth: a key left in a .env anywhere in the tree must never reach the build context.
@@ -20,4 +20,12 @@ build
 docs
 specs
 deploy
-scripts
+# The scripts folder stays out, except the operator pack and the checks that it reuses. The last line that matches a path decides, and a line above a re-include does not reach into the folder that the
+# re-include lets in. So the four lines after the re-includes leave out of those two folders what the lines above leave out of the others: test folders, env files and node_modules.
+scripts/*
+!scripts/operator
+!scripts/checks
+scripts/**/test
+scripts/**/.env
+scripts/**/.env.*
+scripts/**/node_modules
