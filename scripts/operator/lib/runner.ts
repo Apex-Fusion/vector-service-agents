@@ -428,7 +428,7 @@ export interface RunDeps {
 }
 
 /** What a run ended with, before the machine line is made. */
-interface Ended { readonly exit: number; readonly outcome: ResultOutcome }
+interface Ended { readonly exit: number; readonly outcome: ResultOutcome; readonly result?: Readonly<Record<string, unknown>> }
 
 interface RunLock { readonly path: string; release(): void }
 
@@ -727,17 +727,28 @@ async function execute<Extra>(def: TaskDefinition<Extra>, argv: readonly string[
   ctx.lock = takeRunLock(join(settings.stateDir, RUN_LOCK), `${def.name} ${args.command} in ${args.mode} mode, started ${iso(clock.now())}`);
   const use = await (deps.loadUseCase ?? loadUseCase)(args.useCase ?? settings.useCase);
   const extra = def.parse(deps.env, settings, use, args.flags);
+  const base = join(settings.stateDir, args.run === null ? def.name : `${def.name}.${args.run}`);
+  const identity = { check: def.name, network: settings.network.name, record: args.run === null ? use.name : `${use.name}:${args.run}` };
+  const factsPath = join(settings.stateDir, 'facts.json');
+  const factsIdentity = { useCase: use.name, network: settings.network.name };
+  if (def.offline?.matches(extra)) {
+    if (args.command !== 'run' || args.mode !== 'dry') throw new FlagError('the local document writer takes only run without --submit');
+    const flight = StateFile.peek(`${base}.state.json`, identity)?.in_flight;
+    if (flight != null) throw new PreconditionError(`the step ${flight.step} has a transaction in flight; settle it with the normal command before writing documents`);
+    const facts = FactsFile.open(factsPath, factsIdentity).read();
+    const { message, result } = await def.offline.run({ extra, use, facts, stateDir: settings.stateDir, out });
+    out.out(message);
+    return { exit: 0, outcome: 'done', result };
+  }
   const submit = args.mode === 'submit';
   const approvalNeeded = submit && def.needs.approval === 'submit';
   const named = def.needs.keys(use, args.flags);
   const registry = loadKeys(deps.readRegistry ?? ((options) => loadRegistry(options)), { dir: settings.keysDir, useCase: use.name, specs: use.keys }, named, approvalNeeded);
-  const base = join(settings.stateDir, args.run === null ? def.name : `${def.name}.${args.run}`);
-  const identity = { check: def.name, network: settings.network.name, record: args.run === null ? use.name : `${use.name}:${args.run}` };
   const state = StateFile.open(`${base}.state.json`, identity);
   ctx.state = state;
   const evidence = EvidenceFile.open(`${base}.evidence.json`, identity);
   ctx.evidence = evidence;
-  const facts = FactsFile.open(join(settings.stateDir, 'facts.json'), { useCase: use.name, network: settings.network.name });
+  const facts = FactsFile.open(factsPath, factsIdentity);
   const awaitMs = deps.awaitMs ?? AWAIT_MS;
   const pollMs = deps.pollMs ?? POLL_MS;
   const connections = connect(def, settings, deps);
@@ -887,7 +898,7 @@ export async function runTask<Extra>(def: TaskDefinition<Extra>, argv: readonly 
   } finally {
     await release(ctx, deps.out);
   }
-  emit(deps.out, { task: def.name, command: ctx.command, mode: ctx.mode, outcome: ended.outcome, exit: ended.exit, step: stepOf(def, ctx, ended.outcome), result: resultOf(def, ctx, deps.out) });
+  emit(deps.out, { task: def.name, command: ctx.command, mode: ctx.mode, outcome: ended.outcome, exit: ended.exit, step: stepOf(def, ctx, ended.outcome), result: ended.result ?? resultOf(def, ctx, deps.out) });
   return ended.exit;
 }
 

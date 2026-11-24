@@ -606,12 +606,10 @@ describe('the tenant, vaults and funding', () => {
     expect(data.funding.reduce((sum, line) => sum + line.floatLovelace, 0n)).toBe(910n * UNIT);
   });
 
-  it('uses the CI checkout of the runtime and the Module-1 path of the Sourcing Agent example', () => {
-    const ci = parseYaml(read('.github/workflows/ci.yml')) as { jobs: Record<string, { steps?: { with?: { repository?: string; ref?: string } }[] }> };
-    const refs = Object.values(ci.jobs).flatMap((job) => job.steps ?? []).filter((step) => step.with?.repository === 'Apex-Fusion/vector-agent-template').map((step) => step.with?.ref);
-    expect(refs.length).toBeGreaterThan(0);
+  it('uses the runtime revision verified by CI and the Module-1 path of the Sourcing Agent example', () => {
+    const ci = parseYaml(read('.github/workflows/ci.yml')) as { env?: { AGENT_RUNTIME_TEMPLATE_COMMIT?: string } };
     expect(data.runtimeCommit).toMatch(/^[0-9a-f]{40}$/);
-    for (const ref of refs) expect(ref).toBe(data.runtimeCommit);
+    expect(data.runtimeCommit).toBe(ci.env?.AGENT_RUNTIME_TEMPLATE_COMMIT);
     expect(exampleOf(read('deploy/server/.env.sourcing-agent.example')).VECTOR_MODULE1_MANIFEST.split('<commit>/')[1]).toBe(data.moduleManifestPath);
   });
 });

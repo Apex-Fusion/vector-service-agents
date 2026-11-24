@@ -649,6 +649,33 @@ describe('a transaction in flight', () => {
   /** The time after which a transaction of `strand` cannot land any more, and the run may let it go. */
   const AFTER_VALIDITY = NOW + 30 * 60_000 + 61_000;
 
+  it('renders offline without keys or a node and never reconciles a pending payment', async () => {
+    const w = await taskWorld();
+    const render = toyTask([], { offline: {
+      matches: () => true,
+      run: ({ use }) => ({ message: 'documents written', result: { use: use.name } }),
+    } });
+    const noKeys = w.deps({ readRegistry: () => { throw new Error('local render opened the key registry'); } });
+    expect(await runTask(render, [], noKeys)).toBe(0);
+    expect(w.machine()).toMatchObject({ outcome: 'done', result: { use: w.use.name } });
+    expect(await runTask(render, ['--submit'], noKeys)).toBe(2);
+    expect(await runTask(render, ['cleanup'], noKeys)).toBe(2);
+    const refused = toyTask([], { offline: { matches: () => true, run: () => { throw new PreconditionError('missing document facts'); } } });
+    expect(await runTask(refused, [], noKeys)).toBe(2);
+    expect(existsSync(join(w.stateDir, 'toy.state.json'))).toBe(false);
+    expect(w.node.networkReads).toBe(0);
+    expect(w.node.submitted).toEqual([]);
+
+    const { hash } = await strand(w, []);
+    w.node.neverConfirm = false;
+    const reads = w.node.networkReads;
+    expect(await runTask(render, [], noKeys)).toBe(2);
+    expect(w.node.networkReads).toBe(reads);
+    expect(w.node.reads).toEqual([]);
+    expect(w.state('toy').in_flight?.tx_hash).toBe(hash);
+    expect(w.exposure().map((entry) => entry.tx_hash)).toEqual([hash]);
+  });
+
   it('signs, submits, waits, records the step with its hash, writes the evidence, and reserves the net outflow in the cap file before the submit', async () => {
     const w = await taskWorld();
     w.writeGo();
