@@ -24,6 +24,7 @@ import type { StepRecord } from '../../checks/lib/state.ts';
 import { verifyWithTools } from '../../checks/lib/verify.ts';
 import type { HostedTools, ToolAnswer } from '../../checks/lib/hosted.ts';
 import type { ToolCheck } from '../../checks/lib/verify.ts';
+import { requireGo } from '../lib/approval.ts';
 import { attestationDocumentName, attestationDocumentOf, documentMatches, readLimited, requirePublicDigests, runningImagesOf, writeAttestationDocument } from '../lib/build-record.ts';
 import type { AttestationDocument, RunningImages } from '../lib/build-record.ts';
 import type { AgentSpec, AttestationFact, AttestationSpec, DeployFact, RecordFact, TaskDefinition, TaskFlags, TaskSession, UseCase } from '../lib/contract.ts';
@@ -252,6 +253,8 @@ async function buildAttestation(session: Session, type: AttType, input: Attestat
     const structure = envelopeSigStructure(fields);
     if (first.sigStructure !== structure) throw new PreconditionError('the build gives a Sig_structure that is not the one of the five fields of the envelope: nothing was signed');
     if (session.mode === 'dry') return { build: first, validUntil, envelopeSig: null };
+    // The provider key signs nothing before the approval allows this step: the task, the run wallet and the tag attestation. `landBuilt` checks the same again before it signs the transaction.
+    requireGo(session.go, { task: session.task, runWallet: session.registry.addressOf('run'), nowMs: session.clock.now(), irreversible: ['attestation'] });
     const envelopeSig = session.registry.key('provider').signMessage(Buffer.from(structure, 'hex'));
     if (!envelopeVerifies(fields, envelopeSig)) throw new PreconditionError('the signature of the envelope does not verify with the public key of the provider: nothing was landed');
     const context = await session.chain.context(feeAddress);
@@ -319,6 +322,10 @@ function attestationStep(spec: AttestationSpec, type: AttType): StepHandler<Atte
   return {
     name,
     async run(session) {
+      const held = session.facts.read().attestations[spec.agent]?.[type];
+      if (held !== undefined) {
+        throw new PreconditionError(`the facts file holds the ${type} attestation ${held.id} of ${spec.agent} already: an attestation of a step is made once, and another run label or a state file that was moved away does not change that`);
+      }
       const commit = commitOf(session);
       const { locatorBase } = session.extra;
       if (locatorBase === null) throw new FlagError('an attestation step needs --locator-base <the raw folder of the published documents>');

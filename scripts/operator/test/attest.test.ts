@@ -285,6 +285,9 @@ const nothingLanded = (r: Rig): void => {
   expect(r.signing.messages).toBe(0);
 };
 
+/** The attestations that the ledger holds at the attestation script: the outputs that carry a token of the attestation policy. */
+const attestationsOnLedger = (r: Rig): number => r.world.chain.held.filter((output) => output.address === DEPLOYMENT.attestation.address && Object.keys(output.assets).some((unit) => unit.startsWith(DEPLOYMENT.attestation.hash))).length;
+
 /** The service container and the runtime container of each agent that a row of `REFUSED` takes out. */
 const CONTAINER: Record<AgentId, { service: string; runtime: string }> = { 'reorder-agent': { service: 'reorder-service', runtime: 'reorder-runtime' }, 'order-desk': { service: 'orders-service', runtime: 'orders-large-runtime' } };
 const manifestUrl = (agent: AgentId): string => `${agentOf(agent).endpoint}/agent.json`;
@@ -659,6 +662,48 @@ describe('an attestation step', () => {
     r.go();
     r.signing.throwing = false;
     expect(await r.run(...SUBMIT)).toBe(0);
+  });
+  it('asks no signature of the provider key when the approval does not list the tag attestation: the envelope step stops with exit 2 before it signs', async () => {
+    const r = await rig();
+    await land(r, 1);
+    r.go({ irreversible: [] });
+    r.signing.throwing = true;
+    r.signing.signers.length = 0;
+    r.signing.messages = 0;
+    expect(await r.run(...SUBMIT)).toBe(2);
+    expect(r.w.screen.errorText).toContain('irreversible tag attestation');
+    expect(r.signing.messages).toBe(0);
+    expect(r.signing.signers).toEqual([]);
+    expect(r.node.submitted).toHaveLength(1);
+    r.go();
+    r.signing.throwing = false;
+    expect(await r.run(...SUBMIT)).toBe(0);
+    expect(r.signing.messages).toBe(1);
+    expect(r.node.submitted).toHaveLength(2);
+  });
+  /** After a second run of a step that the facts hold: the words of the refusal, one transaction, one attestation on the ledger, and the first attestation in the facts. */
+  const refusedAgain = (r: Rig, id: string): void => {
+    expect(r.w.screen.errorText).toContain('already: an attestation of a step is made once');
+    expect(r.node.submitted).toHaveLength(1);
+    expect(attestationsOnLedger(r)).toBe(1);
+    expect(r.w.facts().attestations['reorder-agent']?.provenance?.id).toBe(id);
+  };
+  it('makes an attestation of a step once: a run with another run label stops with exit 2 and makes no second transaction', async () => {
+    const r = await rig();
+    expect(await r.run(...SUBMIT)).toBe(0);
+    const id = r.part('reorder-agent:provenance').refs.attestation_id!;
+    r.signing.throwing = true;
+    expect(await r.run(...SUBMIT, '--run', 'again')).toBe(2);
+    refusedAgain(r, id);
+  });
+  it('makes an attestation of a step once: a run after the state file was moved away stops with exit 2 and makes no second transaction', async () => {
+    const r = await rig();
+    expect(await r.run(...SUBMIT)).toBe(0);
+    const id = r.part('reorder-agent:provenance').refs.attestation_id!;
+    rmSync(join(r.w.stateDir, 'attest.state.json'));
+    r.signing.throwing = true;
+    expect(await r.run(...SUBMIT)).toBe(2);
+    refusedAgain(r, id);
   });
   it('needs the task in the approval', async () => {
     const r = await rig();
