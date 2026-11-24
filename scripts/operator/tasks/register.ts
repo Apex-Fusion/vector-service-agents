@@ -400,6 +400,8 @@ function recordStep(subject: Subject): StepHandler<Extra> {
     async run(session) {
       session.extra.result = null;
       if (session.state.snapshot().in_flight !== null) throw new PreconditionError('a transaction is in flight: settle it before a record is built');
+      const held = session.facts.read().records[subject.id];
+      if (held !== undefined) throw new PreconditionError(`the facts file holds the record ${subject.id} already (${held.did}): a record is registered once, and another run label or a state file that was moved away does not change that`);
       requireOrganisationParty(subject);
       await requireFeeWallet(session);
       const parent = subject.parent === null ? null : await parentOf(session, subject);

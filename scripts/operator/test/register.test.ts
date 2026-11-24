@@ -1000,3 +1000,23 @@ describe('register: a transaction in flight', () => {
     }
   });
 });
+
+describe('register: a record is registered once', () => {
+  it('stops before it builds when the facts file holds the record already, also for another run label, and a dry run says the same', async () => {
+    const f = await fixture();
+    await registered(f);
+    f.hosted.calls.length = 0;
+    const signed = f.signs.length;
+    expect(await f.run('--run', 'again', '--submit')).toBe(2);
+    expect(errorText(f)).toContain('the facts file holds the record reorder-agent already');
+    expect(f.hosted.calls).toEqual([]);
+    expect(f.signs).toHaveLength(signed);
+    expect(f.world.chain.applied).toHaveLength(1);
+    expect(Object.keys(f.w.state('register', 'again').steps)).toEqual([]);
+    expect(await f.run('--run', 'again')).toBe(2);
+    expect(f.hosted.calls).toEqual([]);
+    // The twin: the run with no label goes on to the next record.
+    expect(await f.run('--submit')).toBe(0);
+    expect(steps(f)).toEqual(['reorder-agent', 'stock-reader']);
+  });
+});
