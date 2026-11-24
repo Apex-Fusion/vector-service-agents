@@ -3,7 +3,7 @@
 // variable and never repeats a value that could be a secret: a key of 64 hex characters in the wrong line is never in a message. The limits of the two kinds of hire are bigints of more than 0, and a limit that is
 // not set is never "no limit". The three scorers are three agents, and none is the agent. The numbers of the service agree with each other: the deadline of a job, the timeout of the runtime and the window of the advert.
 import { describe, expect, test } from 'vitest';
-import { VECTOR_KOIOS_URL, VECTOR_OGMIOS_URL, VECTOR_SUBMIT_URL } from '@vsa/buyer-core';
+import { READ_BUDGET_MS, VECTOR_KOIOS_URL, VECTOR_OGMIOS_URL, VECTOR_SUBMIT_URL } from '@vsa/buyer-core';
 import { REGISTRY_POLICY } from '@vsa/vector-read';
 import { PROPOSE_DEADLINE_MS } from '../../src/propose/index.ts';
 import {
@@ -374,7 +374,9 @@ describe('the settings of the dispute code', () => {
     ...rowsOf('DISPUTE_MIN_WINDOW_LEFT_MS', disputeOf, '2000', [
       ['the least window that is not set', undefined], ['a least window of 1,999 ms', '1999'], ['a negative least window', '-1'], ['a least window that is no number', 'x'], ['a key in the line', SECRET],
     ]),
-    ...rowsOf('DISPUTE_READ_TIMEOUT_MS', disputeOf, '1', [['the bound of a read that is not set', undefined], ['a bound of 0', '0'], ['a bound that is no number', 'x'], ['a key in the line', SECRET]]),
+    ...rowsOf('DISPUTE_READ_TIMEOUT_MS', disputeOf, '1', [
+      ['the bound of a read that is not set', undefined], ['a bound of 0', '0'], ['a bound that is no number', 'x'], ['a bound of 30,001 ms, above the read budget of the buyer code', '30001'], ['a key in the line', SECRET],
+    ]),
     ...rowsOf('DISPUTE_STARTED_LEASE_MS', disputeOf, '40000', [['a lease of 39,999 ms, below twice the bound of a read', '39999'], ['a lease that is no number', 'x'], ['a key in the line', SECRET]]),
     ...rowsOf('DISPUTE_RESOLUTION_DEADLINE_MS', disputeOf, '24000000', [['a deadline of 1,000 ms', '1000'], ['a deadline that is no number', 'x'], ['a key in the line', SECRET]]),
   ];
@@ -391,6 +393,18 @@ describe('the settings of the dispute code', () => {
     expect(messageOf(() => disputeOf(completeEnv({ DISPUTE_MIN_WINDOW_LEFT_MS: '1999' })))).toMatch(/^environment variable DISPUTE_MIN_WINDOW_LEFT_MS must be a whole number of milliseconds of at least 2000/);
     expect(messageOf(() => disputeOf(completeEnv({ DISPUTE_STARTED_LEASE_MS: '39999' })))).toMatch(/^environment variable DISPUTE_STARTED_LEASE_MS must be a whole number of milliseconds of at least 40000/);
     expect(messageOf(() => disputeOf(completeEnv({ DISPUTE_RESOLUTION_DEADLINE_MS: '1000' })))).toMatch(/^environment variable DISPUTE_RESOLUTION_DEADLINE_MS must be a whole number of milliseconds of at least 24000000/);
+  });
+
+  test('the bound of a read is at most the read budget of the buyer code: 30,001 ms stops the start by its name, and 30,000 ms is its twin', () => {
+    expect(READ_BUDGET_MS).toBe(30_000);
+    const message = messageOf(() => disputeOf(completeEnv({ DISPUTE_READ_TIMEOUT_MS: String(READ_BUDGET_MS + 1) })));
+    expect(message).toMatch(/^environment variable DISPUTE_READ_TIMEOUT_MS must be a whole number of milliseconds of at most 30000/);
+    expect(message).toContain(`and it has ${String(READ_BUDGET_MS + 1).length} characters`);
+    expect(message).not.toContain(String(READ_BUDGET_MS + 1));
+    expect(disputeOf(completeEnv({ DISPUTE_READ_TIMEOUT_MS: String(READ_BUDGET_MS) })).read_timeout_ms).toBe(READ_BUDGET_MS);
+    // The lease must hold twice the bound, so the least lease of the largest bound is 60,000 ms.
+    expect(disputeOf(completeEnv({ DISPUTE_READ_TIMEOUT_MS: String(READ_BUDGET_MS), DISPUTE_STARTED_LEASE_MS: '60000' })).started_lease_ms).toBe(60_000);
+    expect(messageOf(() => disputeOf(completeEnv({ DISPUTE_READ_TIMEOUT_MS: String(READ_BUDGET_MS), DISPUTE_STARTED_LEASE_MS: '59999' })))).toMatch(/^environment variable DISPUTE_STARTED_LEASE_MS must be a whole number of milliseconds of at least 60000/);
   });
 });
 

@@ -4,7 +4,7 @@
 //
 // Two groups of limits are required, and none has a default. The model hire has four (the models, the price and the two bond limits), and the hire of a quote has three (the price and the two bond limits).
 // Each limit is a bigint of more than 0. A wrong text stops the start: a limit that is not set is never "no limit".
-import { VECTOR_KOIOS_URL, VECTOR_OGMIOS_URL, VECTOR_SUBMIT_URL } from '@vsa/buyer-core';
+import { READ_BUDGET_MS, VECTOR_KOIOS_URL, VECTOR_OGMIOS_URL, VECTOR_SUBMIT_URL } from '@vsa/buyer-core';
 import { envInt, given, hexOf, requiredEnv, shown } from '@vsa/service-kit';
 import type { MockBases } from '@vsa/usecase-kit/access';
 import { checkLimits as checkHireLimits } from '@vsa/usecase-kit/buyer';
@@ -296,13 +296,18 @@ export function quoteLimitsOf(env: NodeJS.ProcessEnv): HireLimits {
 }
 
 /**
- * The settings of the dispute code. The stake, the least window left and the bound of a read are required. The lease of an unfinished challenge and the resolution deadline are optional: the deadline must be
+ * The settings of the dispute code. The stake, the least window left and the bound of a read are required. The bound of a read is at most the read budget of the buyer code: the time that a quote hire keeps for a
+ * challenge assumes that one read ends within that budget, so a longer bound stops the start here, by its name. The lease of an unfinished challenge and the resolution deadline are optional: the deadline must be
  * the one of the Module-1 deployment, and the dispute code checks that when it reads the deployment.
  */
 export function disputeOf(env: NodeJS.ProcessEnv): DisputeSettings {
   const stake = lovelaceOf('DISPUTE_CHALLENGE_STAKE_LOVELACE', requiredEnv('DISPUTE_CHALLENGE_STAKE_LOVELACE', env.DISPUTE_CHALLENGE_STAKE_LOVELACE, 'the stake of a challenge, in lovelace'));
   const windowLeft = millisecondsOf('DISPUTE_MIN_WINDOW_LEFT_MS', requiredEnv('DISPUTE_MIN_WINDOW_LEFT_MS', env.DISPUTE_MIN_WINDOW_LEFT_MS, 'the least time left in the challenge window of a claim'), LEAST_WINDOW_LEFT_MS);
-  const readTimeout = millisecondsOf('DISPUTE_READ_TIMEOUT_MS', requiredEnv('DISPUTE_READ_TIMEOUT_MS', env.DISPUTE_READ_TIMEOUT_MS, 'the most time that one read of the dispute code may take'), 1);
+  const readText = requiredEnv('DISPUTE_READ_TIMEOUT_MS', env.DISPUTE_READ_TIMEOUT_MS, 'the most time that one read of the dispute code may take');
+  const readTimeout = millisecondsOf('DISPUTE_READ_TIMEOUT_MS', readText, 1);
+  if (readTimeout > READ_BUDGET_MS) {
+    throw new Error(`environment variable DISPUTE_READ_TIMEOUT_MS must be a whole number of milliseconds of at most ${READ_BUDGET_MS}: a quote hire keeps time for a challenge that assumes reads of at most that time, and it has ${readText.length} characters`);
+  }
   const lease = given(env.DISPUTE_STARTED_LEASE_MS);
   const deadline = given(env.DISPUTE_RESOLUTION_DEADLINE_MS);
   return {
