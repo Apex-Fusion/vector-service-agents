@@ -2,9 +2,11 @@
 // The real list of buyer-core, `listAttestations`, behind `readCompliance`, over the ledger fixtures of buyer-core: an offline node that holds the outputs, and a fake Koios that lists them. The datums are real bytes. The
 // codec of the builders makes them, and the real code reads them back. No test here touches the network. The scenarios of read.test.ts run again over the real list, so the real list and the scripted list must give
 // the same answers.
+import { deepStrictEqual } from 'node:assert/strict';
 import { describe, expect, test } from 'vitest';
 import { listAttestations } from '@vsa/buyer-core';
-import { decodeAttestationDatum, utf8Hex } from '@vsa/vector-read/identity-codec';
+import type { AttestationQuery } from '@vsa/buyer-core';
+import { decodeAttestationDatum, encodeAttestationDatum, utf8Hex } from '@vsa/vector-read/identity-codec';
 import type { AttestationDatum } from '@vsa/vector-read/identity-codec';
 import {
   CAPTURE, CAPTURE_MS, MAINNET, attestationIdOf, attestationUtxo, callsTo, capturedUtxos, koiosRow, ledgerWorld, revokedWithReason,
@@ -12,7 +14,7 @@ import {
 import type { KoiosOptions, LedgerWorld } from '../../../../packages/buyer-core/test/fixtures/ledger-read-world.ts';
 import { readCompliance } from '../../src/compliance/index.ts';
 import type { ComplianceDeps, FactState } from '../../src/compliance/index.ts';
-import { AGENT_ID, DAY, DID, ID, NOW, OTHER_ID, REGISTRY, STRANGER, ManualClock, datum, depsOf, golden, id, readItems, revoked, view } from './support.ts';
+import { ABSENT, AGENT_ID, DAY, DID, ID, MINUTE, NOW, OTHER_ID, REGISTRY, STRANGER, ManualClock, datum, depsOf, golden, id, readItems, revoked, view } from './support.ts';
 
 /** One attestation of a scenario: its identifier and datum. A reason that a number cannot hold also has its exact value and the bytes of the datum, because the codec of the builders refuses to make such a datum. */
 interface Row {
@@ -32,6 +34,25 @@ const wideRow = (attestationId: string): Row => ({
   id: attestationId, datum: datum(revoked(WIDE_REVOKED_AT, Number.NaN)), reason: WIDE_REASON, bytes: revokedWithReason(WIDE_REASON, datum()),
 });
 
+/** The bytes of the datum `d` with each named 32-byte member written as an indefinite byte string of two chunks. The decoded datum is the same, and the bytes are not, as in a datum that a `Contest` writes again. */
+function chunkedBytes(d: AttestationDatum, members: readonly ('subject' | 'issuer')[]): string {
+  const plain = encodeAttestationDatum(d);
+  let bytes = plain;
+  for (const member of members) {
+    const value = d[member];
+    bytes = bytes.replace(`5820${value}`, `5f5810${value.substring(0, 32)}5810${value.substring(32)}ff`);
+  }
+  if (bytes === plain) throw new Error('the datum was not written again');
+  deepStrictEqual(decodeAttestationDatum(bytes), decodeAttestationDatum(plain));
+  return bytes;
+}
+
+/** An attestation of a scenario whose datum is written again with the named 32-byte members in chunks. */
+const chunkedRow = (attestationId: string, d: AttestationDatum, members: readonly ('subject' | 'issuer')[] = ['subject']): Row => ({ id: attestationId, datum: d, bytes: chunkedBytes(d, members) });
+
+/** The page of the list of every attestation that a query names by its place only: Koios pages it in the order of the output reference. */
+const everyAttestation = (query: AttestationQuery): AttestationQuery => ({ limit: query.limit, ...(query.offset === undefined ? {} : { offset: query.offset }) });
+
 const REPLY = { uri: utf8Hex('https://bidder.example/reply.txt'), sha256: 'cd'.repeat(32) };
 
 /** What the ledger holds besides the scenario: attestations of the registry about another agent, and decoys that hold the bidder as a digest or as a link target, and an attestation of a stranger. */
@@ -45,9 +66,11 @@ const noise = () => [
 const utxosOf = (rows: readonly Row[]) => rows.map((r) => (r.bytes === undefined ? attestationUtxo(r.id, r.datum) : attestationUtxo(r.id, datum(), { datum: r.bytes })));
 const worldOf = (rows: readonly Row[], koios: KoiosOptions = {}): LedgerWorld => ledgerWorld([...utxosOf(rows), ...noise()], koios);
 
-/** The deps over the real list of a world. A wide list asks for every attestation about the bidder, whatever its issuer and type: the reader must drop the others itself. */
-const realDeps = (world: LedgerWorld, wide = false): ComplianceDeps =>
-  depsOf((query) => (wide ? listAttestations(world.env, { subject: query.subject, limit: 50 }) : listAttestations(world.env, query)));
+/**
+ * The deps over the real list of a world. The list that the reader asks for names the key hash of the registry and the type. A wide list answers with every attestation of the world instead, whatever its issuer, its type
+ * and its subject, in the order of the output reference: the reader must drop the attestations that it does not count and put the others in order itself.
+ */
+const realDeps = (world: LedgerWorld, wide = false): ComplianceDeps => depsOf((query) => listAttestations(world.env, wide ? everyAttestation(query) : query));
 
 const SCENARIOS: ReadonlyArray<readonly [string, readonly Row[], FactState]> = [
   ['no attestation', [], 'absent'],
@@ -62,6 +85,9 @@ const SCENARIOS: ReadonlyArray<readonly [string, readonly Row[], FactState]> = [
   ['two attestations issued at the same time: the lower identifier is active', [row(id(0x20), datum({ issuedAt: NOW - DAY, ...revoked(NOW - DAY, 1) })), row(id(0x10), datum({ issuedAt: NOW - DAY }))], 'valid'],
   ['an active attestation with a reply', [row(ID, datum({ contested: REPLY }))], 'valid'],
   ['a revoked attestation with a reply', [row(ID, datum({ contested: REPLY, ...revoked(NOW - 2 * DAY, 9) }))], 'invalid'],
+  ['a revoked attestation with a reply, whose subject is written in chunks of bytes', [chunkedRow(ID, datum({ contested: REPLY, ...revoked(NOW - 2 * DAY, 7) }))], 'invalid'],
+  ['a newer attestation that is revoked, with its subject in chunks of bytes, and an older one that is active', [chunkedRow(id(2), datum({ issuedAt: NOW - 5 * DAY, ...revoked(NOW - DAY, 1) })), row(id(1), datum({ issuedAt: NOW - 10 * DAY }))], 'invalid'],
+  ['an active attestation whose subject and issuer are written in chunks of bytes', [chunkedRow(ID, datum(), ['subject', 'issuer'])], 'valid'],
   ['an attestation of type 1', [row(ID, datum({ attType: 1 }))], 'absent'],
   ['an attestation of type 15', [row(ID, datum({ attType: 15 }))], 'absent'],
   ['an attestation of another issuer', [row(ID, datum({ issuer: STRANGER.publicKey }))], 'absent'],
@@ -83,14 +109,53 @@ describe('the real list gives the answers of the scripted list', () => {
   });
 });
 
+describe('a datum that the controller of the subject writes again', () => {
+  // The controller of the subject signs a `Contest`, which writes the datum again with the same decoded fields. The bytes can differ: a 32-byte value may be written in chunks. A filter of the list on the bytes of
+  // the subject then misses the output, so the reader asks for no subject and decides on the decoded datum.
+  const contested = datum({ contested: REPLY, ...revoked(NOW - 2 * DAY, 7) });
+  const subjectQuery: AttestationQuery = { subject: DID, issuer: { type: 'key_hash', hash: REGISTRY.keyHash }, attType: 0, limit: 20 };
+
+  test('a revoked attestation with a reply, whose subject is written in chunks of bytes, reads invalid: revoked, the reason 7 and the reply', async () => {
+    const world = worldOf([chunkedRow(ID, contested)]);
+    const expected = { ...golden('fact-valid.json'), state: 'invalid', attestation_state: 'revoked', revoked_at: '2026-11-22T12:00:00Z', revoke_reason: '7', contested: { sha256: REPLY.sha256 } };
+    expect(await readCompliance(realDeps(world), DID, NOW)).toStrictEqual(expected);
+    // The witness: a list that names the subject does not find the output, and it finds the plain twin.
+    expect((await listAttestations(world.env, subjectQuery)).total).toBe(0);
+    const plain = worldOf([row(ID, contested)]);
+    expect((await listAttestations(plain.env, subjectQuery)).total).toBe(1);
+    expect(await readCompliance(realDeps(plain), DID, NOW)).toStrictEqual(expected);
+  });
+
+  test('a newer attestation that is revoked, with its subject in chunks, does not hide behind an older one that is active: the fact is invalid and not valid', async () => {
+    const newer = datum({ issuedAt: NOW - 5 * DAY, ...revoked(NOW - DAY, 1) });
+    const older = datum({ issuedAt: NOW - 10 * DAY });
+    const world = worldOf([chunkedRow(id(2), newer), row(id(1), older)]);
+    const fact = await readCompliance(realDeps(world), DID, NOW);
+    expect([fact.state, fact.attestation, fact.attestation_state]).toStrictEqual(['invalid', id(2), 'revoked']);
+    // The witness: a list that names the subject finds the older attestation only, and a reader that asked for it would say valid.
+    const found = await listAttestations(world.env, subjectQuery);
+    expect(found.items.map((item) => item.id)).toStrictEqual([id(1)]);
+    // The twin: with the plain datum the answer is the same.
+    expect(await readCompliance(realDeps(worldOf([row(id(2), newer), row(id(1), older)])), DID, NOW)).toStrictEqual(fact);
+  });
+
+  test('an issuer that is written in chunks of bytes is still the issuer: the key hash is taken of the decoded key', async () => {
+    const both = chunkedRow(ID, datum(revoked(NOW - 2 * DAY, 7)), ['subject', 'issuer']);
+    expect(await readCompliance(realDeps(worldOf([both])), DID, NOW)).toMatchObject({ state: 'invalid', attestation_state: 'revoked', revoke_reason: '7' });
+    // The twin: the same writing of the key of a stranger is still the key of a stranger.
+    const stranger = chunkedRow(ID, datum({ issuer: STRANGER.publicKey }), ['subject', 'issuer']);
+    expect(await readCompliance(realDeps(worldOf([stranger])), DID, NOW)).toStrictEqual(ABSENT);
+  });
+});
+
 describe('the real list', () => {
   test('a revoked attestation with a reason above 2^53 shows the exact reason and the time of the revocation, and the number of the datum is NaN', async () => {
     const fact = await readCompliance(realDeps(worldOf([wideRow(ID)])), DID, NOW);
     expect(fact.revoke_reason).toBe('1152921504606846983');
     expect(fact.revoked_at).toBe(new Date(WIDE_REVOKED_AT).toISOString().replace(/\.000Z$/, 'Z'));
     expect(fact.attestation_state).toBe('revoked');
-    const page = await listAttestations(worldOf([wideRow(ID)]).env, { subject: DID, issuer: { type: 'key_hash', hash: REGISTRY.keyHash }, attType: 0, limit: 20 });
-    const status = page.items[0]!.attestation.status;
+    const page = await listAttestations(worldOf([wideRow(ID)]).env, { issuer: { type: 'key_hash', hash: REGISTRY.keyHash }, attType: 0, limit: 50 });
+    const status = page.items.find((item) => item.id === ID)!.attestation.status;
     expect(status.type === 'AttRevoked' && Number.isNaN(status.reason)).toBe(true);
   });
 
@@ -113,8 +178,8 @@ describe('the real list', () => {
     expect((await readCompliance(spent, DID, NOW)).state).toBe('unreadable');
   });
 
-  test('5,000 attestations about the bidder make the list fail, and the fact is unreadable: it is neither valid nor absent, and a few strangers do not matter', async () => {
-    const template = koiosRow(attestationUtxo(id(0x90), datum({ issuer: STRANGER.publicKey })));
+  test('5,000 attestation outputs in all make the list fail, and the fact is unreadable: it is neither valid nor absent, and a few outputs of other agents do not matter', async () => {
+    const template = koiosRow(attestationUtxo(id(0x90), datum({ subject: OTHER_ID, issuer: STRANGER.publicKey })));
     const hash = (n: number): string => n.toString(16).padStart(8, '0').repeat(8);
     const outputs = (count: number) => Array.from({ length: count }, (_, n) => ({
       ...template, tx_hash: hash(0x100000 + n), asset_list: [{ policy_id: MAINNET.attestation.hash, asset_name: (0x100000 + n).toString(16).padStart(64, '0'), quantity: '1' }],
@@ -122,29 +187,34 @@ describe('the real list', () => {
     const mine = attestationUtxo(ID, datum());
     const fine = ledgerWorld([mine], { rows: [...outputs(50), koiosRow(mine)] });
     expect(await readCompliance(realDeps(fine), DID, NOW)).toStrictEqual(golden('fact-valid.json'));
-    // The list reads at most 4,999 outputs of one subject: the 5,000th makes it fail, and the attestation of the registry is among them.
+    // The reader names no subject, so the list reads every attestation output, whoever its subject and its issuer are. It reads at most 4,999 of them: the 5,000th makes it fail, for every bidder.
     const flooded = ledgerWorld([mine], { rows: [...outputs(4_999), koiosRow(mine)] });
     expect(await readCompliance(realDeps(flooded), DID, NOW)).toMatchObject({ state: 'unreadable', attestation: null });
   });
 
-  test('a Koios that ignores its datum filter and its token filter changes nothing: the reader and the list decide on the decoded datum', async () => {
+  test('a Koios that ignores its token filter changes nothing: the list decides on the token and on the decoded datum', async () => {
     const rows = [row(ID, datum())];
-    const loose = worldOf(rows, { ignoreDatumFilter: true, ignoreAssetFilter: true });
+    const loose = worldOf(rows, { ignoreAssetFilter: true });
     expect(await readCompliance(realDeps(loose), DID, NOW)).toStrictEqual(golden('fact-valid.json'));
   });
 
-  test('a page that says that more attestations exist is not followed: the newest of 25 decides, and the list is read once', async () => {
-    // The newest attestation of the 25 is revoked. The 24 older ones are active, so a reader that took the first active one, or a later page, would say valid.
-    const rows = Array.from({ length: 25 }, (_, n) => row(id(0x80 + n), datum({ issuedAt: NOW - (30 - n) * DAY, ...(n === 24 ? revoked(NOW - DAY, 1) : {}) })));
-    const world = worldOf(rows);
-    let calls = 0;
-    const deps = depsOf((query) => { calls += 1; return listAttestations(world.env, query); });
-    const fact = await readCompliance(deps, DID, NOW);
-    expect([fact.state, fact.attestation, fact.attestation_state]).toStrictEqual(['invalid', id(0x80 + 24), 'revoked']);
-    expect(calls).toBe(1);
-    expect(callsTo(world.koios, 'credential_utxos')).toHaveLength(1);
-    const page = await listAttestations(world.env, { subject: DID, issuer: { type: 'key_hash', hash: REGISTRY.keyHash }, attType: 0, limit: 20 });
-    expect([page.items.length, page.total, page.nextOffset]).toStrictEqual([20, 25, 20]);
+  test('a list of 120 attestations of the registry is read page by page: the revoked attestation of the bidder is on the last page, and the older active one is beside it', async () => {
+    const idOf = (n: number): string => n.toString(16).padStart(64, '0');
+    // The registry attested 120 other agents. Each of those attestations is newer than both of the bidder, so the pages of the list, newest first, end with the bidder.
+    const others = Array.from({ length: 120 }, (_, n) => row(idOf(n + 1), datum({ subject: idOf(0x1000 + n), issuedAt: NOW - (n + 1) * MINUTE })));
+    const mine = [row(id(1), datum({ issuedAt: NOW - 10 * DAY })), row(id(2), datum({ issuedAt: NOW - 5 * DAY, ...revoked(NOW - DAY, 7) }))];
+    for (const wide of [false, true]) {
+      const world = worldOf([...others, ...mine]);
+      const offsets: Array<number | undefined> = [];
+      const deps = depsOf((query) => {
+        offsets.push(query.offset);
+        return listAttestations(world.env, wide ? everyAttestation(query) : query);
+      });
+      const fact = await readCompliance(deps, DID, NOW);
+      expect([fact.state, fact.attestation, fact.attestation_state, fact.revoke_reason], `wide: ${wide}`).toStrictEqual(['invalid', id(2), 'revoked', '7']);
+      expect(offsets, `wide: ${wide}`).toStrictEqual([undefined, 50, 100]);
+      expect(callsTo(world.koios, 'credential_utxos'), `wide: ${wide}`).toHaveLength(3);
+    }
   });
 
   test('the type 0 attestation that mainnet holds, made by another issuer, does not count for the key of the registry; one of the registry beside it decides', async () => {

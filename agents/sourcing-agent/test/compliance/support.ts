@@ -90,6 +90,24 @@ export function scripted(answer: (query: AttestationQuery) => unknown): Scripted
 /** A list that answers with one page of these items. */
 export const listing = (items: readonly AttestationView[], over: Partial<AttestationPage> = {}): ScriptedList => scripted(() => page(items, over));
 
+/**
+ * A list that serves these pages in order, as `listAttestations` pages a list. The first call asks for no offset. A later call must ask for the offset where its page starts, which the page before it named in
+ * `nextOffset`. A call that asks for another offset, or for a page that the list does not have, fails. Each page except the last names the start of the next one.
+ */
+export function paged(pages: readonly (readonly AttestationView[])[]): ScriptedList {
+  let call = 0;
+  const total = pages.reduce((sum, items) => sum + items.length, 0);
+  return scripted((query) => {
+    const at = call;
+    call += 1;
+    const items = pages[at];
+    if (items === undefined) throw new Error(`the list has no page ${at + 1}`);
+    const offset = pages.slice(0, at).reduce((sum, earlier) => sum + earlier.length, 0);
+    if (query.offset !== (at === 0 ? undefined : offset)) throw new Error(`page ${at + 1} was asked for the offset ${String(query.offset)}, and it starts at ${offset}`);
+    return page(items, { offset, nextOffset: at < pages.length - 1 ? offset + items.length : null, total });
+  });
+}
+
 /** One tick of the event loop, with the microtasks that it holds. */
 export const settle = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
 

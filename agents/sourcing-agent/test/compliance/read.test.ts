@@ -9,7 +9,7 @@ import { FACT_READ_TIMEOUT_MS, readCompliance } from '../../src/compliance/index
 import type { ComplianceClock, ComplianceDeps } from '../../src/compliance/index.ts';
 import {
   ABSENT, AGENT_ID, DAY, DID, ID, LAST_TIME_MS, MINUTE, NOW, OTHER_ID, REGISTRY, STRANGER, UNREADABLE,
-  ManualClock, damagedDatum, damagedView, datum, deferred, depsOf, golden, goldenText, id, listing, page, readItems, revoked, scripted, settle, view,
+  ManualClock, damagedDatum, damagedView, datum, deferred, depsOf, golden, goldenText, id, listing, page, paged, readItems, revoked, scripted, settle, view,
 } from './support.ts';
 import type { Deferred } from './support.ts';
 
@@ -17,10 +17,19 @@ import type { Deferred } from './support.ts';
 const fact = (over: Record<string, unknown>): Record<string, unknown> => ({ ...golden('fact-valid.json'), ...over });
 
 describe('the query', () => {
-  test('asks one list for the attestations of type 0 by the key hash of the registry about the bidder, in one page of 20', async () => {
+  test('asks the list for the attestations of type 0 by the key hash of the registry, with no subject, 50 to a page', async () => {
     const source = listing([view(ID, datum())]);
     await readCompliance(depsOf(source.list), DID, NOW);
-    expect(source.queries).toStrictEqual([{ subject: DID, issuer: { type: 'key_hash', hash: REGISTRY.keyHash }, attType: 0, limit: 20 }]);
+    expect(source.queries).toStrictEqual([{ issuer: { type: 'key_hash', hash: REGISTRY.keyHash }, attType: 0, limit: 50 }]);
+  });
+
+  test('names no subject, whatever the bidder: the reader decides on the decoded subject, because a filter on the bytes of the subject can be dodged', async () => {
+    const first = listing([]);
+    const second = listing([]);
+    await readCompliance(depsOf(first.list), DID, NOW);
+    await readCompliance(depsOf(second.list), `did:vector:${OTHER_ID}`, NOW);
+    expect(first.queries).toStrictEqual(second.queries);
+    expect(first.queries.every((query) => !('subject' in query))).toBe(true);
   });
 });
 
@@ -197,15 +206,115 @@ describe('the newest attestation decides', () => {
       expect((await readItems(items)).state).toBe('invalid');
     }
   });
+});
 
-  test('a page that says that more attestations exist is not followed: the first item decides, and one list call is made', async () => {
-    const more = listing([view(ID, datum(revoked(NOW - DAY, 1)))], { nextOffset: 20, total: 31 });
-    const read = await readCompliance(depsOf(more.list), DID, NOW);
-    expect([read.state, read.attestation_state]).toStrictEqual(['invalid', 'revoked']);
-    expect(more.queries).toHaveLength(1);
-    const same = listing([view(ID, datum(revoked(NOW - DAY, 1)))], { nextOffset: null });
-    expect(await readCompliance(depsOf(same.list), DID, NOW)).toStrictEqual(read);
-    expect(same.queries).toHaveLength(1);
+describe('the pages of the list', () => {
+  const QUERY = { issuer: { type: 'key_hash', hash: REGISTRY.keyHash }, attType: 0, limit: 50 };
+  /** An attestation of the registry about another bidder. */
+  const other = (n: number, over: Partial<AttestationDatum> = {}) => view(id(n), datum({ subject: OTHER_ID, issuedAt: NOW - n * DAY, ...over }));
+  const older = view(id(1), datum({ issuedAt: NOW - 10 * DAY }));
+  const newer = view(id(2), datum({ issuedAt: NOW - 5 * DAY, ...revoked(NOW - DAY, 1) }));
+
+  test('a page that names a next page is followed: the attestations of every page take part, and the newest decides', async () => {
+    // The newest attestation of the bidder is on the second page, against the order of the lister. The reader decides on all of them.
+    const source = paged([[other(3), older], [newer]]);
+    const read = await readCompliance(depsOf(source.list), DID, NOW);
+    expect([read.state, read.attestation, read.attestation_state]).toStrictEqual(['invalid', id(2), 'revoked']);
+    expect(source.queries).toStrictEqual([QUERY, { ...QUERY, offset: 2 }]);
+    // The twin: the same attestations on one page give the same fact.
+    expect(await readItems([other(3), older, newer])).toStrictEqual(read);
+  });
+
+  test('the attestation of the bidder can be on any page: the third page holds it', async () => {
+    const source = paged([[other(3), other(4)], [other(5), other(6)], [view(ID, datum(revoked(NOW - 2 * DAY, 1)))]]);
+    const read = await readCompliance(depsOf(source.list), DID, NOW);
+    expect([read.state, read.attestation, read.attestation_state]).toStrictEqual(['invalid', ID, 'revoked']);
+    expect(source.queries.map((query) => query.offset)).toStrictEqual([undefined, 2, 4]);
+  });
+
+  test('a failure on a later page makes the fact unreadable, whatever the first page says', async () => {
+    const failing = scripted((query) => (query.offset === undefined ? page([view(ID, datum())], { nextOffset: 1 }) : Promise.reject(new Error('the source answered 500'))));
+    expect(await readCompliance(depsOf(failing.list), DID, NOW)).toStrictEqual(UNREADABLE);
+    expect(failing.queries).toHaveLength(2);
+    // The twin: a first page that names no next page is read, and the fact is valid.
+    expect((await readItems([view(ID, datum())])).state).toBe('valid');
+  });
+
+  test('a later page that is not a page makes the fact unreadable', async () => {
+    const broken = scripted((query) => (query.offset === undefined ? page([view(ID, datum())], { nextOffset: 1 }) : { total: 1 }));
+    expect(await readCompliance(depsOf(broken.list), DID, NOW)).toStrictEqual(UNREADABLE);
+    expect(broken.queries).toHaveLength(2);
+  });
+
+  test.each<readonly [string, unknown]>([
+    ['a text', '1'],
+    ['a number below zero', -1],
+    ['a number with a fraction', 1.5],
+    ['NaN', Number.NaN],
+    ['an object', {}],
+    ['zero, where the first page starts', 0],
+  ])('a next page that is %s is not a page to follow: the fact is unreadable, and no second call is made', async (_name, nextOffset) => {
+    const source = scripted(() => ({ ...page([view(ID, datum())]), nextOffset }));
+    expect(await readCompliance(depsOf(source.list), DID, NOW)).toStrictEqual(UNREADABLE);
+    expect(source.queries).toHaveLength(1);
+  });
+
+  test.each<readonly [string, unknown]>([
+    ['null', null],
+    ['no member', undefined],
+  ])('a next page that is %s is the end of the list', async (_name, nextOffset) => {
+    const source = scripted(() => ({ ...page([view(ID, datum())]), nextOffset }));
+    expect(await readCompliance(depsOf(source.list), DID, NOW)).toStrictEqual(golden('fact-valid.json'));
+    expect(source.queries).toHaveLength(1);
+  });
+
+  test('a page that does not lead forward makes the fact unreadable: a later page that names its own start', async () => {
+    const stuck = scripted((query) => page([query.offset === undefined ? other(3) : view(ID, datum())], { nextOffset: 1 }));
+    expect(await readCompliance(depsOf(stuck.list), DID, NOW)).toStrictEqual(UNREADABLE);
+    expect(stuck.queries).toHaveLength(2);
+  });
+
+  test('at most 100 pages are read: a list of 100 pages is read, and a list that names a 101st page is unreadable', async () => {
+    const pages = (count: number) => Array.from({ length: count }, (_, n) => (n === count - 1 ? [view(ID, datum())] : [other(n + 1)]));
+    const hundred = paged(pages(100));
+    expect(await readCompliance(depsOf(hundred.list), DID, NOW)).toStrictEqual(golden('fact-valid.json'));
+    expect(hundred.queries).toHaveLength(100);
+    const more = paged(pages(101));
+    expect(await readCompliance(depsOf(more.list), DID, NOW)).toStrictEqual(UNREADABLE);
+    expect(more.queries).toHaveLength(100);
+  });
+
+  test('the time bound covers all the pages together: a second page that does not come ends the read 20 seconds after its start', async () => {
+    const clock = new ManualClock();
+    const second = deferred<AttestationPage>();
+    let calls = 0;
+    const list: ComplianceDeps['list'] = () => {
+      calls += 1;
+      return calls === 1 ? Promise.resolve(page([view(ID, datum())], { nextOffset: 1 })) : second.promise;
+    };
+    const pending = readCompliance(depsOf(list, { clock }), DID, NOW);
+    await clock.advance(15_000);
+    expect(calls).toBe(2);
+    expect(clock.waiting).toBe(1);
+    await clock.advance(FACT_READ_TIMEOUT_MS - 15_000 - 1);
+    expect(clock.waiting).toBe(1);
+    await clock.advance(1);
+    expect(await pending).toStrictEqual(UNREADABLE);
+    expect(clock.waiting).toBe(0);
+
+    // The twin: a second page that comes just in time is read, and the newest attestation of the two pages decides.
+    const spare = new ManualClock();
+    const inTime = deferred<AttestationPage>();
+    let spareCalls = 0;
+    const timely: ComplianceDeps['list'] = () => {
+      spareCalls += 1;
+      return spareCalls === 1 ? Promise.resolve(page([older], { nextOffset: 1 })) : inTime.promise;
+    };
+    const pendingInTime = readCompliance(depsOf(timely, { clock: spare }), DID, NOW);
+    await spare.advance(FACT_READ_TIMEOUT_MS - 1);
+    inTime.resolve(page([newer]));
+    expect(await pendingInTime).toMatchObject({ state: 'invalid', attestation: id(2) });
+    expect(spare.waiting).toBe(0);
   });
 });
 
