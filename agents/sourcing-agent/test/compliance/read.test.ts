@@ -4,8 +4,9 @@
 import { describe, expect, test } from 'vitest';
 import type { AttestationPage } from '@vsa/buyer-core';
 import type { AttestationDatum } from '@vsa/vector-read/identity-codec';
+import { systemClock } from '@vsa/usecase-kit/access';
 import { FACT_READ_TIMEOUT_MS, readCompliance } from '../../src/compliance/index.ts';
-import type { ComplianceDeps } from '../../src/compliance/index.ts';
+import type { ComplianceClock, ComplianceDeps } from '../../src/compliance/index.ts';
 import {
   ABSENT, AGENT_ID, DAY, DID, ID, LAST_TIME_MS, MINUTE, NOW, OTHER_ID, REGISTRY, STRANGER, UNREADABLE,
   ManualClock, damagedDatum, damagedView, datum, deferred, depsOf, golden, goldenText, id, listing, page, readItems, revoked, scripted, settle, view,
@@ -293,6 +294,11 @@ describe('a list that cannot be read', () => {
     expect(await pending).toStrictEqual(UNREADABLE);
     settleLate(late);
     await settle();
+  });
+
+  test('the clock of the kit fits the port of the reader, and a list that answers is read with it', async () => {
+    const clock: ComplianceClock = systemClock;
+    expect(await readCompliance(depsOf(listing([view(ID, datum())]).list, { clock }), DID, NOW)).toStrictEqual(golden('fact-valid.json'));
   });
 
   test.each<readonly [string, unknown]>([
