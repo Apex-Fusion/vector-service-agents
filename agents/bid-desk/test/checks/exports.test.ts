@@ -11,13 +11,13 @@ const FOLDER = fileURLToPath(new URL('../../src/checks/', import.meta.url));
 describe('the folder of the hook', () => {
   it('exports the names that the service wires, and no other value', () => {
     expect(Object.keys(checks).sort()).toEqual([
-      'FileRfqBook', 'MemoryRfqBook', 'PASSED_CHECKS_LIMIT', 'PASSED_CHECKS_TTL_MS', 'PassedChecks', 'RFQ_BOOK_LIMIT', 'loadPriceList', 'rfqChecks',
+      'FileRfqBook', 'HOOK_READS', 'MemoryRfqBook', 'PASSED_CHECKS_LIMIT', 'PASSED_CHECKS_TTL_MS', 'PassedChecks', 'RFQ_BOOK_LIMIT', 'createPrecheck', 'loadPriceList', 'rfqChecks',
     ]);
   });
 
   it('has the files of the design, and each imports only a file of its own folder, a workspace package or a module of node', () => {
     const files = readdirSync(FOLDER).filter((name) => name.endsWith('.ts')).sort();
-    expect(files).toEqual(['book.ts', 'extra.ts', 'index.ts', 'passed.ts', 'pricelist.ts']);
+    expect(files).toEqual(['book.ts', 'extra.ts', 'index.ts', 'passed.ts', 'precheck.ts', 'pricelist.ts']);
     for (const file of files) {
       const specifiers = [...readFileSync(join(FOLDER, file), 'utf8').matchAll(/^(?:import|export)\b[^;]*?\bfrom '([^']+)'/gm)].map((match) => match[1]);
       for (const specifier of specifiers) {
