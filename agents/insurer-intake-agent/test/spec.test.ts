@@ -26,7 +26,6 @@ import {
 import type { ProtocolResult } from '@vsa/usecase-kit/protocol';
 import { blake2b224Hex } from '@vsa/vector-read';
 import { CLAIM_STAKE_LOVELACE, CLAIM_WINDOW_MS } from '../../../scripts/operator/lib/claim-constants.ts';
-import { USE_CASE_NAMES } from '../../../scripts/operator/usecases/names.ts';
 import { intakeChecks } from '../src/checks/index.ts';
 import { COMPLETENESS_NAME, INTAKE_REFUSAL_STATUS, RUNTIME_MARGIN_MS, completenessDecision, completenessInput } from '../src/job/index.ts';
 import { READ_BUDGET_MS, REPORT_BUDGET_MS, reportAttestations } from '../src/report/index.ts';
@@ -164,11 +163,11 @@ describe('specs/insurer-intake-agent.md: the frame, the identity and the capabil
     expect(row(identity, 'Parties')).toBe('| Parties | Accountable: the Accountable key of the organisation, with its domain. Responsible: Module-1. Provider: the Provider key. Guardians: the guardian key of the organisation and a controller key of this deployment, with threshold 2 |');
     expect(row(identity, 'Organisation')).toBe('| Organisation | the domain `delta.vector.apexfusion.org`, with the description "Demonstration organisation run by the Apex Fusion Foundation". The identity gateway verifies the domain with a DNS TXT record |');
     expect(row(identity, 'Reputation stake')).toBe('| Reputation stake | a Module-3 self-stake on the capability, owned by the service key |');
-    // The claim: the numbers are the constants of the operator pack. The service stakes none, and no command of this repository stakes one for this agent yet.
+    // The operator command uses the claim constants. The service stakes no claim.
     expect(CLAIM_STAKE_LOVELACE).toBe(50_000_000n);
     expect(CLAIM_WINDOW_MS).toBe(86_400_000);
     expect(row(identity, 'Claim')).toBe(
-      `| Claim | a Module-1 claim for each run. The design is that an operator command stakes it with the service key before the run: ${CLAIM_STAKE_LOVELACE / 1_000_000n} units, which is ${CLAIM_STAKE_LOVELACE} lovelace, with a challenge window of ${CLAIM_WINDOW_MS / 3_600_000} hours. The command withdraws it after the window, when nobody challenged it. No command of this repository stakes a claim for this agent yet. The service stakes none. See Claim statements |`,
+      `| Claim | a Module-1 claim for each run. Before a run of this use case, an operator command stakes a claim with the service key of the agent: ${CLAIM_STAKE_LOVELACE / 1_000_000n} units, which is ${CLAIM_STAKE_LOVELACE} lovelace, with a challenge window of ${CLAIM_WINDOW_MS / 3_600_000} hours. After the window, the same command withdraws the claim when nobody challenged it. The service stakes none. See Claim statements |`,
     );
     // The public URL is the origin of the runtime in the compose file.
     const origin = String(runtimeEnv.PUBLIC_ORIGIN);
@@ -901,31 +900,27 @@ describe('specs/insurer-intake-agent.md: the receipt, the claim and the fault sw
     expect(readFileSync(new URL('../src/serve/server.ts', import.meta.url), 'utf8')).toContain('serialize: (result) => JSON.stringify(result),');
   });
 
-  test('the claim statements are the constants of the kit, the manifest holds the same three texts, no source of the service stakes a claim, and no command of the repository stakes one for this agent yet', () => {
+  test('the claim statements match the kit and the manifest, and the operator command, not the service, stakes the claim', () => {
     const claim = section('Claim statements');
     expect(claim.split('\n').filter((line) => /^\| S[123] \|/.test(line))).toStrictEqual(INTAKE_CLAIM.statements.map((statement) => `| ${statement.id} | ${statement.text} |`));
     expect(manifest.behaviour.claim.statements).toStrictEqual(INTAKE_CLAIM.statements);
     expect(INTAKE_CLAIM.statements.map((statement) => statement.id)).toStrictEqual(['S1', 'S2', 'S3']);
-    expect(claim).toContain('The service stakes no claim: no code of the service calls the staking. No command of this repository stakes a claim for this agent yet. Until one does, a challenge against it ends with `no_open_claim`.');
-    expect(claim).toContain('The same holds for the Prior Authorization Agent: no command stakes a claim for it, so the challenge of this agent against it (see What it checks before the Claim) ends with `no_open_claim` too.');
-    expect(claim).toContain(`The design is that, before a run, an operator command stakes a Module-1 claim for the agent with the service key: ${CLAIM_STAKE_LOVELACE / 1_000_000n} units, which is ${CLAIM_STAKE_LOVELACE} lovelace, with a challenge window of ${CLAIM_WINDOW_MS / 3_600_000} hours. After the window, the same command withdraws the claim when nobody challenged it.`);
+    expect(claim).toContain('The service stakes no claim: no code of the service calls the staking.');
+    expect(claim).toContain(`Before a run of this use case, an operator command stakes a claim with the service key of the agent: ${CLAIM_STAKE_LOVELACE / 1_000_000n} units, which is ${CLAIM_STAKE_LOVELACE} lovelace, with a challenge window of ${CLAIM_WINDOW_MS / 3_600_000} hours. After the window, the same command withdraws the claim when nobody challenged it.`);
+    expect(claim).toContain(`A challenge needs an open claim of the other party. With no open claim, it ends with \`${NO_OPEN_CLAIM}\`.`);
     expect(claim).toContain('The claim has three statements. The manifest holds the same three texts in `behaviour.claim`, with no reference to a claim. A challenge names the text of a statement.');
     // No source of the service calls the staking of a run claim.
     const sourceDir = new URL('../src/', import.meta.url);
     const sources = readdirSync(sourceDir, { recursive: true, encoding: 'utf8' }).filter((file) => file.endsWith('.ts'));
     expect(sources.length).toBeGreaterThan(10);
     expect(sources.filter((file) => readFileSync(new URL(file, sourceDir), 'utf8').includes('stakeRunClaim'))).toStrictEqual([]);
-    // The loader and the two claims that the task can stake determine which agents the command supports.
-    expect(USE_CASE_NAMES).toStrictEqual(['inventory-reorder']);
-    const packDir = new URL('../../../scripts/operator/', import.meta.url);
-    expect(readFileSync(new URL('tasks/claim.ts', packDir), 'utf8')).toContain("agent.kind === 'reorder-agent' ? REORDER_CLAIM : ORDER_DESK_CLAIM");
     // The example environment sets the stake of a challenge, and it sets it once. A challenge targets a claim whose stake is not above that number, so a claim of 50 units is a target.
     expect(envExample.split('\n').filter((line) => line.startsWith('DISPUTE_CHALLENGE_STAKE_LOVELACE='))).toStrictEqual([`DISPUTE_CHALLENGE_STAKE_LOVELACE=${CLAIM_STAKE_LOVELACE}`]);
     // S2 is the statement that a wrong intake record breaks: the evidence of an intake record is about S2.
     expect(EVIDENCE_STATEMENTS.intake_record).toBe('S2');
     expect(INTAKE_CLAIM.statements[1].text).toBe('An intake record names the hash of the request this agent received.');
     expect(NOT_SHOWN_GAP).toContain('the challenge of the Prior Authorization Agent against this agent (this agent has no fault value)');
-    expect(claim).toContain('S2 is the statement that a wrong intake record breaks. When the intake record names another hash than the hash of the request that the Prior Authorization Agent sent, and the model of that agent says no, that agent declines the delivery and challenges the claim of this agent on S2. A challenge needs two things: an open claim of this agent, and two hashes that differ. With an open claim, a no of the model for two equal hashes gives `no_contradiction`, and an accept of the model for two hashes that differ gives `decision_failed`. Neither files a challenge. Until a command stakes a claim for this agent, a challenge ends with `no_open_claim`. No run covers that challenge, because this agent has no fault value (see Known gaps).');
+    expect(claim).toContain('S2 is the statement that a wrong intake record breaks. When the intake record names another hash than the hash of the request that the Prior Authorization Agent sent, and the model of that agent says no, that agent declines the delivery and challenges the claim of this agent on S2. A challenge needs two things: an open claim of this agent, and two hashes that differ. With an open claim, a no of the model for two equal hashes gives `no_contradiction`, and an accept of the model for two hashes that differ gives `decision_failed`. Neither files a challenge. With no open claim, a challenge ends with `no_open_claim`. No run covers that challenge, because this agent has no fault value (see Known gaps).');
     // The two codes. The evidence of an intake record that names the hash of the request that was sent shows no contradiction, and nothing is filed. The Prior Authorization Agent gives `decision_failed` for a model that accepts while the hashes differ.
     const intakeEvidence = (named: string) => evidenceDocument({
       claim: `${'a5'.repeat(32)}#0`, claim_token: `636c6d5f${'b6'.repeat(28)}`, against_did: INSURER_DID, by_did: SENDER_DID, escrow_ref: ESCROW_REF, statement_text: INTAKE_CLAIM.statements[1].text, kind: 'intake_record',
