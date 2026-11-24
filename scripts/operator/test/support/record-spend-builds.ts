@@ -1,5 +1,6 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { fixtureProtocolParameters } from '../../../../packages/buyer-core/test/fixtures/fixture-provider.ts';
 import { CONFIG_UTXO, CONTROLLER_ACCOUNTABLE, DAY, M1, REF_UTXOS, recordUtxo, rootRecord } from '../../../../packages/buyer-core/test/fixtures/identity-world.ts';
 import type { RecordSpendBuild } from '../../../../packages/buyer-core/src/vendored/mcp/identity-build.ts';
 import { utf8Hex } from '../../../../packages/vector-read/src/identity-codec.ts';
@@ -33,10 +34,14 @@ export interface SpendWorldOptions {
   addRecord?: boolean;
   addFact?: boolean;
   failResolver?: boolean;
+  protocolParameters?: Readonly<Record<string, unknown>>;
 }
 
 interface ArchiveOutput { tx_hash: string; tx_index: number; payment_addr: { bech32: string }; value: string }
-interface ArchiveSpend { tx_hash: string; fee: string; inputs: ArchiveOutput[]; outputs: ArchiveOutput[] }
+interface ArchiveSpend {
+  tx_hash: string; fee: string; inputs: ArchiveOutput[]; outputs: ArchiveOutput[];
+  plutus_contracts: { valid_contract: boolean }[];
+}
 
 function archiveOutput(utxo: Utxo): ArchiveOutput {
   return { tx_hash: utxo.txHash, tx_index: utxo.outputIndex, payment_addr: { bech32: utxo.address }, value: String(utxo.assets.lovelace) };
@@ -81,15 +86,21 @@ export async function spendWorld(options: SpendWorldOptions): Promise<SpendWorld
   const statusUrls: string[] = [];
   let runtimeStatus = 'free';
   const archive = new Map<string, ArchiveSpend>();
+  const protocolParameters = options.protocolParameters ?? { minUtxoDepositCoefficient: String(fixtureProtocolParameters().coinsPerUtxoByte) };
   const w = await taskWorld({
     keys: options.use.keys.map(({ name }) => name), shared: options.use.keys.filter(({ scope }) => scope === 'shared').map(({ name }) => name), use: options.use,
     // The runner uses the test loader below. Its environment still needs an active default.
-    env: { OPERATOR_USE_CASE: 'inventory-reorder' },
+    env: { OPERATOR_USE_CASE: 'inventory-reorder', VECTOR_OGMIOS_URL: 'https://ogmios.test' },
     fetchImpl: async (input, init) => {
       const url = String(input);
+      if (new URL(url).hostname === 'ogmios.test') {
+        const request = JSON.parse(String(init?.body)) as { method: string; id: number };
+        if (request.method !== 'queryLedgerState/protocolParameters') throw new Error('Unexpected node request.');
+        return Response.json({ jsonrpc: '2.0', id: request.id, result: protocolParameters });
+      }
       if (new URL(url).pathname === '/api/v1/tx_info') {
-        const request = JSON.parse(String(init?.body)) as { _tx_hashes: string[]; _inputs?: boolean };
-        if (request._inputs !== true) throw new Error('The archive request needs transaction inputs.');
+        const request = JSON.parse(String(init?.body)) as { _tx_hashes: string[]; _inputs?: boolean; _scripts?: boolean };
+        if (request._inputs !== true || request._scripts !== true) throw new Error('The archive request needs transaction inputs and script results.');
         return Response.json(request._tx_hashes.flatMap((hash) => {
           const found = archive.get(hash);
           return found === undefined ? [] : [found];
@@ -106,7 +117,7 @@ export async function spendWorld(options: SpendWorldOptions): Promise<SpendWorld
     const inputs = facts.inputs.map((ref) => archiveOutput(w.world.chain.find(ref)!));
     const hash = await submit(hex);
     const outputs = w.world.chain.held.filter((utxo) => utxo.txHash === hash).map(archiveOutput);
-    archive.set(hash, { tx_hash: hash, fee: String(facts.feeLovelace), inputs, outputs });
+    archive.set(hash, { tx_hash: hash, fee: String(facts.feeLovelace), inputs, outputs, plutus_contracts: [{ valid_contract: true }] });
     return hash;
   };
   const { registry } = w.keys;

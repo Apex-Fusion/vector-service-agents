@@ -186,6 +186,33 @@ describe('revoke-record', () => {
 });
 
 describe('reclaim', () => {
+  it('requires a positive node coefficient that agrees with the wallet context before it asks for a reclaim build', async () => {
+    const protocolParameters: Record<string, unknown> = {};
+    const f = await setup({ protocolParameters });
+    await prepareRevocation(f);
+    expect(await f.run(revokeRecord, ...ARGS)).toBe(0);
+    f.signed.length = 0;
+
+    for (const coefficient of [undefined, 0, -1, 1.5]) {
+      protocolParameters.minUtxoDepositCoefficient = coefficient;
+      expect(await f.run(revokeRecord, ...CLEANUP)).toBe(2);
+      expect(f.w.screen.errorText).toContain('did not give one explicit positive minimum-output coefficient');
+    }
+    const { coinsPerUtxoByte } = await f.w.chain.provider.getProtocolParameters();
+    protocolParameters.minUtxoDepositCoefficient = String(coinsPerUtxoByte + 1n);
+    expect(await f.run(revokeRecord, ...CLEANUP)).toBe(2);
+    expect(f.w.screen.errorText).toContain('wallet context does not use the node minimum-output coefficient');
+    expect(f.hosted.calls.some(({ name }) => name === TOOLS.reclaim)).toBe(false);
+    expect(f.signed).toEqual([]);
+    expect(f.w.node.submitted).toHaveLength(1);
+
+    delete protocolParameters.minUtxoDepositCoefficient;
+    protocolParameters.coinsPerUtxoByte = String(coinsPerUtxoByte);
+    f.prepare(TOOLS.reclaim, await buildReclaim(await f.context(), { changeAddress: f.fee, id: f.id, nowMs: f.w.clock.now() }));
+    expect(await f.run(revokeRecord, ...CLEANUP)).toBe(0);
+    expect(f.signed.sort()).toEqual(['controller', 'fee']);
+  });
+
   it('returns the surplus of the verified tombstone to fee with only the controller and fee signatures', async () => {
     const f = await setup();
     await prepareRevocation(f);
@@ -234,6 +261,9 @@ describe('reclaim', () => {
     const pending = f.w.state('revoke-record').notes[`part.${step}`];
     expect(pending).toMatchObject({ tx_hash: built.txHash });
     expect(pending).not.toHaveProperty('verified_at');
+    f.archive.set(built.txHash, { ...archived, plutus_contracts: [{ valid_contract: false }] });
+    expect(await f.run(revokeRecord, ...CLEANUP)).toBe(1);
+    expect(f.w.screen.errorText).toContain('no affirmative phase-two validity evidence');
     f.archive.set(built.txHash, { ...archived, fee: String(BigInt(archived.fee) + 1n) });
     expect(await f.run(revokeRecord, ...CLEANUP)).toBe(1);
     expect(f.w.screen.errorText).toContain('inputs, outputs or fee differ from the checked transaction');

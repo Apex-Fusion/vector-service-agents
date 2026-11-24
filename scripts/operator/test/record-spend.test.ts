@@ -51,9 +51,11 @@ describe('confirmed record-spend accounting', () => {
     const out = { tx_hash: txHash, tx_index: 0, payment_addr: { bech32: fee }, value: '9000000', ...raw };
     const input = { ...out, tx_hash: inputHash, value: '10000000' };
     let reported = [out];
+    let withDetails = true;
+    let phaseTwo: Record<string, unknown> = { plutus_contracts: [{ valid_contract: true }] };
     const fetchImpl: typeof fetch = async (_url, init) => {
-      expect(JSON.parse(String(init?.body))).toEqual({ _tx_hashes: [txHash], _inputs: true, _assets: true, _scripts: true });
-      return Response.json([{ tx_hash: txHash, fee: '1000000', inputs: [input], outputs: reported }]);
+      expect(JSON.parse(String(init?.body))).toEqual({ _tx_hashes: [txHash], _inputs: true, _scripts: true, ...(withDetails ? { _assets: true } : {}) });
+      return Response.json([{ tx_hash: txHash, fee: '1000000', inputs: [input], outputs: reported, ...phaseTwo }]);
     };
     const session = { node: w.node, chain: { ...w.chain, fetchImpl } };
     w.node.script.push({ confirmations: 1 }, { confirmations: 1 }, { confirmations: 0 });
@@ -65,5 +67,23 @@ describe('confirmed record-spend accounting', () => {
     await expect(readConfirmedRecordSpend(session, txHash, { withDetails: true })).rejects.toThrow('same output reference more than once');
     reported = [out];
     await expect(readConfirmedRecordSpend(session, txHash, { withDetails: true })).rejects.toThrow('does not confirm the exact record spend');
+
+    withDetails = false;
+    phaseTwo = { valid_contract: true };
+    w.node.script.push({ confirmations: 1 });
+    await expect(readConfirmedRecordSpend(session, txHash)).resolves.toStrictEqual({
+      fee: 1_000_000n, inputs: [{ ref: `${inputHash}#0`, address: fee, lovelace: 10_000_000n }],
+      outputs: [{ ref: `${txHash}#0`, address: fee, lovelace: 9_000_000n }],
+    });
+
+    for (const unproved of [
+      {}, { plutus_contracts: [] }, { plutus_contracts: [{}] },
+      { valid_contract: false, plutus_contracts: [{ valid_contract: true }] },
+      { valid_contract: true, plutus_contracts: [{ valid_contract: true }, { valid_contract: false }] },
+    ]) {
+      phaseTwo = unproved;
+      w.node.script.push({ confirmations: 1 });
+      await expect(readConfirmedRecordSpend(session, txHash)).rejects.toThrow('no affirmative phase-two validity evidence');
+    }
   });
 });
