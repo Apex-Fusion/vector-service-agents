@@ -112,12 +112,23 @@ describe('acceptInput', () => {
   });
 
   test.each([
-    ['a request number of 64 characters', { request_number: 'a'.repeat(64) }],
-    ['a request number with a dot, a hyphen and an underscore', { request_number: 'run1.a-1_b' }],
-    ['a hash of 64 lower-case hex characters', { request_sha256: '0f'.repeat(32) }],
-  ])('accepts %s on each side', (_name, change) => {
-    expect(acceptInput({ ...SENT, ...change }, RECEIVED)).toStrictEqual({ sent: { ...SENT, ...change }, record: RECEIVED });
-    expect(acceptInput(SENT, { ...RECEIVED, ...change })).toStrictEqual({ sent: SENT, record: { ...RECEIVED, ...change } });
+    ['a request number of 64 characters', 'a'.repeat(64)],
+    ['a request number with a dot, a hyphen and an underscore', 'run1.a-1_b'],
+  ])('accepts %s, the same on both sides', (_name, requestNumber) => {
+    const sent = { ...SENT, request_number: requestNumber };
+    const received = { ...RECEIVED, request_number: requestNumber };
+    expect(acceptInput(sent, received)).toStrictEqual({ sent, record: received });
+  });
+
+  test('accepts a hash of 64 lower-case hex characters on each side: the two hashes may differ, and the model compares them', () => {
+    const hash = '0f'.repeat(32);
+    expect(acceptInput({ ...SENT, request_sha256: hash }, RECEIVED)).toStrictEqual({ sent: { ...SENT, request_sha256: hash }, record: RECEIVED });
+    expect(acceptInput(SENT, { ...RECEIVED, request_sha256: hash })).toStrictEqual({ sent: SENT, record: { ...RECEIVED, request_sha256: hash } });
+  });
+
+  test('accepts two request numbers that differ in case only: the portal counts a number without regard to case, and the input keeps each value as it was given', () => {
+    expect(acceptInput({ ...SENT, request_number: 'RUN1-1' }, RECEIVED)).toStrictEqual({ sent: { ...SENT, request_number: 'RUN1-1' }, record: RECEIVED });
+    expect(acceptInput(SENT, { ...RECEIVED, request_number: 'Run1-1' })).toStrictEqual({ sent: SENT, record: { ...RECEIVED, request_number: 'Run1-1' } });
   });
 
   /** The error that a call throws. The test fails when the call does not throw. */
@@ -174,6 +185,25 @@ describe('acceptInput', () => {
       expect(error, name).toBeInstanceOf(TypeError);
       expectNames(error.message, `${side}.request_sha256`);
       expect(error.message).not.toContain('Ignore');
+    }
+  });
+
+  test.each([
+    ['another counter', 'run1-2'],
+    ['another tenant', 'run2-1'],
+    ['a longer number that starts with the number that was sent', 'run1-10'],
+    ['a shorter number that ends with a hyphen', 'run1-'],
+  ])('refuses two request numbers that differ (%s), with a TypeError that names both members and repeats no value: the model compares the hashes only, so the caller checks the numbers first', (_name, other) => {
+    for (const [sent, received] of [
+      [SENT, { ...RECEIVED, request_number: other }],
+      [{ ...SENT, request_number: other }, RECEIVED],
+      [SENT, { ...RECEIVED, request_number: other, request_sha256: OTHER_HASH }],
+    ]) {
+      const error = thrown(() => acceptInput(sent, received));
+      expect(error).toBeInstanceOf(TypeError);
+      expectNames(error.message, 'sent.request_number');
+      expectNames(error.message, 'received.request_number');
+      expect(error.message).not.toContain(other);
     }
   });
 });

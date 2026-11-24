@@ -20,7 +20,7 @@
 // `model_output_invalid` in the decision folder.
 import { accepted, checkMembers, isPlainObject, parseDigest, refused } from '@vsa/usecase-kit/protocol';
 import type { Digest, JsonValue, Refused } from '@vsa/usecase-kit/protocol';
-import { MAX_JUSTIFICATION_CHARS } from '@vsa/usecase-kit/priorauth';
+import { MAX_JUSTIFICATION_CHARS, requestNumberKey } from '@vsa/usecase-kit/priorauth';
 import type { Guideline, RecordSet } from '@vsa/usecase-kit/priorauth';
 import type { ChoiceParser, DecisionSpec } from '@vsa/usecase-kit/decision';
 import { ID_RULE, isId } from './intake.ts';
@@ -216,8 +216,14 @@ function sideOf(side: RequestSide, name: string): { request_number: string; requ
 /**
  * The input of `accept_delivery`: the number and the hash of the request that was sent, and the number and the hash that the intake record names. The four values are copied by name. No other member of
  * either argument reaches the prompt: not the `decisions`, the `sender`, the `checks` or the `missing` list of the record, and no text of the counterparty. The caller computes the hash of the request that was
- * sent from the document that it sent, and never takes it from the record. A value that is not a request number or a hash is a `TypeError`.
+ * sent from the document that it sent, and never takes it from the record. A value that is not a request number or a hash is a `TypeError`. So are two request numbers that differ: the model compares the
+ * hashes and nothing else, and `mismatch` cannot name a number, so the caller checks the numbers in code before it asks the model. The portal counts a number without regard to case, and so does this check.
  */
 export function acceptInput(sent: RequestSide, received: RequestSide): JsonValue {
-  return { sent: sideOf(sent, 'sent'), record: sideOf(received, 'received') };
+  const sentSide = sideOf(sent, 'sent');
+  const record = sideOf(received, 'received');
+  if (requestNumberKey(sentSide.request_number) !== requestNumberKey(record.request_number)) {
+    throw new TypeError('acceptInput: sent.request_number and received.request_number must be the number of one request');
+  }
+  return { sent: sentSide, record };
 }
