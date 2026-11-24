@@ -11,6 +11,7 @@
 //   claims     the claim statements of the two agents
 //   quote        the quote that a Bid Desk returns, its 7 checks, and the arithmetic of its lines
 //   quote-rules  the rules that tie a quote to the request that it answers and to the price list that it was priced from, and the check of each line against the list
+//   facts        the facts of the evidence of a quote challenge: the line whose quoted unit price is not the unit price of the list
 export { BID_CAPABILITIES, BID_DESK_MODEL, MAX_ITEM_QUANTITY, SOURCING_MODEL, parseRfqId, parseSku } from './ids.ts';
 export { MAX_RFQ_ITEMS, parseRfqDocument, rfqSha256 } from './rfq.ts';
 export type { RfqDocument, RfqItem } from './rfq.ts';
@@ -27,3 +28,5 @@ export { QUOTE_CHECKS, QUOTE_SCHEMA, parseQuote, quoteTotals } from './quote.ts'
 export type { Quote, QuoteLine } from './quote.ts';
 export { checkQuoteAnswersRfq, checkQuoteFromList, lineChecks } from './quote-rules.ts';
 export type { LineCheck } from './quote-rules.ts';
+export { quotePriceFacts } from './facts.ts';
+export type { PriceFacts } from './facts.ts';
