@@ -179,8 +179,9 @@ async function recordDocuments(session: Session): Promise<StepOutcome> {
   for (const one of checked) for (const image of [one.images.service, ...one.images.runtimes]) images[image.container] = image.reference;
   const deploy: DeployFact = { commit, images };
   const held = session.facts.read().deploy;
-  if (held !== null && !isDeepStrictEqual(held, deploy)) {
-    throw new PreconditionError(`the facts hold the deploy record of the commit ${held.commit}, and the running containers or the commit differ from it: repair the facts file before the documents of another build are written`);
+  // The deploy record names the build of the documents. A record of another build is replaced while no attestation names it, and it stays when one does.
+  if (held !== null && !isDeepStrictEqual(held, deploy) && Object.keys(session.facts.read().attestations).length > 0) {
+    throw new PreconditionError(`the facts hold the deploy record of the commit ${held.commit}, and an attestation names that build: the deploy record of another build is not written`);
   }
   const dir = join(session.settings.stateDir, DOCUMENTS);
   const documents: Record<string, { name: string; sha256: string }> = {};
@@ -189,7 +190,7 @@ async function recordDocuments(session: Session): Promise<StepOutcome> {
     documents[one.subject.agent.id] = { name: one.name, sha256: one.document.sha256 };
     session.out.out(`the document ${one.name} of ${one.subject.agent.id}: SHA-256 ${one.document.sha256}, ${outcome === 'written' ? 'written' : 'there already'} in ${join(dir, one.name)}`);
   }
-  session.facts.put('deploy', [], deploy);
+  session.facts.put('deploy', [], deploy, { replace: true });
   session.state.setNote('documents', documents);
   session.out.out('copy the files into docs/attestations/ in a docs pull request, and use the raw folder at the merge commit as --locator-base');
   return { kind: 'done', message: `the documents of the commit ${commit} are written: ${Object.values(documents).map((document) => document.name).join(', ')}` };

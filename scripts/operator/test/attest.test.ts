@@ -108,16 +108,16 @@ class Web {
   }
 }
 
-const registryUrls = (image: string): { token: string; manifest: string } => ({
+const registryUrls = (image: string, commit = COMMIT): { token: string; manifest: string } => ({
   token: `https://ghcr.io/token?service=ghcr.io&scope=repository:apex-fusion/vector-service-agents/${image}:pull`,
-  manifest: `https://ghcr.io/v2/apex-fusion/vector-service-agents/${image}/manifests/${COMMIT}`,
+  manifest: `https://ghcr.io/v2/apex-fusion/vector-service-agents/${image}/manifests/${commit}`,
 });
 const REGISTRY_TOKEN = 'a-pull-token-of-the-test-registry';
 
 /** The public registry: a token for each image, and the manifest of the commit tag with its digest. */
-function publish(web: Web, images: Readonly<Record<string, string>>): void {
+function publish(web: Web, images: Readonly<Record<string, string>>, commit = COMMIT): void {
   for (const [image, imageDigest] of Object.entries(images)) {
-    const urls = registryUrls(image);
+    const urls = registryUrls(image, commit);
     web.set(urls.token, () => Response.json({ token: REGISTRY_TOKEN }));
     web.set(urls.manifest, () => new Response('{"manifests":[]}', { headers: { 'docker-content-digest': imageDigest } }));
   }
@@ -463,11 +463,25 @@ describe('attest run --record', () => {
     expect(await r.run(...RECORD_ARGV)).toBe(2);
     expect(readFileSync(path, 'utf8')).toBe(`${documentOf('order-desk').text}\n`);
   });
-  it('refuses a deploy record of another build, and writes no file', async () => {
+  it('replaces the deploy record of another build while no attestation names it, and writes the documents of the new build', async () => {
     const r = await rig();
-    FactsFile.open(join(r.w.stateDir, 'facts.json'), { useCase: 'inventory-reorder', network: 'vector-mainnet' }).put('deploy', [], { commit: 'f'.repeat(40), images: { 'reorder-service': 'a' } });
-    expect(await r.run(...RECORD_ARGV)).toBe(2);
-    expect(documentsOf(r)).toEqual([]);
+    expect(await r.run(...RECORD_ARGV)).toBe(0);
+    const other = 'f'.repeat(40);
+    publish(r.web, PUBLIC_IMAGES, other);
+    expect(await r.run('run', '--record', '--commit', other)).toBe(0);
+    expect(r.w.facts().deploy).toEqual({ commit: other, images: Object.fromEntries(r.running) });
+    expect(documentsOf(r)).toEqual([attestationDocumentName('order-desk', COMMIT), attestationDocumentName('order-desk', other), attestationDocumentName('reorder-agent', COMMIT), attestationDocumentName('reorder-agent', other)].sort());
+  });
+  it('keeps the deploy record of a build that an attestation names, and writes no file of another build', async () => {
+    const r = await rig();
+    await r.run(...RECORD_ARGV);
+    await land(r, 1);
+    const other = 'f'.repeat(40);
+    publish(r.web, PUBLIC_IMAGES, other);
+    expect(await r.run('run', '--record', '--commit', other)).toBe(2);
+    expect(r.w.screen.errorText).toContain('an attestation names that build');
+    expect(r.w.facts().deploy?.commit).toBe(COMMIT);
+    expect(documentsOf(r)).toEqual([attestationDocumentName('order-desk', COMMIT), attestationDocumentName('reorder-agent', COMMIT)].sort());
   });
 });
 
