@@ -353,3 +353,90 @@ A refusal is `{ "error": "<code>", "message": "<words>" }` with the status in th
 | 500, the service | `precheck_missing` (the job has no record of passed checks for its body), `store_write_failed` (the intake book or the record of the model hire cannot be written. When the intake book fails, the portal holds the entry), `internal` (a fault of the service: a plain 500 with no message when nothing names it, and the fixed message when the job names it) |
 | 502, a third party | `svid_failed` (the identity gateway gave no JWT-SVID), `mock_system_failed` (the insurer portal did not take the call. After a call that was sent, the entry may exist at the portal), `inference_failed` (the model hire failed), `model_output_invalid` (the answer of the model cannot be used) |
 | 503, the service cannot answer now | `check_unavailable` (the hook could not read a source), `shutting_down` (the service is stopping) |
+
+## What the receipt commits to
+
+The service signs no receipt. The runtime builds and signs the receipt, and submits its hash in the Submit transaction.
+
+| Receipt field | Value for this agent |
+|---|---|
+| `escrow_ref` | the escrow UTxO, `<txid>#<index>` |
+| `supplier_pkh` | the key hash of the supplier key of the runtime |
+| `prompt_hash` | sha256 of the UTF-8 bytes of the wire payload, as the buyer committed it in the escrow datum |
+| `response_hash` | sha256 of the UTF-8 bytes of the intake record exactly as the service returned them |
+| `model` | `insurer-intake-agent-v1` |
+| `prompt_tokens`, `completion_tokens` | 0 and 0, the runtime counts none. The token counts of the model hire are in the sub-receipt under `decisions[0].inference.sub_job` |
+| `wallclock_ms` | how long the service call took |
+
+The intake record is the committed output. So the receipt commits the intake as the Insurer Intake Agent understood it: the number and the hash of the request that it received, the status and the missing requirements, the id of the entry, who sent the request and under which approval, what the report found about the sender, the 15 checks, and the completeness decision with its reasoning and the sub-receipt of the model supplier. It does not commit to any coverage decision: the intake record is not one.
+
+The signature is Ed25519 over the canonical JSON of the receipt. The sha256 of the canonical JSON of `{ receipt, signature }` is the `result_receipt_hash` in the Submitted escrow datum.
+
+## Claim statements
+
+The service stakes no claim: no code of the service calls the staking. Before a run, an operator command stakes a Module-1 claim for the agent with the service key: 50 units, which is 50000000 lovelace, with a challenge window of 24 hours. After the window, the same command withdraws the claim when nobody challenged it. The claim has three statements. The manifest holds the same three texts in `behaviour.claim`, with no reference to a claim. A challenge names the text of a statement.
+
+| Id | Statement |
+|---|---|
+| S1 | This agent issues an intake record only for a request with a valid sign-off by the party whose delegation paid for it. |
+| S2 | An intake record names the hash of the request this agent received. |
+| S3 | This agent files one entry per request number. |
+
+S2 is the statement that a wrong intake record breaks. When the intake record names another hash than the hash of the request that the Prior Authorization Agent sent, that agent declines the delivery and challenges the claim of this agent on S2. No run covers that challenge, because this agent has no fault value (see Known gaps).
+
+## Fault switch
+
+None. FAULT_MODE must be empty.
+
+The Insurer Intake Agent has no fault value. The service stops at start when `FAULT_MODE` has any value. The manifest lists no value in `behaviour.fault_modes`. Each intake record carries the member `fault_mode`, and it is the empty text. The Prior Authorization Agent has the fault value `alter_after_approval`, which makes it send a request that its hirer did not sign off. The Insurer Intake Agent refuses that request before its Claim (see What it checks before the Claim).
+
+## Operator and data handling
+
+Operator: Apex Fusion Foundation. The contact is `operator.contact` in the manifest.
+
+The authorization request, the sign-off reference and the requirements are synthetic data. They are held in memory while a job runs, and none of them is kept after the job. The filed request lives in the insurer portal of the mock service. On disk the service keeps the bookkeeping of the escrows that it posts for its model call, the book of the request numbers that it filed (the tenant, the request number and the intake id of each request), and the journal of its challenges. On a digest mismatch it publishes an evidence document and a challenge on the ledger. The log carries job outcomes, counts and codes, never a request, a requirement or a key.
+
+Every request is synthetic, and no patient exists behind any of it. Do not send a record of a real person to this agent while it is a demonstration.
+
+The service keeps these files and folders in its state directory (`INTAKE_STATE_DIR`, which is `/data` in the image):
+
+| Path | What it holds |
+|---|---|
+| `keys/<key hash>/stranded.json` | the escrows that a model hire posted and did not settle: references, times and transaction hashes, never a request or a requirement. The janitor of the service key settles them when their time has come, every 60 s |
+| `dispute/` | the journal of the dispute code: one file for each escrow job, so one escrow has at most one challenge |
+| `requests.json` | the intake book: the tenant, the request number and the intake id of each request that the service filed. It holds at most 10000 entries and never drops one |
+
+What leaves the service to third parties:
+
+| Party | What it receives |
+|---|---|
+| the identity gateway (the resolution of the DID of the sender, and the request for the JWT-SVID) | the DID of the sender, in the hook. In the job, the request for the JWT-SVID: the DID of this agent, a subject token that the service key signs, and the audience, which is the insurer system of the tenant of the request. The job asks again when the first JWT-SVID is about to end |
+| the ledger, read only (the delegation, the escrow paid from a vault, the sign-off and the other attestations of the sender) | the reads of the hook (the delegation, the escrow and the approval attestation) and of the report (the record of the sender, the delegation and the attestations about the sender). Each read names identifiers, key hashes and DIDs, and never a text of the request |
+| the insurer portal of the mock service (the read of the requirements and the filing of the request, with the JWT-SVID) | the service code, for the read of the requirements. For the filing: the whole authorization request, without the salt and without the approval, with the status and the ids of the missing requirements. Both calls present the JWT-SVID as the bearer credential |
+| a model supplier on the Vector marketplace, hired through a bonded escrow, and the model provider behind it (the prompt of the decision: the members ordering_clinician_ref, diagnosis_codes, justification, guideline_refs, record_refs and record_set_sha256 of the request, and the requirements, and no other member of the request) | one job: the instruction of the decision, six members of the request and the requirement set, and the reference of the escrow |
+| the ledger, written only after a digest mismatch (the evidence document and the challenge) | the evidence document (the statement S1 of the claim of the sender, the digest that the approval holds, the digest of the request that was sent, and the references of the claim, the two agents, the escrow and the approval; no text of the request and no salt) and the challenge |
+
+What each decision receives:
+
+| Decision | Data block | Left out |
+|---|---|---|
+| `completeness` | `request` (`ordering_clinician_ref`, `diagnosis_codes`, `justification`, `guideline_refs`, `record_refs` and `record_set_sha256`) and `requirements` (`service_code`, `title` and `requirements`, each requirement with its `id` and its `text`) | the DID of the sender (`sender_did`) and the DID of the insurer (`insurer_did`), the advert reference (`advert_ref`), and the `patient_ref`, the `tenant`, the `order_id` and the `request_number` of the request |
+
+The text of the justification and of the requirements reaches the model only inside the marked data block, and never inside an instruction. The report of the attestations, the sender data and the 15 checks never reach the model.
+
+To post and settle its escrows for the model hire, the service reads the ledger through the node (Ogmios) and the Koios indexer, submits its transactions through the submit API, and finds the model suppliers on the marketplace indexer. They see the references and the transactions of those escrows, and nothing of a request. On the ledger an escrow carries only the sha256 of its wire payload. At start the service fetches one file: the Module-1 deployment manifest, at an https address that a commit pins. It sends no data of a job there.
+
+## Known gaps
+
+The manifest states these ten, in this order, word for word. A test keeps them equal to `gapsFor` in `agents/insurer-intake-agent/src/serve/gaps.ts`. The first eight are the gaps of the agent. The ninth says whose keys the parties are. The tenth starts with a run-in lead and names three things that no run of use case 2 (prior authorization) covers. The agent has no fault value, so the kit adds no sentence about a fault switch.
+
+- An intake record is not a coverage decision.
+- The model decides completeness. Nothing in this agent overrides it.
+- The checks read the ledger and the gateway as they are at that moment.
+- The sender's organisation and its provenance, software and principal-binding attestations are reported, not required.
+- A request refused is not paid, and leaves no signed record of the refusal except, on a digest mismatch, the evidence of the challenge.
+- Every request is synthetic.
+- The report does not check the digest of the principal-binding attestation, because the salt and the document stay with the hirer.
+- A source that cannot be read is reported as unreadable and never as absent.
+- The controller key, the Accountable key and the guardian keys of this deployment are on one host of one operator, so a party is independent of the controller by key only.
+- What this does not show: no run covers the refund of the escrow of a revoked agent, a relying party that refuses a live token after its authority ended, or the challenge of the Prior Authorization Agent against this agent (this agent has no fault value). Tests alone cover the last two.

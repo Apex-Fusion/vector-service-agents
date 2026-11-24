@@ -3,41 +3,47 @@
 // table, so that they cannot part: the opening line, the status line and the changelog; the identity rows; the terms, the times and the limits; the 15 checks of the hook with their refusal codes; the steps of the job;
 // the report of the attestations; the intake record; the errors; the claim; the gaps word for word; what the model receives; and the links. No test here uses the network.
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, test } from 'vitest';
 import { parse as parseYaml } from 'yaml';
 import { ACCEPT_WINDOW_MS, ATT_TYPES } from '@vsa/buyer-core';
+import { STRANDED_FILE } from '@vsa/hire-kit';
 import { BUSY_TEXT, CONTEXT_HEADERS, HEARTBEAT_MS, JobSlot, MAX_BODY, RESERVATION_MS, STOPPING_TEXT, operatorsText, parseWire } from '@vsa/service-kit';
 import { systemClock } from '@vsa/usecase-kit/access';
 import { CheckUnavailableError, SHARED_CHECK_NAMES } from '@vsa/usecase-kit/checks';
-import { EVIDENCE_STATEMENTS } from '@vsa/usecase-kit/dispute';
+import { INPUT_OPEN, buildPrompt } from '@vsa/usecase-kit/decision';
+import { EVIDENCE_STATEMENTS, evidenceDocument } from '@vsa/usecase-kit/dispute';
+import { faultGap } from '@vsa/usecase-kit/manifest';
 import {
-  ATTESTATION_STATES, INTAKE_CHECKS, INTAKE_RECORD_SCHEMA, INTAKE_STATUSES, PRIORAUTH_CAPABILITIES, PRIORAUTH_CLAIM, PRIORAUTH_MODELS, PRIORAUTH_REQUEST_SCHEMA, parseIntakeRecord, parsePriorAuthRequest,
+  ATTESTATION_STATES, INTAKE_CHECKS, INTAKE_CLAIM, INTAKE_RECORD_SCHEMA, INTAKE_STATUSES, PRIORAUTH_CAPABILITIES, PRIORAUTH_CLAIM, PRIORAUTH_MODELS, PRIORAUTH_REQUEST_SCHEMA, parseIntakeRecord, parsePriorAuthRequest,
+  parseRequirementSet,
 } from '@vsa/usecase-kit/priorauth';
 import {
-  COUNTERPARTY_REFUSALS, ERROR_STATUS, HANDOFF_SCHEMA, MAX_REQUEST_BYTES, NO_OPEN_CLAIM, RUNTIME_BODY_LIMIT_BYTES, accepted, canonicalJson, parseHandoff, proposalDigest,
+  COUNTERPARTY_REFUSALS, ERROR_STATUS, FAULT_MODES, HANDOFF_SCHEMA, MAX_REQUEST_BYTES, NO_OPEN_CLAIM, RUNTIME_BODY_LIMIT_BYTES, accepted, canonicalJson, parseHandoff, proposalDigest,
 } from '@vsa/usecase-kit/protocol';
 import type { ProtocolResult } from '@vsa/usecase-kit/protocol';
 import { blake2b224Hex } from '@vsa/vector-read';
 import { CLAIM_STAKE_LOVELACE, CLAIM_WINDOW_MS } from '../../../scripts/operator/lib/claim-constants.ts';
 import { intakeChecks } from '../src/checks/index.ts';
-import { COMPLETENESS_NAME, INTAKE_REFUSAL_STATUS, RUNTIME_MARGIN_MS, completenessDecision } from '../src/job/index.ts';
+import { COMPLETENESS_NAME, INTAKE_REFUSAL_STATUS, RUNTIME_MARGIN_MS, completenessDecision, completenessInput } from '../src/job/index.ts';
 import { READ_BUDGET_MS, REPORT_BUDGET_MS, reportAttestations } from '../src/report/index.ts';
 import type { ReportDeps, ReportExpectation } from '../src/report/index.ts';
-import { BINDING_GAP } from '../src/serve/gaps.ts';
+import { BINDING_GAP, KEYS_GAP, NOT_SHOWN_GAP, gapsFor } from '../src/serve/gaps.ts';
 import { KEY_ROLES, keyClashOf } from '../src/serve/keys.ts';
 import { STATUS_SINCE_DEFAULT, TEMPLATE_ENV, manifestFromEnv } from '../src/serve/manifest.ts';
 import { RequestRefusal, parseIntakeRequest } from '../src/serve/server.ts';
 import {
   BUYER_BOND_LOVELACE, CALL_TIMEOUT_MS, CHECKS_READ_BUDGET_DEFAULT_MS, CHECKS_READ_BUDGET_MAX_MS, CHECKS_READ_BUDGET_MIN_MS, HOOK_READS, HOOK_READS_LIMIT_MS, JOB_DEADLINE_MS, MIN_PROCESSING_WINDOW_MS,
-  PORT_DEFAULT, PRICE_DEFAULT_LOVELACE, RUNTIME_PRECHECK_WAIT_MS, SUPPLIER_BOND_LOVELACE, checksReadBudgetOf, priceOf, supplierKeyOf,
+  PORT_DEFAULT, PRICE_DEFAULT_LOVELACE, RUNTIME_PRECHECK_WAIT_MS, STATE_DIR_DEFAULT, SUPPLIER_BOND_LOVELACE, checksReadBudgetOf, faultOf, module1SourceOf, priceOf, supplierKeyOf,
 } from '../src/serve/settings.ts';
-import { SETTINGS } from '../src/serve/start.ts';
-import { MemoryIntakeBook, PASSED_CHECKS_TTL_MS } from '../src/store/index.ts';
+import { JANITOR_INTERVAL_MS, SETTINGS } from '../src/serve/start.ts';
+import { INTAKE_BOOK_LIMIT, MemoryIntakeBook, PASSED_CHECKS_TTL_MS } from '../src/store/index.ts';
 import { makeRig, refusalOf } from './job/rig.ts';
 import type { Rig } from './job/rig.ts';
-import { BASES, DELEGATION_ID, PRIOR_REQUEST, PRIOR_REQUEST_SHA256, SENDER_DID, decisionOf, handoffOf, hashOf, priorRequest, recordFor } from './job/samples.ts';
+import {
+  ATTESTATION_ID, BASES, DELEGATION_ID, ESCROW_REF, INSURER_DID, ISSUER_DID, PRIOR_REQUEST, PRIOR_REQUEST_SHA256, REQUIREMENTS, SALT, SENDER_DID, decisionOf, handoffOf, hashOf, priorRequest, recordFor,
+} from './job/samples.ts';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 const page = readFileSync(new URL('../../../specs/insurer-intake-agent.md', import.meta.url), 'utf8');
@@ -65,7 +71,7 @@ const runtimeEnv = compose.services.runtime.environment ?? {};
 const serviceEnv = compose.services.service.environment ?? {};
 
 /** The value of a result that the kit gave, or the error that says why there is none. */
-function must<T>(result: ProtocolResult<T>): T {
+function must<T, C extends string>(result: ProtocolResult<T, C>): T {
   if (!result.ok) throw new Error(result.detail);
   return result.value;
 }
@@ -844,5 +850,224 @@ describe('specs/insurer-intake-agent.md: the errors', () => {
     // The service answers 200 only for a job that did its work, and the buyer-side agent that hires it turns each refusal and failure into a reason of its own result.
     expect(errors).toContain('- The service answers 200 only when it did the work, and the 200 answer is the intake record. Every code of the table is a refusal or a failure. The Prior Authorization Agent, which hires this service, turns a refusal or a failure into its own `reason`, and answers its hirer with a 200 result.');
     expect(readme).toContain('Every code of the table is a refusal or a failure. The Prior Authorization Agent, which hires this service, turns a refusal or a failure into its own `reason`, and answers its hirer with a 200 result.');
+  });
+});
+
+describe('specs/insurer-intake-agent.md: the receipt, the claim and the fault switch', () => {
+  test('the receipt: the runtime signs it, its model is the model of the advert, and the intake record is the committed output', () => {
+    const receipt = section('What the receipt commits to');
+    expect(receipt).toContain('The service signs no receipt. The runtime builds and signs the receipt, and submits its hash in the Submit transaction.');
+    expect(row(receipt, '`escrow_ref`')).toBe('| `escrow_ref` | the escrow UTxO, `<txid>#<index>` |');
+    expect(row(receipt, '`supplier_pkh`')).toBe('| `supplier_pkh` | the key hash of the supplier key of the runtime |');
+    expect(row(receipt, '`prompt_hash`')).toBe('| `prompt_hash` | sha256 of the UTF-8 bytes of the wire payload, as the buyer committed it in the escrow datum |');
+    expect(row(receipt, '`response_hash`')).toBe('| `response_hash` | sha256 of the UTF-8 bytes of the intake record exactly as the service returned them |');
+    // The model of a receipt is the model of its advert, and the manifest says so.
+    expect(row(receipt, '`model`')).toBe(`| \`model\` | \`${PRIORAUTH_MODELS.intake}\` |`);
+    expect(manifest.interface.notes.join('\n')).toContain(`The advert and every receipt name the model ${PRIORAUTH_MODELS.intake}. The receipt commits to the SHA-256 of the intake record as the service returns it.`);
+    expect(row(receipt, '`prompt_tokens`, `completion_tokens`')).toBe('| `prompt_tokens`, `completion_tokens` | 0 and 0, the runtime counts none. The token counts of the model hire are in the sub-receipt under `decisions[0].inference.sub_job` |');
+    expect(row(receipt, '`wallclock_ms`')).toBe('| `wallclock_ms` | how long the service call took |');
+    expect(receipt).toContain(`the ${INTAKE_CHECKS.length} checks, and the completeness decision with its reasoning and the sub-receipt of the model supplier.`);
+    expect(receipt).toContain('It does not commit to any coverage decision: the intake record is not one.');
+    expect(receipt).toContain('The signature is Ed25519 over the canonical JSON of the receipt. The sha256 of the canonical JSON of `{ receipt, signature }` is the `result_receipt_hash` in the Submitted escrow datum.');
+    // The answer is the intake record as JSON text, so `response_hash` is the hash of those bytes.
+    expect(readFileSync(new URL('../src/serve/server.ts', import.meta.url), 'utf8')).toContain('serialize: (result) => JSON.stringify(result),');
+  });
+
+  test('the claim statements are the constants of the kit, the manifest holds the same three texts, and no source of the service stakes a claim', () => {
+    const claim = section('Claim statements');
+    expect(claim.split('\n').filter((line) => /^\| S[123] \|/.test(line))).toStrictEqual(INTAKE_CLAIM.statements.map((statement) => `| ${statement.id} | ${statement.text} |`));
+    expect(manifest.behaviour.claim.statements).toStrictEqual(INTAKE_CLAIM.statements);
+    expect(INTAKE_CLAIM.statements.map((statement) => statement.id)).toStrictEqual(['S1', 'S2', 'S3']);
+    expect(claim).toContain(`The service stakes no claim: no code of the service calls the staking. Before a run, an operator command stakes a Module-1 claim for the agent with the service key: ${CLAIM_STAKE_LOVELACE / 1_000_000n} units, which is ${CLAIM_STAKE_LOVELACE} lovelace, with a challenge window of ${CLAIM_WINDOW_MS / 3_600_000} hours. After the window, the same command withdraws the claim when nobody challenged it.`);
+    expect(claim).toContain('The claim has three statements. The manifest holds the same three texts in `behaviour.claim`, with no reference to a claim. A challenge names the text of a statement.');
+    // No source of the service calls the staking of a run claim.
+    const sourceDir = new URL('../src/', import.meta.url);
+    const sources = readdirSync(sourceDir, { recursive: true, encoding: 'utf8' }).filter((file) => file.endsWith('.ts'));
+    expect(sources.length).toBeGreaterThan(10);
+    expect(sources.filter((file) => readFileSync(new URL(file, sourceDir), 'utf8').includes('stakeRunClaim'))).toStrictEqual([]);
+    // The example environment sets the stake of a challenge, and it sets it once. A challenge targets a claim whose stake is not above that number, so a claim of 50 units is a target.
+    expect(envExample.split('\n').filter((line) => line.startsWith('DISPUTE_CHALLENGE_STAKE_LOVELACE='))).toStrictEqual([`DISPUTE_CHALLENGE_STAKE_LOVELACE=${CLAIM_STAKE_LOVELACE}`]);
+    // S2 is the statement that a wrong intake record breaks: the evidence of an intake record is about S2.
+    expect(EVIDENCE_STATEMENTS.intake_record).toBe('S2');
+    expect(INTAKE_CLAIM.statements[1].text).toBe('An intake record names the hash of the request this agent received.');
+    expect(NOT_SHOWN_GAP).toContain('the challenge of the Prior Authorization Agent against this agent (this agent has no fault value)');
+    expect(claim).toContain('S2 is the statement that a wrong intake record breaks. When the intake record names another hash than the hash of the request that the Prior Authorization Agent sent, that agent declines the delivery and challenges the claim of this agent on S2. No run covers that challenge, because this agent has no fault value (see Known gaps).');
+  });
+
+  test('the Fault switch says that the agent has none, the service stops at start for any value, and every intake record carries the empty text', async () => {
+    const fault = section('Fault switch');
+    expect(fault.split('\n')[1]).toBe('None. FAULT_MODE must be empty.');
+    expect(FAULT_MODES['insurer-intake-agent']).toStrictEqual([]);
+    expect(manifest.behaviour.fault_modes).toStrictEqual([]);
+    expect(faultGap('insurer-intake-agent')).toBeNull();
+    expect(faultOf({}).mode).toBe('');
+    expect(faultOf({ FAULT_MODE: '' }).mode).toBe('');
+    for (const value of ['alter_after_approval', 'anything']) expect(() => faultOf({ FAULT_MODE: value }), value).toThrow(/FAULT_MODE/);
+    expect(envExample.split('\n')).toContain('FAULT_MODE=');
+    // The value that the Prior Authorization Agent has makes it send a request that its hirer did not sign off, and the hook of this agent refuses that request with the code of the check of the digest.
+    expect(FAULT_MODES['prior-authorization-agent']).toStrictEqual(['alter_after_approval']);
+    expect(INTAKE_CHECKS[11]).toBe('approval_digest');
+    expect(COUNTERPARTY_REFUSALS['insurer-intake-agent']).toContain('approval_digest_mismatch');
+    // Every intake record carries the member `fault_mode` as its last member, and it is the empty text: the parser of the kit takes no other text.
+    const record = await makeRig().run();
+    expect(Object.keys(record).at(-1)).toBe('fault_mode');
+    expect(record.fault_mode).toBe('');
+    expect(parseIntakeRecord({ ...record, fault_mode: 'alter_after_approval' }).ok).toBe(false);
+    expect(fault).toContain('The Insurer Intake Agent has no fault value. The service stops at start when `FAULT_MODE` has any value. The manifest lists no value in `behaviour.fault_modes`.');
+    expect(fault).toContain('Each intake record carries the member `fault_mode`, and it is the empty text.');
+    expect(fault).toContain('The Prior Authorization Agent has the fault value `alter_after_approval`, which makes it send a request that its hirer did not sign off. The Insurer Intake Agent refuses that request before its Claim (see What it checks before the Claim).');
+  });
+});
+
+describe('specs/insurer-intake-agent.md: the operator, the data and the gaps', () => {
+  const operator = section('Operator and data handling');
+
+  test('Operator and data handling: the operator, the data sentences of the manifest, the five third parties, and the state of the service', () => {
+    expect(manifest.operator.name).toBe('Apex Fusion Foundation');
+    expect(operator).toContain('Operator: Apex Fusion Foundation. The contact is `operator.contact` in the manifest.');
+    expect(operator).toContain(manifest.behaviour.data_handling);
+    expect(operator).toContain('Every request is synthetic, and no patient exists behind any of it. Do not send a record of a real person to this agent while it is a demonstration.');
+    const parties = tableRows(operator, '| Party | What it receives |');
+    expect(parties.map((cells) => cells[0])).toStrictEqual(manifest.behaviour.third_parties);
+    expect(parties).toHaveLength(5);
+    // The state: the three entries of the state directory are the entries of the README, and the wiring makes them.
+    const state = tableRows(operator, '| Path | What it holds |');
+    expect(state).toStrictEqual(tableRows(readme.split('\n## State\n')[1] ?? '', '| Path | What it holds |'));
+    expect(state.map((cells) => cells[0])).toStrictEqual([`\`keys/<key hash>/${STRANDED_FILE}\``, '`dispute/`', '`requests.json`']);
+    const wiring = readFileSync(new URL('../src/serve/wiring.ts', import.meta.url), 'utf8');
+    expect(wiring).toContain("join(config.stateDir, 'requests.json')");
+    expect(wiring).toContain("join(config.stateDir, 'dispute')");
+    expect(wiring).toContain("join(config.stateDir, 'keys', service.pkh)");
+    expect(operator).toContain(`(\`INTAKE_STATE_DIR\`, which is \`${STATE_DIR_DEFAULT}\` in the image)`);
+    expect(state[0][1]).toContain(`every ${JANITOR_INTERVAL_MS / 1000} s`);
+    expect(state[2][1]).toContain(`It holds at most ${INTAKE_BOOK_LIMIT} entries and never drops one`);
+    // The one file that the start fetches, and the services that the service calls.
+    for (const name of ['VECTOR_MODULE1_MANIFEST', 'VECTOR_OGMIOS_URL', 'VECTOR_KOIOS_URL', 'VECTOR_SUBMIT_URL', 'VECTOR_MARKETPLACE_INDEXER_URL', 'IDENTITY_GATEWAY_URL']) expect(SETTINGS).toContain(name);
+    expect(() => module1SourceOf({ VECTOR_MODULE1_MANIFEST: 'https://example.test/vector-agent-modules/main/manifest.json' })).toThrow('must be pinned to a commit');
+    expect(module1SourceOf({ VECTOR_MODULE1_MANIFEST: `https://example.test/vector-agent-modules/${'ab'.repeat(20)}/manifest.json` })).toContain('ab'.repeat(20));
+    expect(operator).toContain('At start the service fetches one file: the Module-1 deployment manifest, at an https address that a commit pins. It sends no data of a job there.');
+    expect(operator).toContain('the node (Ogmios) and the Koios indexer');
+  });
+
+  test('what leaves the service: the request for the JWT-SVID, the two calls to the portal with the bearer credential, and the evidence of a challenge', async () => {
+    const parties = tableRows(operator, '| Party | What it receives |').map((cells) => cells[1]);
+    const rig = makeRig();
+    await rig.run();
+    // The gateway gets the DID of the sender in the hook, and in the job it gets a request for the JWT-SVID: a subject token and the audience of the tenant.
+    expect(readFileSync(new URL('../../../packages/usecase-kit/src/checks/shared.ts', import.meta.url), 'utf8')).toContain('ports.gateway.resolve(sender)');
+    const asked = rig.gateway.requests.filter((call) => call.path === '/spiffe/jwt-svid');
+    expect(asked).toHaveLength(1);
+    expect(Object.keys(JSON.parse(asked[0].body)).sort()).toStrictEqual(['audience', 'subject_token']);
+    expect(parties[0]).toContain('the DID of the sender, in the hook. In the job, the request for the JWT-SVID: the DID of this agent, a subject token that the service key signs, and the audience, which is the insurer system of the tenant of the request.');
+    expect(parties[0]).toContain('The job asks again when the first JWT-SVID is about to end');
+    // The portal gets the service code in the read, and the whole authorization request with the status and the missing ids in the filing, and each call carries the JWT-SVID as the bearer credential.
+    expect(rig.portal.calls.map((call) => call.headers.authorization)).toStrictEqual([`Bearer ${rig.issued[0]}`, `Bearer ${rig.issued[0]}`]);
+    expect(rig.portal.calls[0]?.url.endsWith('/insurer/requirements/SYN-MRI-LS')).toBe(true);
+    const filing = JSON.parse(posts(rig)[0]?.body ?? 'null');
+    expect(Object.keys(filing)).toStrictEqual(['request', 'status', 'missing']);
+    expect(filing.request).toStrictEqual(must(parsePriorAuthRequest(PRIOR_REQUEST)));
+    expect(Object.keys(filing.request)).toHaveLength(14);
+    expect(parties[2]).toContain('the service code, for the read of the requirements. For the filing: the whole authorization request, without the salt and without the approval, with the status and the ids of the missing requirements.');
+    expect(parties[2]).toContain('Both calls present the JWT-SVID as the bearer credential');
+    // The reads of the ledger name identifiers, key hashes and DIDs.
+    expect(parties[1]).toContain('Each read names identifiers, key hashes and DIDs, and never a text of the request');
+    // The model supplier gets the one input of the decision, and the evidence document of a challenge has the two digests and the references, and no text of the request and no salt.
+    expect(parties[3]).toContain('one job: the instruction of the decision, six members of the request and the requirement set, and the reference of the escrow');
+    const evidence = must(evidenceDocument({
+      claim: `${'a5'.repeat(32)}#0`, claim_token: `636c6d5f${'b6'.repeat(28)}`, against_did: SENDER_DID, by_did: INSURER_DID, escrow_ref: ESCROW_REF, statement_text: PRIORAUTH_CLAIM.statements[0].text,
+      kind: 'approval_digest', use_case: 'prior-authorization', approval: { attestation: ATTESTATION_ID, issuer_did: ISSUER_DID },
+      mismatch: { ok: false, code: 'approval_digest_mismatch', detail: 'the digests differ', expected_digest: 'aa'.repeat(32), observed_digest: 'bb'.repeat(32) },
+    }));
+    expect(evidence.text).toContain(`Statement S1 of the claim reads: ${JSON.stringify(PRIORAUTH_CLAIM.statements[0].text)}`);
+    expect(evidence.text).toContain(`The approval holds the digest ${'aa'.repeat(32)}.`);
+    expect(evidence.text).toContain(`The request that the claimer sent holds the digest ${'bb'.repeat(32)}.`);
+    expect(evidence.text).toContain('This evidence has no text of the request and no salt.');
+    for (const reference of [`${'a5'.repeat(32)}#0`, `636c6d5f${'b6'.repeat(28)}`, SENDER_DID, INSURER_DID, ESCROW_REF, ATTESTATION_ID, ISSUER_DID]) expect(evidence.text, reference).toContain(reference);
+    expect(evidence.text).not.toContain(String(PRIOR_REQUEST.justification));
+    expect(evidence.text).not.toContain(SALT);
+    expect(parties[4]).toContain('the evidence document (the statement S1 of the claim of the sender, the digest that the approval holds, the digest of the request that was sent, and the references of the claim, the two agents, the escrow and the approval; no text of the request and no salt) and the challenge');
+  });
+
+  test('What each decision receives: the names of the data block are the members of the input of the decision, the request leaves out its identifiers, and no text of a party reaches an instruction', async () => {
+    const header = '| Decision | Data block | Left out |';
+    const rows = tableRows(operator, header);
+    expect(rows).toHaveLength(1);
+    const [completeness] = rows;
+    expect(completeness[0]).toBe('`completeness`');
+    expect(COMPLETENESS_NAME).toBe('completeness');
+    const namesOf = (cell: string): string[] => [...cell.matchAll(/`([a-z0-9_]+)`/g)].map((hit) => hit[1]);
+    /** The names of the members of a JSON value, at every depth. */
+    const memberNames = (value: unknown): Set<string> => {
+      const names = new Set<string>();
+      const walk = (node: unknown): void => {
+        if (Array.isArray(node)) node.forEach(walk);
+        else if (typeof node === 'object' && node !== null) for (const [name, member] of Object.entries(node)) { names.add(name); walk(member); }
+      };
+      walk(value);
+      return names;
+    };
+    const request = must(parsePriorAuthRequest(PRIOR_REQUEST));
+    const set = must(parseRequirementSet(REQUIREMENTS['SYN-MRI-LS']));
+    const input = completenessInput(request, set) as { request: Record<string, unknown>; requirements: { service_code: string } };
+    // The data block: the names of the page are the names of the input, as a set.
+    expect(memberNames(input)).toStrictEqual(new Set(namesOf(completeness[1])));
+    expect(memberNames(input).size).toBe(12);
+    expect(Object.keys(input)).toStrictEqual(['request', 'requirements']);
+    expect(Object.keys(input.request)).toStrictEqual(['ordering_clinician_ref', 'diagnosis_codes', 'justification', 'guideline_refs', 'record_refs', 'record_set_sha256']);
+    expect(input.requirements.service_code).toBe(request.service_code);
+    // The members that the input leaves out are the members that the page lists, but for the schema and the service code, which stands in the requirement set. The sender is a member of the handoff.
+    const leftOut = namesOf(completeness[2]);
+    const omitted = Object.keys(request).filter((name) => !(name in input.request));
+    expect(omitted.filter((name) => !leftOut.includes(name))).toStrictEqual(['schema', 'service_code']);
+    expect(leftOut.filter((name) => !omitted.includes(name))).toStrictEqual(['sender_did']);
+    // The job gives the model this input and nothing else: the sender, the approval, the report and the checks stay out.
+    const plain = makeRig();
+    await plain.run();
+    expect(plain.decideCalls[0]?.input).toStrictEqual(input);
+    // A request with a marker in each member that the page leaves out: no marker reaches the prompt, and the six members of the data block do.
+    const markers = {
+      sender_did: `did:vector:${'c7'.repeat(32)}`, insurer_did: `did:vector:${'e9'.repeat(32)}`, advert_ref: `${'f8'.repeat(32)}#7`, patient_ref: 'MARKER-PATIENT-77', tenant: 'marker-tenant', order_id: 'MARKER-ORDER-77',
+      request_number: 'MARKER-NUMBER-77',
+    };
+    const { sender_did: senderMarker, ...inRequest } = markers;
+    const marked = handoffOf(priorRequest(inRequest), { sender_did: senderMarker });
+    expect(Object.keys(markers).sort()).toStrictEqual([...leftOut].sort());
+    const rig = makeRig();
+    rig.kept.set(rig.context.escrowRef, recordFor(marked));
+    await rig.run({ request: marked });
+    const ids = set.requirements.map((requirement) => requirement.id);
+    const prompt = must(buildPrompt(completenessDecision(ids), rig.decideCalls[0]?.input ?? null));
+    for (const marker of Object.values(markers)) expect(prompt, marker).not.toContain(marker);
+    const [instruction] = prompt.split(INPUT_OPEN);
+    const block = prompt.slice(prompt.indexOf(INPUT_OPEN));
+    for (const text of [request.justification, request.ordering_clinician_ref, request.record_set_sha256, ...request.diagnosis_codes, ...request.guideline_refs, ...request.record_refs, set.title, ...set.requirements.map((requirement) => requirement.text)]) {
+      expect(block, text).toContain(text);
+    }
+    // The text of the justification and of the requirements stands in the marked data block, and in no other part of the prompt.
+    for (const text of [request.justification, ...set.requirements.map((requirement) => requirement.text)]) expect(instruction, text).not.toContain(text);
+    expect(operator).toContain('The text of the justification and of the requirements reaches the model only inside the marked data block, and never inside an instruction. The report of the attestations, the sender data and the 15 checks never reach the model.');
+  });
+
+  test('Known gaps: the ten sentences of the manifest, word for word and in order, with the sentence about the keys, the run-in lead of what no run shows, and no sentence about a fault switch', () => {
+    const gaps = section('Known gaps');
+    const lines = gaps.split('\n').filter((line) => line.startsWith('- '));
+    expect(lines).toStrictEqual(gapsFor().map((gap) => `- ${gap}`));
+    expect(manifest.gaps).toStrictEqual([...gapsFor()]);
+    expect(lines).toHaveLength(10);
+    expect(gaps).toContain('The manifest states these ten, in this order, word for word. A test keeps them equal to `gapsFor` in `agents/insurer-intake-agent/src/serve/gaps.ts`.');
+    expect(gaps).toContain('The first eight are the gaps of the agent. The ninth says whose keys the parties are. The tenth starts with a run-in lead and names three things that no run of use case 2 (prior authorization) covers. The agent has no fault value, so the kit adds no sentence about a fault switch.');
+    expect(faultGap('insurer-intake-agent')).toBeNull();
+    // The ninth says that one operator holds the keys of the parties on one host.
+    expect(lines[8]).toBe(`- ${KEYS_GAP}`);
+    expect(KEYS_GAP).toBe('The controller key, the Accountable key and the guardian keys of this deployment are on one host of one operator, so a party is independent of the controller by key only.');
+    // The tenth is the run-in lead of what no run shows, with its three things, and the page has the lead one time.
+    expect(lines[9]).toBe(`- ${NOT_SHOWN_GAP}`);
+    expect(NOT_SHOWN_GAP.startsWith('What this does not show: ')).toBe(true);
+    expect(page.split('What this does not show:').length - 1).toBe(1);
+    for (const item of ['the refund of the escrow of a revoked agent', 'a relying party that refuses a live token after its authority ended', 'the challenge of the Prior Authorization Agent against this agent']) expect(lines[9], item).toContain(item);
+    expect(lines[9]).toContain('Tests alone cover the last two.');
+    // The seventh says what the report does not check, and the sixth says that every request is synthetic.
+    expect(lines[6]).toBe(`- ${BINDING_GAP}`);
+    expect(lines[5]).toBe('- Every request is synthetic.');
   });
 });
