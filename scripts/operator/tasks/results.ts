@@ -36,6 +36,8 @@ const PUBLIC_LABEL = /^(\d{4}-\d{2}-\d{2})-([a-z][a-z0-9-]{0,62})-run-[1-9][0-9]
 const STEP_ID = /^[a-z0-9][a-z0-9-]{0,31}$/;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const HASH = /^[0-9a-f]{64}$/;
+const OUTPUT_REF = /^[0-9a-f]{64}#(?:0|[1-9]\d{0,5})$/;
+const DID = /^did:vector:[0-9a-f]{64}$/;
 const REF_VALUE = /^[A-Za-z0-9._:#/-]{1,200}$/;
 const REF_KIND = /^[a-z][a-z0-9_-]{0,31}$/;
 /** A line of an env file: a name and an equals sign at the start of a line. A header names a group in plain words, so it holds no such line. */
@@ -253,6 +255,7 @@ export const PAGE_TEXT = {
   noReason: 'The evidence file gives no reason.',
   noEntry: 'The evidence file has no entry for this step.',
   noReference: 'Not shown. The evidence file holds no reference for this step.',
+  partialReference: 'Not shown in full. The evidence file does not support every part of this step.',
   wholeStep: 'The whole step.',
   notCovered: 'Not covered',
   limitsLead: 'The runs have these limits:',
@@ -267,7 +270,7 @@ export const PAGE_TEXT = {
 
 /** A reference of a step: a plain text (a transaction hash when it is 64 hex characters) or a labelled value (`kind` and `value`). */
 export interface Ref { readonly kind: string | null; readonly value: string }
-export interface EvidenceStep { readonly id: string; readonly status: 'shown' | 'not_run'; readonly refs: readonly Ref[]; readonly note: string }
+export interface EvidenceStep { readonly id: string; readonly status: 'shown' | 'not_run'; readonly refs: readonly Ref[]; readonly note: string; readonly complete: boolean }
 export interface PageRun { readonly label: string; readonly kind: string; readonly date: string; readonly steps: ReadonlyMap<string, EvidenceStep> }
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -281,12 +284,134 @@ function refOf(raw: unknown): Ref | null {
   return kind === 'transaction' && !HASH.test(value) ? null : { kind, value };
 }
 
+type Refusal = 'ledger' | 'tool';
+type RouteRead = readonly [route: string, credential: string, links: number | null, count?: number, decision?: 'refused'];
+interface StepProof {
+  readonly refs: Readonly<Record<string, number>>;
+  readonly refusals?: readonly Refusal[];
+  readonly routes?: readonly RouteRead[];
+}
+interface CaseProof { readonly number: number; readonly steps: Readonly<Record<string, StepProof>> }
+
+const HIRE = { transaction: 2, escrow: 1 } as const;
+const CLOSE = { transaction: 2 } as const;
+const APPROVAL = { attestation: 1, transaction: 1 } as const;
+const VERDICT = { case: 1, transaction: 1, hold: 1 } as const;
+const RECORD = { transaction: 1, record: 1 } as const;
+
+/** Minimum distinct references for each row. The assembler checks the ledger and the actual operation; this task checks its saved evidence. */
+const PROOF: Readonly<Record<string, CaseProof>> = {
+  'inventory-reorder': { number: 1, steps: {
+    'r1-01': { refs: { delegation: 1, transaction: 1 } },
+    'r1-02': { refs: { vault: 1, transaction: 1 } },
+    'r1-03': { refs: HIRE },
+    'r1-04': { refs: { delegation: 1, transaction: 1 }, routes: [['GET /erp/stock/{sku}', 'token', 2]] },
+    'r1-05': { refs: { escrow: 1, transaction: 1 } },
+    'r1-06': { refs: APPROVAL },
+    'r1-07': { refs: HIRE },
+    'r1-08': { refs: { escrow: 1, transaction: 1 } },
+    'r1-09': { refs: { escrow: 2 }, routes: [['POST /supplier/orders', 'x509-svid', null]] },
+    'r1-10': { refs: { escrow: 1, transaction: 1 }, routes: [['POST /po', 'token', 1]] },
+    'r1-11': { refs: CLOSE },
+    'r2-a': { refs: HIRE, refusals: ['ledger'] },
+    'r2-b': { refs: HIRE, refusals: ['ledger'] },
+    'r2-c': { refs: { claim: 1, transaction: 1, challenge: 1 } },
+    'r2-d': { refs: VERDICT },
+    'r2-e': { refs: { escrow: 1 } },
+    'r2-f': { refs: HIRE },
+    'r2-g': { refs: CLOSE },
+    'r2-h': { refs: { transaction: 3, escrow: 1 }, refusals: ['ledger', 'tool'] },
+  } },
+  'prior-authorization': { number: 2, steps: {
+    'r1-01': { refs: { delegation: 1, attestation: 1, vault: 1, transaction: 3 } },
+    'r1-02': { refs: { escrow: 2, delegation: 2, transaction: 4 }, routes: [['GET /records/orders/{order_id}', 'token', 2], ['GET /guidelines/{code}', 'token', 2]] },
+    'r1-03': { refs: APPROVAL },
+    'r1-04': { refs: { escrow: 2, transaction: 3 } },
+    'r1-05': { refs: { escrow: 2, transaction: 2 }, routes: [['POST /insurer/requests', 'jwt-svid', null]] },
+    'r1-06': { refs: { escrow: 1, transaction: 1 }, routes: [['POST /records/orders/{order_id}/submission', 'token', 1]] },
+    'r1-07': { refs: CLOSE },
+    'r2-d': { refs: { attestation: 2, escrow: 3, transaction: 6 } },
+    'r2-e': { refs: { attestation: 1, escrow: 1, transaction: 2 } },
+    'r2-a': { refs: { escrow: 2, transaction: 2 } },
+    'r2-b': { refs: { claim: 1, challenge: 1 } },
+    'r2-b-hold': { refs: VERDICT },
+    'r2-c': { refs: { hold: 1 }, refusals: ['tool'] },
+    'r2-f': { refs: { transaction: 1, resolution: 2, probe: 2 } },
+  } },
+  'bid-evaluation': { number: 3, steps: {
+    'r1-01': { refs: { delegation: 1, vault: 1, transaction: 2 } },
+    'r1-02': { refs: HIRE },
+    'r1-03': { refs: { bidder: 3, escrow: 1 } },
+    'r1-04': { refs: { escrow: 9, transaction: 6 } },
+    'r1-05': { refs: { delegation: 3, transaction: 6, escrow: 1 }, routes: [['GET /vendors', 'token', 2, 3]] },
+    'r1-06': { refs: APPROVAL },
+    'r1-07': { refs: HIRE, routes: [['POST /sourcing/rankings', 'token', 1]] },
+    'r1-08': { refs: CLOSE },
+    'r2-a': { refs: { escrow: 1, claim: 1, challenge: 1 } },
+    'r2-a-release': { refs: { escrow: 1 } },
+    'r2-a-hold': { refs: VERDICT },
+    'r2-b': { refs: { attestation: 1, escrow: 1, transaction: 4 } },
+    'r2-c': { refs: { escrow: 1, hold: 1, transaction: 2 } },
+    'r2-d': { refs: HIRE, routes: [['POST /sourcing/rankings', 'token', 1, 1, 'refused']] },
+    'r2-e': { refs: RECORD },
+    'l1-01': { refs: RECORD },
+    'l1-02': { refs: RECORD },
+    'l1-03': { refs: CLOSE, refusals: ['tool'] },
+    'l1-04': { refs: RECORD },
+    'l1-05': { refs: RECORD },
+    'l1-06': { refs: RECORD },
+    'l1-07': { refs: RECORD },
+  } },
+};
+
+function proofOf(proof: StepProof | undefined, id: string, refs: readonly Ref[], doc: Record<string, unknown>): boolean {
+  if (proof === undefined) return false;
+  for (const [kind, count] of Object.entries(proof.refs)) {
+    const values = new Set<string>();
+    for (const ref of refs) {
+      if (ref.kind !== kind) continue;
+      const valid = kind === 'delegation' || kind === 'attestation' || kind === 'case' || kind === 'transaction' || kind === 'bidder' ? HASH.test(ref.value)
+        : kind === 'resolution' ? DID.test(ref.value) : kind === 'probe' ? REF_VALUE.test(ref.value) : OUTPUT_REF.test(ref.value);
+      if (valid) values.add(ref.value);
+    }
+    if (values.size < count) return false;
+  }
+  if (proof.refusals !== undefined) {
+    const refusals: unknown[] = Array.isArray(doc.refusals) ? doc.refusals : [];
+    for (const kind of proof.refusals) {
+      if (!refusals.some((value) => isObject(value) && value.step === id && value.kind === kind && (kind === 'tool'
+        ? typeof value.message === 'string' && value.message.trim() !== ''
+        : typeof value.evaluation_error === 'string' && value.evaluation_error.trim() !== '' && typeof value.transaction_body === 'string' && value.transaction_body !== ''))) return false;
+    }
+  }
+  if (proof.routes !== undefined) {
+    const log: unknown[] = isObject(doc.mock) && Array.isArray(doc.mock.log) ? doc.mock.log : [];
+    for (const [route, credential, links, count = 1, decision = 'allowed'] of proof.routes) {
+      const rows = new Set<string>();
+      for (const row of log) {
+        if (!isObject(row) || row.route !== route || row.credential !== credential || row.decision !== decision
+            || (links !== null && (!Array.isArray(row.act) || row.act.length !== links))) continue;
+        rows.add(JSON.stringify([row.at, row.sub, row.delegation, row.act]));
+      }
+      if (rows.size < count) return false;
+    }
+  }
+  return true;
+}
+
 /** The run of an evidence file. A file that is not the evidence of a run of this use case is a PreconditionError that names the file by its label and the rule that it breaks, never a value. */
-export function parseEvidence(value: unknown, label: string, use: Pick<UseCase, 'runs' | 'evidenceSteps'>): PageRun {
+export function parseEvidence(value: unknown, label: string, use: Pick<UseCase, 'name' | 'agents' | 'runs' | 'evidenceSteps'>): PageRun {
   const bad = (rule: string): Error => new PreconditionError(`the evidence file ${label} is not usable: ${rule}`);
   if (!isObject(value)) throw bad('it is not a JSON object');
   const { kind, date, steps } = value;
   if (typeof kind !== 'string' || !use.runs.some((run) => run.id === kind)) throw bad('kind is not the id of a run of the use case');
+  const profile = Object.hasOwn(PROOF, use.name) ? PROOF[use.name] : undefined;
+  if (profile === undefined || value.run !== `use-case-${profile.number}-${kind}` || (value.use_case !== undefined && value.use_case !== use.name)) {
+    throw bad('run does not name this use case and run kind');
+  }
+  if (typeof value.capability_id !== 'string' || !use.agents.some(({ capability }) => capability === value.capability_id)) {
+    throw bad('its capability is not a capability of this use case');
+  }
   if (typeof date !== 'string' || !DATE.test(date) || Number.isNaN(Date.parse(date))) throw bad('date is not a date of the form YYYY-MM-DD');
   if (!Array.isArray(steps)) throw bad('steps is not a list');
   const allowed = new Set(use.evidenceSteps.filter((step) => step.run === kind || step.run === 'both').map((step) => step.id));
@@ -305,7 +430,9 @@ export function parseEvidence(value: unknown, label: string, use: Pick<UseCase, 
     if (note !== undefined && note !== null && (typeof note !== 'string' || note.length > MOST_NOTE_CHARS)) throw bad(`${where}.note is not a text of at most ${MOST_NOTE_CHARS} characters`);
     const text = typeof note === 'string' ? note : '';
     if (holdsSecret(id) || holdsSecret(text) || list.some((ref) => ref !== null && (holdsSecret(ref.value) || holdsSecret(ref.kind)))) throw bad(`${where} holds a mark of a secret`);
-    parsed.set(id, { id, status, refs: list.filter((ref): ref is Ref => ref !== null), note: text });
+    const refs_ = list.filter((ref): ref is Ref => ref !== null);
+    const proof = Object.hasOwn(profile.steps, id) ? profile.steps[id] : undefined;
+    parsed.set(id, { id, status, refs: refs_, note: text, complete: status === 'shown' && proofOf(proof, id, refs_, value) });
   });
   if (holdsSecret(label) || holdsSecret(kind) || holdsSecret(date)) throw bad('it holds a mark of a secret');
   return { label, kind, date, steps: parsed };
@@ -321,7 +448,7 @@ function refText(ref: Ref): string {
   return ref.kind === 'transaction' ? link(ref.value) : `${ref.kind} \`${ref.value}\``;
 }
 
-/** The six cells of the row of a step. A step is shown only when the evidence file holds a reference for it. */
+/** The six cells of the row of a step. Do not apply the step's full summary to partial evidence. */
 function rowOf(step: UseCase['evidenceSteps'][number], found: EvidenceStep | undefined, overrides: Readonly<Partial<Record<string, Sentences>>> | undefined): string[] {
   if (!Object.hasOwn(SHOWS, step.primitive)) throw new PreconditionError(`the table of shows and does not show has no entry for the primitive of the step ${step.id}`);
   const text = overrides !== undefined && Object.hasOwn(overrides, step.primitive) ? overrides[step.primitive]! : SHOWS[step.primitive]!;
@@ -331,7 +458,9 @@ function rowOf(step: UseCase['evidenceSteps'][number], found: EvidenceStep | und
     return [...head, PAGE_TEXT.none, `${PAGE_TEXT.notRun} ${found.note === '' ? PAGE_TEXT.noReason : cell(found.note)}`, PAGE_TEXT.wholeStep];
   }
   if (found.refs.length === 0) return [...head, PAGE_TEXT.none, PAGE_TEXT.noReference, PAGE_TEXT.wholeStep];
-  return [...head, found.refs.map(refText).join('; '), text.shows, text.doesNotShow];
+  const references = found.refs.map(refText).join('; ');
+  if (!found.complete) return [...head, references, PAGE_TEXT.partialReference, PAGE_TEXT.wholeStep];
+  return [...head, references, text.shows, text.doesNotShow];
 }
 
 /** The page: the header, the title, one table for each run, and the section "Not covered". The header comes first and verbatim. */
@@ -437,11 +566,7 @@ function loadRuns(files: ReadonlyMap<string, Found>, wanted: readonly string[] |
   const runs = labels.map((label) => {
     const file = files.get(label);
     if (file === undefined) throw new PreconditionError(`there is no evidence file for the label ${label}: the evidence folders hold ${[...files.keys()].join(', ') || 'no file'}`);
-    const value = readEvidence(file);
-    if (isObject(value) && value.capability_id !== undefined && !use.agents.some(({ capability }) => capability === value.capability_id)) {
-      throw new PreconditionError(`the evidence file ${label} is not usable: its capability is not a capability of this use case`);
-    }
-    return parseEvidence(value, label, use);
+    return parseEvidence(readEvidence(file), label, use);
   });
   return wanted === null ? runs.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : a.label < b.label ? -1 : a.label > b.label ? 1 : 0)) : runs;
 }

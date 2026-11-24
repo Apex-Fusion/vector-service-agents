@@ -11,10 +11,10 @@ This page lists the steps of each run. A row names the primitive that the step u
 |---|---|---|---|---|---|
 | l1-01 | The old and the new controller of Bid Desk Bravo change the controller. | Change of the controller | none | Not run. The evidence file has no entry for this step. | The whole step. |
 | l1-02 | Both guardians and the next controller start a recovery. | Recovery start | none | Not run. The evidence file has no entry for this step. | The whole step. |
-| l1-03 | The recovery waits 7 days. The tool refuses to build an earlier completion. | Waiting time of a recovery | refusal `example-refusal` | The tool refused to build a completion before the recovery window opened. | That the ledger refused a submitted completion. None was submitted early. |
+| l1-03 | The recovery waits 7 days. The tool refuses to build an earlier completion. | Waiting time of a recovery | refusal `example-refusal` | Not shown in full. The evidence file does not support every part of this step. | The whole step. |
 | l1-04 | After the 7 days the wallet completes the recovery. The new controller takes over. | Recovery completion | none | Not run. The evidence file has no entry for this step. | The whole step. |
 | l1-05 | The new controller retires the record. The deposit stays. | Retire of a record | none | Not run. The evidence file has no entry for this step. | The whole step. |
-| l1-06 | The controller of the retired record and the controller of the successor record name the successor. | Successor of an ended record | successor `example-successor` | The tombstone names the successor record. | That the successor inherits a claim, delegation or advert. |
+| l1-06 | The controller of the retired record and the controller of the successor record name the successor. | Successor of an ended record | successor `example-successor` | Not shown in full. The evidence file does not support every part of this step. | The whole step. |
 | l1-07 | The controller of the retired record takes back the deposit above the ledger minimum. | Reclaim of an ended record | none | Not shown. The evidence file holds no reference for this step. | The whole step. |
 
 ## Not covered

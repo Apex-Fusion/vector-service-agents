@@ -1,5 +1,5 @@
-// scripts/operator/test/results.test.ts - the task `results` through the real runner, over made-up evidence files in a temporary state folder: two runs, one step that did not run. The page equals
-// its golden file byte for byte. A step is shown only with a reference. The header file comes first and verbatim, and it is refused above 8 KiB. A dry run writes nothing. No test uses the network.
+// The results task through the real runner, over saved assembler fixtures and partial evidence files in a temporary state folder.
+// A step is shown only when the evidence supports it in full. The header file comes first and verbatim. No test uses the network.
 import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import type * as NodeFs from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -45,28 +45,25 @@ const tx = (name: string): string => hashOf(`results tx ${name}`);
 
 interface StepInput { id: string; status: 'shown' | 'not_run'; refs: unknown[]; note?: string }
 
-/** The refs of a step of the clean run: one transaction, and two or three references of other kinds where a step has them. */
-function cleanRefs(id: string): unknown[] {
-  if (id === 'r1-01') return [tx('r1-01'), { kind: 'delegation', value: hashOf('delegation id') }];
-  if (id === 'r1-03') return [tx('post'), `${tx('post')}#0`, tx('accept')];
-  return [tx(id)];
-}
+interface AssemblerFixture { readonly steps: readonly StepInput[]; readonly mock: unknown; readonly refusals: unknown }
+const ASSEMBLED_CLEAN = JSON.parse(readFileSync(new URL('./golden/evidence-clean.json', import.meta.url), 'utf8')) as AssemblerFixture;
+const ASSEMBLED_FAILURE = JSON.parse(readFileSync(new URL('./golden/evidence-failure.json', import.meta.url), 'utf8')) as AssemblerFixture;
+const cleanSteps = (): readonly StepInput[] => ASSEMBLED_CLEAN.steps;
+const failureSteps = (): StepInput[] => ASSEMBLED_FAILURE.steps.map((step) =>
+  step.id === 'r2-d' ? { id: step.id, status: 'not_run', refs: [], note: NOTE } : step);
 
-const cleanSteps = (): StepInput[] => data.evidenceSteps.filter((step) => step.run !== 'failure').map((step) => ({ id: step.id, status: 'shown' as const, refs: cleanRefs(step.id) }));
-
-/** The failure run: step d did not run, and step h has a labelled transaction and a labelled case. */
-const failureSteps = (): StepInput[] => data.evidenceSteps.filter((step) => step.run === 'failure').map((step): StepInput => {
-  if (step.id === 'r2-d') return { id: step.id, status: 'not_run', refs: [], note: NOTE };
-  return { id: step.id, status: 'shown', refs: step.id === 'r2-h' ? [{ kind: 'transaction', value: tx(step.id) }, { kind: 'case', value: `${tx('case')}#0` }] : [tx(step.id)] };
-});
+const transaction = (name: string) => ({ kind: 'transaction', value: tx(name) });
+const output = (kind: string, name: string) => ({ kind, value: `${tx(name)}#0` });
 
 /** An evidence file as the assembler writes it, with members that the page never reads. */
 const doc = (kind: UseCase['runs'][number]['id'], date: string, steps: unknown, over: Record<string, unknown> = {}): Record<string, unknown> => ({
   run: `use-case-1-${kind}`, kind, date, capability_id: 'supplychain.reorder.po.v1', builder: 'https://hosted.test/mcp', result: 'a text that the page never reads', hires: [{ step: 'propose' }], steps, ...over,
 });
 
-const cleanDoc = (over: Record<string, unknown> = {}): Record<string, unknown> => doc('clean', '2026-12-01', cleanSteps(), over);
-const failureDoc = (over: Record<string, unknown> = {}): Record<string, unknown> => doc('failure', '2026-12-03', failureSteps(), { audience: 'private', ...over });
+const cleanDoc = (over: Record<string, unknown> = {}): Record<string, unknown> =>
+  doc('clean', '2026-12-01', cleanSteps(), { mock: ASSEMBLED_CLEAN.mock, refusals: ASSEMBLED_CLEAN.refusals, ...over });
+const failureDoc = (over: Record<string, unknown> = {}): Record<string, unknown> =>
+  doc('failure', '2026-12-03', failureSteps(), { mock: ASSEMBLED_FAILURE.mock, refusals: ASSEMBLED_FAILURE.refusals, audience: 'private', ...over });
 
 /** True for a reference that has a kind and a value, as the evidence files label one. */
 const isLabelled = (ref: unknown): ref is { kind: string; value: string } => typeof ref === 'object' && ref !== null && 'kind' in ref && 'value' in ref && typeof ref.kind === 'string' && typeof ref.value === 'string';
@@ -113,6 +110,16 @@ function rowOf(page: string, id: string): string[] {
   return line.slice(2, -2).split(' | ');
 }
 
+/** The historical page has different synthetic reference values. Compare its wording and layout with the page made from the assembler's references. */
+function withoutReferences(page: string): string {
+  return page.split('\n').map((line) => {
+    if (!/^\| [rl]\d-/.test(line)) return line;
+    const columns = line.split(' | ');
+    columns[3] = '';
+    return columns.join(' | ');
+  }).join('\n');
+}
+
 const NO_ARGUMENTS = (rig: Rig): string[] => ['--header-file', rig.header];
 
 describe('the task results', () => {
@@ -127,15 +134,22 @@ describe('the task results', () => {
     expect([...results.valued].sort()).toEqual(['header-file', 'runs']);
   });
 
-  it('writes the page of two runs, with one step that did not run, and the page equals its golden file byte for byte', async () => {
+  it('preserves the original page wording and layout for sufficient assembler evidence', async () => {
     const rig = await makeRig();
     rig.seed();
     expect(await rig.run(...NO_ARGUMENTS(rig), '--runs', `${CLEAN},${FAILURE}`, '--submit')).toBe(0);
-    if (process.env.WRITE_GOLDEN === '1') writeFileSync(GOLDEN, rig.page());
-    expect(rig.page()).toBe(readFileSync(GOLDEN, 'utf8'));
+    expect(withoutReferences(rig.page())).toBe(withoutReferences(readFileSync(GOLDEN, 'utf8')));
     const line = rig.world.machine();
     expect(line).toMatchObject({ task: 'results', command: 'run', mode: 'submit', outcome: 'done', exit: 0, step: 'run' });
     expect(line.result).toMatchObject({ labels: [CLEAN, FAILURE], file: join('results', 'inventory-reorder.md'), written: true, bytes: Buffer.byteLength(rig.page(), 'utf8') });
+  });
+
+  it('considers each shown step of both unchanged assembler files complete', () => {
+    for (const doc of [ASSEMBLED_CLEAN, ASSEMBLED_FAILURE]) {
+      const run = parseEvidence(doc, 'assembler', data);
+      expect(run.steps.size).toBeGreaterThan(0);
+      for (const step of run.steps.values()) expect(step.complete, step.id).toBe(step.status === 'shown');
+    }
   });
 
   it('puts the text of the header file first and verbatim, whatever its ending, and never changes it', async () => {
@@ -156,11 +170,11 @@ describe('the task results', () => {
     rig.seed();
     expect(await rig.run(...NO_ARGUMENTS(rig), '--runs', `${CLEAN},${FAILURE}`)).toBe(0);
     expect(existsSync(join(rig.world.stateDir, 'results'))).toBe(false);
-    const golden = readFileSync(GOLDEN, 'utf8');
-    expect(rig.world.screen.text).toContain(golden.slice(0, -1));
+    const dry = rig.world.screen.text;
     expect(rig.world.machine()).toMatchObject({ mode: 'dry', outcome: 'done', exit: 0, result: { written: false } });
     expect(await rig.run(...NO_ARGUMENTS(rig), '--runs', `${CLEAN},${FAILURE}`, '--submit')).toBe(0);
-    expect(rig.page()).toBe(golden);
+    expect(dry).toContain(rig.page().slice(0, -1));
+    expect(withoutReferences(rig.page())).toBe(withoutReferences(readFileSync(GOLDEN, 'utf8')));
     expect(statSync(rig.pagePath).mode & 0o777).toBe(0o600);
     expect(statSync(join(rig.world.stateDir, 'results')).mode & 0o777).toBe(0o700);
     expect(rig.world.machine().result).toMatchObject({ written: true });
@@ -183,10 +197,10 @@ describe('the task results', () => {
     const runOf = (steps: unknown[]) => parseEvidence(doc('clean', '2026-12-01', steps), 'x', data);
     const shown = (id: string, refs: unknown[]): unknown => ({ id, status: 'shown', refs });
 
-    it('writes a step that has a reference as shown, with the two sentences of its primitive', () => {
-      const page = renderPage({ header: HEADER, use, runs: [runOf([shown('r1-02', [tx('vault')])])] });
+    it('writes a step that has the required references as shown, with both sentences', () => {
+      const page = renderPage({ header: HEADER, use, runs: [runOf([shown('r1-02', [transaction('vault'), output('vault', 'vault')])])] });
       const row = rowOf(page, 'r1-02');
-      expect(row[3]).toBe(`[\`${tx('vault')}\`](${EXPLORER_TX}${tx('vault')})`);
+      expect(row[3]).toBe(`[\`${tx('vault')}\`](${EXPLORER_TX}${tx('vault')}); vault \`${tx('vault')}#0\``);
       expect(row[4]).toBe(SHOWS['Vault']!.shows);
       expect(row[5]).toBe(SHOWS['Vault']!.doesNotShow);
     });
@@ -259,7 +273,9 @@ describe('the task results', () => {
       expect(await rig.run('status')).toBe(0);
       expect(rig.world.screen.text).toContain(`${PRIOR_LABEL} (public)`);
       expect(rowOf(rig.page(), 'r1-04')[4]).toBe(PAGE_TEXT.noReference);
-      expect(rowOf(rig.page(), 'r1-06')[4]).toBe(SHOWS['Receipt checks, accept, token for a route']!.shows);
+      expect(rowOf(rig.page(), 'r1-01')[4]).toBe(PAGE_TEXT.partialReference);
+      expect(rowOf(rig.page(), 'r1-06')[4]).toBe(PAGE_TEXT.partialReference);
+      expect(rig.page()).not.toContain(SHOWS['Receipt checks, accept, token for a route']!.shows);
     });
 
     it('writes the bid evaluation lifecycle page from only the recorded evidence', async () => {
@@ -272,20 +288,63 @@ describe('the task results', () => {
       expect(await rig.run(...NO_ARGUMENTS(rig), '--submit')).toBe(0);
       expect(rig.page()).toBe(readFileSync(GOLDEN_BIDS, 'utf8'));
       expect(rowOf(rig.page(), 'l1-07')[4]).toBe(PAGE_TEXT.noReference);
+      expect(rowOf(rig.page(), 'l1-03')[4]).toBe(PAGE_TEXT.partialReference);
+      expect(rowOf(rig.page(), 'l1-06')[4]).toBe(PAGE_TEXT.partialReference);
     });
 
     it('uses the shared primitive text for the other cases, not the original page wording', () => {
-      for (const use of [priorAuthorization, bidEvaluation]) {
-        const run = (kind: 'clean' | 'failure') => parseEvidence(doc(kind, '2026-12-01', use.evidenceSteps
-          .filter((step) => step.run === kind)
-          .map(({ id }) => ({ id, status: 'shown', refs: ['example-ref'] }))), kind, use);
-        const page = renderPage({ header: HEADER, use, runs: [run('clean'), run('failure')] });
+      for (const [use, number] of [[priorAuthorization, 2], [bidEvaluation, 3]] as const) {
+        const steps = use === priorAuthorization ? [
+          { id: 'r2-b', status: 'shown', refs: [output('claim', 'claim'), output('challenge', 'challenge')] },
+          { id: 'r2-b-hold', status: 'shown', refs: [{ kind: 'case', value: tx('case') }, transaction('finalize'), output('hold', 'hold')] },
+          { id: 'r2-c', status: 'shown', refs: [output('hold', 'hold')] },
+        ] : [
+          { id: 'r2-a', status: 'shown', refs: [output('escrow', 'quote'), output('claim', 'claim'), output('challenge', 'challenge')] },
+          { id: 'r2-a-hold', status: 'shown', refs: [{ kind: 'case', value: tx('case') }, transaction('finalize'), output('hold', 'hold')] },
+          { id: 'r2-c', status: 'shown', refs: [transaction('proposal'), output('escrow', 'proposal'), transaction('posted'), output('hold', 'hold')] },
+        ];
+        const run = parseEvidence(doc('failure', '2026-12-01', steps, {
+          run: `use-case-${number}-failure`, capability_id: use.agents[0]!.capability, refusals: [{ step: 'r2-c', kind: 'tool', message: 'The supplier is not listed.' }],
+        }), 'failure', use);
+        const page = renderPage({ header: HEADER, use, runs: [run] });
         expect(page).not.toContain('Order Desk');
         expect(page).not.toContain('purchase order');
         expect(page).toContain(SHOWS['Module-1 challenge']!.shows);
         expect(page).toContain(SHOWS['Hold removes the agent from the listing']!.shows);
         expect(page).toContain(SHOWS['Module-1 verdict and hold']!.shows);
       }
+    });
+
+    it('requires distinct binding, vault and delegation references and the route evidence for the receipt step', () => {
+      const refs = [
+        { kind: 'delegation', value: tx('delegation id') }, transaction('delegation'), { kind: 'attestation', value: tx('binding id') }, transaction('binding'),
+        output('vault', 'open'), transaction('open'),
+      ];
+      const write = [{ route: 'POST /records/orders/{order_id}/submission', credential: 'token', decision: 'allowed', act: ['agent'] }];
+      const render = (principal: unknown[], log: unknown[]) => renderPage({
+        header: HEADER, use: priorAuthorization, runs: [parseEvidence(doc('clean', '2026-12-01', [
+          { id: 'r1-01', status: 'shown', refs: principal },
+          { id: 'r1-06', status: 'shown', refs: [transaction('accept intake'), output('escrow', 'accept decision')] },
+        ], { run: 'use-case-2-clean', capability_id: priorAuthorization.agents[0]!.capability, mock: { log } }), PRIOR_LABEL, priorAuthorization)],
+      });
+      const incomplete = render([...refs.slice(0, -1), refs[1]], []);
+      expect(rowOf(incomplete, 'r1-01')[4]).toBe(PAGE_TEXT.partialReference);
+      expect(rowOf(incomplete, 'r1-06')[4]).toBe(PAGE_TEXT.partialReference);
+      const full = render(refs, write);
+      expect(rowOf(full, 'r1-01')[4]).toBe(SHOWS['Delegation with a co-signature, attestation: principal binding, vault']!.shows);
+      expect(rowOf(full, 'r1-06')[4]).toBe(SHOWS['Receipt checks, accept, token for a route']!.shows);
+    });
+
+    it('requires two distinct wait transactions and the recorded early tool refusal', () => {
+      const start = transaction('recovery start');
+      const finish = transaction('recovery complete');
+      const check = (refs: unknown[], refusals: unknown[]) => parseEvidence(doc('lifecycle', '2026-12-04', [{ id: 'l1-03', status: 'shown', refs }], {
+        run: 'use-case-3-lifecycle', capability_id: bidEvaluation.agents[2]!.capability, refusals,
+      }), BIDS_LABEL, bidEvaluation).steps.get('l1-03')!.complete;
+      const refused = [{ step: 'l1-03', kind: 'tool', message: 'The recovery window has not opened.' }];
+      expect(check([start, start], refused)).toBe(false);
+      expect(check([start, finish], [])).toBe(false);
+      expect(check([start, finish], refused)).toBe(true);
     });
 
     it('reads the lead and items from the case data', () => {
@@ -298,7 +357,7 @@ describe('the task results', () => {
     });
 
     it('refuses long private labels and public labels with a foreign agent, invalid date or run number', async () => {
-      const evidence = doc('clean', '2026-12-01', [], { capability_id: priorAuthorization.agents[0]!.capability });
+      const evidence = doc('clean', '2026-12-01', [], { run: 'use-case-2-clean', capability_id: priorAuthorization.agents[0]!.capability });
       const privateFile = await makeRig(priorAuthorization);
       privateFile.put('private', PRIOR_LABEL, evidence);
       expect(await privateFile.run(...NO_ARGUMENTS(privateFile), '--runs', PRIOR_LABEL, '--submit')).toBe(2);
@@ -313,12 +372,23 @@ describe('the task results', () => {
       }
     });
 
-    it('refuses an evidence file that declares a capability of another case', async () => {
-      const rig = await makeRig(priorAuthorization);
-      rig.put('public', PRIOR_LABEL, doc('clean', '2026-12-01', [{ id: 'r1-01', status: 'shown', refs: ['example'] }]));
-      expect(await rig.run(...NO_ARGUMENTS(rig), '--submit')).toBe(2);
-      expect(rig.world.screen.errorText).toContain('its capability is not a capability of this use case');
-      expect(existsSync(rig.pagePath)).toBe(false);
+    it('refuses a missing or foreign capability and an inconsistent declaration of case or run kind', async () => {
+      const capability = priorAuthorization.agents[0]!.capability;
+      const evidence = doc('clean', '2026-12-01', [{ id: 'r1-01', status: 'shown', refs: ['example'] }], { run: 'use-case-2-clean', capability_id: capability });
+      for (const [change, detail] of [
+        [{ capability_id: data.agents[0]!.capability }, 'its capability is not a capability of this use case'],
+        [{ capability_id: undefined }, 'its capability is not a capability of this use case'],
+        [{ run: 'use-case-3-clean' }, 'run does not name this use case and run kind'],
+        [{ run: 'use-case-2-failure' }, 'run does not name this use case and run kind'],
+        [{ run: undefined }, 'run does not name this use case and run kind'],
+        [{ use_case: 'bid-evaluation' }, 'run does not name this use case and run kind'],
+      ] as const) {
+        const rig = await makeRig(priorAuthorization);
+        rig.put('public', PRIOR_LABEL, { ...evidence, ...change });
+        expect(await rig.run(...NO_ARGUMENTS(rig), '--submit')).toBe(2);
+        expect(rig.world.screen.errorText).toContain(detail);
+        expect(existsSync(rig.pagePath)).toBe(false);
+      }
     });
   });
 
