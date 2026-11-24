@@ -25,15 +25,17 @@ import { addressDetails, decodePlutusData } from '../../../packages/vector-read/
 import { decodeJuryDatum } from '../../../packages/buyer-core/src/vendored/mcp/jury-codec.ts';
 import { REDEEMER } from '../../../packages/buyer-core/src/vendored/mcp/marketplace-constants.ts';
 import type { KoiosUtxo } from '../../../packages/buyer-core/src/vendored/mcp/marketplace-indexer.ts';
-import type { ClaimFact, Facts, RecordFact, StepOutcome, TaskDefinition } from '../lib/contract.ts';
+import type { ClaimFact, Facts, StepOutcome, TaskDefinition } from '../lib/contract.ts';
 import { EVIDENCE_MODULES, evidenceModuleOf } from '../lib/evidence/index.ts';
+import { historicalReceiptKey } from '../lib/evidence/historical-receipt-keys.ts';
+import type { HistoricalReceiptKey } from '../lib/evidence/historical-receipt-keys.ts';
 import { isObject, lastHire, txOf } from '../lib/evidence/types.ts';
 import type {
   ApprovalRead, Assembly, CaseRead, CaseView, Challenge, CommittedApproval, CommittedExecute, EvidenceModule, EvidenceOptions, EvidenceSession, FaultEntry, HireView, Hold, HoldCandidate,
-  IndexedCase, Loaded, MockRead, Obj, Reads, Ref, ReportedHire, Shown, TerminalSpend, VaultPayment,
+  IndexedCase, Loaded, MockRead, Obj, Reads, ReceiptAttribution, Ref, ReportedHire, Shown, TerminalSpend, VaultPayment,
 } from '../lib/evidence/types.ts';
 import { MOCK_PUBLIC_BASE } from '../lib/mock-hosts.ts';
-import { checkAttestation, escrowPaidFromVault, findRecord, keyHashOf, koiosUtxoInfo, readDelegation, readVaults, resolveEscrowLineage, verifyReceipt } from '../lib/platform.ts';
+import { checkAttestation, escrowPaidFromVault, findRecord, koiosUtxoInfo, readDelegation, readVaults, resolveEscrowLineage, verifyReceipt } from '../lib/platform.ts';
 import type { LedgerEnv } from '../lib/platform.ts';
 import { FlagError } from '../lib/runner.ts';
 import { hireRoleOf, parseReport, parseRunRecord, readJsonFile, scriptTxInfoOf, UnknownTransactionError, txInfoOf, txTimeOf } from '../lib/run-record.ts';
@@ -422,9 +424,11 @@ function receiptHashOf(datum: IdentityEscrowDatum): string {
   return hash;
 }
 
+interface SubmissionProof { readonly ref: string; readonly receiptHash: string }
+
 interface CheckedTerminal {
   readonly proof: TerminalSpend;
-  readonly receiptHash: string | null;
+  readonly submission: SubmissionProof | null;
 }
 
 /** Verify the ledger's successful terminal redeemer and the exact sequence of escrow inputs. */
@@ -450,7 +454,8 @@ async function terminalSpend(session: EvidenceSession, hire: HireEntry, tx: stri
   }
   const refund_outputs = payment === undefined ? [] : await vaultRefund(session, payment, row, datum, info);
   await confirmed(session, tx);
-  return { proof: { action, tx, spent_output: spent, at: info.timeMs, refund_outputs }, receiptHash: action === 'Reclaim' ? null : receiptHashOf(datum) };
+  return { proof: { action, tx, spent_output: spent, at: info.timeMs, refund_outputs },
+    submission: action === 'Reclaim' ? null : { ref: spent, receiptHash: receiptHashOf(datum) } };
 }
 
 interface EscrowHistory {
@@ -505,7 +510,7 @@ async function readRelease(session: Session, hire: HireEntry, discover: Discover
 
 interface LiveSubmission { readonly ref: string; readonly receiptHash: string | null }
 
-async function readSubmittedReceipt(session: EvidenceSession, post: string, submitted: string, live: LiveSubmission | null): Promise<string> {
+async function readSubmittedReceipt(session: EvidenceSession, post: string, submitted: string, live: LiveSubmission | null): Promise<SubmissionProof> {
   const out = await outputOf(session, submitted);
   if (out.address !== session.chain.deployment.escrow.address || typeof out.is_spent !== 'boolean') {
     throw new PreconditionError('the actual Submitted escrow output is not known');
@@ -517,7 +522,7 @@ async function readSubmittedReceipt(session: EvidenceSession, post: string, subm
   }
   await verifyEscrowAncestry(session, post, submitted, datum);
   await confirmed(session, txOf(submitted));
-  return hash;
+  return { ref: submitted, receiptHash: hash };
 }
 
 /** The file holds the exact text passed as payload, not a reconstruction from a result or a receipt. */
@@ -558,55 +563,41 @@ function committedExecute(session: EvidenceSession, record: RunRecord, hire: Hir
   } finally { closeSync(fd); }
 }
 
-/** The public keys of the record of an agent on the node: its controller and each Ed25519 key that it lists. The record lists the supplier keys of the agent. */
-async function recordKeysOf(session: EvidenceSession, fact: RecordFact): Promise<readonly string[]> {
-  const found = await findRecord(session.chain.provider, session.chain.deployment, fact.id);
-  if (found === null) throw new Error(`the record ${fact.did} is not in the identity registry`);
-  return [found.record.controller, ...found.record.keys.filter((one) => one.keyType === 'Ed25519').map((one) => one.key)];
-}
-
-/**
- * The receipt of a hire is the account that the supplier gives of the job, so the task reads it against the chain. Its supplier_pkh is the one of the escrow datum, and its signature verifies with a key of the record
- * of the agent that hashes to that supplier_pkh (`verifyReceipt` of buyer-core: Ed25519 over the canonical receipt, by the rules of the ledger).
- */
-async function checkReceipt(session: EvidenceSession, view: ReportedHire, posted: Obj, receiptHash: string, fact: RecordFact | undefined,
-    keys: Map<string, Promise<readonly string[]>>, problems: Problems): Promise<void> {
+/** The actual Submit names the record and transaction key that authenticated the receipt at that time. */
+async function checkReceipt(session: EvidenceSession, view: ReportedHire, posted: Obj, submission: SubmissionProof, agentId: string,
+    problems: Problems): Promise<ReceiptAttribution | null> {
   const member = `hires[${view.index}].report_file`;
   const supplier = posted.supplier_pkh;
   if (typeof supplier !== 'string' || view.report.receipt.supplier_pkh !== supplier) {
     problems.add(member, 'receipt.supplier_pkh is not the supplier_pkh of the escrow datum on the chain');
-    return;
+    return null;
   }
-  if (fact === undefined) return;
-  const known = keys.get(fact.id) ?? recordKeysOf(session, fact);
-  keys.set(fact.id, known);
-  let listed: readonly string[];
-  try { listed = await known; } catch (err) {
-    problems.add(member, `the record of the agent cannot be read to find the key of the supplier (${shown(err)})`);
-    return;
-  }
-  const key = listed.find((one) => keyHashOf(one) === supplier);
-  if (key === undefined) {
-    problems.add(member, 'no key of the record of the agent hashes to the supplier_pkh of the escrow, so the signature of the receipt cannot be verified');
-    return;
-  }
+  let key: HistoricalReceiptKey;
+  try { key = await historicalReceiptKey(envOf(session), { ...submission, agentId, supplierPkh: supplier }); }
+  catch (err) { problems.add(member, shown(err)); return null; }
   const { checks } = verifyReceipt({
-    receipt: view.report.receipt, signature: view.report.receipt_signature, escrowRef: view.entry.escrow_ref, result: view.report.result, supplierPubKeyHex: key, escrowSupplierPkh: supplier,
-    escrowPromptHash: String(posted.prompt_hash), escrowAgentId: typeof posted.agent_id === 'string' ? posted.agent_id : null, resultReceiptHashOnChain: receiptHash,
+    receipt: view.report.receipt, signature: view.report.receipt_signature, escrowRef: view.entry.escrow_ref, result: view.report.result,
+    supplierPubKeyHex: key.publicKeyHex, escrowSupplierPkh: supplier, escrowPromptHash: String(posted.prompt_hash), escrowAgentId: agentId,
+    resultReceiptHashOnChain: submission.receiptHash,
   });
+  const before = problems.lines.length;
   for (const name of ['supplier_key_matches', 'signature_valid', 'prompt_hash_matches', 'on_chain_hash_matches'] as const) {
     if (checks[name].state !== 'pass') problems.add(member, `the check ${name} of the receipt fails: ${shown(checks[name].note)}`);
   }
+  if (problems.lines.length !== before) return null;
+  const revoked = key.revocation;
+  return { record_ref: key.recordRef, submitted_ref: submission.ref, submitted_at_ms: key.submittedAtMs,
+    revocation: revoked === null ? null : { record_ref: revoked.recordRef, invalid_from_ms: revoked.invalidFromMs, invalidates_submission: revoked.invalidatesSubmission } };
 }
 
 async function checkHires(session: EvidenceSession, loaded: Loaded, facts: Readonly<Facts>, discover: DiscoverEscrow, problems: Problems): Promise<{
   terminals: ReadonlyMap<string, TerminalSpend>; committedApprovals: ReadonlyMap<string, CommittedApproval | null>;
-  committedExecutes: ReadonlyMap<string, CommittedExecute>;
+  committedExecutes: ReadonlyMap<string, CommittedExecute>; receiptAttributions: ReadonlyMap<string, ReceiptAttribution>;
 }> {
   const terminals = new Map<string, TerminalSpend>();
   const committedApprovals = new Map<string, CommittedApproval | null>();
   const committedExecutes = new Map<string, CommittedExecute>();
-  const keys = new Map<string, Promise<readonly string[]>>();
+  const receiptAttributions = new Map<string, ReceiptAttribution>();
   for (const view of loaded.hires) {
     const { entry, index } = view;
     const where = `hires[${index}]`;
@@ -639,7 +630,7 @@ async function checkHires(session: EvidenceSession, loaded: Loaded, facts: Reado
     if (advertRef !== entry.advert_ref) problems.add(`${where}.advert_ref`, 'is not the advert that the escrow on the chain was posted for');
     const record = facts.records[agent];
     if (record === undefined || posted.agent_id !== record.id) problems.add(`${where}.escrow_ref`, `the escrow on the chain is not for the agent ${agent}`);
-    let receiptHash: string | null = null;
+    let submission: SubmissionProof | null = null;
     for (const member of ['accept_tx', 'reclaim_tx'] as const) {
       const end = entry[member];
       if (end === null) continue;
@@ -648,20 +639,22 @@ async function checkHires(session: EvidenceSession, loaded: Loaded, facts: Reado
       try {
         const checked = await terminalSpend(session, entry, end, member === 'accept_tx' ? 'Accept' : 'Reclaim', payment);
         terminals.set(entry.escrow_ref, checked.proof);
-        receiptHash = checked.receiptHash;
+        submission = checked.submission;
       } catch (err) { problems.add(`${where}.${member}`, `the spend of the escrow cannot be proved (${shown(err)})`); }
     }
     if (view.report === null) continue;
-    if (receiptHash === null && entry.accept_tx === null && entry.reclaim_tx === null) {
+    if (submission === null && entry.accept_tx === null && entry.reclaim_tx === null) {
       try {
         const submitted = liveSubmitted?.ref ?? (hasLive ? null : (await discover(entry.escrow_ref))?.submitted ?? null);
-        if (submitted !== null) receiptHash = await readSubmittedReceipt(session, entry.escrow_ref, submitted, liveSubmitted);
+        if (submitted !== null) submission = await readSubmittedReceipt(session, entry.escrow_ref, submitted, liveSubmitted);
       } catch (err) { problems.add(`${where}.report_file`, `the actual Submitted receipt cannot be read (${shown(err)})`); }
     }
-    if (receiptHash === null) { problems.add(`${where}.report_file`, 'the actual Submitted escrow receipt commitment is unproven'); continue; }
-    const beforeReceipt = problems.lines.length;
-    await checkReceipt(session, view, posted, receiptHash, record, keys, problems);
-    if (problems.lines.length === beforeReceipt && view.role === 'execute' && typeof posted.prompt_hash === 'string') {
+    if (submission === null) { problems.add(`${where}.report_file`, 'the actual Submitted escrow receipt commitment is unproven'); continue; }
+    if (record === undefined || posted.agent_id !== record.id) continue;
+    const attribution = await checkReceipt(session, view, posted, submission, record.id, problems);
+    if (attribution === null) continue;
+    receiptAttributions.set(entry.escrow_ref, attribution);
+    if (view.role === 'execute' && typeof posted.prompt_hash === 'string') {
       try {
         const request = committedExecute(session, loaded.record, entry, posted.prompt_hash);
         if (request !== undefined) {
@@ -671,7 +664,7 @@ async function checkHires(session: EvidenceSession, loaded: Loaded, facts: Reado
       } catch (err) { problems.add(`${where}.request`, `the exact execute request is unproven: ${shown(err)}`); }
     }
   }
-  return { terminals, committedApprovals, committedExecutes };
+  return { terminals, committedApprovals, committedExecutes, receiptAttributions };
 }
 
 // ---- 4. the delegations, the vaults and the approval ----
@@ -1450,10 +1443,14 @@ function documentOf(session: Session, a: Assembly, steps: readonly StepEntry[], 
       ...(projected === null ? { checks: carried.report.checks, receipt: carried.report.receipt, receipt_signature: carried.report.receipt_signature,
         result_sha256: carried.sha256, result: carried.report.result } : { result_sha256: carried.sha256, result_projection: projected.result }),
     }),
-    hires: hires.map((hire) => ({
-      step: hire.entry.step, agent: hire.entry.agent, advert_ref: hire.entry.advert_ref, escrow_ref: hire.entry.escrow_ref, post_tx: hire.entry.post_tx, accept_tx: hire.entry.accept_tx,
-      reclaim_tx: hire.entry.reclaim_tx, verdict: hire.report?.verdict ?? null, result_sha256: hire.sha256,
-    })),
+    hires: hires.map((hire) => {
+      const signer = a.receiptAttributions.get(hire.entry.escrow_ref);
+      return {
+        step: hire.entry.step, agent: hire.entry.agent, advert_ref: hire.entry.advert_ref, escrow_ref: hire.entry.escrow_ref, post_tx: hire.entry.post_tx, accept_tx: hire.entry.accept_tx,
+        reclaim_tx: hire.entry.reclaim_tx, verdict: hire.report?.verdict ?? null, result_sha256: hire.sha256,
+        ...(signer?.revocation == null ? {} : { receipt_attribution: signer }),
+      };
+    }),
     delegation: a.reads.delegations, vault: a.reads.vaults, ...(approval === undefined ? {} : { approval }), sub_delegations: sub_delegations ?? a.reads.subDelegations,
     mock: { tenant: record.tenant, log: projected === null ? a.mock?.lines ?? [] : publicLog(a), unattributed_lines: a.mock?.unattributed ?? 0, state: a.mock?.counts ?? null },
     decisions: projected?.decisions ?? hires.filter((hire) => hire.decisions.length > 0).map((hire) => ({ step: hire.entry.step, decisions: hire.decisions })),
@@ -1489,7 +1486,7 @@ async function readPaidFromVault(session: EvidenceSession, loaded: Loaded, hire:
 function baseAssembly(session: Session, loaded: Loaded, purpose: Assembly['purpose'], discover = escrowDiscovery(session)): Assembly {
   return {
     purpose, use: session.use, loaded, facts: session.facts.read(), reads: EMPTY_READS, mock: null, terminals: new Map(), times: new Map(), faults: [], extra: {},
-    challenge: null, caseRead: null, approvalStates: [], committedApprovals: new Map(), committedExecutes: new Map(), lifecycleTransactions: new Set(),
+    challenge: null, caseRead: null, approvalStates: [], committedApprovals: new Map(), committedExecutes: new Map(), receiptAttributions: new Map(), lifecycleTransactions: new Set(),
     paidFromVault(hire) {
       if (!loaded.hires.some((one) => one.entry === hire)) throw new PreconditionError('the hire is not in the run');
       return readPaidFromVault(session, loaded, hire);
