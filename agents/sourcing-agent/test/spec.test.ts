@@ -5,9 +5,10 @@
 // file of the pack and some source files, and no network. The test of the headings holds the thirteen headings of the page and the seven sub-headings of Interface.
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { afterEach, describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 import { parse } from 'yaml';
 import { ACCEPT_WINDOW_MS, HIRE_ACTION } from '@vsa/buyer-core';
+import { DECISION_WINDOW_MS } from '@vsa/hire-kit';
 import { MAX_BODY, RESERVATION_MS } from '@vsa/service-kit';
 import { CONFIRMATIONS_REQUIRED, GATEWAY_FAILURES, MIN_SUB_DELEGATION_MS, SUB_DELEGATION_FAILURES, tokenTarget } from '@vsa/usecase-kit/access';
 import {
@@ -17,6 +18,8 @@ import {
 } from '@vsa/usecase-kit/bids';
 import type { PriceList, Quote } from '@vsa/usecase-kit/bids';
 import { COUNTERPARTY_REFUSED, EARLIER_PAY_MAY_LAND, INCONSISTENT_OUTCOME, INTERRUPTION_REASONS, PAY_UNCONFIRMED, checkRuntimeBody, checkWirePayload } from '@vsa/usecase-kit/buyer';
+import type { VerifiedDelivery } from '@vsa/usecase-kit/buyer';
+import { readAnswer } from '../../../packages/usecase-kit/src/decision/answer.ts';
 import { COSIGN_SETTINGS, COSIGN_STATUS, parseAllowlist, parseCosignSettings } from '@vsa/usecase-kit/cosign';
 import { HIRE_MIN_MS } from '@vsa/usecase-kit/decision';
 import { readFaultSwitch, withFaultMode } from '@vsa/usecase-kit/fault';
@@ -36,6 +39,7 @@ import { EFFECTIVE_REASONS } from '../src/bidders/lineage.ts';
 import { PROPOSE_DEADLINE_MS, PROPOSE_FAILURES, ProposeRefusal, RANKING_RESERVE_MS, SCORING_RESERVE_MS, runPropose } from '../src/propose/index.ts';
 import type { ProposeDeps, ProposeRequest, QuoteRecord } from '../src/propose/index.ts';
 import { BID_DESK_REFUSALS, CHALLENGE_CODES, CODE, NOT_ACTIVE_STATUSES } from '../src/quotes/ports.ts';
+import { judgeQuote } from '../src/quotes/decide.ts';
 import { QUOTE_CODES, QUOTE_HIRE_RESERVE_MS } from '../src/quotes/index.ts';
 import { SCORER_JOB_TIMEOUT_MS, SCORER_NEED_MS, SCORERS_NEED_MS, SCORING_FAILURES, SUB_DELEGATION_VALID_MS } from '../src/scoring/index.ts';
 import { reversedOf, scoreFaultOf } from '../src/scoring/fault.ts';
@@ -49,11 +53,12 @@ import { SETTINGS } from '../src/serve/start.ts';
 import { STATE_FILES } from '../src/serve/wiring.ts';
 import { DESKS, addDesk, advertOf, deskOf, extraDesk, goldenWorld, manifestText, ok, priceListText, revokedCompliance, revokedOf, rowOf, stubOf } from './bidders/support.ts';
 import type { Desk } from './bidders/support.ts';
-import { ALFA as GOLDEN_ALFA, BRAVO as GOLDEN_BRAVO, CHARLIE as GOLDEN_CHARLIE, acceptedOf, excludedOf, fanOf, proposed, shortlistAnswer, world } from './propose/support.ts';
+import { ALFA as GOLDEN_ALFA, BRAVO as GOLDEN_BRAVO, CHARLIE as GOLDEN_CHARLIE, NOW as PROPOSE_NOW, acceptedOf, excludedOf, fanOf, proposed, rankAnswer, shortlistAnswer, world } from './propose/support.ts';
 import * as quoteSupport from './quotes/support.ts';
 import * as quoteWorld from './quotes/world.ts';
 import { NOW as SCORING_NOW } from './scoring/support.ts';
-import { world as scoringWorld } from './scoring/world.ts';
+import { UNTOUCHED, footprint as executeFootprint, words as executeWords, world as executeWorld } from './execute/world.ts';
+import { janitorOnce, world as scoringWorld } from './scoring/world.ts';
 
 const root = new URL('../../../', import.meta.url);
 const text = (path: string): string => readFileSync(new URL(path, root), 'utf8');
@@ -337,7 +342,8 @@ describe('specs/sourcing-agent.md', () => {
       'If the supplier never submits, the buyer reclaims after `deliver_by`.',
       'The quotes are paid from the vault of the hirer. Each quote hire locks the price and both bonds of the advert of a Bid Desk: 3 units for the adverts of the Bid Desks of this repository. The value limit of the delegation caps the sum of these payments.',
       'The delegation key of the agent pays the fees of each Pay and of each Accept.',
-      `When the model does not accept a quote, the agent does not accept the escrow of that quote. The Bid Desk may then Release it ${ACCEPT_WINDOW_MS / 1000} s after its Submit and take the price and both bonds. A challenge does not return that money (see Known gaps).`,
+      'When the agent does not accept a delivery, it does not accept the escrow of that quote. This happens when a check in code fails, when the decision on the quote fails, when the decision comes too late, and when the model does not accept the quote.',
+      `The Bid Desk may then Release the escrow ${ACCEPT_WINDOW_MS / 1000} s after its Submit and take the price and both bonds. Only a no of the model can start a challenge: no challenge follows a failed check, a failed decision or a late decision. A challenge does not return that money (see Known gaps).`,
       'The service pays each model hire from the service key.',
     ]) expect(terms, part).toContain(part);
   });
@@ -570,6 +576,11 @@ describe('specs/sourcing-agent.md, Interface, Request', () => {
     expect(COUNTERPARTY_REFUSALS['bid-desk']).toContain('duplicate_rfq');
     expect(QUOTE_CODES).toContain('duplicate_rfq');
     expect(EXCLUDED_REASONS).toContain('refused');
+    // The sender of every request for quotation is this agent, whoever the hirer is, and the book keys an entry by its sender and its identifier.
+    expect(RUN.w.calls.quotes[0]?.input.sender).toBe(AGENT);
+    expect(RUN.w.calls.quotes[0]?.input.sender).not.toBe(HIRER);
+    expect(text('agents/bid-desk/src/checks/book.ts')).toContain('The sender is a part of the key: the same identifier from another sender is a new request.');
+    expect(request).toContain('The sender of a request for quotation is this agent for every hirer, so an `rfq_id` must be new across all hirers of the agent, and not only across your own requests.');
   });
 
   test('the examples of the requests are what the kit makes, the kit parses them, and the intake of the service takes them', () => {
@@ -738,6 +749,145 @@ describe('specs/sourcing-agent.md, the delegation of the hirer and a decision th
   });
 });
 
+describe('specs/sourcing-agent.md, the checks in code, the order of the ranking, the keys and the deadlines', () => {
+  const request = sub('Request');
+
+  afterEach(() => {
+    vi.useRealTimers();
+    quoteWorld.cleanWorlds();
+  });
+
+  test('five checks in code come before the model, each with its own code, and a quote that passes all five goes to the model', async () => {
+    const quote = QUOTE as unknown as Record<string, unknown>;
+    const delivered = (given: unknown, supplier: string = keyHashOf('the supplier of a check')): VerifiedDelivery => {
+      const body = typeof given === 'string' ? given : JSON.stringify(given);
+      const escrow = refOf('the escrow of a check');
+      return {
+        escrow_ref: escrow, advert_ref: ALFA_FILE.advert_ref, text: body, result: typeof given === 'string' ? null : (given as JsonObject),
+        receipt: { escrow_ref: escrow, supplier_pkh: supplier, response_hash: made('the answer of a check'), agent_did: ALFA }, receipt_signature: made('the signature of a check', 'sha512'), verification: VERIFICATION,
+      };
+    };
+    const judged = async (delivery: VerifiedDelivery): Promise<{ answer: unknown; learned: unknown; asked: number }> => {
+      let asked = 0;
+      const judge = judgeQuote(
+        {
+          acceptQuote: async () => {
+            asked += 1;
+            return { ok: true, decision: ACCEPT_DECISION_RECORD, choice: { accept: true, mismatch: [] } };
+          },
+          note: () => undefined,
+        },
+        RFQ, { did: ALFA, organisation: ALFA_FILE.organisation }, { list: ALFA_LIST, sha256: ALFA_LIST_SHA },
+      );
+      const answer = await judge.decide(delivery);
+      return { answer, learned: judge.learned(), asked };
+    };
+    const cases: ReadonlyArray<readonly [string, VerifiedDelivery, string]> = [
+      ['an answer that is no quote', delivered('this is not a quote'), 'quote_invalid'],
+      ['a quote of another bidder', delivered({ ...quote, desk_did: BRAVO }), 'quote_not_from_bidder'],
+      ['a quote for another request', delivered({ ...quote, rfq_id: 'rfq-other' }), 'quote_not_for_rfq'],
+      ['a quote from another price list', delivered({ ...quote, price_list_sha256: made('another price list') }), 'quote_not_from_list'],
+      ['a receipt that names no key hash of the supplier', delivered(quote, 'no key hash'), 'delivery_not_recordable'],
+    ];
+    for (const [what, delivery, code] of cases) expect(await judged(delivery), what).toStrictEqual({ answer: { accept: false, reason: code }, learned: { said: code }, asked: 0 });
+    expect(await judged(delivered(quote))).toMatchObject({ answer: { accept: true }, asked: 1 });
+    expect(request).toContain(
+      'Then five checks in code come before the model: the answer must be a quote (`quote_invalid`), it must come from this bidder (`quote_not_from_bidder`), it must answer this request (`quote_not_for_rfq`), it must name the price list that the agent read (`quote_not_from_list`), and the receipt must name the key hash of the supplier, so that the agent can record the delivery (`delivery_not_recordable`). A check that fails files no challenge.',
+    );
+    expect(sub('Errors')).toContain('so the delivery cannot be recorded (the fifth check in code, step 4 of `propose`)');
+  });
+
+  test('an order that repeats a DID is no choice (model_output_invalid), and an order that leaves out a scored bidder or names another DID ends the job with ranking_invalid', async () => {
+    const ask = (order: readonly Did[]) => readAnswer({ text: JSON.stringify({ reasoning: 'The order of the test.', choice: { order, tie_break: '' } }), status: 'completed' }, RANKING_DECISION.parse);
+    expect(ask([ALFA, ALFA])).toMatchObject({ ok: false, code: 'model_output_invalid' });
+    expect(ask([ALFA, BRAVO])).toMatchObject({ ok: true });
+    const jobWith = async (order: readonly Did[]) => {
+      const w = world();
+      w.script.shortlist = async () => shortlistAnswer([GOLDEN_ALFA, GOLDEN_BRAVO]);
+      w.script.rank = async () => rankAnswer(order);
+      return w.run();
+    };
+    for (const order of [[GOLDEN_ALFA], [GOLDEN_ALFA, GOLDEN_CHARLIE], [GOLDEN_ALFA, GOLDEN_BRAVO, GOLDEN_CHARLIE]]) {
+      const result = await jobWith(order);
+      expect(result, order.join()).toMatchObject({ outcome: 'failed', reason: 'ranking_invalid', document: null });
+      if (result.outcome !== 'failed') throw new Error('the job must fail');
+      expect(result.decisions.map((decision) => decision.name).at(-1)).toBe('ranking');
+    }
+    expect(proposed(await jobWith([GOLDEN_BRAVO, GOLDEN_ALFA])).document).not.toBeNull();
+    expect(request).toContain('An order that repeats a DID is no choice: the hire ends with `model_output_invalid`. An order that leaves out a scored bidder, or names a DID that is not scored, ends the job with `ranking_invalid`.');
+    expect(sub('Errors')).toContain('or the order of the model leaves out a scored bidder or names a DID that is not scored |');
+  });
+
+  test('the Bid Desk keeps the escrow after any delivery that the agent does not accept, and only a no of the model can start a challenge', async () => {
+    const delivered = async (arrange: (q: quoteWorld.World) => void): Promise<{ word: string; escrow: string; challenges: number; accepted: number }> => {
+      const q = await quoteWorld.world();
+      arrange(q);
+      const result = await q.run(q.input({ invited: [quoteSupport.bidderOf(quoteSupport.BRAVO)] }));
+      const outcome = quoteWorld.hired(result.outcomes, 0);
+      return { word: quoteWorld.words(outcome), escrow: await q.chain.escrowState(outcome.record.escrow_ref), challenges: quoteWorld.footprint(q).challenges, accepted: q.booked.accepted };
+    };
+    const kept = (word: string, challenges = 0): { word: string; escrow: string; challenges: number; accepted: number } => ({ word, escrow: 'Submitted', challenges, accepted: 0 });
+    expect(await delivered((q) => void (q.desks.bravo.answer = () => 'this is not a quote'))).toStrictEqual(kept('excluded failed quote_invalid'));
+    expect(await delivered((q) => void (q.accept.answer = () => ({ ok: false, code: 'model_output_invalid' })))).toStrictEqual(kept('excluded failed decision_failed'));
+    expect(await delivered((q) => void (q.desks.bravo.answer = () => quoteSupport.quoteText(quoteSupport.BRAVO, quoteSupport.priced('SYR-10ML', 30))))).toStrictEqual(kept('excluded disputed none', 1));
+    vi.useFakeTimers();
+    expect(
+      await delivered((q) => {
+        q.accept.answer = () => {
+          vi.advanceTimersByTime(DECISION_WINDOW_MS);
+          return new Promise<never>(() => undefined);
+        };
+      }),
+    ).toStrictEqual(kept('excluded failed decision_timeout'));
+    vi.useRealTimers();
+    expect(ACCEPT_WINDOW_MS).toBe(600_000);
+    expect(section('Terms')).toContain('This happens when a check in code fails, when the decision on the quote fails, when the decision comes too late, and when the model does not accept the quote. The Bid Desk may then Release the escrow 600 s after its Submit and take the price and both bonds.');
+  });
+
+  test('the key of the live delegation signs the proof of the token of execute only, and each scorer signs the proof of its own token with its own delegation key', () => {
+    const sourceDir = new URL('agents/sourcing-agent/src/', root);
+    const files = (readdirSync(sourceDir, { recursive: true }) as string[]).map(String).filter((file) => file.endsWith('.ts'));
+    const using = (call: string): string[] => files.filter((file) => readFileSync(new URL(file, sourceDir), 'utf8').includes(call)).sort();
+    expect(using('requestRouteToken(')).toStrictEqual(['execute/execute.ts']);
+    expect(using('requestSubagentToken(')).toStrictEqual(['scoring/scoring.ts']);
+    expect(text('agents/sourcing-agent/src/execute/execute.ts')).toContain('dpopKey: entry.dpopKey');
+    expect(text('packages/usecase-kit/src/access/token.ts')).toContain('dpopKey: request.subagent.delegationKey,');
+    const access = text('packages/usecase-kit/src/access/subdelegation.ts');
+    expect(access).toContain('signAll(built.txCbor, built.requiredSigners, [plan.agentSigner, plan.subagentSigner])');
+    expect(access).toContain('signAll(built.txCbor, built.requiredSigners, [plan.agentSigner])');
+    const identity = section('Identity');
+    expect(row(identity, 'Delegation keys')).toContain('and signs the proof of the token of `execute`. It also signs the Delegate and the Undelegate of each sub-delegation. It signs no other token proof: each scorer signs the proof of its own token request with its own delegation key.');
+    expect(row(identity, 'Subagents')).toContain('The delegation key of a scorer signs the proof of its token request. It also signs the Delegate of its sub-delegation, together with the live delegation key of the agent.');
+  });
+
+  test('a scorer counts its 720000 ms to the scoring deadline, which is the job deadline less 120000 ms, and an Undelegate that fails goes to the janitor', async () => {
+    expect([SCORER_NEED_MS, RANKING_RESERVE_MS]).toStrictEqual([720_000, 120_000]);
+    expect(RUN.w.calls.scoring[0]?.input.deadline_ms).toBe(PROPOSE_NOW + JOB_DEADLINE_MS - RANKING_RESERVE_MS);
+    const w = scoringWorld();
+    w.chain.faults.submitUndelegateThrows = true;
+    expect((await w.run()).ok).toBe(true);
+    expect(w.sink.entries.size).toBe(3);
+    w.chain.faults.submitUndelegateThrows = false;
+    expect((await janitorOnce(w)).entries.map((entry) => entry.state)).toStrictEqual(['ended', 'ended', 'ended']);
+    expect(w.sink.entries.size).toBe(0);
+    expect(request).toContain('A scorer needs 720000 ms left when its Delegate is sent. The count runs to the scoring deadline, which is the job deadline less 120000 ms. With less, it sends nothing and the job ends `failed` with `deadline`.');
+    expect(request).toContain('An Undelegate that fails changes no result: the sub-delegation goes to the janitor of the service, which ends it later.');
+    expect(section('Operator and data handling')).toContain('| `left/` | the sub-delegations that a job left behind, which their janitor ends |');
+  });
+
+  test('execute ends failed with deadline when a step cannot start before its deadline of 120000 ms, and a call that was sent and gets no answer in time is mock_system_failed', async () => {
+    expect(EXECUTE_FAILURES).toEqual(expect.arrayContaining(['deadline', 'mock_system_failed']));
+    const x = executeWorld();
+    expect(executeWords(await x.run(x.request(), x.arrived - EXECUTE_DEADLINE_MS))).toBe('failed deadline Failed');
+    expect(executeFootprint(x)).toStrictEqual(UNTOUCHED);
+    expect(text('packages/usecase-kit/src/access/call.ts')).toContain('if (bounded.timedOut) return failed(null, null, true, `the system did not answer within');
+    expect(text('agents/sourcing-agent/src/execute/execute.ts')).toContain("return { kind: 'failed', status: sent.status, sent: sent.sent };");
+    expect(request).toContain(
+      'The job deadline of 120000 ms bounds every step. A step that cannot start before the deadline ends the job `failed` with `deadline`: this holds for the two reads of the ledger, the token request and the call. A read or a token request that is still open at the deadline ends the job in the same way. A call that was sent and does not end in time ends the job `failed` with `mock_system_failed`, and it can have written the ranking.',
+    );
+  });
+});
+
 describe('specs/sourcing-agent.md, Interface, Response', () => {
   const response = sub('Response');
 
@@ -820,7 +970,7 @@ describe('specs/sourcing-agent.md, Interface, Response', () => {
     expect(Object.keys((golden.writes as object[])[0])).toStrictEqual(['system', 'route', 'status', 'ref']);
     expect((golden.writes as Array<Record<string, unknown>>)[0]).toMatchObject({ system: 'sourcing-record', route: 'POST /sourcing/rankings', status: 201 });
     expect(row(response, '`writes`')).toContain('"system": "sourcing-record", "route": "POST /sourcing/rankings", "status": 201, "ref": <the identifier of the ranking, or null>');
-    expect(response).toContain('The result of `execute` has these members, in this order:');
+    expect(response).toContain('The result of `execute` has these members:');
     expect(ACCEPT_WINDOW_MS).toBe(600_000);
   });
 });
@@ -976,7 +1126,7 @@ describe('specs/sourcing-agent.md, Interface, The ranking', () => {
     expect(text('agents/sourcing-agent/src/model/score.ts')).toContain('No code\n// checks that the score follows from the four parts and the weights: the model decides the numbers.');
     for (const part of [
       'The model gives the order and nothing else. No code sorts by score: an order that does not follow the scores is an order that the model chose.',
-      'The job accepts the order only when it is a list of DIDs that holds each scored bidder once (`ranking_invalid` otherwise).',
+      'The decision refuses an order that holds a DID two times (`model_output_invalid`). The job accepts the order only when it holds each scored bidder and no other DID (`ranking_invalid` otherwise).',
       'The score is not worked out again from the components and the weights: the model decides the numbers, and the job holds only that each number is from 0 to 100.',
       'It is a member only when the gateway verified the organisation: the sourcing record refuses the value `null`, so the member is left out when there is none |',
     ]) expect(ranking, part).toContain(part);
