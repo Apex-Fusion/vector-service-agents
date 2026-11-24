@@ -10,7 +10,7 @@ import { REPUTATION_ADDRESS as READ_ADDRESS, REPUTATION_SCRIPT_HASH, decodeStake
 import stake, { OPENING_LOVELACE, REPUTATION_ADDRESS, REPUTATION_POLICY, stakeTokenUnit } from '../tasks/stake.ts';
 import type { Registry } from '../lib/registry.ts';
 import { ORDER_DESK, REORDER, USE, stakeAdvertWorld } from './support/stake-advert-builds.ts';
-import type { Fixture } from './support/stake-advert-builds.ts';
+import type { Fixture, Twist } from './support/stake-advert-builds.ts';
 import { NOW } from './support/task-world.ts';
 
 const OPEN = 'vector_build_reputation_stake_open';
@@ -445,6 +445,62 @@ describe('stake: the guards judge the bytes of the build', () => {
     expect(f.w.evidence('stake')).toMatchObject([{ status: 'tool_refused', tool: OPEN, message: 'Failed to build: the module refuses this opening' }]);
     nothingSigned(f);
   });
+});
+
+// ---- a tool that builds another stake than it was asked for ----
+
+describe('stake: a tool that builds another stake than the one that it was asked for', () => {
+  const argCases: Array<[string, 'open' | 'create', (args: Record<string, unknown>, f: Fixture) => Record<string, unknown>, string]> = [
+    ['another amount', 'create', (a) => ({ ...a, amount: 12 }), 'the stake output holds 12.000000 units, and the stake of the data is 10.000000 units'],
+    ['the controller as owner', 'create', (a, f) => ({ ...a, owner_key_hash: f.hash('controller') }), 'the datum names another owner than the service key'],
+    ['another capability', 'create', (a) => ({ ...a, capabilities: [ORDER_DESK.capability] }), 'the datum lists other capabilities than the capability of the agent'],
+    ['two capabilities', 'create', (a) => ({ ...a, capabilities: [REORDER.capability, ORDER_DESK.capability] }), 'the datum lists other capabilities than the capability of the agent'],
+    ['another agent', 'create', (a) => ({ ...a, did: `did:vector:${'ab'.repeat(32)}` }), 'the stake output does not hold exactly one stake token of this agent and nothing else'],
+    ['another agent in the opening', 'open', (a) => ({ ...a, did: `did:vector:${'ab'.repeat(32)}` }), 'the datum names another agent'],
+    ['another capability in the opening', 'open', (a) => ({ ...a, capabilities: [ORDER_DESK.capability] }), 'the datum lists other capabilities than the capability of the agent'],
+    ['the controller as owner of the opening', 'open', (a, f) => ({ ...a, owner_key_hash: f.hash('controller') }), 'the datum names another owner than the service key'],
+  ];
+  for (const [label, step, change, reason] of argCases) {
+    it(`refuses a ${step} that the tool builds with ${label}: exit 2, nothing more is signed`, async () => {
+      const f = await stakeAdvertWorld();
+      if (step === 'create') await land(f);
+      const signed = f.signs.length;
+      f.hosted.bend[step === 'open' ? OPEN : CREATE] = (args) => change(args, f);
+      expect(await f.run(stake, '--submit')).toBe(2);
+      expect(errors(f)).toContain(reason);
+      expect(f.hosted.built).toHaveLength(step === 'open' ? 1 : 2);
+      expect(f.signs).toHaveLength(signed);
+      expect(f.world.chain.applied).toHaveLength(step === 'open' ? 0 : 1);
+    });
+  }
+  const hex = (text: string): string => Buffer.from(text, 'utf8').toString('hex');
+  const twistCases: Array<[string, 'open' | 'create', (f: Fixture) => Twist, string]> = [
+    ['a datum that counts another stake', 'create', () => ({ stakeDatum: { stake_amount: 11_000_000n } }), 'the datum counts another stake than the stake of the data'],
+    ['a datum with history points', 'create', () => ({ stakeDatum: { history_points: 3n } }), 'the datum has history points or challenge locks'],
+    ['a datum with a challenge lock', 'create', () => ({ stakeDatum: { challenge_locks: ['aa'] } }), 'the datum has history points or challenge locks'],
+    ['a datum of another agent', 'create', () => ({ stakeDatum: { agent_did: 'ab'.repeat(32) } }), 'the datum names another agent'],
+    ['a datum with another capability', 'create', () => ({ stakeDatum: { staked_capabilities: [hex(ORDER_DESK.capability)] } }), 'the datum lists other capabilities than the capability of the agent'],
+    ['a datum with two capabilities', 'create', () => ({ stakeDatum: { staked_capabilities: [hex(REORDER.capability), hex(ORDER_DESK.capability)] } }), 'the datum lists other capabilities than the capability of the agent'],
+    ['a datum of another agent in the opening', 'open', () => ({ stakeDatum: { agent_did: 'ab'.repeat(32) } }), 'the datum names another agent'],
+    ['a datum with another capability in the opening', 'open', () => ({ stakeDatum: { staked_capabilities: [hex(ORDER_DESK.capability)] } }), 'the datum lists other capabilities than the capability of the agent'],
+    ['the stake token of another agent', 'create', (f) => ({ assets: { [unitOf(f, ORDER_DESK)]: 1n } }), 'the stake output does not hold exactly one stake token of this agent and nothing else'],
+    ['two stake tokens', 'create', (f) => ({ assets: { [unitOf(f, REORDER)]: 2n } }), 'the stake output does not hold exactly one stake token of this agent and nothing else'],
+    ['a second token', 'create', (f) => ({ assets: { [unitOf(f, REORDER)]: 1n, [unitOf(f, ORDER_DESK)]: 1n } }), 'the stake output does not hold exactly one stake token of this agent and nothing else'],
+    ['a second output at the reputation address', 'open', () => ({ extra: { address: REPUTATION_ADDRESS, lovelace: 1_500_000n } }), 'has 2 output(s) at the reputation address'],
+    ['a second output at the reputation address', 'create', () => ({ extra: { address: REPUTATION_ADDRESS, lovelace: 2_000_000n } }), 'has 2 output(s) at the reputation address'],
+  ];
+  for (const [label, step, twist, reason] of twistCases) {
+    it(`refuses a ${step} with ${label} when the arguments of the tool are right: exit 2, nothing more is signed`, async () => {
+      const f = await stakeAdvertWorld();
+      if (step === 'create') await land(f);
+      const signed = f.signs.length;
+      f.hosted.twist[step] = twist(f);
+      expect(await f.run(stake, '--submit')).toBe(2);
+      expect(errors(f)).toContain(reason);
+      expect(f.signs).toHaveLength(signed);
+      expect(f.world.chain.applied).toHaveLength(step === 'open' ? 0 : 1);
+    });
+  }
 });
 
 // ---- the verification ----

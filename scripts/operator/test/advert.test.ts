@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest';
 import { factsOf } from '../../checks/lib/txfacts.ts';
 import { ADVERT_REF, DEPLOYMENT, keyOf } from '../../checks/test/support/world.ts';
 import { decodeIdentityAdvertDatum } from '../../../packages/vector-read/src/index.ts';
+import type { IdentityAdvertDatum } from '../../../packages/vector-read/src/index.ts';
 import advert from '../tasks/advert.ts';
 import type { AdvertSpec, AgentSpec } from '../lib/contract.ts';
 import { ORDER_DESK, REORDER, USE, manifestOf, stakeAdvertWorld } from './support/stake-advert-builds.ts';
@@ -407,6 +408,48 @@ describe('advert: the guards judge the bytes of the build', () => {
     expect(f.w.evidence('advert')).toMatchObject([{ status: 'tool_refused', tool: POST, message: 'Failed to build: the record does not list the key' }]);
     nothingSigned(f);
   });
+});
+
+// ---- a tool that builds another advert than it was asked for ----
+
+describe('advert: a tool that builds another advert than the one that it was asked for', () => {
+  const argCases: Array<[string, (args: Record<string, unknown>) => Record<string, unknown>, string]> = [
+    ['another deposit', (a) => ({ ...a, deposit_lovelace: 3_000_000 }), 'the advert output holds 3.000000 units, and the deposit of the data is 2.500000 units'],
+    ['another price', (a) => ({ ...a, price_lovelace: 3_000_001 }), 'price_lovelace is "3000001", and the data has "3000000"'],
+    ['another supplier bond', (a) => ({ ...a, supplier_bond_lovelace: 0 }), 'supplier_bond_lovelace is "0", and the data has "1000000"'],
+    ['another buyer bond', (a) => ({ ...a, buyer_bond_lovelace: 0 }), 'buyer_bond_lovelace is "0", and the data has "1000000"'],
+    ['another window', (a) => ({ ...a, max_processing_ms: 1_800_001 }), 'max_processing_ms is "1800001", and the data has "1800000"'],
+    ['other output tokens', (a) => ({ ...a, max_output_tokens: 5 }), 'max_output_tokens is "5", and the data has "0"'],
+    ['another endpoint', (a) => ({ ...a, endpoint_url: 'https://other.example' }), `endpoint_url is "https://other.example", and the data has "${REORDER_ADVERT.origin}"`],
+    ['another detail address', (a) => ({ ...a, detail_uri: 'https://other.example/agent.json' }), 'detail_uri is "https://other.example/agent.json"'],
+    ['another detail hash', (a) => ({ ...a, detail_hash: 'bb'.repeat(32) }), `detail_hash is "${'bb'.repeat(32)}"`],
+    ['another model', (a) => ({ ...a, model: 'lot-large' }), 'model is "lot-large", and the data has "reorder-agent-v1"'],
+    ['another capability', (a) => ({ ...a, capability_id: ORDER_DESK.capability }), `capability_id is "${ORDER_DESK.capability}", and the data has "${REORDER.capability}"`],
+    ['another agent', (a) => ({ ...a, did: `did:vector:${'ab'.repeat(32)}` }), `agent_id is "${'ab'.repeat(32)}"`],
+  ];
+  for (const [label, change, reason] of argCases) {
+    it(`refuses an advert that the tool builds with ${label}: exit 2, nothing is signed`, async () => {
+      const f = await stakeAdvertWorld();
+      f.hosted.bend[POST] = change;
+      expect(await f.run(advert, '--submit')).toBe(2);
+      expect(errors(f)).toContain(reason);
+      expect(f.hosted.built).toHaveLength(1);
+      nothingSigned(f);
+    });
+  }
+  const datumCases: Array<[string, Partial<IdentityAdvertDatum>, string]> = [
+    ['another supplier key in the datum', { supplier_pkh: 'ab'.repeat(28) }, `supplier_pkh is "${'ab'.repeat(28)}"`],
+    ['the status Retired in the datum', { status: 'Retired' }, 'status is "Retired", and the data has "Active"'],
+  ];
+  for (const [label, datum, reason] of datumCases) {
+    it(`refuses an advert with ${label} when the arguments of the tool are right: exit 2, nothing is signed`, async () => {
+      const f = await stakeAdvertWorld();
+      f.hosted.twist.post = { advertDatum: datum };
+      expect(await f.run(advert, '--submit')).toBe(2);
+      expect(errors(f)).toContain(reason);
+      nothingSigned(f);
+    });
+  }
 });
 
 // ---- the cleanup ----
