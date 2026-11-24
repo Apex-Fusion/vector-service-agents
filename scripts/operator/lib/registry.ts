@@ -4,7 +4,7 @@
 // The registry never prints, logs, returns or copies a seed, except through `secretHexForEnv`. A refusal names the key and the rule that it broke, and nothing that a file holds: no text, no
 // path and no message of the file system (only its short error code). `keys-public.json` lists the public part of each key, so that a person can see the wallets and compare them with the files.
 import { randomBytes } from 'node:crypto';
-import { chmodSync, closeSync, fchmodSync, fsyncSync, linkSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeSync } from 'node:fs';
+import { chmodSync, closeSync, fchmodSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, unlinkSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 import { inspect } from 'node:util';
 import { writeFileAtomically } from '../../checks/lib/files.ts';
@@ -26,8 +26,8 @@ export class KeyStoreError extends Error {
   }
 }
 
-/** What a path is: a file or a folder, and its permission bits. */
-export interface KeyStat { isFile: boolean; isFolder: boolean; mode: number }
+/** What a path is: a file, a folder or a symbolic link (a link is never followed), and its permission bits. */
+export interface KeyStat { isFile: boolean; isFolder: boolean; isSymlink: boolean; mode: number }
 
 /** What the registry needs from the file system. A test gives a fake for the parts that it breaks. */
 export interface KeyStoreIo {
@@ -66,8 +66,8 @@ export function codeOf(err: unknown): string {
 
 const realIo: KeyStoreIo = {
   stat: (path) => {
-    const stats = statSync(path, { throwIfNoEntry: false });
-    return stats === undefined ? null : { isFile: stats.isFile(), isFolder: stats.isDirectory(), mode: stats.mode & 0o777 };
+    const stats = lstatSync(path, { throwIfNoEntry: false });
+    return stats === undefined ? null : { isFile: stats.isFile(), isFolder: stats.isDirectory(), isSymlink: stats.isSymbolicLink(), mode: stats.mode & 0o777 };
   },
   read: (path) => readFileSync(path, 'utf8'),
   makeFolder: (path) => {
@@ -147,8 +147,9 @@ function foldersOf(dir: string, useCase: string, specs: readonly KeySpec[]): { p
   return [...new Set(specs.map((spec) => spec.scope))].map((scope) => ({ path: folderOf(dir, useCase, scope), label: scope === 'shared' ? 'the shared key folder' : 'the key folder of the use case' }));
 }
 
-/** Checks that a folder that is there is a folder with mode 700. */
+/** Checks that a folder that is there is a folder with mode 700, and no symbolic link: a link would lead the keys to a folder that nobody checked. */
 function checkFolder(found: KeyStat, label: string): void {
+  if (found.isSymlink) throw new KeyStoreError('folder', `${label} is a symbolic link: it must be a folder`);
   if (!found.isFolder) throw new KeyStoreError('folder', `${label} is not a folder`);
   if (CHECK_MODES && found.mode !== FOLDER_MODE) throw new KeyStoreError('folder', `${label} has mode ${found.mode.toString(8)}: set mode 700 on it`);
 }
@@ -308,11 +309,12 @@ export class Registry {
   }
 }
 
-/** Reads the seed of one key. The file must exist, be a file, have mode 600, and hold 64 lower-case hex characters and at most one newline. */
+/** Reads the seed of one key. The file must exist, be a file and no symbolic link, have mode 600, and hold 64 lower-case hex characters and at most one newline. */
 function readSeed(store: KeyStoreIo, folder: string, name: string): string {
   const file = join(folder, `${name}.seed`);
   const found = attempt('unreadable', `the key ${name} could not be read`, () => store.stat(file));
   if (found === null) throw new KeyStoreError('missing', `the key ${name} is missing: its key file does not exist`);
+  if (found.isSymlink) throw new KeyStoreError('unreadable', `the key ${name} is a symbolic link: a key file is a file`);
   if (!found.isFile) throw new KeyStoreError('unreadable', `the key ${name} is not a file`);
   if (CHECK_MODES && found.mode !== FILE_MODE) throw new KeyStoreError('mode', `the key ${name} has mode ${found.mode.toString(8)}: set mode 600 on its key file`);
   const text = attempt('unreadable', `the key ${name} could not be read`, () => store.read(file));

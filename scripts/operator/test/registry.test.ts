@@ -1,5 +1,5 @@
 // The named key registry: it makes the key files, loads them, and never shows a seed. Each refusal has an accepted twin. No test uses a real key: every seed comes from a counter.
-import { chmodSync, linkSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, linkSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { inspect } from 'node:util';
 import { afterAll, describe, expect, it } from 'vitest';
@@ -32,8 +32,8 @@ function filesBelow(root: string, folder = ''): string[] {
 }
 /** The answer of the real `stat`, for a fake io that must answer for folders as the real one does. */
 const realStat: KeyStoreIo['stat'] = (path) => {
-  const stats = statSync(path, { throwIfNoEntry: false });
-  return stats === undefined ? null : { isFile: stats.isFile(), isFolder: stats.isDirectory(), mode: stats.mode & 0o777 };
+  const stats = lstatSync(path, { throwIfNoEntry: false });
+  return stats === undefined ? null : { isFile: stats.isFile(), isFolder: stats.isDirectory(), isSymlink: stats.isSymbolicLink(), mode: stats.mode & 0o777 };
 };
 /** A key folder with the three keys, made by the registry itself. */
 function madeRoot(): string {
@@ -308,6 +308,47 @@ describe('loadRegistry', () => {
     rmSync(seedFileOf(root, THREE[1]!));
     mkdirSync(seedFileOf(root, THREE[1]!), { mode: 0o600 });
     expect(refusal(() => loadRegistry({ dir: root, useCase: USE_CASE, specs: THREE })).reason).toBe('unreadable');
+  });
+
+  it('refuses a folder that is a symbolic link, in the make call and in the load call, and writes nothing through it', () => {
+    const root = makeKeyRoot();
+    const target = makeKeyRoot();
+    symlinkSync(target, join(root, 'shared'));
+    const made = refusal(() => makeMissingKeys(root, USE_CASE, THREE));
+    expect(made.reason).toBe('folder');
+    expect(made.message).toContain('symbolic link');
+    expect(filesBelow(target)).toEqual([]);
+    const loaded = refusal(() => loadRegistry({ dir: root, useCase: USE_CASE, specs: THREE, need: ['alpha'] }));
+    expect(loaded.reason).toBe('folder');
+    expect(loaded.message).toContain('symbolic link');
+    const link = join(makeKeyRoot(), 'keys-link');
+    symlinkSync(madeRoot(), link);
+    expect(refusal(() => makeMissingKeys(link, USE_CASE, THREE)).reason).toBe('folder');
+    expect(refusal(() => loadRegistry({ dir: link, useCase: USE_CASE, specs: THREE })).reason).toBe('folder');
+    unlinkSync(join(root, 'shared'));
+    expect(makeMissingKeys(root, USE_CASE, THREE).made).toEqual(['alpha', 'bravo', 'charlie']);
+  });
+
+  it('refuses a key file that is a symbolic link, also one that leads nowhere, and never writes through it', () => {
+    const root = madeRoot();
+    const outside = writeSeed(makeKeyRoot(), 'elsewhere', 'other', `${counterSeed()}\n`);
+    const path = seedFileOf(root, THREE[1]!);
+    rmSync(path);
+    symlinkSync(outside, path);
+    const err = refusal(() => loadRegistry({ dir: root, useCase: USE_CASE, specs: THREE }));
+    expect(err.reason).toBe('unreadable');
+    expect(err.message).toContain('bravo');
+    expect(err.message).toContain('symbolic link');
+    const seedText = readFileSync(outside, 'utf8');
+    expect(makeMissingKeys(root, USE_CASE, THREE)).toEqual({ made: [], kept: ['alpha', 'bravo', 'charlie'] });
+    expect(readFileSync(outside, 'utf8')).toBe(seedText);
+    unlinkSync(path);
+    symlinkSync(join(root, 'nowhere'), path);
+    expect(refusal(() => loadRegistry({ dir: root, useCase: USE_CASE, specs: THREE })).message).toContain('symbolic link');
+    expect(makeMissingKeys(root, USE_CASE, THREE).kept).toContain('bravo');
+    unlinkSync(path);
+    writeFileSync(path, seedText, { mode: 0o600 });
+    expect(loadRegistry({ dir: root, useCase: USE_CASE, specs: THREE }).secretHexForEnv('bravo')).toBe(seedText.trim());
   });
 
   for (const mode of [0o644, 0o640, 0o660, 0o666, 0o400, 0o700]) {
