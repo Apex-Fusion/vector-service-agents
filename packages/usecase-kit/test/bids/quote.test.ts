@@ -410,6 +410,12 @@ describe('the notes', () => {
     { label: 'the tag characters (Cf)', characters: ['\u{e0001}', '\u{e0020}', '\u{e0041}', '\u{e007f}'] },
     { label: 'the variation selectors', characters: ['\ufe00', '\ufe0e', '\ufe0f'] },
     { label: 'the variation selectors of the supplement', characters: ['\u{e0100}', '\u{e01ef}'] },
+    { label: 'the combining grapheme joiner (default ignorable)', characters: ['\u034f'] },
+    { label: 'the Hangul fillers (default ignorable)', characters: ['\u115f', '\u1160', '\u3164', '\uffa0'] },
+    { label: 'the Khmer inherent vowels (default ignorable)', characters: ['\u17b4', '\u17b5'] },
+    { label: 'the Mongolian free variation selectors and the fourth one (default ignorable)', characters: ['\u180b', '\u180c', '\u180d', '\u180f'] },
+    { label: 'the code points that the standard reserves as default ignorable', characters: ['\u2065', '\ufff0', '\ufff8', '\u{e0000}', '\u{e0fff}'] },
+    { label: 'a surrogate that stands alone (Cs): a high one, a low one, and the two in the wrong order', characters: ['\ud800', '\udbff', '\udc00', '\udfff', '\ude00\ud83d'] },
   ];
 
   it.each(HIDDEN)('refuses $label, in any place of the text, and never repeats the text', ({ characters }) => {
@@ -433,8 +439,12 @@ describe('the notes', () => {
     }
   });
 
-  it('takes letters of other scripts, symbols, emoji, a no-break space, a combining mark, flags, and the character after the variation selectors', () => {
-    for (const text of ['Kriterium: erf\u00fcllt \u8179\u75db \u2022 \u{1F600} \u00a0 ok', 'Flags \u{1F1E9}\u{1F1EA} and a mark e\u0301 and \ufe10 and a heart \u2764']) {
+  it('takes letters of other scripts, symbols, emoji, a no-break space, a combining mark, flags, the character after the variation selectors, and the characters next to the default ignorable ones', () => {
+    const NEXT_TO_HIDDEN = '\u034e \u0350 \u115e \u1161 \u17b3 \u17b6 \u180a \u1810 \u3163 \u3165 \uff9f \uffa1';
+    for (const text of [
+      'Kriterium: erf\u00fcllt \u8179\u75db \u2022 \u{1F600} \u00a0 ok', 'Flags \u{1F1E9}\u{1F1EA} and a mark e\u0301 and \ufe10 and a heart \u2764', `Next to the hidden ones: ${NEXT_TO_HIDDEN}`,
+      'A pair of surrogates is one emoji: \ud83d\ude00 and \u{1F600}',
+    ]) {
       expect(parse(change(golden(), ['notes'], text)).ok, text).toBe(true);
     }
   });

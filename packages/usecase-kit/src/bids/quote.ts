@@ -17,8 +17,8 @@
 //
 // The organisation of the desk is its own domain: not null, in lower case, with at least two labels and at most 64 characters, as the organisation of an agent record is. The organisation of the sender is
 // recorded and never a reason to refuse. It is null when no party names one, and else any text of at most 1024 characters, because the shared sender check takes any text from the record of the sender. The
-// notes are the words of the desk, and a hirer reads them: at most 500 characters, and no control, format, separator or variation selector character. A reader cannot see such a character, and it can change
-// how a text reads without a change of a letter. The line feed is a control character, so the notes are one line. The credential has three parts of base64url text with a dot between them, and at most 8192
+// notes are the words of the desk, and a hirer reads them: at most 500 characters, and no control, format, separator, surrogate or default ignorable character. A reader cannot see such a character, and it can
+// change how a text reads without a change of a letter. The line feed is a control character, so the notes are one line. The credential has three parts of base64url text with a dot between them, and at most 8192
 // characters.
 //
 // `decisions` holds exactly one decision of the protocol, and its name is `quote`: the model decision of the Bid Desk. The desk makes it in every job, also when a fault value is set, so a list with no
@@ -110,9 +110,11 @@ const LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 const CREDENTIAL = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
 /**
  * The characters that the notes never hold: the control characters (Cc, among them NUL and the line feed), the format characters (Cf: zero width, direction, byte order mark and tag characters), the line and
- * paragraph separators (Zl and Zp), and the variation selectors. A reader cannot see them, and they can change how a text reads without a change of a letter.
+ * paragraph separators (Zl and Zp), the surrogates that stand alone (Cs), and the default ignorable characters of the Unicode standard: the variation selectors, the Hangul fillers, the combining grapheme joiner,
+ * the Khmer inherent vowels, the Mongolian free variation selectors and the code points that the standard reserves for more of them. A reader cannot see them, and they can change how a text reads without a
+ * change of a letter. A pair of surrogates is one character and passes: only a surrogate that stands alone is refused.
  */
-const HIDDEN = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\u{fe00}-\u{fe0f}\u{e0100}-\u{e01ef}]/u;
+const HIDDEN = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Cs}\p{Default_Ignorable_Code_Point}]/u;
 /** The identifier of a capability: the form of a SKU. */
 const CAPABILITY = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 /** The signature of a receipt: printable characters with no space. A signature is hex or base64, so no more is asked of it. */
@@ -199,11 +201,11 @@ function parseLines(value: JsonValue, field: string): ProtocolResult<readonly Qu
   return lines;
 }
 
-/** The notes: a text of at most MAX_NOTES_CHARS characters with no control, format, separator or variation selector character. The copy holds the text in the NFC form, and the check of the characters runs on the copy. */
+/** The notes: a text of at most MAX_NOTES_CHARS characters with no control, format, separator, surrogate or default ignorable character. The copy holds the text in the NFC form, and the check of the characters runs on the copy. */
 function parseNotes(value: JsonValue, field: string): ProtocolResult<string> {
   const copy = nfcWithin(value, MAX_NOTES_CHARS);
   if (copy !== null && !HIDDEN.test(copy)) return accepted(copy);
-  return refused('bad_shape', `${field} must be a text of at most ${MAX_NOTES_CHARS} characters with no control, format, separator or variation selector character`);
+  return refused('bad_shape', `${field} must be a text of at most ${MAX_NOTES_CHARS} characters with no control, format, separator, surrogate or default ignorable character`);
 }
 
 /** The credential: a compact JWS text. The length is checked first, so that a long text is never matched. */
