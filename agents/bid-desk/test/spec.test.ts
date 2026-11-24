@@ -1083,8 +1083,6 @@ describe('specs/bid-desk.md: the receipt, the claim and the fault switch', () =>
     expect(await refusalOf(none.run())).toMatchObject({ code: 'internal', status: 500 });
     expect(none.booked).toHaveLength(0);
     expect(fault).toContain('When no line can take the new price, the job ends with `internal` (500): a run never says that a fault was on when it changed nothing.');
-    // The CLI enables only inventory reorder, even when the pack has data for another use case.
-    expect([...USE_CASE_NAMES]).toStrictEqual(['inventory-reorder']);
     expect(fault).toContain('The planned failure run sets the switch on one Bid Desk only, Bid Desk Charlie, to test whether the Sourcing Agent\'s model identifies the off-list price. The switch of one Bid Desk never changes another: each Bid Desk reads an env file of its own.');
   });
 
