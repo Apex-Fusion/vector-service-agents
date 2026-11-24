@@ -195,7 +195,7 @@ async function statusLines<Extra>(def: CheckDefinition<Extra>, session: Session<
   if (def.needs.chain) {
     const gate = await session.network.guard();
     lines.push(`network guard: ${gate.ok ? 'ok' : 'FAIL'}, ${gate.message}`);
-    for (const key of [...session.ring.keyHashes()].map((hash) => session.ring.get(session.ring.roleOf(hash)!))) {
+    for (const key of [...session.ring.keyHashes()].map((hash) => session.ring.get(session.ring.roleOf(hash)! as CheckKeyRole))) {
       const utxos = await session.chain.provider.getUtxos(key.address);
       const total = utxos.reduce((sum, utxo) => sum + (utxo.assets.lovelace ?? 0n), 0n);
       const collateral = utxos.filter(isCollateralOutput).length;
@@ -244,7 +244,7 @@ export async function runCheck<Extra>(def: CheckDefinition<Extra>, argv: readonl
     const extra = def.parse(deps.env, common);
     const readKey = deps.readKey ?? ((path: string, role: CheckKeyRole) => readKeyFile(path, role));
     const loaded = def.needs.keys.map((role) => readKey(common.keyFiles[role]!, role));
-    const ring = new KeyRing(loaded);
+    const ring = new KeyRing<CheckKeyRole>(loaded);
     const authPath = common.keyFiles.authentication;
     const authKey = authPath === undefined ? (ring.find('agent') ?? null) : readKey(authPath, 'agent');
     const fetchImpl = deps.fetchImpl ?? fetch;

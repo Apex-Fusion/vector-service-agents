@@ -173,8 +173,11 @@ export function readKeyFile(path: string, role: KeyRole, io: Partial<KeyFileIo> 
   return parseKeyText(bytes, role);
 }
 
-/** The keys that the operator gave, by hash and by role. It signs for a key that it holds, and for no other. */
-export class KeyRing {
+/**
+ * The keys that the operator gave, by hash and by role. It signs for a key that it holds, and for no other. `R` is the set of names that a caller asks for: the ring of a check is
+ * `KeyRing<CheckKeyRole>`, so a misspelt role does not compile, and the ring of a pack keeps any string.
+ */
+export class KeyRing<R extends KeyRole = KeyRole> {
   readonly #byHash = new Map<string, LoadedKey>();
   readonly #byRole = new Map<KeyRole, LoadedKey>();
 
@@ -191,13 +194,13 @@ export class KeyRing {
     return this.#byHash.has(keyHash);
   }
 
-  get(role: KeyRole): LoadedKey {
+  get(role: R): LoadedKey {
     const key = this.#byRole.get(role);
     if (key === undefined) throw new Error(`the ${role} key was not given`);
     return key;
   }
 
-  find(role: KeyRole): LoadedKey | undefined {
+  find(role: R): LoadedKey | undefined {
     return this.#byRole.get(role);
   }
 

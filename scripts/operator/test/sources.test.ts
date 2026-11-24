@@ -1,5 +1,6 @@
-// The source scan of the operator pack. It reads each .ts file of the pack outside the test folder, and it fails when a file holds a text that only some files may hold: the call that gives a
-// seed, the suffix of a key file, a run of 64 hex characters (the size of a key) and the process environment. The scan walks the folder to any depth, so it reads the files that later parts add.
+// The source scan of the operator pack. It reads each script file of the pack (.ts, .mts, .cts, .js, .mjs and .cjs) outside the test folder, and it fails when a file holds a text that only some
+// files may hold: the call that gives a seed, the suffix of a key file, a run of 64 hex characters (the size of a key) and the process environment, in each way that code can reach it. The scan
+// walks the folder to any depth, so it reads the files that later parts add.
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -31,19 +32,23 @@ const RULES: readonly Rule[] = [
     accepted: [`const d = '${'ab'.repeat(31)}a';`, `const e = '${'ab'.repeat(16)}-${'ab'.repeat(16)}';`],
   },
   {
-    name: 'process.env', pattern: /process\.env/, allowed: ['cli.ts', 'lib/settings.ts', 'lib/session.ts'],
-    refused: ['const env = process.env;'], accepted: ['const args = process.argv;', 'const env = deps.env;'],
+    name: 'process.env', pattern: /\bprocess\s*(?:\?\.|\.|\[\s*['"`])\s*env\b|\}\s*=\s*(?:globalThis\.)?process\b|['"](?:node:)?process['"]/, allowed: ['cli.ts', 'lib/settings.ts', 'lib/session.ts'],
+    refused: [
+      'const env = process.env;', "import { env } from 'node:process';", "import proc from 'node:process';", 'const { env } = process;', 'const { env } = globalThis.process;',
+      "const env = process['env'];", 'const env = process?.env;', 'const env = process\n  .env;',
+    ],
+    accepted: ['const args = process.argv;', 'const here = process.cwd();', 'const env = deps.env;', 'const env = subprocess.env;'],
   },
 ];
 
-/** The .ts files of a folder, relative to it and written with a slash, but not those of its test folder and not those of node_modules. */
+/** The script files of a folder (.ts, .mts, .cts, .js, .mjs and .cjs), relative to it and written with a slash, but not those of its test folder and not those of node_modules. */
 function sourcesOf(root: string, folder = ''): string[] {
   const found: string[] = [];
   for (const entry of readdirSync(join(root, folder), { withFileTypes: true })) {
     const path = folder === '' ? entry.name : `${folder}/${entry.name}`;
     if (entry.isDirectory()) {
       if (path !== 'test' && entry.name !== 'node_modules') found.push(...sourcesOf(root, path));
-    } else if (entry.isFile() && entry.name.endsWith('.ts')) {
+    } else if (entry.isFile() && /\.[cm]?[jt]s$/.test(entry.name)) {
       found.push(path);
     }
   }
@@ -93,10 +98,18 @@ describe('the source scan', () => {
       expect(problemsOf(folderWith({ ...near, ...own }))).toEqual([]);
     });
   }
-  it('skips the test folder of the root, node_modules and each file that is no .ts file, and reads a folder named test below the root', () => {
-    const skipped = { 'test/a.ts': EVERYTHING, 'test/support/b.ts': EVERYTHING, 'node_modules/c.ts': EVERYTHING, 'README.md': EVERYTHING, 'data.json': EVERYTHING, 'lib/notes.txt': EVERYTHING };
+  it('skips the test folder of the root, node_modules and each file that is no script file, and reads a folder named test below the root', () => {
+    const skipped = {
+      'test/a.ts': EVERYTHING, 'test/support/b.ts': EVERYTHING, 'node_modules/c.ts': EVERYTHING, 'README.md': EVERYTHING, 'data.json': EVERYTHING, 'lib/notes.txt': EVERYTHING, 'lib/old.ts.bak': EVERYTHING,
+    };
     expect(problemsOf(folderWith(skipped))).toEqual([]);
     expect(problemsOf(folderWith({ ...skipped, 'lib/test/d.ts': EVERYTHING }))).toEqual(RULES.map((rule) => `lib/test/d.ts: ${rule.name}`));
+  });
+  it('reads the files of each script extension: .ts, .mts, .cts, .js, .mjs and .cjs', () => {
+    const extensions = ['ts', 'mts', 'cts', 'js', 'mjs', 'cjs'];
+    const files = Object.fromEntries(extensions.map((extension) => [`lib/file.${extension}`, `const key = '${'ab'.repeat(32)}';`]));
+    expect(sourcesOf(folderWith(files))).toEqual(Object.keys(files).sort());
+    expect(problemsOf(folderWith(files))).toEqual(Object.keys(files).sort().map((file) => `${file}: a run of 64 hex characters`));
   });
   it('passes on the real folder of the pack, and reads its files: the scan is not empty', () => {
     const root = fileURLToPath(new URL('..', import.meta.url));

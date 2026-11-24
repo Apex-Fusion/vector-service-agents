@@ -41,7 +41,7 @@ export interface Session<Extra = unknown> {
   readonly clock: Clock;
   readonly state: StateFile;
   readonly evidence: EvidenceFile;
-  readonly ring: KeyRing;
+  readonly ring: KeyRing<CheckKeyRole>;
   /** The key that signs the proofs of the identity gateway: the authentication key when the operator gave one, else the agent key. Null when the check has no agent key. */
   readonly authKey: LoadedKey | null;
   readonly node: NodeAccess;
