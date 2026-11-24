@@ -1088,6 +1088,16 @@ describe('register: legacy organisation facts', () => {
     expect(f.signs).toEqual([]);
   });
 
+  it.each([null, 'another-case'])('refuses organisation-keyed facts without the matching released writer: %s', async (writer) => {
+    const { legacyOrganisationWriter: _original, ...current } = USE;
+    const f = await fixture({ use: writer === null ? current : { ...current, legacyOrganisationWriter: writer } });
+    const old = pinnedRegistration(f);
+    const bytes = readFileSync(old.path);
+    expect(await f.run('--submit')).toBe(2);
+    expect(readFileSync(old.path)).toEqual(bytes);
+    expect(f.signs).toEqual([]);
+  });
+
   it('preserves a pending legacy fact without giving it another subject\'s verification', async () => {
     const f = await fixture();
     const old = pinnedRegistration(f, { pending: true });

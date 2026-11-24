@@ -226,7 +226,7 @@ function organisationMoves(session: Session, subjects: readonly Subject[]): Lega
       requireOrganisationFact(own, facts.records[from], fact);
       continue;
     }
-    if (session.use.name !== 'inventory-reorder') throw new PreconditionError('the facts file has an organisation key that is not a subject of this use case');
+    if (session.use.legacyOrganisationWriter !== session.use.name) throw new PreconditionError('the facts file has an organisation key that is not a subject of this use case');
     const matching = Object.entries(facts.records).filter(([, record]) => record.did === fact.txtValue);
     const to = matching[0]?.[0];
     const record = matching[0]?.[1];

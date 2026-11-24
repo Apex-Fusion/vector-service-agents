@@ -82,6 +82,8 @@ export interface EvidenceStepSpec {
 }
 export interface UseCase {
   readonly name: string; readonly title: string; readonly keys: readonly KeySpec[]; readonly organisations: readonly OrganisationSpec[];
+  /** Name in the released register journals that used organisation ids as fact keys. Absent for data with no such writer. */
+  readonly legacyOrganisationWriter?: string;
   readonly agents: readonly AgentSpec[]; readonly subagents: readonly SubagentSpec[]; readonly funding: readonly FundingLine[];
   readonly attestations: readonly AttestationSpec[]; readonly runs: readonly RunSpec[]; readonly evidenceSteps: readonly EvidenceStepSpec[];
   readonly moduleManifestPath: string; readonly runtimeCommit: string;
