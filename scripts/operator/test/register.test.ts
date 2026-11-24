@@ -1018,7 +1018,7 @@ describe('register: agents, subagents and additional records', () => {
 });
 
 /** The pinned writer uses this ten-section envelope and these registration and gateway evidence shapes. */
-function pinnedRegistration(f: Fixture, over: { pending?: boolean; badEvidence?: 'missing' | 'other DID' | 'conflicting' } = {}) {
+function pinnedRegistration(f: Fixture, over: { pending?: boolean; badEvidence?: 'missing' | 'other DID' | 'conflicting'; missingOrganisationStep?: boolean } = {}) {
   const format = { useCase: USE_CASE, network: 'vector-mainnet' };
   const path = join(f.w.stateDir, 'facts.json');
   const header = { check: 'register', network: format.network, record: format.useCase };
@@ -1050,7 +1050,9 @@ function pinnedRegistration(f: Fixture, over: { pending?: boolean; badEvidence?:
   for (const { from, to, domain, record, fact } of moves) {
     if (fact.verifiedAt === null) continue;
     const name = `organisation:${to}`;
-    state.recordStep(name, { tx_hash: null, confirmed_at: verified, verified_at: verified, refs: { did: record.did }, facts: { organisation: from, domain } });
+    if (to !== 'order-desk' || over.missingOrganisationStep !== true) {
+      state.recordStep(name, { tx_hash: null, confirmed_at: verified, verified_at: verified, refs: { did: record.did }, facts: { organisation: from, domain } });
+    }
     const isDesk = to === 'order-desk';
     const did = isDesk && over.badEvidence === 'other DID' ? moves[0]!.record.did : record.did;
     const shows = { organisation: from, domain, did, organisationVerified: true };
@@ -1100,7 +1102,7 @@ describe('register: legacy organisation facts', () => {
     expect(f.signs).toEqual([]);
   });
 
-  it.each(['missing', 'other DID', 'conflicting'] as const)('keeps every old byte when verification evidence is %s', async (badEvidence) => {
+  it.each(['other DID', 'conflicting'] as const)('keeps every old byte when verification evidence is %s', async (badEvidence) => {
     const f = await fixture();
     const old = pinnedRegistration(f, { badEvidence });
     const source = readFileSync(old.path, 'utf8');
@@ -1108,6 +1110,34 @@ describe('register: legacy organisation facts', () => {
     expect(errorText(f)).toContain('no matching verification evidence or its evidence conflicts');
     expect(readFileSync(old.path, 'utf8')).toBe(source);
     expect(f.net.urls).toEqual([]);
+    expect(f.signs).toEqual([]);
+  });
+
+  it.each([true, false])('rechecks an interrupted legacy verification when the original step is missing: %s', async (missingOrganisationStep) => {
+    const f = await fixture();
+    const old = pinnedRegistration(f, { badEvidence: 'missing', missingOrganisationStep });
+    const desk = old.moves[1]!;
+    const previous = readFileSync(old.path, 'utf8');
+    f.net.gateway.set(desk.record.did, { organisation: desk.domain, verified: true, did: old.moves[0]!.record.did });
+    expect(await f.run('--submit')).toBe(4);
+    expect(readFileSync(old.path, 'utf8')).toBe(previous);
+    expect(f.w.screen.text).toContain('needs fresh verification');
+    f.net.gateway.set(desk.record.did, { organisation: desk.domain, verified: true });
+    // Simulate interruption after the observation but before the atomic facts move.
+    writeFileSync(`${old.path}.lock`, '', { mode: 0o600 });
+    expect(await f.run('--submit')).toBe(2);
+    expect(readFileSync(old.path, 'utf8')).toBe(previous);
+    const name = 'organisation:order-desk';
+    const shown = { organisationVerified: true, did: desk.record.did, legacyVerifiedAt: desk.fact.verifiedAt, verifiedAt: iso(NOW), txtName: desk.fact.txtName, txtValue: desk.fact.txtValue };
+    expect(f.w.evidence('register').filter(({ step }) => step === name)).toEqual([expect.objectContaining({ at: iso(NOW), shows: expect.objectContaining(shown) })]);
+    rmSync(`${old.path}.lock`);
+    f.net.urls.length = 0;
+    expect(await f.run('--submit')).toBe(0);
+    expect(f.net.urls).toEqual([]);
+    expect(old.store.read().organisations['order-desk']).toEqual({ ...desk.fact, verifiedAt: iso(NOW) });
+    expect(f.w.state('register').steps[name]).toMatchObject({ refs: { did: desk.record.did }, verified_at: iso(NOW) });
+    expect(f.w.evidence('register').filter(({ step }) => step === name)).toHaveLength(1);
+    expect(f.hosted.calls).toEqual([]);
     expect(f.signs).toEqual([]);
   });
 

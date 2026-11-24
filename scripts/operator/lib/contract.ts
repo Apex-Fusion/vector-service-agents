@@ -114,6 +114,8 @@ export interface OrganisationMove {
   readonly to: string;
   readonly fact: Readonly<OrganisationFact>;
   readonly record: Readonly<RecordFact>;
+  /** A fresh verification of the same DID and TXT when the old journal was incomplete. */
+  readonly recheckedAt?: string;
 }
 export interface StakeFact { openingRef: string; stakeRef: string | null; tokenUnit: string | null; amountLovelace: string }
 export interface AdvertFact { ref: string; tx: string; detailUri: string; detailHash: string; endpoint: string; postedAt: string }

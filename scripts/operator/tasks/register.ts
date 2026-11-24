@@ -172,10 +172,16 @@ function requireOrganisationFact(subject: Subject, record: RecordFact | undefine
 
 function verifiedStepMatches(step: StepRecord | undefined, at: string | null, did: string, organisation: OrganisationSpec): boolean {
   return at !== null && step?.tx_hash === null && step.refs.did === did && step.facts.organisation === organisation.id
-    && step.facts.domain === organisation.domain && step.confirmed_at === at && step.verified_at === at;
+    && step.facts.domain === organisation.domain && Date.parse(step.confirmed_at) <= Date.parse(at) && step.verified_at === at;
 }
 
-function requireLegacyProof(session: Session, subject: Subject, fact: OrganisationFact, record: RecordFact, entries: readonly Record<string, unknown>[]): void {
+interface LegacyMove extends OrganisationMove {
+  readonly subject: Subject;
+  /** Undefined: no repair. Null: the gateway must be read. A time: the fresh observation is in the journal. */
+  readonly recheck: string | null | undefined;
+}
+
+function requireLegacyProof(session: Session, subject: Subject, fact: OrganisationFact, record: RecordFact, entries: readonly Record<string, unknown>[]): LegacyMove['recheck'] {
   const step = session.state.step(subject.id);
   const note = noteOf(session, subject.id);
   if (step === undefined || step.tx_hash !== record.tx || step.refs.did !== record.did || step.refs.id !== record.id
@@ -190,19 +196,29 @@ function requireLegacyProof(session: Session, subject: Subject, fact: Organisati
   const entry = results[0];
   const shows = entry?.shows;
   const organisation = subject.organisation!;
-  if (fact.verifiedAt === null || !verifiedStepMatches(proof, fact.verifiedAt, record.did, organisation)
-    || results.length !== 1 || entry?.status !== 'info' || typeof entry.at !== 'string' || !(Date.parse(entry.at) >= Date.parse(fact.verifiedAt))
+  const old = fact.verifiedAt;
+  const oldProof = old !== null && verifiedStepMatches(proof, old, record.did, organisation) && proof?.confirmed_at === old;
+  if (old !== null && results.length === 0 && (proof === undefined || oldProof)) return null;
+  const conflict = () => new PreconditionError(`the legacy organisation fact of ${subject.id} has no matching verification evidence or its evidence conflicts. Use the original register state and evidence files`);
+  if (old === null || results.length !== 1 || entry?.status !== 'info' || typeof entry.at !== 'string'
     || typeof shows !== 'object' || shows === null || !('did' in shows) || shows.did !== record.did
     || !('organisation' in shows) || shows.organisation !== organisation.id || !('domain' in shows) || shows.domain !== organisation.domain
-    || !('organisationVerified' in shows) || shows.organisationVerified !== true) {
-    throw new PreconditionError(`the legacy organisation fact of ${subject.id} has no matching verification evidence or its evidence conflicts. Use the original register state and evidence files`);
+    || !('organisationVerified' in shows) || shows.organisationVerified !== true) throw conflict();
+  if (!('legacyVerifiedAt' in shows)) {
+    if (!oldProof || !(Date.parse(entry.at) >= Date.parse(old))) throw conflict();
+    return undefined;
   }
+  if (shows.legacyVerifiedAt !== old || !('txtName' in shows) || shows.txtName !== fact.txtName || !('txtValue' in shows) || shows.txtValue !== fact.txtValue
+    || !('verifiedAt' in shows) || shows.verifiedAt !== entry.at || !(Date.parse(entry.at) >= Date.parse(record.registeredAt))
+    || (proof !== undefined && !oldProof && (!verifiedStepMatches(proof, entry.at, record.did, organisation)
+      || (proof.confirmed_at !== old && proof.confirmed_at !== entry.at)))) throw conflict();
+  return entry.at;
 }
 
 /** Only the earlier inventory register wrote organisation ids as keys. Check the entire old mapping before moving any fact. */
-function organisationMoves(session: Session, subjects: readonly Subject[]): OrganisationMove[] {
+function organisationMoves(session: Session, subjects: readonly Subject[]): LegacyMove[] {
   const facts = session.facts.read();
-  const moves: OrganisationMove[] = [];
+  const moves: LegacyMove[] = [];
   let entries: readonly Record<string, unknown>[] | undefined;
   for (const [from, fact] of Object.entries(facts.organisations)) {
     const own = subjects.find((subject) => subject.id === from);
@@ -219,24 +235,72 @@ function organisationMoves(session: Session, subjects: readonly Subject[]): Orga
       throw new PreconditionError('a legacy organisation fact does not match one unique registered subject of its organisation');
     }
     requireOrganisationFact(subject, record, fact);
+    const recheck = requireLegacyProof(session, subject, fact, record, entries ??= session.evidence.entries());
     const target = facts.organisations[subject.id];
-    if (target !== undefined && (target.txtName !== fact.txtName || target.txtValue !== fact.txtValue || target.verifiedAt !== fact.verifiedAt)) {
+    if (target !== undefined && (target.txtName !== fact.txtName || target.txtValue !== fact.txtValue
+      || (target.verifiedAt !== fact.verifiedAt && (typeof recheck !== 'string' || target.verifiedAt !== recheck)))) {
       throw new PreconditionError(`the legacy and subject organisation facts for ${subject.id} conflict`);
     }
-    requireLegacyProof(session, subject, fact, record, entries ??= session.evidence.entries());
-    moves.push({ from, to: subject.id, fact, record });
+    moves.push({ from, to: subject.id, subject, fact, record, recheck });
   }
   for (const subject of subjects) {
-    if (subject.organisation === null) continue;
+    if (subject.organisation === null || moves.some(({ to }) => to === subject.id)) continue;
     const proof = session.state.step(`organisation:${subject.id}`);
     if (proof === undefined) continue;
-    const fact = facts.organisations[subject.id] ?? moves.find(({ to }) => to === subject.id)?.fact;
+    const fact = facts.organisations[subject.id];
     const record = facts.records[subject.id];
     if (fact === undefined || record === undefined || !verifiedStepMatches(proof, fact.verifiedAt, record.did, subject.organisation)) {
       throw new PreconditionError(`the completed organisation step of ${subject.id} does not match its record and TXT fact`);
     }
   }
   return moves;
+}
+
+/** The runner holds the run lock. Record all fresh gateway reads before the atomic facts move, so an interrupted move can resume. */
+async function moveOrganisations(session: Session, moves: readonly LegacyMove[]): Promise<StepOutcome | null> {
+  if (session.networkResult()?.ok !== true) throw new PreconditionError('the network guard did not pass, so the organisation facts were not moved');
+  const checked: OrganisationMove[] = [];
+  const observations: Array<{ move: LegacyMove; at: string; journaled: boolean }> = [];
+  for (const move of moves) {
+    const { subject, record, recheck } = move;
+    if (recheck === undefined) {
+      checked.push(move);
+      continue;
+    }
+    const organisation = subject.organisation!;
+    let at = recheck;
+    if (at === null) {
+      const result = await askGateway(session, record.did, organisation.domain);
+      const now = session.clock.now();
+      if (!result.verified) {
+        const untilMs = Date.parse(record.registeredAt) + ORGANISATION_LIMIT_MS;
+        const message = `the legacy organisation fact of ${subject.id} needs fresh verification (${result.why}). It is left unchanged`;
+        if (now < untilMs) return { kind: 'wait', untilMs, message };
+        throw new PreconditionError(message);
+      }
+      if (now < Date.parse(move.fact.verifiedAt!)) throw new PreconditionError('the current clock is before the legacy verification time');
+      at = iso(now);
+    }
+    observations.push({ move, at, journaled: recheck !== null });
+    checked.push({ ...move, recheckedAt: at });
+  }
+  for (const { move, at, journaled } of observations) {
+    const { subject, fact, record } = move;
+    const organisation = subject.organisation!;
+    const name = `organisation:${subject.id}`;
+    if (!journaled) session.evidence.add({
+      step: name, status: 'info', at,
+      shows: { organisation: organisation.id, domain: organisation.domain, did: record.did, organisationVerified: true, txtName: fact.txtName, txtValue: fact.txtValue, legacyVerifiedAt: fact.verifiedAt, verifiedAt: at },
+    });
+    const step = session.state.step(name);
+    if (step === undefined) {
+      session.state.recordStep(name, { confirmed_at: at, tx_hash: null, refs: { did: record.did }, facts: { organisation: organisation.id, domain: organisation.domain }, verified_at: at });
+    } else if (step.verified_at !== at) {
+      session.state.markVerified(name, at);
+    }
+  }
+  session.facts.moveOrganisations(checked);
+  return null;
 }
 
 /**
@@ -618,9 +682,10 @@ const register: TaskDefinition<Extra> = {
     const moves = organisationMoves(session, subjects);
     if (moves.length > 0) {
       if (session.mode === 'submit') {
-        if (session.networkResult()?.ok !== true) throw new PreconditionError('the network guard did not pass, so the organisation facts were not moved');
-        session.facts.moveOrganisations(moves);
+        const stopped = await moveOrganisations(session, moves);
+        if (stopped !== null) return stopped;
       } else {
+        if (moves.some(({ recheck }) => recheck !== undefined)) throw new PreconditionError('a legacy organisation fact needs a fresh verified read. Run register with --submit to finish the check');
         session.extra.legacy = new Map(moves.map(({ to, fact }) => [to, fact]));
       }
     }
@@ -628,7 +693,9 @@ const register: TaskDefinition<Extra> = {
   },
   cleanup: async () => ({ kind: 'done', message: 'a record is permanent: there is nothing to take back' }),
   async status(session) {
-    organisationMoves(session, subjectsOf(session.use));
+    if (organisationMoves(session, subjectsOf(session.use)).some(({ recheck }) => recheck !== undefined)) {
+      throw new PreconditionError('a legacy organisation fact needs a fresh verified read. Run register with --submit to finish the check');
+    }
     return [];
   },
   result: (session) => session.extra.result ?? {},

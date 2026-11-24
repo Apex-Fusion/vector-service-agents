@@ -293,11 +293,11 @@ export class FactsFile implements FactsStore {
     });
   }
 
-  /** Checks the entire move under the facts lock. An identical destination can survive an earlier move, but a different one cannot be replaced. */
+  /** Checks the entire move under the facts lock. Only a fresh observation can replace an unproven legacy verification time. */
   moveOrganisations(moves: readonly OrganisationMove[]): void {
     if (moves.length === 0) return;
     const names = new Set<string>();
-    for (const { from, to, fact, record } of moves) {
+    const checked = moves.map(({ from, to, fact, record, recheckedAt }) => {
       for (const name of [from, to]) {
         routeOf('organisations', [name]);
         if (isSecretName(name)) throw new FactsError('secret', 'a path for organisations looks like a secret');
@@ -307,26 +307,31 @@ export class FactsFile implements FactsStore {
       if (!isFact(ORGANISATION, fact) || !isFact(RECORD, record) || fact.txtValue !== record.did) {
         throw new FactsError('value', 'an organisation move needs the matching fact and record');
       }
-      if (holdsSecret(fact) || holdsSecret(record)) throw new FactsError('secret', 'a value for the organisation move looks like a secret');
-    }
+      if (holdsSecret(fact) || holdsSecret(record) || holdsSecret(recheckedAt)) throw new FactsError('secret', 'a value for the organisation move looks like a secret');
+      if (recheckedAt !== undefined && (fact.verifiedAt === null || typeof recheckedAt !== 'string' || !(Date.parse(recheckedAt) >= Date.parse(record.registeredAt)))) {
+        throw new FactsError('value', 'a rechecked organisation needs a fresh verification time');
+      }
+      const next = recheckedAt === undefined ? fact : { ...fact, verifiedAt: recheckedAt };
+      return { from, to, fact, record, next };
+    });
     this.#locked(() => {
       const facts = this.#load();
       let changed = false;
-      for (const { from, to, fact, record } of moves) {
+      for (const { from, to, fact, record, next } of checked) {
         if (!same(getFact(facts, 'records', [to]), record) || Object.entries(facts.records).some(([id, held]) => id !== to && (held.did === record.did || held.id === record.id))) {
           throw new FactsConflict('the record attribution for the organisation move changed or is not unique');
         }
         const source = getFact(facts, 'organisations', [from]);
         const target = getFact(facts, 'organisations', [to]);
-        if ((source === undefined ? !same(target, fact) : !same(source, fact)) || (target !== undefined && !same(target, fact))) {
+        if (source === undefined ? !same(target, next) : !same(source, fact) || (target !== undefined && !same(target, fact) && !same(target, next))) {
           throw new FactsConflict('the source or destination of the organisation move holds another fact or is missing');
         }
         if (source !== undefined) changed = true;
       }
       if (!changed) return;
-      for (const { from, to } of moves) {
+      for (const { from, to, next } of checked) {
         if (!Object.hasOwn(facts.organisations, from)) continue;
-        facts.organisations[to] = facts.organisations[from]!;
+        facts.organisations[to] = next;
         delete facts.organisations[from];
       }
       this.#write(facts);
