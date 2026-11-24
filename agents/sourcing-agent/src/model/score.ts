@@ -94,8 +94,8 @@ export const SCORE_DECISION: DecisionSpec<ScoreChoice> = Object.freeze({ name: '
 const DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
 
 /**
- * True for a calendar date as `YYYY-MM-DD` that exists. The year is 0100 or later: `Date.UTC` reads a year from 0 to 99 as a year of the twentieth century, and the stores of the mock service refuse such a date
- * for the same reason.
+ * True for a calendar date as `YYYY-MM-DD` that exists. The year is 0100 or later: `Date.UTC` reads a year from 0 to 99 as a year of the twentieth century, so the date that it builds has another year, and the
+ * comparison below refuses it. The stores of the mock service refuse such a date for the same reason.
  */
 function isDay(value: unknown): value is string {
   const parts = typeof value === 'string' ? DATE.exec(value) : null;
@@ -104,7 +104,7 @@ function isDay(value: unknown): value is string {
   const month = Number(parts[2]);
   const day = Number(parts[3]);
   const parsed = new Date(Date.UTC(year, month - 1, day));
-  return year >= 100 && parsed.getUTCFullYear() === year && parsed.getUTCMonth() === month - 1 && parsed.getUTCDate() === day;
+  return parsed.getUTCFullYear() === year && parsed.getUTCMonth() === month - 1 && parsed.getUTCDate() === day;
 }
 
 /**
