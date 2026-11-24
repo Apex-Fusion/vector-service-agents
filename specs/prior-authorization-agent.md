@@ -21,14 +21,14 @@ The table gives the design of the record. A value that the registration fixes re
 | DID | assigned at registration. The service reads it from `AGENT_DID`, and the manifest gives it as `identity.did` |
 | Controller | a controller key of this deployment. The Known gaps section says who holds the keys of the parties |
 | Supplier key | the key of the runtime, listed in the record for the authentication and transaction purposes. It signs the receipts, the Claims and the Submits. The service never holds it. The service holds its key hash and its public key, and the manifest publishes them as `keys.supplier_pkh` and `keys.pub_key_hex`. The service does not start unless the public key hashes to the key hash |
-| Service key | a key of its own, listed in the record for the authentication and transaction purposes. It pays the model hires, signs the claim and the challenges of the agent, and signs the subject token of the agent. The manifest publishes its key hash as `keys.buyer_pkh` |
+| Service key | a key of its own, listed in the record for the authentication and transaction purposes. It pays the model hires, signs the challenges of the agent, and signs the subject token of the agent. It signs the claim of the agent too, once a command stakes one. The manifest publishes its key hash as `keys.buyer_pkh` |
 | Delegation keys | two keys, listed in the record for the delegation purpose. The manifest publishes their key hashes as `keys.delegation_pkhs`. A delegation of a hirer names one of them as its delegate key. The key of the live delegation signs the vault Pay, the Accept and the sub-delegations of a job. Each key has a wallet of its own |
 | Parties | Accountable: the Accountable key of the organisation, with its domain. Responsible: Module-1. Provider: the Provider key. Guardians: the guardian key of the organisation and a controller key of this deployment, with threshold 2 |
 | Organisation | the domain `echo.vector.apexfusion.org`, with the description "Demonstration organisation run by the Apex Fusion Foundation". The identity gateway verifies the domain with a DNS TXT record |
 | Subagents | `record-reader` and `drafter`: each has its own record, with this agent as its parent. Each has its own authentication key and its own delegation key, which are the other four keys of the service. They have no endpoint, and nobody can hire them. `RECORD_READER_DID` and `DRAFTER_DID` name them |
 | Public URL | planned: `https://mp-suppliers-priorauth.vector.apexfusion.org`, the origin of the runtime in the pack. The agent has no advert yet |
 | Reputation stake | a Module-3 self-stake on the capability, owned by the service key |
-| Claim | a Module-1 claim that an operator command stakes with the service key before a run. The service stakes none. See Claim statements |
+| Claim | a Module-1 claim for each run. The design is that an operator command stakes it with the service key before the run. No command of this repository stakes a claim for this agent yet. The service stakes none. See Claim statements |
 
 ## Capability id
 
@@ -487,7 +487,7 @@ The signature is Ed25519 over the canonical JSON of the receipt. The sha256 of t
 
 ## Claim statements
 
-The service stakes no claim, and no code of the service calls the staking of one. Before a run, an operator command stakes one claim with the service key of the agent: 50 units, with a challenge window of 24 hours. The operator withdraws the claim after the window. A claim has these three statements. The manifest holds them in `behaviour.claim`, with no reference to a claim. A challenge names the text of a statement.
+The service stakes no claim, and no code of the service calls the staking of one. No command of this repository stakes a claim for this agent yet. Until one does, a challenge against it ends with `no_open_claim`. The same holds for the Insurer Intake Agent: no command stakes a claim for it, so the challenge of this agent against it (step 9 of `execute`) ends with `no_open_claim` too. The design is that, before a run, an operator command stakes one claim with the service key of the agent: 50 units, with a challenge window of 24 hours. The operator withdraws the claim after the window. A claim has these three statements. The manifest holds them in `behaviour.claim`, with no reference to a claim. A challenge names the text of a statement.
 
 | Id | Statement |
 |---|---|

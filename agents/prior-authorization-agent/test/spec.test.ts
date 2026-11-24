@@ -26,12 +26,13 @@ import {
   parsePriorAuthRequest, parseRecordSet, recordSetSha256, requestNumberOf,
 } from '@vsa/usecase-kit/priorauth';
 import {
-  AFTER_CLAIM_REFUSALS, APPROVAL_ATT_TYPE, APPROVAL_DEPOSIT_LOVELACE, COSIGN_ROUTE, COSIGN_RULE, COUNTERPARTY_REFUSALS, ERROR_STATUS, EXECUTE_OUTCOMES, EXIT_STATES, FAULT_MODES, MAX_REQUEST_BYTES, PROPOSE_OUTCOMES,
-  RECEIPT_CHECKS, RUNTIME_BODY_LIMIT_BYTES,
+  AFTER_CLAIM_REFUSALS, APPROVAL_ATT_TYPE, APPROVAL_DEPOSIT_LOVELACE, COSIGN_ROUTE, COSIGN_RULE, COUNTERPARTY_REFUSALS, ERROR_STATUS, EXECUTE_OUTCOMES, EXIT_STATES, FAULT_MODES, MAX_REQUEST_BYTES, NO_OPEN_CLAIM,
+  PROPOSE_OUTCOMES, RECEIPT_CHECKS, RUNTIME_BODY_LIMIT_BYTES,
   canonicalJson, checkRequestSize, exitStateOf, makeProposal, parseOutputRef, parseProposal, parseRequest,
 } from '@vsa/usecase-kit/protocol';
 import type { Decision, ExecuteOutcome, ExecuteRequest, ExecuteResult, HandoffRecord, JsonObject, ProtocolResult, ReceiptVerification, SubJob, WriteRecord } from '@vsa/usecase-kit/protocol';
 import { CLAIM_STAKE_LOVELACE, CLAIM_WINDOW_MS, RUN_APPROVAL_VALIDITY_MS } from '../../../scripts/operator/lib/claim-constants.ts';
+import { USE_CASE_NAMES } from '../../../scripts/operator/usecases/names.ts';
 import { EVIDENCE_FAILURES } from '../src/evidence/index.ts';
 import { MOCK_CODES } from '../src/evidence/subread.ts';
 import { NOT_ACCEPTED } from '../src/execute/decision.ts';
@@ -131,6 +132,7 @@ describe('specs/prior-authorization-agent.md: the frame, the identity and the te
     expect(supplier).toContain('The service does not start unless the public key hashes to the key hash');
     expect(() => supplierKeyOf({ SUPPLIER_PKH: 'aa'.repeat(28), SUPPLIER_PUB_KEY_HEX: 'bb'.repeat(32) })).toThrow('is not the public key of SUPPLIER_PKH');
     expect(row(identity, 'Service key')).toContain('The manifest publishes its key hash as `keys.buyer_pkh`');
+    expect(row(identity, 'Service key')).toContain('It signs the claim of the agent too, once a command stakes one.');
     expect(manifest.keys.buyer_pkh).toBe(TEMPLATE_ENV.PRIORAUTH_SERVICE_PKH);
     const delegation = row(identity, 'Delegation keys');
     expect(delegation.startsWith('| Delegation keys | two keys,')).toBe(true);
@@ -148,7 +150,7 @@ describe('specs/prior-authorization-agent.md: the frame, the identity and the te
     expect(row(identity, 'Organisation')).toBe('| Organisation | the domain `echo.vector.apexfusion.org`, with the description "Demonstration organisation run by the Apex Fusion Foundation". The identity gateway verifies the domain with a DNS TXT record |');
     expect(row(identity, 'Parties')).toContain('Guardians: the guardian key of the organisation and a controller key of this deployment, with threshold 2');
     expect(row(identity, 'Reputation stake')).toBe('| Reputation stake | a Module-3 self-stake on the capability, owned by the service key |');
-    expect(row(identity, 'Claim')).toBe('| Claim | a Module-1 claim that an operator command stakes with the service key before a run. The service stakes none. See Claim statements |');
+    expect(row(identity, 'Claim')).toBe('| Claim | a Module-1 claim for each run. The design is that an operator command stakes it with the service key before the run. No command of this repository stakes a claim for this agent yet. The service stakes none. See Claim statements |');
   });
 
   test('the public URL of the identity table is the origin of the runtime in the compose file of the pack', () => {
@@ -882,7 +884,7 @@ describe('specs/prior-authorization-agent.md, the receipt, the claim and the fau
     expect(receipt).toContain('It does not commit to the justification being clinically right, or to the record set being complete beyond what the records system returned.');
   });
 
-  test('Claim statements: the table is the claim of the kit and the manifest, a claim has no reference to a claim, and no code of the service stakes it', () => {
+  test('Claim statements: the table is the claim of the kit and the manifest, a claim has no reference to a claim, no code of the service stakes it, and no command of the repository stakes one for this agent yet', () => {
     const claim = section('Claim statements');
     expect(claim.split('\n').filter((line) => /^\| S[123] \|/.test(line))).toStrictEqual(PRIORAUTH_CLAIM.statements.map((statement) => `| ${statement.id} | ${statement.text} |`));
     expect(PRIORAUTH_CLAIM.statements.map((statement) => statement.id)).toStrictEqual(['S1', 'S2', 'S3']);
@@ -890,10 +892,16 @@ describe('specs/prior-authorization-agent.md, the receipt, the claim and the fau
     expect(Object.keys(manifest.behaviour.claim)).toStrictEqual(['statements']);
     // The stake and the window of the claim of a run are the numbers of the operator command that stakes it.
     expect([CLAIM_STAKE_LOVELACE, CLAIM_WINDOW_MS]).toStrictEqual([50_000_000n, 86_400_000]);
-    expect(claim).toContain('The service stakes no claim, and no code of the service calls the staking of one. Before a run, an operator command stakes one claim with the service key of the agent: 50 units, with a challenge window of 24 hours. The operator withdraws the claim after the window. A claim has these three statements. The manifest holds them in `behaviour.claim`, with no reference to a claim. A challenge names the text of a statement.');
+    expect(claim).toContain('The service stakes no claim, and no code of the service calls the staking of one. No command of this repository stakes a claim for this agent yet. Until one does, a challenge against it ends with `no_open_claim`. The same holds for the Insurer Intake Agent: no command stakes a claim for it, so the challenge of this agent against it (step 9 of `execute`) ends with `no_open_claim` too. The design is that, before a run, an operator command stakes one claim with the service key of the agent: 50 units, with a challenge window of 24 hours. The operator withdraws the claim after the window. A claim has these three statements. The manifest holds them in `behaviour.claim`, with no reference to a claim. A challenge names the text of a statement.');
     // No code of the service calls the staking of a claim: the kit has the call, and the sources of the agent do not.
     expect(text('packages/usecase-kit/src/dispute/dispute.ts')).toContain('async stakeRunClaim(input: RunClaimInput)');
     expect(sourcesOf('agents/prior-authorization-agent/src/').filter(({ code }) => code.includes('stakeRunClaim')).map(({ file }) => file)).toStrictEqual([]);
+    // No command of this repository stakes a claim for this agent or for the Insurer Intake Agent. The operator pack loads the use case `inventory-reorder` only, its claim task chooses between the claim of the Reorder Agent and
+    // the claim of the Order Desk, and no source of the pack outside its tests names a claim or a capability of use case 2. So a challenge against either agent ends with `no_open_claim`, as the page says.
+    expect(USE_CASE_NAMES).toStrictEqual(['inventory-reorder']);
+    expect(text('scripts/operator/tasks/claim.ts')).toContain("agent.kind === 'reorder-agent' ? REORDER_CLAIM : ORDER_DESK_CLAIM");
+    expect(sourcesOf('scripts/operator/').filter(({ file, code }) => !file.startsWith('test/') && /PRIORAUTH_|INTAKE_CLAIM|health\.priorauth/.test(code)).map(({ file }) => file)).toStrictEqual([]);
+    expect(NO_OPEN_CLAIM).toBe('no_open_claim');
     // Statement S3: the agent reads no record and no guideline with a token of its own. The folder of the evidence asks for the token of a subagent only.
     for (const { file, code } of sourcesOf('agents/prior-authorization-agent/src/evidence/')) {
       expect(code, file).not.toContain('requestRouteToken');

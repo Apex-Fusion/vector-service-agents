@@ -28,7 +28,7 @@ The table gives the design of the record. A value that the registration fixes re
 | Organisation | the domain `delta.vector.apexfusion.org`, with the description "Demonstration organisation run by the Apex Fusion Foundation". The identity gateway verifies the domain with a DNS TXT record |
 | Public URL | planned: `https://mp-suppliers-intake.vector.apexfusion.org`, the origin of the runtime in the pack. The agent has no advert yet |
 | Reputation stake | a Module-3 self-stake on the capability, owned by the service key |
-| Claim | a Module-1 claim for each run. The service stakes none. Before a run, an operator command stakes the claim with the service key: 50 units, which is 50000000 lovelace, with a challenge window of 24 hours. The command withdraws it after the window, when nobody challenged it. See Claim statements |
+| Claim | a Module-1 claim for each run. The design is that an operator command stakes it with the service key before the run: 50 units, which is 50000000 lovelace, with a challenge window of 24 hours. The command withdraws it after the window, when nobody challenged it. No command of this repository stakes a claim for this agent yet. The service stakes none. See Claim statements |
 
 ## Capability id
 
@@ -374,7 +374,7 @@ The signature is Ed25519 over the canonical JSON of the receipt. The sha256 of t
 
 ## Claim statements
 
-The service stakes no claim: no code of the service calls the staking. Before a run, an operator command stakes a Module-1 claim for the agent with the service key: 50 units, which is 50000000 lovelace, with a challenge window of 24 hours. After the window, the same command withdraws the claim when nobody challenged it. The claim has three statements. The manifest holds the same three texts in `behaviour.claim`, with no reference to a claim. A challenge names the text of a statement.
+The service stakes no claim: no code of the service calls the staking. No command of this repository stakes a claim for this agent yet. Until one does, a challenge against it ends with `no_open_claim`. The same holds for the Prior Authorization Agent: no command stakes a claim for it, so the challenge of this agent against it (see What it checks before the Claim) ends with `no_open_claim` too. The design is that, before a run, an operator command stakes a Module-1 claim for the agent with the service key: 50 units, which is 50000000 lovelace, with a challenge window of 24 hours. After the window, the same command withdraws the claim when nobody challenged it. The claim has three statements. The manifest holds the same three texts in `behaviour.claim`, with no reference to a claim. A challenge names the text of a statement.
 
 | Id | Statement |
 |---|---|
@@ -382,7 +382,7 @@ The service stakes no claim: no code of the service calls the staking. Before a 
 | S2 | An intake record names the hash of the request this agent received. |
 | S3 | This agent files one entry per request number. |
 
-S2 is the statement that a wrong intake record breaks. When the intake record names another hash than the hash of the request that the Prior Authorization Agent sent, that agent declines the delivery and challenges the claim of this agent on S2. No run covers that challenge, because this agent has no fault value (see Known gaps).
+S2 is the statement that a wrong intake record breaks. When the intake record names another hash than the hash of the request that the Prior Authorization Agent sent, that agent declines the delivery and challenges the claim of this agent on S2. Until a command stakes a claim for this agent, that challenge ends with `no_open_claim`. No run covers that challenge, because this agent has no fault value (see Known gaps).
 
 ## Fault switch
 
