@@ -56,10 +56,12 @@ export const PROPOSE_DEADLINE_MS = 5_220_000;
 export const RANKING_RESERVE_MS = 120_000;
 
 /**
- * The time that must be left when the scoring starts, in milliseconds: the 720,000 ms that one scorer needs (the least wait for 30 confirmations, the job of the scorer and the end of its
- * sub-delegation) and the time of the ranking. The quote fan-out keeps the same time after its last hire.
+ * The time that must be left when the scoring starts, in milliseconds: the 960,000 ms that the three scorers need, and the time of the ranking. The 960,000 ms are `SCORERS_NEED_MS` of the scoring folder.
+ * One scorer needs 720,000 ms (the least wait for 30 confirmations, the job of the scorer and the end of its sub-delegation), and the Delegates of the other two scorers land one after the other, 120,000 ms
+ * each, so the sum is 720,000 + 2 x 120,000. This folder does not import the scoring folder, so the number is written here, and the test of the wiring of the service holds the two equal. The quote fan-out
+ * keeps the same time after its last hire.
  */
-export const SCORING_RESERVE_MS = 720_000 + RANKING_RESERVE_MS;
+export const SCORING_RESERVE_MS = 960_000 + RANKING_RESERVE_MS;
 
 /** The most candidates that a ranking can list as excluded: the limit of the document. */
 const MOST_LISTED = 20;
