@@ -52,10 +52,10 @@ const reasonOf = async (call: () => Promise<unknown>): Promise<LoadReason> => (a
 const TASKS = ['keys', 'fund', 'register', 'stake', 'advert', 'attest', 'compliance', 'claim', 'allowlist', 'env', 'tenant', 'fault', 'probe', 'hold', 'end-subagents', 'revoke-record', 'lifecycle', 'delegations', 'evidence', 'results', 'end-state'];
 
 describe('the closed lists', () => {
-  it('lists each supported task once and enables only inventory reorder', () => {
+  it('lists each supported task once and names the three supported cases', () => {
     expect([...TASK_NAMES]).toEqual(TASKS);
     expect(new Set(TASK_NAMES).size).toBe(TASK_NAMES.length);
-    expect([...USE_CASE_NAMES]).toEqual(['inventory-reorder']);
+    expect([...USE_CASE_NAMES]).toEqual(['inventory-reorder', 'prior-authorization', 'bid-evaluation']);
   });
   it('hold names that are the names of files: lower-case letters, digits and hyphens', () => {
     for (const name of [...TASK_NAMES, ...USE_CASE_NAMES]) expect(name).toMatch(/^[a-z][a-z0-9-]{0,47}$/);

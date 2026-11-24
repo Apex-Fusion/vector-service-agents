@@ -189,7 +189,7 @@ describe('specs/sourcing-agent.md', () => {
     const sources = (readdirSync(sourceDir, { recursive: true }) as string[]).map(String).filter((file) => file.endsWith('.ts'));
     expect(sources.length).toBeGreaterThan(30);
     expect(sources.filter((file) => readFileSync(new URL(file, sourceDir), 'utf8').includes('stakeRunClaim'))).toStrictEqual([]);
-    expect(USE_CASE_NAMES).toStrictEqual(['inventory-reorder']);
+    expect(USE_CASE_NAMES).toContain('bid-evaluation');
   });
 
   test('the public URL of the identity table is the origin of the runtime in the compose file of the pack', () => {
@@ -1562,8 +1562,6 @@ describe('specs/sourcing-agent.md, the receipt, the claim and the fault switch',
       'The planned failure run sets the switch on this agent to show that an approver can find a wrong score from the quote that it cites. No command of this repository runs use case 3 yet. The switch changes what the job writes and never a check.',
       'The switch is empty in a clean run. Any other value than `invert_scores` stops the start of the service. The service reads the switch one time, at start. It is declared in the manifest, in `behaviour.fault_modes`, and the manifest is the same for every value. Each result returns the active value as `fault_mode`, its last member.',
     ]) expect(fault, part).toContain(part);
-    // The CLI enables only inventory reorder, even when the pack has data for another use case.
-    expect(USE_CASE_NAMES).toStrictEqual(['inventory-reorder']);
   });
 });
 

@@ -1212,7 +1212,7 @@ describe('deploy/server/RUNBOOK-prior-authorization-agent.md', () => {
       `challenge window is ${CLAIM_WINDOW_MS / 3_600_000} hours`, '`claim cleanup` withdraws the claim if nobody challenged it',
       'The operator CLI does not enable use case 2 yet.',
     ]) expect(what).toContain(part);
-    expect(USE_CASE_NAMES).not.toContain('prior-authorization');
+    expect(USE_CASE_NAMES).toContain('prior-authorization');
     const env = sectionOf(runbookText, 'The env file');
     expect(env).toContain('`PRIORAUTH_SERVICE_PRIV_KEY_HEX` pays the model hires and signs the challenges.');
     expect(env).toContain("The operator pack uses this key to sign the agent's claim.");

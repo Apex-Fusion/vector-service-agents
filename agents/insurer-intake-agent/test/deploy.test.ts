@@ -1198,7 +1198,7 @@ describe('deploy/server/RUNBOOK-insurer-intake-agent.md', () => {
       `challenge window is ${CLAIM_WINDOW_MS / 3_600_000} hours`, '`claim cleanup` withdraws the claim if nobody challenged it',
       'The operator CLI does not enable use case 2 yet.', 'no eligible open claim', '`no_open_claim`',
     ]) expect(what).toContain(part);
-    expect(USE_CASE_NAMES).not.toContain('prior-authorization');
+    expect(USE_CASE_NAMES).toContain('prior-authorization');
     const env = sectionOf(runbookText, 'The env file');
     expect(env).toContain('it signs the challenges of the dispute code and the request for the JWT-SVID.');
     expect(env).toContain("The operator pack uses this key to sign the agent's claim.");

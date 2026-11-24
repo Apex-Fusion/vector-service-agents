@@ -1648,7 +1648,7 @@ describe('deploy/server/RUNBOOK-bid-desk.md', () => {
       'the claim document transaction and then the stake transaction, one Bid Desk at a time',
       'The service has no claim code and no dispute code', 'Sourcing Agent', 'It never makes a stake, a claim or a record', 'behaviour.claim',
     ]) expect(note).toContain(part);
-    expect(USE_CASE_NAMES).not.toContain('bid-evaluation');
+    expect(USE_CASE_NAMES).toContain('bid-evaluation');
   });
 
   const faults: readonly Fault[] = [
