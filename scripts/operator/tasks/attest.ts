@@ -170,6 +170,7 @@ function runningOf(session: Session): ReadonlyMap<string, string> {
 
 /** Writes the document file of each agent, after every check of every agent has passed: no file is written for a build that fails a check. */
 async function recordDocuments(session: Session): Promise<StepOutcome> {
+  session.out.out('record: this run makes no transaction and loads no key, and it writes the document files');
   const commit = commitOf(session);
   const running = runningOf(session);
   const checked: Inspected[] = [];
@@ -470,28 +471,31 @@ async function withdraw(session: Session, agent: string, type: string, fact: Att
 
 /** Withdraws each deposit that is due, and prints the date for each that is not. */
 async function cleanup(session: Session): Promise<StepOutcome> {
-  const lines: string[] = [];
+  const counts = { withdrawn: 0, back: 0, waiting: 0 };
   let dry = false;
   for (const [agent, byType] of Object.entries(session.facts.read().attestations)) {
     for (const [type, fact] of Object.entries(byType)) {
       const what = `the ${type} attestation of ${agent}`;
       if (partOf(session, `withdraw:${agent}:${type}`) !== undefined) {
-        lines.push(`the deposit of ${what} is back already`);
+        session.out.out(`the deposit of ${what} is back already`);
+        counts.back += 1;
         continue;
       }
       const dueAt = Date.parse(fact.validUntil) + WITHDRAW_WAIT_MS;
       if (!(session.clock.now() >= dueAt + WITHDRAW_LEAD_MS)) {
-        lines.push(`the deposit of ${what} is due on ${iso(dueAt)}, 90 days after its valid_until: it can be withdrawn one minute after that time`);
+        session.out.out(`the deposit of ${what} is due on ${iso(dueAt)}, 90 days after its valid_until: it can be withdrawn one minute after that time`);
+        counts.waiting += 1;
         continue;
       }
       const outcome = await withdraw(session, agent, type, fact);
-      if (!outcome.landed) dry = true;
-      lines.push(outcome.line);
+      session.out.out(outcome.line);
+      if (outcome.landed) counts.withdrawn += 1;
+      else dry = true;
     }
   }
-  if (lines.length === 0) lines.push('the facts hold no attestation: there is nothing to take back');
-  for (const line of lines) session.out.out(line);
-  return dry ? { kind: 'dry' } : { kind: 'done', message: lines.join('; ') };
+  if (dry) return { kind: 'dry' };
+  if (counts.withdrawn + counts.back + counts.waiting === 0) return { kind: 'done', message: 'the facts hold no attestation: there is nothing to take back' };
+  return { kind: 'done', message: `attestation deposits: ${counts.withdrawn} withdrawn, ${counts.back} back already, ${counts.waiting} not due yet` };
 }
 
 // ---- status and result ----

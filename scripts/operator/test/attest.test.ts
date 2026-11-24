@@ -20,6 +20,7 @@ import { attestationDocumentName, attestationDocumentOf } from '../lib/build-rec
 import { FactsFile } from '../lib/facts.ts';
 import { ATT_TYPES, envelopeSigStructure, envelopeVerifies, lucidForAddress } from '../lib/platform.ts';
 import type * as Platform from '../lib/platform.ts';
+import { loadTask } from '../lib/load.ts';
 import { loadRegistry } from '../lib/registry.ts';
 import type { Registry } from '../lib/registry.ts';
 import { runTask } from '../lib/runner.ts';
@@ -330,6 +331,24 @@ describe('the task attest', () => {
   it('has the four attestation steps and then the four waits, as the data names them', () => {
     expect(attest.steps(data, { has: () => false, value: () => undefined })).toEqual([...STEPS, ...STEPS.map((step) => `visible:${step}`)]);
   });
+  it('is the task that the command line loads for the name attest', async () => {
+    const loaded = await loadTask('attest');
+    expect(loaded.name).toBe('attest');
+    expect(loaded.steps(data, { has: () => false, value: () => undefined })).toHaveLength(8);
+  });
+  it('shows its steps, each attestation of the facts with the date of its deposit, and the deploy record, in the status', async () => {
+    const r = await rig();
+    await r.run(...RECORD_ARGV);
+    await land(r, 1);
+    r.w.screen.lines.length = 0;
+    expect(await r.run('status')).toBe(0);
+    const fact = r.w.facts().attestations['reorder-agent']!.provenance!;
+    expect(r.w.screen.text).toContain(`the provenance attestation of reorder-agent: ${fact.id}, valid until ${fact.validUntil}`);
+    expect(r.w.screen.text).toContain(`the deposit can be withdrawn from ${iso(Date.parse(fact.validUntil) + 90 * DAY)}`);
+    expect(r.w.screen.text).toContain(`deploy: the commit ${COMMIT}, 6 running containers`);
+    expect(r.w.screen.text).toContain('reorder-agent:software');
+    expect(r.node.submitted).toHaveLength(1);
+  });
 });
 
 // ---- --record ----
@@ -510,7 +529,7 @@ describe('an attestation step', () => {
     expect(r.w.evidence('attest').filter((entry) => entry.step === 'reorder-agent:provenance').map((entry) => entry.status)).toEqual(['confirmed', 'verified']);
     expect(r.hosted.calls).toEqual([{ name: 'vector_get_attestation', args: { attestation: id } }]);
     expect(r.w.screen.text).toContain(`issues a provenance attestation about did:vector:${RECORD_ID}`);
-    expect(r.w.machine()).toMatchObject({ task: 'attest', outcome: 'done', exit: 0, step: 'reorder-agent:provenance' });
+    expect(r.w.machine()).toMatchObject({ task: 'attest', outcome: 'done', exit: 0, step: 'reorder-agent:provenance', result: { commit: null, attestations: { 'reorder-agent': { provenance: { id, envelope: false } } } } });
     expect(r.web.missed).toEqual([]);
     for (const name of KEYS) expect(r.w.allText()).not.toContain(r.w.keys.seedOf(name));
     expect(r.w.allText()).not.toContain(REGISTRY_TOKEN);
@@ -520,6 +539,21 @@ describe('an attestation step', () => {
     await land(r, 2);
     expect(r.node.submitted).toHaveLength(2);
     expect(Object.keys(r.w.state('attest').notes).filter((key) => key.startsWith('part.'))).toEqual(['part.reorder-agent:provenance', 'part.reorder-agent:software']);
+  });
+  it('keeps the fact of an attestation that landed when the facts file could not be written: the next run writes it before it goes on', async () => {
+    const r = await rig();
+    const lock = join(r.w.stateDir, 'facts.json.lock');
+    writeFileSync(lock, '');
+    expect(await r.run(...SUBMIT)).toBe(1);
+    expect(r.w.screen.errorText).toContain('the facts file may lack its facts');
+    expect(r.node.submitted).toHaveLength(1);
+    expect(r.w.facts().attestations).toEqual({});
+    expect(r.part('reorder-agent:provenance').tx_hash).toBe(r.world.hashOf(r.node.submitted[0]!));
+    rmSync(lock);
+    expect(await r.run(...SUBMIT)).toBe(0);
+    expect(r.w.facts().attestations['reorder-agent']?.provenance?.tx).toBe(r.world.hashOf(r.node.submitted[0]!));
+    expect(r.part('reorder-agent:provenance').verified_at).not.toBeNull();
+    expect(r.node.submitted).toHaveLength(2);
   });
   it('lands the four attestations with --all, each with the digest of the document of its agent, the envelope on one of them only, and then waits for the gateway', async () => {
     const r = await rig();
