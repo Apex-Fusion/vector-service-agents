@@ -1,7 +1,7 @@
 // agents/bid-desk/test/spec.test.ts
 // specs/bid-desk.md is the public page of the three Bid Desks, and the manifest of each links to its Response heading. These tests hold the page to the code, to the manifest of each instance, to the three price list
 // files and to the deploy pack, table by table, so that they cannot part: the opening line, the status line and the changelog; the identity rows of the three instances; the terms, the times and the limits; the 7 checks
-// of the hook with their refusal codes; the steps of the job; the quote; the price list tables; the errors; the claim; the gaps word for word; the data that leaves the service; and the links. No test here uses the network.
+// of the hook with their refusal codes; the steps of the job; the quote; the price list tables; the errors; the claim; the gaps word for word; the data that leaves the service; and the links. No test calls an external service.
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -45,7 +45,7 @@ import { gatewayFailure, makeRig, refusalOf } from './job/rig.ts';
 import { CHECKS, DESK_DID, RFQ_VALUE, SENDER_DID, T0, choiceOf, decisionOf, messageOf, recordFor } from './job/samples.ts';
 import { PRICE_LIST_SHA256, SERVICE, envOf, priceListOf } from './serve/support.ts';
 import { serve, until } from './serve/serve.ts';
-import { cleanDirs, makeWorld as makeServiceWorld } from './serve/world.ts';
+import { cleanDirs, headersOf, makeWorld as makeServiceWorld, wire } from './serve/world.ts';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 const page = readFileSync(new URL('../../../specs/bid-desk.md', import.meta.url), 'utf8');
@@ -376,28 +376,27 @@ describe('specs/bid-desk.md: the Terms', () => {
     expect(readme).toContain(`| Least time left before delivery | ${RUNTIME_MARGIN_MS} ms | the job records no quote when less than this is left before \`deliver_by\`. The runtime stops waiting for the job this long before \`deliver_by\` |`);
   });
 
-  test('the request limit is 900000 bytes of wire payload and 20 items, and the page says that it is safe only below the limit of the runtime on the escaped body', () => {
+  test('the manifest limit counts the full wire payload, and the service and runtime have separate limits', () => {
     expect(INSTANCES.every((instance) => manifests[instance].terms.input_limits.request_bytes === MAX_REQUEST_BYTES)).toBe(true);
-    expect(row(terms, 'Request')).toBe(`| Request | at most ${MAX_REQUEST_BYTES} bytes of wire payload, and 1 to 20 items |`);
-    expect(MAX_REQUEST_BYTES).toBeLessThan(MAX_BODY);
-    expect(MAX_BODY).toBeLessThan(RUNTIME_BODY_LIMIT_BYTES);
-    expect(RUNTIME_BODY_LIMIT_BYTES).toBe(1_048_576);
-    expect(terms).toContain('**The request limit.** The limit on a request counts the wire payload: the request JSON written as a string inside a one-message array. The manifest publishes it in `terms.input_limits.request_bytes`.');
-    expect(terms).toContain('The limit does not count the body of the call that a buyer makes to a runtime. The buyer puts the wire payload inside a second JSON object, and each quote mark and each backslash of the wire payload then gets one more byte.');
-    expect(terms).toContain(`The runtime refuses a body above ${RUNTIME_BODY_LIMIT_BYTES} bytes (1 MiB).`);
-    expect(terms).toContain(`So the limit of ${MAX_REQUEST_BYTES} bytes is safe only below the limit of the runtime, on the escaped body, and a buyer must keep the body of its call at or below ${RUNTIME_BODY_LIMIT_BYTES} bytes.`);
-    expect(terms).toContain(`The service reads at most ${MAX_BODY} bytes of wire payload and refuses more with \`request_too_large\` (400).`);
+    expect(row(terms, 'Request')).toBe(`| Request | published limit of ${MAX_REQUEST_BYTES} bytes of wire payload, and 1 to ${MAX_RFQ_ITEMS} items |`);
+    expect([MAX_REQUEST_BYTES, MAX_BODY, RUNTIME_BODY_LIMIT_BYTES]).toStrictEqual([900_000, 1_000_000, 1_048_576]);
+    expect(terms).toContain(`The manifest asks the buyer to keep the full wire payload at or below ${MAX_REQUEST_BYTES} UTF-8 bytes (\`terms.input_limits.request_bytes\`).`);
+    expect(terms).toContain('This counts the one-message array and all escapes.');
+    expect(terms).toContain(`The runtime limits the whole request body to ${RUNTIME_BODY_LIMIT_BYTES} bytes.`);
+    expect(terms).toContain('Escaping the payload again can put the body above the runtime limit even if the payload fits.');
+    expect(terms).toContain(`On \`POST /\` and \`POST /precheck\` the Bid Desk's HTTP reader has a separate limit of ${MAX_BODY} bytes. It refuses more with \`request_too_large\` (400).`);
   });
 
-  test('the money: the lock of each advert, the payment from a vault, Accept, Release and Reclaim, and a job that fails is not paid', () => {
-    expect(terms).toContain(`**The money.** A hire of an advert locks its price and both bonds: ${lock / 1_000_000} units.`);
+  test('the money: the lock of each advert, the vault Pay, Accept, Release and Reclaim', () => {
+    expect(terms).toContain(`**The money.** A hire of an advert locks its price and both bonds: ${lock / 1_000_000} units at the listed terms.`);
     expect(terms).toContain('The buyer pays the lock from a vault of its delegation, and the value limit of the delegation caps that payment.');
-    expect(terms).toContain("On Accept the Bid Desk receives the price and the supplier bond, and the buyer's bond returns to the buyer.");
+    expect(terms).toContain('The buyer bond goes to a separate `Returned` vault output that only the vault owner can close.');
     // The runtime of each Bid Desk releases an escrow that the buyer did not accept, after the window of 600 s.
     expect(ACCEPT_WINDOW_MS).toBe(600_000);
     expect(terms).toContain(`If the buyer does not accept within ${ACCEPT_WINDOW_MS / 1000} s of the Submit, the Bid Desk may Release the escrow and take the price and both bonds.`);
     for (const instance of INSTANCES) expect(runtimeEnv(instance).RELEASE_WATCHER, instance).toBe('1');
-    expect(terms).toContain('If the Bid Desk never submits, the buyer reclaims after `deliver_by`. A request that the hook refuses, and a job that fails after the Claim, end that way: neither is paid.');
+    expect(terms).toContain('Reclaim applies only to an Open or Claimed escrow. After `deliver_by` it returns the full lock to a `Returned` output, not to the caller\'s wallet.');
+    expect(terms).toContain('Neither return restores the spending allowance of the Live vault.');
     expect(terms).toContain('The service pays for its one model call from the service key.');
   });
 });
@@ -426,6 +425,24 @@ describe('specs/bid-desk.md: the routes of the Interface', () => {
       for (const path of ['/agent.json', '/price-list.json']) expect((await api.request('GET', path, { headers: { authorization: null } })).status, path).toBe(200);
       const missing = await api.request('GET', '/quote', { headers: { authorization: null } });
       expect([missing.status, missing.json]).toStrictEqual([404, { error: 'not_found' }]);
+    });
+  });
+
+  test('both routes refuse one byte over the HTTP limit and accept a valid request at that limit', async () => {
+    const world = makeServiceWorld();
+    const framed = wire(world.message);
+    const padding = ' '.repeat(MAX_BODY - Buffer.byteLength(framed));
+    const headers = headersOf(world.context);
+    await serve(world, async (api) => {
+      for (const path of ['/precheck', '/']) {
+        const tooLarge = await api.request('POST', path, { headers, body: `${framed}${padding} ` });
+        expect([tooLarge.status, tooLarge.json?.error], path).toStrictEqual([400, 'request_too_large']);
+      }
+      const precheck = await api.request('POST', '/precheck', { headers, body: framed + padding });
+      expect([precheck.status, precheck.json?.go]).toStrictEqual([200, true]);
+      // Different framing does not change the hash of the parsed request that the hook recorded.
+      const quote = await api.request('POST', '/', { headers, body: padding + framed });
+      expect([quote.status, quote.json?.rfq_id]).toStrictEqual([200, world.message.rfq.rfq_id]);
     });
   });
 
@@ -601,9 +618,9 @@ describe('specs/bid-desk.md: what the hook checks before the Claim', () => {
     const go = createPrecheck({ ports: world.ports, book: new MemoryRfqBook(), passed, clock: () => HOOK_T, log: () => undefined });
     expect(await go(world.rfq, world.context)).toStrictEqual({ go: true });
     expect(Object.keys(passed.take(world.context.escrowRef, HOOK_T)?.record.checks ?? {})).toStrictEqual([...QUOTE_CHECKS]);
-    expect(hook).toContain('The hook does not check the SKUs of the request against the price list. A request none of whose SKUs the list carries passes the hook and the Claim.');
-    expect(hook).toContain('The job then hires the model. It ends with `model_output_invalid` (502) only when the model gives no line, because a quote needs at least one line (see What it does).');
-    expect(hook).toContain('When the model gives a line for an item that the list does not carry, with a price that it made up, the job makes a quote: it checks no price against the list.');
+    expect(hook).toContain('The hook does not check the SKUs of the request against the price list. SKUs absent from the list do not prevent the Claim.');
+    expect(hook).toContain('If the model gives no line, the job ends with `model_output_invalid` (502), because a quote needs at least one line');
+    expect(hook).toContain('A line that passes the code checks can use a price that the model made up, even for a SKU that the list does not carry.');
   });
 });
 
@@ -638,7 +655,8 @@ describe('specs/bid-desk.md: what the job does', () => {
     expect(readFileSync(new URL('../src/serve/wiring.ts', import.meta.url), 'utf8')).toContain('deadlineMs: Math.min(arrivedAt + JOB_DEADLINE_MS, context.deliverByMs - RUNTIME_MARGIN_MS - CALL_TIMEOUT_MS)');
     expect([RUNTIME_MARGIN_MS + CALL_TIMEOUT_MS, HIRE_MIN_MS]).toStrictEqual([50_000, 60_000]);
     expect(steps[1]).toContain(`The hire ends ${JOB_DEADLINE_MS} ms after the request arrives, or ${hireMargin} ms before \`deliver_by\` when that is earlier, and it does not start with less than ${HIRE_MIN_MS} ms left for it.`);
-    expect(steps[0]).toContain('A job with no record, with the record of another body, with a record that lacks one of the 7 checks, or with a fact in the record that it cannot read, fails with `precheck_missing` and makes no quote.');
+    expect(steps[0]).toContain('It compares the hash of the canonical JSON of its parsed request with the hash that the hook recorded.');
+    expect(steps[0]).toContain('A job with no record, with the record of a different request, with a record that lacks one of the 7 checks, or with a fact in the record that it cannot read, fails with `precheck_missing` and makes no quote.');
   });
 
   test('a job with no record, with the record of another body, with a record that lacks a check, or with a fact that it cannot read, fails with precheck_missing and makes no quote', async () => {
@@ -716,7 +734,7 @@ describe('specs/bid-desk.md: what the job does', () => {
     expect(await refusalOf(unlisted.run())).toMatchObject({ code: 'model_output_invalid', status: 502 });
     expect(membersOf(unlisted.decideInputs[0]).price_list).toStrictEqual([]);
     expect(unlisted.events).toStrictEqual(['take', 'decide']);
-    // The twin: a model that gives a line for the item that the list lacks, at a price that it made up, gets a quote. Only a choice with no line ends with model_output_invalid.
+    // A line for an unlisted item still makes a quote if it passes the job's checks.
     const invented = makeRig({ rfq: { items: [{ sku: 'NO-SUCH-SKU', quantity: 3 }] } });
     invented.decision = accepted(decisionOf(choiceOf({ lines: [{ sku: 'NO-SUCH-SKU', quantity: 3, unit_price: 50, lead_time_days: 3 }] })));
     expect(priceFor(invented.deps.priceList.list, 'NO-SUCH-SKU', 3)).toBeNull();
@@ -963,8 +981,8 @@ describe('specs/bid-desk.md: the errors', () => {
     expect(errors).toContain('- The messages of `duplicate_rfq` and `deadline` are fixed texts that hold no value of the request.');
     // The `deadline` row names the time before deliver_by. The runtime stops waiting 30 s before deliver_by, so the job gives its quote while 30 s or more are left before deliver_by, and "30 s before the runtime stops waiting" would be 60 s before deliver_by.
     expect(statusRows(errors).find((line) => line.startsWith('| 422, the job |'))).toBe('| 422, the job | `deadline` (the caller hung up before the model hire or before the record in the book, or less than 30 s are left before `deliver_by`) |');
-    expect(errors).toContain('- A refusal of the hook leaves the escrow open, and nothing is paid. A job that fails after the Claim leaves the escrow Claimed: the buyer reclaims it after `deliver_by`, and nothing is paid for work that was not done.');
-    expect(readme).toContain('A job that fails after the Claim leaves the escrow claimed. The buyer reclaims it after the deadline, and nothing is paid for work that was not done.');
+    expect(errors).toContain('- A refusal of the hook leaves the funded escrow Open. A job that fails after the Claim does not Submit a quote, so the escrow stays Claimed. The lock does not return automatically.');
+    expect(readme).toContain('A Reclaim after `deliver_by` returns its full lock as a separate `Returned` vault output.');
     expect(errors).toContain('- The Bid Desk calls no mock system, so a failed job can leave behind a model hire and nothing else. A job that fails after the service accepted the model hire has paid the model supplier from the service key. A hire that stays unfinished is in the stranded file of the service key, and the janitor settles it.');
     expect(readme).toContain('A job that fails after it accepted the model hire has paid the model supplier from the service key.');
     expect(STRANDED_FILE).toBe('stranded.json');
@@ -1212,7 +1230,7 @@ describe('specs/bid-desk.md: the hire, the headings, the changelog and the links
     expect(sources.some(([file, text]) => file === 'serve/wiring.ts' && text.includes("new FileRfqBook(join(config.stateDir, 'rfq-book.json'))"))).toBe(true);
     expect(how).toContain("Each Bid Desk has its own advert and its own book of answered requests, so a buyer's agent can send one request, with one `rfq_id`, to each of the three Bid Desks, with one hire for each advert.");
     expect(how).toContain('To see the Bid Desks work, hire the [Sourcing Agent](sourcing-agent.md). It hires Bid Desks for quotes on one request for quotation, and it proposes a ranking of the quotes to its hirer. The steps to hire the Sourcing Agent are on its page.');
-    expect(existsSync(`${root}agents/sourcing-agent`)).toBe(true);
+    expect(existsSync(join(root, 'specs/sourcing-agent.md'))).toBe(true);
   });
 
   test('the page has the thirteen headings of its profile in order, and Interface has the six sub-headings that the tests above read', () => {

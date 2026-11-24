@@ -591,8 +591,6 @@ describe('specs/sourcing-agent.md, Interface, Request', () => {
     expect(executeBlock).toBe(JSON.stringify(EXECUTE_REQUEST, null, 2));
     expect(must(parseRequest(JSON.parse(proposeBlock), parseProposeFields))).toStrictEqual(PROPOSE_REQUEST);
     expect(must(parseRequest(JSON.parse(executeBlock)))).toStrictEqual(EXECUTE_REQUEST);
-    expect(parseJob(parseWire(wirePayloadFor(proposeBlock))).op).toBe('propose');
-    expect(parseJob(parseWire(wirePayloadFor(executeBlock))).op).toBe('execute');
     const { proposal } = JSON.parse(executeBlock) as typeof EXECUTE_REQUEST;
     expect(must(parseProposal(proposal))).toStrictEqual(PROPOSAL);
     expect(must(parseRanking(proposal.document)).rfq_id).toBe(RFQ.rfq_id);
@@ -600,7 +598,9 @@ describe('specs/sourcing-agent.md, Interface, Request', () => {
     expect(createHash('sha256').update(Buffer.from(proposal.salt, 'hex')).update(must(canonicalJson(proposal.document)), 'utf8').digest('hex')).toBe(proposal.proposal_digest);
     expect(request).toContain('The digest is the sha256 of the 32 bytes of the salt and the canonical JSON of the document.');
     // The two requests are a few kilobytes: far below the limits of Terms.
-    for (const block of [proposeBlock, executeBlock]) {
+    for (const [block, op] of [[proposeBlock, 'propose'], [executeBlock, 'execute']] as const) {
+      const wire = wirePayloadFor(block);
+      expect(parseJob(parseWire(wire), wire).op).toBe(op);
       expect(must(checkWirePayload(block))).toBeLessThan(12_000);
       expect(must(checkRuntimeBody(block))).toBeLessThan(12_000);
     }
@@ -1708,5 +1708,6 @@ describe('specs/sourcing-agent.md, the operator, the gaps, the hire and the link
     expect(links).toContain('[agents/sourcing-agent/agent.json.template](../agents/sourcing-agent/agent.json.template)');
     expect(links).toContain('[docs/HIRE.md](../docs/HIRE.md)');
     expect(links).toContain('[Bid Desk](bid-desk.md)');
+    expect(existsSync(new URL('specs/bid-desk.md', root))).toBe(true);
   });
 });

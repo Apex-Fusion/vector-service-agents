@@ -143,18 +143,19 @@ describe('agents/sourcing-agent/README.md: what it is', () => {
     expect(intro).toContain('Read the sourcing record before you send `execute` again.');
   });
 
-  test('the claim is the manifest claim, only an operator command stakes it, and the only dispute call of the service is the challenge of a quote that the model did not accept', () => {
+  test('the manifest has the claim statements but the service never stakes them and only challenges quotes', () => {
     expect(template.behaviour.claim.statements.map((statement) => statement.text)).toStrictEqual(SOURCING_CLAIM.statements.map((statement) => statement.text));
     expect(SOURCING_CLAIM.statements).toHaveLength(3);
-    expect(intro).toContain('The claim of the agent is the three statements in `behaviour.claim` of its manifest. An operator command stakes that claim, and this service never does.');
+    expect(intro).toContain('The claim of the agent is the three statements in `behaviour.claim` of its manifest. The service never stakes the claim. No command in this repository stakes it yet.');
     expect(sources.filter(({ text }) => /\b(?:stakeRunClaim|withdrawClaim|submitClaim|challengeApproval)\b/.test(text))).toStrictEqual([]);
     expect(sources.filter(({ text }) => /\bchallengeDelivery\b/.test(text)).map(({ file }) => file).sort()).toStrictEqual(['quotes/evidence.ts', 'quotes/ports.ts']);
     expect(intro).toContain('only after a decision of the model that did not accept a quote, and only for a unit price');
   });
 
-  test('the escrow and the vault payment stay locked up to the window of the advert, and the jobs are in memory', () => {
+  test('the processing window does not set a settlement time, and jobs are in memory', () => {
     expect(MIN_PROCESSING_WINDOW_MS).toBe(5_400_000);
-    expect(intro).toContain(`stay locked up to the window of the advert, ${MIN_PROCESSING_WINDOW_MS} ms (${MIN_PROCESSING_WINDOW_MS / 60_000} minutes) by default, when a job runs to its end`);
+    expect(intro).toContain(`The processing window of the advert is ${MIN_PROCESSING_WINDOW_MS} ms (${MIN_PROCESSING_WINDOW_MS / 60_000} minutes) by default.`);
+    expect(intro).toContain('The hire and any quote escrows can remain locked after the job ends. Their funds move only when a settlement transaction lands.');
     expect(template.interface.routes.status).toBe('/status');
     expect(intro).toContain('A restart waits until the runtime says `free` at its `/status` route.');
     expect(intro).toContain('The jobs are in memory, so a restart ends the job that runs.');
@@ -215,6 +216,23 @@ describe('agents/sourcing-agent/README.md: the routes', () => {
     expect(HEARTBEAT_MS).toBe(60_000);
     expect(routes).toContain(`writes an interim \`102 Processing\` line every ${HEARTBEAT_MS / 1000} s`);
     expect(textOf('../../../packages/service-kit/src/server.ts')).toContain('req.httpVersionMajor === 1 && req.httpVersionMinor >= 1');
+  });
+
+  test('precheck and the job count the received wire bytes, including framing, for a full execute request', async () => {
+    const w = executeWorld();
+    const { origin } = await serve({ executeDeps: () => w.deps, clock: () => w.gateway.now() });
+    const framed = wireOf(w.request());
+    const atLimit = framed + ' '.repeat(MAX_REQUEST_BYTES - Buffer.byteLength(framed));
+    const headers = { ...contextOf('aa'), authorization: TOKEN };
+    for (const path of ['/precheck', '/']) {
+      const refused = await fetch(`${origin}${path}`, { method: 'POST', headers, body: `${atLimit} ` });
+      expect(refused.status, path).toBe(400);
+      expect(await refused.json()).toMatchObject({ error: 'request_too_large' });
+      const accepted = await fetch(`${origin}${path}`, { method: 'POST', headers, body: atLimit });
+      expect(accepted.status, path).toBe(200);
+      expect(await accepted.json()).toMatchObject(path === '/precheck' ? { go: true } : { outcome: 'completed' });
+    }
+    expect(w.record.written).toHaveLength(1);
   });
 
   test('POST /precheck has no check of its own: it answers with the state of the slot, and the body and the context are read as for a job', async () => {
