@@ -255,14 +255,39 @@ describe('loadUseCase', () => {
       recordFromTransaction: 'record',
       settlement: { type: 'release', hireRole: 'quote' },
     };
-    const load = (config: string | null, entry: unknown) => loadUseCase('inventory-reorder', baseWith({
-      'usecases/inventory-reorder.ts': useCaseFile('inventory-reorder', { results: config, evidenceSteps: JSON.stringify([entry]) }),
+    const load = (config: string | null, steps: readonly unknown[], kinds: readonly string[] = ['clean', 'failure']) => loadUseCase('inventory-reorder', baseWith({
+      'usecases/inventory-reorder.ts': useCaseFile('inventory-reorder', {
+        results: config, runs: JSON.stringify(kinds.map((id) => ({ id }))), evidenceSteps: JSON.stringify(steps),
+      }),
     }));
 
     it('loads exact wording and the proof for each configured step', async () => {
-      const use = await load(JSON.stringify(results), { ...step, proof });
+      const use = await load(JSON.stringify(results), [{ ...step, proof }]);
       expect(use.results).toEqual(results);
       expect(use.evidenceSteps).toEqual([{ ...step, proof }]);
+    });
+
+    it('checks the step IDs separately for each declared run', async () => {
+      const row = { ...step, proof };
+      const config = JSON.stringify(results);
+      const disjoint = [row, { ...row, run: 'failure' }];
+      expect((await load(config, disjoint)).evidenceSteps).toEqual(disjoint);
+      const malformed = 'INVALID_SELECTION';
+      const wrong: readonly [string, readonly unknown[], readonly string[]][] = [
+        ['results has an invalid run declaration', [row], [malformed]],
+        ['results has a duplicate run declaration', [row], ['clean', 'clean']],
+        ['an evidence step has no usable results step id', [{ ...row, id: malformed }], ['clean']],
+        ['an evidence step has no declared results run', [{ ...row, run: 'lifecycle' }], ['clean']],
+        ['an evidence step has no declared results run', [{ ...row, run: malformed }], ['clean']],
+        ['an evidence step has no declared results run', [{ ...row, run: 'both' }], []],
+        ['an evidence step id applies more than once to a results run', [row, { ...row, run: 'both' }], ['clean', 'failure']],
+      ];
+      for (const [message, rows, kinds] of wrong) {
+        const err = await refusal(() => load(config, rows, kinds));
+        expect(err.reason).toBe('shape');
+        expect(err.message).toContain(message);
+        expect(err.message).not.toContain(malformed);
+      }
     });
 
     const wrong: readonly [string, string | null, unknown][] = [
@@ -288,7 +313,7 @@ describe('loadUseCase', () => {
     ];
     for (const [message, config, rule] of wrong) {
       it(`refuses data when ${message}`, async () => {
-        const err = await refusal(() => load(config, { ...step, proof: rule }));
+        const err = await refusal(() => load(config, [{ ...step, proof: rule }]));
         expect(err.reason).toBe('shape');
         expect(err.message).toContain(message);
       });

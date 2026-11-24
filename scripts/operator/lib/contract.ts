@@ -85,10 +85,12 @@ type ResultSettlement =
   | { readonly type: 'none-recorded' }
   | { readonly type: 'release'; readonly hireRole: string }
   | { readonly type: 'intake-handoff'; readonly executeRole: string; readonly intakeRole: string };
+/** A source-tool refusal can use the raw message only in a private evidence file. */
+export type ResultRefusal = 'ledger' | 'tool' | 'projected-tool' | 'source-tool';
 export interface ResultProof {
   /** The minimum number of distinct references of each kind. */
   readonly refs: Readonly<Partial<Record<ResultRefKind, number>>>;
-  readonly refusals?: readonly ('ledger' | 'tool' | 'projected-tool')[];
+  readonly refusals?: readonly ResultRefusal[];
   readonly routes?: readonly ResultRoute[];
   readonly projectedRoutes?: readonly ProjectedResultRoute[];
   readonly settlement?: ResultSettlement;

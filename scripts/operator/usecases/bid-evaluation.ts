@@ -302,7 +302,7 @@ const USE_CASE: UseCase = {
     },
     {
       id: 'l1-03', run: 'lifecycle', actor: 'operator', primitive: 'Waiting time of a recovery', what: 'The recovery waits 7 days. The tool refuses to build an earlier completion.',
-      proof: { refs: RESULT_REFS.close, refusals: ['projected-tool'] },
+      proof: { refs: RESULT_REFS.close, refusals: ['source-tool'] },
     },
     {
       id: 'l1-04', run: 'lifecycle', actor: 'operator', primitive: 'Recovery completion', what: 'After the 7 days the wallet completes the recovery. The new controller takes over.',

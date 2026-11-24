@@ -17,9 +17,10 @@ import type { Dirent, Stats } from 'node:fs';
 import { isAbsolute, join, relative, sep } from 'node:path';
 import { writeFileAtomically } from '../../checks/lib/files.ts';
 import { PreconditionError } from '../../checks/lib/session.ts';
-import type { ProjectedResultRoute, ResultProof, ResultsSpec, StepOutcome, TaskDefinition, TaskSession, UseCase } from '../lib/contract.ts';
+import type { ProjectedResultRoute, ResultProof, ResultRefusal, ResultsSpec, StepOutcome, TaskDefinition, TaskSession, UseCase } from '../lib/contract.ts';
 import { codeOf } from '../lib/registry.ts';
-import { MOST_RESULT_REFS, resultRefShape } from '../lib/result-policy.ts';
+import { MOST_RESULT_REFS, RESULT_STEP_ID, indexResultPolicy, resultRefShape } from '../lib/result-policy.ts';
+import type { ResultStepIndex } from '../lib/result-policy.ts';
 import { FlagError, runSteps } from '../lib/runner.ts';
 import { holdsSecret } from '../lib/secrets.ts';
 
@@ -33,7 +34,6 @@ const MOST_RUNS = 16;
 const MOST_NOTE_CHARS = 2000;
 const LABEL = /^[a-z0-9][a-z0-9-]{0,31}$/;
 const PUBLIC_LABEL = /^(\d{4}-\d{2}-\d{2})-([a-z][a-z0-9-]{0,62})-run-[1-9][0-9]?$/;
-const STEP_ID = /^[a-z0-9][a-z0-9-]{0,31}$/;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const HASH = /^[0-9a-f]{64}$/;
 const OUTPUT_REF = /^[0-9a-f]{64}#(?:0|[1-9]\d{0,5})$/;
@@ -71,6 +71,16 @@ export const PAGE_TEXT = {
 export interface Ref { readonly kind: string | null; readonly value: string }
 export interface EvidenceStep { readonly id: string; readonly status: 'shown' | 'not_run'; readonly refs: readonly Ref[]; readonly note: string; readonly complete: boolean }
 export interface PageRun { readonly label: string; readonly kind: string; readonly date: string; readonly steps: ReadonlyMap<string, EvidenceStep> }
+
+type ResultPolicyData = Pick<UseCase, 'results' | 'runs' | 'evidenceSteps'>;
+type EvidenceCase = ResultPolicyData & Pick<UseCase, 'name' | 'agents'>;
+type EvidenceIndex = ResultStepIndex<UseCase['evidenceSteps'][number]>;
+
+function requireResultPolicy(use: ResultPolicyData): EvidenceIndex {
+  const policy = indexResultPolicy(use.results, use.runs, use.evidenceSteps);
+  if (typeof policy === 'string') throw new PreconditionError(`the results policy is not usable: ${policy}`);
+  return policy;
+}
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 
@@ -186,8 +196,21 @@ function projectedRoutesOf(id: string, required: readonly ProjectedResultRoute[]
   return true;
 }
 
-function proofOf(proof: ResultProof | undefined, id: string, refs: readonly Ref[], doc: Record<string, unknown>): boolean {
-  if (proof === undefined) return false;
+function refusalMatches(value: unknown, id: string, rule: ResultRefusal, privateSource: boolean): boolean {
+  if (!isObject(value) || value.step !== id) return false;
+  if (rule === 'ledger') {
+    return value.kind === 'ledger' && typeof value.evaluation_error === 'string' && value.evaluation_error.trim() !== ''
+      && typeof value.transaction_body === 'string' && value.transaction_body !== '';
+  }
+  if (value.kind !== 'tool') return false;
+  if (rule === 'tool') return typeof value.message === 'string' && value.message.trim() !== '';
+  const projected = typeof value.message_sha256 === 'string' && HASH.test(value.message_sha256);
+  if (rule === 'projected-tool') return projected;
+  return Object.keys(value).length === 3 && (projected
+    || (privateSource && typeof value.message === 'string' && value.message.trim() !== ''));
+}
+
+function proofOf(proof: ResultProof, id: string, refs: readonly Ref[], doc: Record<string, unknown>, privateSource: boolean): boolean {
   for (const [kind, count] of Object.entries(proof.refs)) {
     const shape = resultRefShape(kind);
     if (shape === undefined) return false;
@@ -205,12 +228,8 @@ function proofOf(proof: ResultProof | undefined, id: string, refs: readonly Ref[
       && refs.some((one) => one.kind === 'transaction' && one.value === value.slice(0, 64)))) return false;
   if (proof.refusals !== undefined) {
     const refusals: unknown[] = Array.isArray(doc.refusals) ? doc.refusals : [];
-    for (const kind of proof.refusals) {
-      const projected = kind === 'projected-tool';
-      if (!refusals.some((value) => isObject(value) && value.step === id && value.kind === (projected ? 'tool' : kind) && (projected
-        ? typeof value.message_sha256 === 'string' && HASH.test(value.message_sha256)
-        : kind === 'tool' ? typeof value.message === 'string' && value.message.trim() !== ''
-          : typeof value.evaluation_error === 'string' && value.evaluation_error.trim() !== '' && typeof value.transaction_body === 'string' && value.transaction_body !== ''))) return false;
+    for (const rule of proof.refusals) {
+      if (!refusals.some((value) => refusalMatches(value, id, rule, privateSource))) return false;
     }
   }
   if (proof.routes !== undefined) {
@@ -229,11 +248,16 @@ function proofOf(proof: ResultProof | undefined, id: string, refs: readonly Ref[
 }
 
 /** The run of an evidence file. A file that is not the evidence of a run of this use case is a PreconditionError that names the file by its label and the rule that it breaks, never a value. */
-export function parseEvidence(value: unknown, label: string, use: Pick<UseCase, 'name' | 'agents' | 'runs' | 'evidenceSteps' | 'results'>): PageRun {
+export function parseEvidence(value: unknown, label: string, use: EvidenceCase): PageRun {
+  return parseRun(value, label, use, requireResultPolicy(use), false);
+}
+
+function parseRun(value: unknown, label: string, use: EvidenceCase, policy: EvidenceIndex, privateSource: boolean): PageRun {
   const bad = (rule: string): Error => new PreconditionError(`the evidence file ${label} is not usable: ${rule}`);
   if (!isObject(value)) throw bad('it is not a JSON object');
   const { kind, date, steps } = value;
-  if (typeof kind !== 'string' || !use.runs.some((run) => run.id === kind)) throw bad('kind is not the id of a run of the use case');
+  const allowed = typeof kind === 'string' ? policy.get(kind) : undefined;
+  if (typeof kind !== 'string' || allowed === undefined) throw bad('kind is not the id of a run of the use case');
   if (value.run !== `${use.results.runPrefix}-${kind}` || (value.use_case !== undefined && value.use_case !== use.name)) {
     throw bad('run does not name this use case and run kind');
   }
@@ -242,13 +266,12 @@ export function parseEvidence(value: unknown, label: string, use: Pick<UseCase, 
   }
   if (typeof date !== 'string' || !DATE.test(date) || Number.isNaN(Date.parse(date))) throw bad('date is not a date of the form YYYY-MM-DD');
   if (!Array.isArray(steps)) throw bad('steps is not a list');
-  const allowed = new Map(use.evidenceSteps.filter((step) => step.run === kind || step.run === 'both').map((step) => [step.id, step]));
   const parsed = new Map<string, EvidenceStep>();
   steps.forEach((raw: unknown, index) => {
     const where = `steps[${index}]`;
     if (!isObject(raw)) throw bad(`${where} is not an object`);
     const { id, status, refs, note } = raw;
-    if (typeof id !== 'string' || !STEP_ID.test(id)) throw bad(`${where}.id is not a step id`);
+    if (typeof id !== 'string' || !RESULT_STEP_ID.test(id)) throw bad(`${where}.id is not a step id`);
     const step = allowed.get(id);
     if (step === undefined) throw bad(`${where}.id is not a step of a run of this kind`);
     if (parsed.has(id)) throw bad(`${where}.id repeats a step`);
@@ -260,7 +283,7 @@ export function parseEvidence(value: unknown, label: string, use: Pick<UseCase, 
     const text = typeof note === 'string' ? note : '';
     if (holdsSecret(id) || holdsSecret(text) || list.some((ref) => ref !== null && (holdsSecret(ref.value) || holdsSecret(ref.kind)))) throw bad(`${where} holds a mark of a secret`);
     const refs_ = list.filter((ref): ref is Ref => ref !== null);
-    const complete = status === 'shown' && Object.hasOwn(use.results.wording, step.primitive) && proofOf(step.proof, id, refs_, value);
+    const complete = status === 'shown' && proofOf(step.proof, id, refs_, value, privateSource);
     parsed.set(id, { id, status, refs: refs_, note: text, complete });
   });
   if (holdsSecret(label) || holdsSecret(kind) || holdsSecret(date)) throw bad('it holds a mark of a secret');
@@ -279,7 +302,6 @@ function refText(ref: Ref): string {
 
 /** The six cells of the row of a step. Do not apply the step's full summary to partial evidence. */
 function rowOf(step: UseCase['evidenceSteps'][number], found: EvidenceStep | undefined, wording: ResultsSpec['wording']): string[] {
-  if (!Object.hasOwn(wording, step.primitive)) throw new PreconditionError(`the table of shows and does not show has no entry for the primitive of the step ${step.id}`);
   const text = wording[step.primitive]!;
   const head = [step.id, cell(step.what), cell(step.primitive)];
   if (found === undefined) return [...head, PAGE_TEXT.none, `${PAGE_TEXT.notRun} ${PAGE_TEXT.noEntry}`, PAGE_TEXT.wholeStep];
@@ -292,13 +314,25 @@ function rowOf(step: UseCase['evidenceSteps'][number], found: EvidenceStep | und
   return [...head, references, text.shows, text.doesNotShow];
 }
 
+interface ResultsPageInput {
+  readonly header: string;
+  readonly use: ResultPolicyData & Pick<UseCase, 'title' | 'notCovered'>;
+  readonly runs: readonly PageRun[];
+}
+
 /** The page: the header, the title, one table for each run, and the section "Not covered". The header comes first and verbatim. */
-export function renderPage(input: { header: string; use: Pick<UseCase, 'title' | 'evidenceSteps' | 'results' | 'notCovered'>; runs: readonly PageRun[] }): string {
+export function renderPage(input: ResultsPageInput): string {
+  return renderRuns(input, requireResultPolicy(input.use));
+}
+
+function renderRuns(input: ResultsPageInput, policy: EvidenceIndex): string {
   const { lead, items } = input.use.notCovered;
   const body: string[] = [`# ${input.use.title}: ${PAGE_TEXT.results}`, '', PAGE_TEXT.intro, ''];
   for (const run of input.runs) {
+    const rows = policy.get(run.kind);
+    if (rows === undefined) throw new PreconditionError('the results run has no declared policy');
     body.push(`## ${PAGE_TEXT.run} ${run.label}: ${run.kind}, ${run.date}`, '', `| ${PAGE_TEXT.columns.join(' | ')} |`, `|${PAGE_TEXT.columns.map(() => '---').join('|')}|`);
-    for (const step of input.use.evidenceSteps.filter((spec) => spec.run === run.kind || spec.run === 'both')) {
+    for (const step of rows.values()) {
       body.push(`| ${rowOf(step, run.steps.get(step.id), input.use.results.wording).join(' | ')} |`);
     }
     body.push('');
@@ -360,11 +394,14 @@ function listEvidence(stateDir: string, use: Pick<UseCase, 'agents'>): Map<strin
   const found = new Map<string, Found>();
   for (const folder of ['public', 'private'] as const) {
     const dir = folder === 'public' ? join(stateDir, 'evidence') : join(stateDir, 'evidence', 'private');
-    let entries: Dirent[];
-    try { entries = readdirSync(dir, { withFileTypes: true }); } catch (err) {
+    let entries: Dirent[] | undefined;
+    try {
+      if (lstatSync(dir).isDirectory()) entries = readdirSync(dir, { withFileTypes: true });
+    } catch (err) {
       if (codeOf(err) === 'ENOENT') continue;
       throw new PreconditionError(`the ${folder} evidence folder cannot be read (${codeOf(err)})`);
     }
+    if (entries === undefined) throw new PreconditionError(`the ${folder} evidence folder is not a directory: a link is refused`);
     for (const entry of [...entries].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
       if (entry.name.startsWith('.') || !entry.name.endsWith('.json')) continue;
       if (!entry.isFile()) throw new PreconditionError(`a ${folder} evidence file is not a regular file: a link or a folder is refused`);
@@ -388,13 +425,13 @@ function readEvidence(file: Found): unknown {
   }
 }
 
-function loadRuns(files: ReadonlyMap<string, Found>, wanted: readonly string[] | null, use: UseCase): PageRun[] {
+function loadRuns(files: ReadonlyMap<string, Found>, wanted: readonly string[] | null, use: EvidenceCase, policy: EvidenceIndex): PageRun[] {
   const labels = wanted ?? [...files.values()].filter((file) => file.folder === 'public').map((file) => file.label);
   if (labels.length === 0) throw new PreconditionError('there is no public evidence file: run the task evidence first, or name a private label with --runs');
   const runs = labels.map((label) => {
     const file = files.get(label);
     if (file === undefined) throw new PreconditionError(`there is no evidence file for the label ${label}: the evidence folders hold ${[...files.keys()].join(', ') || 'no file'}`);
-    return parseEvidence(readEvidence(file), label, use);
+    return parseRun(readEvidence(file), label, use, policy, file.folder === 'private');
   });
   return wanted === null ? runs.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : a.label < b.label ? -1 : a.label > b.label ? 1 : 0)) : runs;
 }
@@ -415,9 +452,10 @@ const pageFile = (use: Pick<UseCase, 'name'>): string => join('results', `${use.
 async function produce(session: TaskSession<ResultsExtra>): Promise<StepOutcome> {
   const { extra, use } = session;
   if (extra.headerFile === null) throw new FlagError('--header-file is required: the page names the group that the results go to, and that name comes from a text file of the operator');
+  const policy = requireResultPolicy(use);
   const header = readHeader(extra.headerFile, session.settings.keysDir);
-  const runs = loadRuns(listEvidence(session.settings.stateDir, use), extra.runs, use);
-  const page = renderPage({ header, use, runs });
+  const runs = loadRuns(listEvidence(session.settings.stateDir, use), extra.runs, use, policy);
+  const page = renderRuns({ header, use, runs }, policy);
   if (holdsSecret(page)) throw new PreconditionError('the page holds a mark of a secret: it is not shown and not written');
   const bytes = Buffer.byteLength(page, 'utf8');
   const sha256 = createHash('sha256').update(page, 'utf8').digest('hex');

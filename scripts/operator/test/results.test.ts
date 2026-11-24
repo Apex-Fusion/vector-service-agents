@@ -12,7 +12,7 @@ import priorAuthorization from '../usecases/prior-authorization.ts';
 import bidEvaluation from '../usecases/bid-evaluation.ts';
 import { USE_CASE_NAMES } from '../usecases/names.ts';
 import type { UseCase } from '../lib/contract.ts';
-import { resultPolicyProblem } from '../lib/result-policy.ts';
+import { indexResultPolicy } from '../lib/result-policy.ts';
 import { USE_CASE, hashOf, taskWorld } from './support/task-world.ts';
 import type { TaskWorld } from './support/task-world.ts';
 import { KEY_TEXT } from './support/secrets.ts';
@@ -452,9 +452,9 @@ describe('the task results', () => {
         ...['one', 'two', 'three'].map((name) => ({ kind: 'delegation', value: tx(name) })),
         ...Array.from({ length: 6 }, (_, i) => transaction(`child ${i}`)), output('escrow', 'score'),
       ];
-      const check = (routeEvidence: unknown[], log: unknown[], linked = refs) => parseEvidence(doc('clean', '2026-12-01', [
+      const check = (routeEvidence: unknown[], log: unknown[], linked = refs, use = bidEvaluation) => parseEvidence(doc('clean', '2026-12-01', [
         { id: step, status: 'shown', refs: linked },
-      ], { run: 'use-case-3-clean', capability_id: bidEvaluation.agents[0]!.capability, route_evidence: routeEvidence, mock: { log } }), 'bids', bidEvaluation).steps.get(step)!.complete;
+      ], { run: 'use-case-3-clean', capability_id: bidEvaluation.agents[0]!.capability, route_evidence: routeEvidence, mock: { log } }), 'bids', use).steps.get(step)!.complete;
       const log = [event, event, event];
       expect(check([evidence], log)).toBe(true);
       expect(check([evidence], log.slice(1))).toBe(false);
@@ -465,6 +465,18 @@ describe('the task results', () => {
       expect(check([{ ...evidence, count: 2 }], log)).toBe(false);
       expect(check([evidence, evidence], log)).toBe(false);
       expect(check([evidence], log, refs.slice(1))).toBe(false);
+      const other = { ...evidence, route: 'GET /other' };
+      expect(check([other], log)).toBe(false);
+      expect(check([evidence], [event, event, { ...event, route: other.route }])).toBe(false);
+      const repeated = (status: number): UseCase => ({
+        ...bidEvaluation,
+        evidenceSteps: bidEvaluation.evidenceSteps.map((row) => row.id !== step ? row : {
+          ...row, proof: { ...row.proof, projectedRoutes: [...row.proof.projectedRoutes!, [route, 'token', 'allowed', 2, 3, status]] },
+        }),
+      });
+      for (const status of [200, 201]) {
+        expect(() => check([evidence, other], log, refs, repeated(status))).toThrow('repeats a projected results route rule');
+      }
     });
 
     it('describes only the linked record output when no revocation details are present', () => {
@@ -490,6 +502,7 @@ describe('the task results', () => {
       expect(check([start, start], [refused])).toBe(false);
       expect(check([start, finish], [])).toBe(false);
       expect(check([start, finish], [{ step: 'l1-03', kind: 'tool', message }])).toBe(false);
+      expect(check([start, finish], [{ ...refused, message }])).toBe(false);
       expect(check([start, finish], [{ ...refused, step: 'l1-02' }])).toBe(false);
       expect(check([start, finish], [{ ...refused, message_sha256: 'not-a-digest' }])).toBe(false);
       expect(check([start, finish], [refused])).toBe(true);
@@ -581,6 +594,45 @@ describe('the task results', () => {
       expect(privateOnly.world.screen.errorText).toContain('there is no public evidence file');
       expect(existsSync(privateOnly.pagePath)).toBe(false);
       expect(await privateOnly.run(...NO_ARGUMENTS(privateOnly), '--runs', FAILURE, '--submit')).toBe(0);
+    });
+
+    it('uses a raw lifecycle refusal only from a verified private evidence folder', async () => {
+      const rig = await makeRig(bidEvaluation);
+      const label = 'recovery-wait';
+      const raw = 'The tool rejected early completion. Private detail.';
+      const evidence = doc('lifecycle', '2026-12-04', [
+        { id: 'l1-03', status: 'shown', refs: [transaction('recovery start'), transaction('recovery complete')] },
+      ], {
+        run: 'use-case-3-lifecycle', capability_id: bidEvaluation.agents[2]!.capability, audience: 'private',
+        refusals: [{ step: 'l1-03', kind: 'tool', message: raw }],
+      });
+      expect(parseEvidence(evidence, label, bidEvaluation).steps.get('l1-03')?.complete).toBe(false);
+      rig.put('public', label, evidence);
+      expect(await rig.run(...NO_ARGUMENTS(rig), '--runs', label, '--submit')).toBe(0);
+      expect(rowOf(rig.page(), 'l1-03')[4]).toBe(PAGE_TEXT.partialReference);
+      expect(rig.page()).not.toContain(raw);
+      rig.put('private', 'private-wait', evidence);
+      expect(await rig.run(...NO_ARGUMENTS(rig), '--runs', 'private-wait', '--submit')).toBe(0);
+      expect(rowOf(rig.page(), 'l1-03')[4]).toBe(bidEvaluation.results.wording['Waiting time of a recovery']!.shows);
+      expect(rig.page()).not.toContain(raw);
+      expect(rig.world.screen.errorText).not.toContain(raw);
+
+      const prior = await makeRig(priorAuthorization);
+      prior.put('private', label, doc('failure', '2026-12-04', [
+        { id: 'r2-c', status: 'shown', refs: [transaction('hold'), output('hold', 'hold')] },
+      ], {
+        run: 'use-case-2-failure', capability_id: priorAuthorization.agents[0]!.capability,
+        refusals: [{ step: 'r2-c', kind: 'tool', message: raw }],
+      }));
+      expect(await prior.run(...NO_ARGUMENTS(prior), '--runs', label, '--submit')).toBe(0);
+      expect(rowOf(prior.page(), 'r2-c')[4]).toBe(PAGE_TEXT.partialReference);
+
+      const linked = await makeRig(bidEvaluation);
+      linked.put('public', label, evidence);
+      symlinkSync(join(linked.world.stateDir, 'evidence'), join(linked.world.stateDir, 'evidence', 'private'));
+      expect(await linked.run(...NO_ARGUMENTS(linked), '--runs', label, '--submit')).toBe(2);
+      expect(linked.world.screen.errorText).toContain('the private evidence folder is not a directory');
+      expect(existsSync(linked.pagePath)).toBe(false);
     });
 
     it('refuses a list that is no list of labels: an empty item, a label twice, a bad label, an empty value, and too many', async () => {
@@ -819,7 +871,7 @@ describe('the task results', () => {
   describe('the table of what a primitive shows and does not show', () => {
     it('has exactly the primitives of each case, each with two sentences and no dash that is not a hyphen', () => {
       for (const use of USE_CASES) {
-        expect(resultPolicyProblem(use.results, use.evidenceSteps)).toBeNull();
+        expect(indexResultPolicy(use.results, use.runs, use.evidenceSteps), use.name).toBeInstanceOf(Map);
         expect(new Set(Object.keys(use.results.wording))).toEqual(new Set(use.evidenceSteps.map((step) => step.primitive)));
         for (const [primitive, text] of Object.entries(use.results.wording)) {
           expect(text.shows.length, primitive).toBeGreaterThan(20);
@@ -846,16 +898,56 @@ describe('the task results', () => {
       expect(() => parseEvidence(evidence, 'test', data)).toThrow('run does not name this use case and run kind');
     });
 
+    it('does not use a different proof for a step that occurs twice in the same run', async () => {
+      const steps = [{ id: 'r1-02', status: 'shown', refs: [transaction('vault')] }];
+      const evidence = doc('clean', '2026-12-01', steps);
+      const original = data.evidenceSteps.find(({ id }) => id === 'r1-02')!;
+      expect(parseEvidence(evidence, CLEAN, data).steps.get(original.id)?.complete).toBe(false);
+
+      const loose = { ...original, what: 'Check just the transaction.', proof: { refs: { transaction: 1 } } };
+      for (const run of ['clean', 'both'] as const) {
+        const use = { ...data, evidenceSteps: [...data.evidenceSteps, { ...loose, run }] };
+        expect(() => parseEvidence(evidence, CLEAN, use)).toThrow('id applies more than once');
+        const parsed = parseEvidence(evidence, CLEAN, data);
+        expect(() => renderPage({ header: HEADER, use, runs: [parsed] })).toThrow('id applies more than once');
+        const rig = await makeRig(use);
+        rig.put('public', CLEAN, evidence);
+        expect(await rig.run(...NO_ARGUMENTS(rig), '--submit')).toBe(2);
+        expect(rig.world.screen.errorText).toContain('id applies more than once');
+        expect(existsSync(rig.pagePath)).toBe(false);
+      }
+
+      const disjoint: UseCase = { ...data, evidenceSteps: [...data.evidenceSteps, { ...loose, run: 'failure' }] };
+      const clean = parseEvidence(evidence, CLEAN, disjoint);
+      const failure = parseEvidence(doc('failure', '2026-12-01', steps), FAILURE, disjoint);
+      expect(clean.steps.get(original.id)?.complete).toBe(false);
+      expect(failure.steps.get(original.id)?.complete).toBe(true);
+      const page = renderPage({ header: HEADER, use: disjoint, runs: [failure] });
+      expect(page.split('\n').filter((line) => line.startsWith(`| ${original.id} |`))).toHaveLength(1);
+      expect(rowOf(page, original.id)[1]).toBe(loose.what);
+    });
+
+    it('refuses an empty or malformed proof without going through the loader', () => {
+      const evidence = doc('clean', '2026-12-01', [
+        { id: 'r1-02', status: 'shown', refs: [transaction('vault'), output('vault', 'vault')] },
+      ]);
+      expect(parseEvidence(evidence, CLEAN, data).steps.get('r1-02')?.complete).toBe(true);
+      for (const proof of [{ refs: {} }, { refs: { vault: 1, transaction: 0 } }, { refs: {}, audit: 'not public' }]) {
+        const use = { ...data, evidenceSteps: data.evidenceSteps.map((row) => row.id === 'r1-02' ? { ...row, proof } : row) };
+        expect(() => parseEvidence(evidence, CLEAN, use)).toThrow(/^the results policy is not usable: an evidence step/);
+      }
+    });
+
     it('stops a run with exit 2 when a step of the data has a primitive that the table lacks, and passes with the primitive in the table', async () => {
       for (const primitive of ['A primitive that is new', 'constructor']) {
         const added = { id: 'r1-12', run: 'clean' as const, what: 'A step that the table does not know.', primitive, actor: 'agent' as const, proof: { refs: { transaction: 1 } } };
         const enough = cleanDoc({ steps: [...cleanSteps(), { id: added.id, status: 'shown', refs: [transaction('unknown primitive')] }] });
         const incomplete = { ...data, evidenceSteps: [...data.evidenceSteps, added] };
-        expect(parseEvidence(enough, CLEAN, incomplete).steps.get(added.id)?.complete).toBe(false);
+        expect(() => parseEvidence(enough, CLEAN, incomplete)).toThrow('an evidence step has no results wording');
         const rig = await makeRig(incomplete);
         rig.put('public', CLEAN, enough);
         expect(await rig.run(...NO_ARGUMENTS(rig), '--submit')).toBe(2);
-        expect(rig.world.screen.errorText).toContain('no entry for the primitive of the step r1-12');
+        expect(rig.world.screen.errorText).toContain('an evidence step has no results wording');
         expect(existsSync(rig.pagePath)).toBe(false);
       }
       const plain = await makeRig();
