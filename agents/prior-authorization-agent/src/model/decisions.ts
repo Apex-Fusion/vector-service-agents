@@ -52,10 +52,10 @@ const JUSTIFICATION_INSTRUCTION = [
 ].join(' ');
 
 /**
- * The characters that a justification never holds, but the line feed: the control characters, the format characters, the line and paragraph separators, and the variation selectors. It is the rule of
- * the document parser of the kit, so that a text that this parser takes is a text that the request takes.
+ * The characters that a justification never holds, but the line feed: the control characters, the format characters, the lone surrogates, the line and paragraph separators, and the default
+ * ignorable code points (the variation selectors among them). It is the rule of the document parser of the kit, so that a text that this parser takes is a text that the request takes.
  */
-const HIDDEN = /(?!\n)[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\u{fe00}-\u{fe0f}\u{e0100}-\u{e01ef}]/u;
+const HIDDEN = /(?!\n)[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/u;
 
 /** The number of code points of a text. A pair of surrogates is one code point, and a lone surrogate is one code point. */
 function pointsIn(text: string): number {
@@ -65,8 +65,8 @@ function pointsIn(text: string): number {
 }
 
 /**
- * A refusal when the text is not a justification of the shape of the request: 1 to MAX_JUSTIFICATION_CHARS code points, as written and in the NFC form, no control, format, separator or variation
- * selector character but the line feed, and not blank after trim. The text is not changed. The detail names the member and the rule and never repeats the text.
+ * A refusal when the text is not a justification of the shape of the request: 1 to MAX_JUSTIFICATION_CHARS code points, as written and in the NFC form, no control, format, separator, lone surrogate
+ * or default ignorable character but the line feed, and not blank after trim. The text is not changed. The detail names the member and the rule and never repeats the text.
  */
 function checkJustification(value: unknown, field: string): Refused | null {
   if (typeof value !== 'string') return refused('bad_shape', `${field} must be a text`);
@@ -75,7 +75,7 @@ function checkJustification(value: unknown, field: string): Refused | null {
   if (value.length < 1 || value.length > 2 * MAX_JUSTIFICATION_CHARS) return refused('bad_shape', limit);
   const form = value.normalize('NFC');
   if (pointsIn(value) > MAX_JUSTIFICATION_CHARS || pointsIn(form) > MAX_JUSTIFICATION_CHARS) return refused('bad_shape', limit);
-  if (HIDDEN.test(form)) return refused('bad_shape', `${field} must not hold a control, format, separator or variation selector character but the line feed`);
+  if (HIDDEN.test(form)) return refused('bad_shape', `${field} must not hold a control, format, separator, lone surrogate or default ignorable character but the line feed`);
   // A text of white space only says nothing. `trim` removes the space and the line feed, and the other white space that the checks above let through, such as the no-break space.
   if (form.trim() === '') return refused('bad_shape', `${field} must not be blank`);
   return null;
