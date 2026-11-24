@@ -28,7 +28,7 @@ The table gives the design of the record. A value that the registration fixes re
 | Subagents | `record-reader` and `drafter`: each has its own record, with this agent as its parent. Each has its own authentication key and its own delegation key, which are the other four keys of the service. They have no endpoint, and nobody can hire them. `RECORD_READER_DID` and `DRAFTER_DID` name them |
 | Public URL | planned: `https://mp-suppliers-priorauth.vector.apexfusion.org`, the origin of the runtime in the pack. The agent has no advert yet |
 | Reputation stake | a Module-3 self-stake on the capability, owned by the service key |
-| Claim | a Module-1 claim for each run. The design is that an operator command stakes it with the service key before the run. No command of this repository stakes a claim for this agent yet. The service stakes none. See Claim statements |
+| Claim | a Module-1 claim for each run. Before a run of this use case, an operator command stakes one claim with the service key of the agent: 50 units, with a challenge window of 24 hours. After the window, the same command withdraws the claim when nobody challenged it. The service stakes none. See Claim statements |
 
 ## Capability id
 
@@ -487,7 +487,7 @@ The signature is Ed25519 over the canonical JSON of the receipt. The sha256 of t
 
 ## Claim statements
 
-The service stakes no claim, and no code of the service calls the staking of one. No command of this repository stakes a claim for this agent yet. Until one does, a challenge against it ends with `no_open_claim`. The same holds for the Insurer Intake Agent: no command stakes a claim for it, so the challenge of this agent against it (step 9 of `execute`) ends with `no_open_claim` too. The design is that, before a run, an operator command stakes one claim with the service key of the agent: 50 units, with a challenge window of 24 hours. The operator withdraws the claim after the window. A claim has these three statements. The manifest holds them in `behaviour.claim`, with no reference to a claim. A challenge names the text of a statement.
+The service stakes no claim, and no code of the service calls the staking of one. Before a run of this use case, an operator command stakes one claim with the service key of the agent: 50 units, with a challenge window of 24 hours. After the window, the same command withdraws the claim when nobody challenged it. A challenge needs an open claim of the other party. With no open claim, it ends with `no_open_claim`. A claim has these three statements. The manifest holds them in `behaviour.claim`, with no reference to a claim. A challenge names the text of a statement.
 
 | Id | Statement |
 |---|---|
