@@ -32,7 +32,7 @@ describe('bid evidence module', () => {
     expect(bidEvaluation.agentOf('not-a-role')).toEqual([]);
     expect(bidEvaluation.reportOptional).toEqual([]);
     expect(BID_REPORT_SCHEMAS).toEqual({ propose: PROPOSAL_SCHEMA, execute: RESULT_SCHEMA, quote: QUOTE_SCHEMA });
-    expect(bidEvaluation.hosted).toEqual(['vector_marketplace_list_suppliers', 'vector_resolve_did']);
+    expect(bidEvaluation.hosted).toEqual(['vector_resolve_did']);
   });
 
   it.each(['clean', 'failure'] as const)('writes the complete %s run from checked reports and independent reads', async (kind) => {
@@ -45,6 +45,14 @@ describe('bid evidence module', () => {
     expect(got.doc).toMatchObject({ kind, run: `use-case-3-${kind}`, result_projection: { exit_state: kind === 'clean' ? 'Completed' : 'Rejected' } });
     expect(got.doc).not.toHaveProperty('result');
     expect(got.doc).not.toHaveProperty('receipt_signature');
+    expect(got.doc?.model_hires).toHaveLength(kind === 'clean' ? 11 : 37);
+    expect(got.doc?.quotes).toHaveLength(kind === 'clean' ? 3 : 10);
+    for (const model of got.doc?.model_hires as Obj[]) expect(model).toEqual({
+      step: expect.any(String), name: expect.any(String), escrow_ref: expect.stringMatching(/^[0-9a-f]{64}#0$/),
+      advert_ref: expect.stringMatching(/^[0-9a-f]{64}#0$/), accept_tx: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    const mock = got.doc?.mock as { log: Obj[] };
+    expect(mock.log.every((row) => ['act', 'sub', 'proposal_digest', 'path'].every((key) => !Object.hasOwn(row, key)))).toBe(true);
     const text = got.text!;
     for (const phrase of ['Private quote notes.', 'Private quote choice.', 'Private model reasoning.', 'do not publish caller paths', 'watcher']) expect(text).not.toContain(phrase);
     if (kind === 'failure') {
@@ -75,11 +83,34 @@ describe('bid evidence module', () => {
     [{ missingCatalog: true }, 'steps.r1-03'],
     [{ vault: 'other' }, 'steps.r1-04'],
     [{ vault: 'wallet' }, 'steps.r1-04'],
+    [{ vault: 'close-replacement' }, 'vaults[0].close_tx'],
     [{ wrongDesk: true }, 'steps.r1-04'],
+    [{ relationship: 'extra-rank' }, 'steps.r1-04'],
+    [{ relationship: 'wrong-subjob' }, 'steps.r1-04'],
+    [{ model: 'missing-output' }, 'steps.r1-03'],
+    [{ model: 'wrong-output' }, 'steps.r1-03'],
+    [{ model: 'wrong-model' }, 'steps.r1-03'],
+    [{ model: 'wrong-buyer' }, 'steps.r1-03'],
+    [{ model: 'no-accept' }, 'steps.r1-03'],
+    [{ model: 'wrong-spend' }, 'steps.r1-03'],
+    [{ model: 'bad-signature' }, 'steps.r1-03'],
+    [{ model: 'reused' }, 'steps.r1-03'],
     [{ scorer: 'wrong-actor' }, 'steps.r1-05'],
     [{ scorer: 'wrong-parent' }, 'steps.r1-05'],
+    [{ scorer: 'wrong-parent-record' }, 'steps.r1-05'],
+    [{ scorer: 'wrong-delegate-key' }, 'steps.r1-05'],
+    [{ scorer: 'same-delegate-key' }, 'steps.r1-05'],
+    [{ scorer: 'same-did' }, 'steps.r1-05'],
+    [{ model: 'late-confirmed' }, 'steps.r1-05'],
     [{ wrongApproval: true }, 'approvals[0]'],
     [{ wrongRanking: true }, 'steps.r1-07'],
+    [{ correlation: 'wrong-digest' }, 'steps.r1-07'],
+    [{ correlation: 'missing-digest' }, 'steps.r1-07'],
+    [{ correlation: 'after-submit' }, 'steps.r1-07'],
+    [{ correlation: 'before-post' }, 'steps.r1-07'],
+    [{ correlation: 'unauthorized' }, 'steps.r1-07'],
+    [{ correlation: 'dropped' }, 'steps.r1-07'],
+    [{ correlation: 'duplicate' }, 'steps.r1-07'],
     [{ noClose: true }, 'steps.r1-08'],
   ] as const)('stops a clean file without its exact proof: %j', async (options, member) => {
     const got = await bidRun('clean', options);
@@ -97,20 +128,52 @@ describe('bid evidence module', () => {
     [{ compliance: 'after-hold' }, 'r2-b'],
     [{ compliance: 'wrong-contest' }, 'r2-b'],
     [{ compliance: 'wrong-issuer' }, 'r2-b'],
-    [{ listing: 'with-target' }, 'r2-c'],
-    [{ listing: 'outside-hold' }, 'r2-c'],
+    [{ holdProposal: 'with-target' }, 'r2-c'],
+    [{ holdProposal: 'outside-hold' }, 'r2-c'],
+    [{ holdProposal: 'before-apply' }, 'r2-c'],
     [{ absentExecute: true }, 'r2-d'],
     [{ wrongRequestDigest: true }, 'r2-d'],
     [{ wrongApproval: true }, 'r2-d'],
     [{ failureWrite: true }, 'r2-d'],
+    [{ relationship: 'extra-rank' }, 'r2-d'],
+    [{ relationship: 'wrong-subjob' }, 'r2-d'],
+    [{ correlation: 'wrong-digest' }, 'r2-d'],
+    [{ correlation: 'missing-digest' }, 'r2-d'],
+    [{ correlation: 'after-submit' }, 'r2-d'],
+    [{ reverse: 'wrong-score' }, 'r2-d'],
+    [{ reverse: 'wrong-price' }, 'r2-d'],
+    [{ reverse: 'wrong-lead-time' }, 'r2-d'],
+    [{ reverse: 'wrong-reliability' }, 'r2-d'],
+    [{ reverse: 'wrong-compliance' }, 'r2-d'],
     [{ revocation: 'wrong-author' }, 'r2-e'],
+    [{ revocation: 'wrong-configured-key' }, 'r2-e'],
     [{ revocation: 'late-invalid-from' }, 'r2-e'],
     [{ revocation: 'resolver-active' }, 'r2-e'],
+    [{ revocation: 'resolver-other' }, 'r2-e'],
+    [{ revocation: 'resolver-unbound' }, 'r2-e'],
+    [{ revocation: 'resolver-error' }, 'r2-e'],
+    [{ revocation: 'no-tombstone' }, 'r2-e'],
   ] as const)('leaves the unproved failure step out: %j', async (options, id) => {
     const got = await bidRun('failure', options);
     expect(got.exit, got.error).toBe(0);
     expect(steps(got.doc).find((s) => s.id === id)).toMatchObject({ status: 'not_run', refs: [], note: expect.any(String) });
     expect(steps(got.doc).find((s) => s.id === id)?.note).not.toBe('');
+  });
+
+  it.each(['pending', 'identity'] as const)('proves the settled model hires for %s from the exact chain', async (model) => {
+    const got = await bidRun('clean', { model });
+    expect(got.exit, got.error).toBe(0);
+    expect(got.doc?.model_hires).toHaveLength(11);
+    expect(steps(got.doc).every(({ status }) => status === 'shown')).toBe(true);
+  });
+
+  it('does not publish a resolver result for another DID or a synthetic result for an unproved model job', async () => {
+    const wrongDid = await bidRun('failure', { revocation: 'resolver-other' });
+    expect(wrongDid.doc?.resolutions).toEqual([]);
+    const missingModel = await bidRun('failure', { model: 'missing-output' });
+    expect(missingModel.exit, missingModel.error).toBe(0);
+    expect(missingModel.doc?.model_hires).toHaveLength(36);
+    expect(steps(missingModel.doc).find(({ id }) => id === 'r2-a')?.status).toBe('not_run');
   });
 
   it('waits for the case and does not treat a verdict for the claimer as a hold', async () => {

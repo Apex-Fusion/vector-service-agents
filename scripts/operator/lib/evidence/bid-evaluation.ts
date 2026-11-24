@@ -1,26 +1,37 @@
 import { createHash } from 'node:crypto';
+import { closeSync, constants, fstatSync, openSync, readSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   module1FromManifest, readManifest,
   decodeChallengeDatum, decodeClaimDatum, readAttestation, readDocument, documentUri, txHashOfUri,
+  isIdentityEscrow, readCapability, readEscrowOutput, readSubmittedOutput, verifyReceipt,
 } from '../../../../packages/buyer-core/src/index.ts';
 import type { LedgerEnv } from '../../../../packages/buyer-core/src/index.ts';
 import { findConfigRecord } from '../../../../packages/buyer-core/src/vendored/mcp/identity-deployment.ts';
-import { hasRight, RIGHT } from '../../../../packages/buyer-core/src/vendored/mcp/identity-rules.ts';
+import { REDEEMER } from '../../../../packages/buyer-core/src/vendored/mcp/marketplace-constants.ts';
+import { escrowCredentialOf } from '../../../../packages/buyer-core/src/vendored/mcp/marketplace-lineage.ts';
+import { activeKey, hasRight, PURPOSE, RIGHT } from '../../../../packages/buyer-core/src/vendored/mcp/identity-rules.ts';
 import type { KoiosUtxo } from '../../../../packages/buyer-core/src/vendored/mcp/marketplace-indexer.ts';
-import { BID_DESK_CLAIM, QUOTE_SCHEMA, parseQuote, parseRanking, receiptSha256 } from '../../../../packages/usecase-kit/src/bids/index.ts';
+import { BID_DESK_CLAIM, QUOTE_SCHEMA, parseComponents, parseQuote, parseRanking, parseScoreValue, receiptSha256 } from '../../../../packages/usecase-kit/src/bids/index.ts';
 import type { Quote, Ranking } from '../../../../packages/usecase-kit/src/bids/index.ts';
 import { EVIDENCE_STATEMENTS, evidenceReferences, readClaimDocument } from '../../../../packages/usecase-kit/src/dispute/index.ts';
 import { parseProposal, PROPOSAL_SCHEMA, RECEIPT_CHECKS, RESULT_SCHEMA } from '../../../../packages/usecase-kit/src/protocol/index.ts';
-import { decodeAttestationDatum, decodeDelegationDatum, decodeIdentityDatum, decodeVaultDatum, utf8Hex } from '../../../../packages/vector-read/src/identity-codec.ts';
+import { requestSpecHash } from '../../../../packages/vector-read/src/index.ts';
+import { decodeAttestationDatum, decodeDelegationDatum, decodeIdentityDatum, utf8Hex } from '../../../../packages/vector-read/src/identity-codec.ts';
+import { reversedChoice } from '../../../../agents/sourcing-agent/src/scoring/fault.ts';
 import type { DelegationDatum, IdentityDatum } from '../../../../packages/vector-read/src/identity-codec.ts';
 import { PreconditionError } from '../../../checks/lib/session.ts';
 import { readLimited } from '../build-record.ts';
 import { CLAIM_STAKE_LOVELACE, CLAIM_WINDOW_MS, RUN_APPROVAL_VALIDITY_MS } from '../claim-constants.ts';
 import type { AgentSpec, UseCase } from '../contract.ts';
+import { EnvFile } from '../envfile.ts';
+import { MOCK_PUBLIC_BASE } from '../mock-hosts.ts';
 import { canonicalSha256, findRecord, formatOutRef, keyHashOf, koiosUtxoInfo, readAdvert } from '../platform.ts';
+import { publicManifestFile } from '../registry.ts';
 import { scriptTxInfoOf, txInfoOf } from '../run-record.ts';
 import type { RunKind, ScriptTxInfo, TxInfo } from '../run-record.ts';
 import data from '../../usecases/bid-evaluation.ts';
+import { historicalReceiptKey } from './historical-receipt-keys.ts';
 import { isObject, lastHire, ref, txOf } from './types.ts';
 import type {
   ApprovalRead, Assembly, Challenge, EvidenceModule, EvidenceReadSession, HistoricalHoldCandidate, Obj, PublicResultProjection, PublicRouteEvidence, Ref, ReportedHire, Shown, TerminalSpend,
@@ -28,7 +39,6 @@ import type {
 
 export const BID_REPORT_SCHEMAS = { propose: PROPOSAL_SCHEMA, execute: RESULT_SCHEMA, quote: QUOTE_SCHEMA } as const;
 const HIRE_ROLES = ['propose', 'execute', 'quote'] as const;
-const LIST = 'vector_marketplace_list_suppliers';
 const RESOLVE = 'vector_resolve_did';
 const READ_VENDORS = 'GET /vendors';
 const WRITE_RANKING = 'POST /sourcing/rankings';
@@ -43,6 +53,9 @@ const CHALLENGE_TOKEN = /^63686c5f[0-9a-f]{56}$/;
 const BIDDER_STATUSES = ['active', 'suspended', 'revoked', 'retired', 'not_found', 'unreadable'];
 const FACT_STATES = ['valid', 'invalid', 'absent', 'unreadable'];
 const PHASES = { clean: ['propose'], failure: ['propose-a', 'propose-b', 'propose-c', 'propose-d'] } as const;
+const MODEL_CAPABILITY = 'llm.text.generate.v1';
+const MODEL_DECISIONS = { propose: ['shortlist', 'accept_quote', 'score', 'ranking'], quote: ['quote'], execute: [] } as const;
+const MAX_MODEL_HIRES = PHASES.failure.length * (2 + 3 * 3);
 
 type Proof<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly why: string };
 const proved = <T>(value: T): Proof<T> => ({ ok: true, value });
@@ -69,7 +82,7 @@ interface Proposal {
   readonly digest: string;
   readonly bidders: readonly Candidate[];
   readonly invites: readonly string[];
-  readonly shortlist: string | null;
+  readonly shortlist: Obj | undefined;
 }
 interface CheckedQuote {
   readonly hire: ReportedHire;
@@ -87,6 +100,7 @@ interface Authority {
   readonly vault: Assembly['reads']['vaults'][number];
   readonly vaultRoot: string;
   readonly principal: DelegationDatum['delegator'];
+  readonly delegateKey: string;
   readonly sourcing: string;
 }
 interface ComplianceRead {
@@ -95,8 +109,18 @@ interface ComplianceRead {
 }
 interface RevocationRead {
   readonly tx: string; readonly record_output: string; readonly spent_output: string; readonly reason: number; readonly author: string;
-  readonly invalid_from: number; readonly at: number;
+  readonly invalid_from: number; readonly at: number; readonly did: string;
 }
+interface ModelHire {
+  readonly step: string; readonly name: string; readonly escrow_ref: string; readonly accept_tx: string;
+  readonly advert_ref: string; readonly postedAt: number; readonly submittedAt: number;
+}
+type Models = ReadonlyMap<Obj, Proof<ModelHire>>;
+type KeyNames = (name: string) => string | undefined;
+interface ScorerRead {
+  readonly id: string; readonly did: string; readonly record: string; readonly delegateKey: string; readonly registeredAt: number;
+}
+interface BidHold { readonly candidate: HistoricalHoldCandidate; readonly appliedAt: number }
 interface BidReads {
   readonly proposals: ReadonlyMap<string, Proof<Proposal>>;
   readonly orderedRfqs: boolean;
@@ -105,10 +129,12 @@ interface BidReads {
   readonly scores: ReadonlyMap<string, Proof<readonly Ref[]>>;
   readonly challenge: Proof<CheckedQuote>;
   readonly release: Proof<TerminalSpend>;
-  readonly hold: Proof<HistoricalHoldCandidate | null>;
+  readonly hold: Proof<BidHold | null>;
   readonly bidderEvidence: Proof<readonly Ref[]>;
+  readonly executionLog: Proof<readonly Obj[]>;
   readonly compliance: Proof<ComplianceRead>;
-  readonly listing: Proof<true>;
+  readonly models: Models;
+  readonly submissions: ReadonlyMap<string, number>;
   readonly revocation: Proof<RevocationRead>;
 }
 
@@ -145,11 +171,29 @@ function same(a: unknown, b: unknown): boolean {
 function verified(row: unknown): boolean {
   return isObject(row) && RECEIPT_CHECKS.every((name) => row[name] === true);
 }
-function modelRef(decision: Obj | undefined): string | null {
-  const inference = decision?.inference;
+function modelJob(decision: Obj) {
+  const inference = decision.inference;
   const job = isObject(inference) ? inference.sub_job : null;
-  return isObject(inference) && inference.path === 'marketplace' && (inference.accepted === 'confirmed' || inference.accepted === 'pending')
-    && isObject(job) && verified(job.verification) && typeof job.escrow_ref === 'string' && REF.test(job.escrow_ref) ? job.escrow_ref : null;
+  if (!isObject(inference) || inference.path !== 'marketplace' || (inference.accepted !== 'confirmed' && inference.accepted !== 'pending')
+    || !isObject(job) || job.capability_id !== MODEL_CAPABILITY || !verified(job.verification)
+    || typeof job.escrow_ref !== 'string' || !REF.test(job.escrow_ref) || typeof job.advert_ref !== 'string' || !REF.test(job.advert_ref)
+    || typeof job.supplier_pkh !== 'string' || !POLICY.test(job.supplier_pkh) || !isObject(job.receipt)
+    || typeof job.receipt.response_hash !== 'string' || !HASH.test(job.receipt.response_hash)
+    || typeof job.receipt_signature !== 'string' || !/^[0-9a-f]{128}$/.test(job.receipt_signature)) return null;
+  return { escrow: job.escrow_ref, advert: job.advert_ref, supplier: job.supplier_pkh, receipt: job.receipt, signature: job.receipt_signature, acceptance: inference.accepted };
+}
+
+function checkedModel(models: Models, decision: Obj | undefined): ModelHire {
+  const model = decision && models.get(decision);
+  need(model, 'model hire: the signed decision has no independently checked job');
+  need(model.ok, model.ok ? '' : model.why);
+  return model.value;
+}
+
+function cached<T>(cache: Map<string, Promise<T>>, key: string, read: (key: string) => Promise<T>): Promise<T> {
+  const held = cache.get(key) ?? read(key);
+  cache.set(key, held);
+  return held;
 }
 function at(a: Assembly, tx: string): number | undefined { return a.times.get(tx); }
 
@@ -176,6 +220,94 @@ function hasSpend(info: ScriptTxInfo, hash: string, input: string, action: numbe
     && single(info.spends, (one) => one.script === hash && one.input === input && one.valid && one.action === action && same(one.fields, fields)) !== undefined;
 }
 
+/** Use the indexer to locate outputs, not to prove their state or spend. */
+async function modelLineage(s: EvidenceReadSession, escrow: string): Promise<{ submission: string; accept: string }> {
+  const response = await s.fetchImpl(`${s.extra.indexer}/escrows/${encodeURIComponent(escrow)}/lineage`, {
+    headers: { accept: 'application/json' }, redirect: 'error', signal: AbortSignal.timeout(10_000),
+  });
+  need(response.status === 200, 'model hire: no lineage for the named escrow');
+  const bytes = await readLimited(response, 512 * 1024);
+  need(bytes, 'model hire: the lineage response exceeds its read limit');
+  const body: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+  need(isObject(body) && body.original_ref === escrow && Array.isArray(body.rows), 'model hire: the lineage does not identify this escrow');
+  const row = single<unknown>(body.rows, (one) => isObject(one) && one.state === 'Submitted');
+  const { terminal } = body;
+  need(isObject(row) && typeof row.utxo_ref === 'string' && REF.test(row.utxo_ref) && isObject(terminal) && terminal.type === 'AcceptEscrow'
+    && typeof terminal.tx_hash === 'string' && HASH.test(terminal.tx_hash), 'model hire: the lineage does not locate one Submitted output and an Accept');
+  return { submission: row.utxo_ref, accept: terminal.tx_hash };
+}
+
+async function readModels(s: EvidenceReadSession, a: Assembly, submissions: ReadonlyMap<string, number>, manifest: (h: ReportedHire) => Promise<Obj>): Promise<Models> {
+  const rows = a.loaded.hires.flatMap((hire) => {
+    if (hire.report === null) return [];
+    const names: readonly string[] = MODEL_DECISIONS[hire.role as keyof typeof MODEL_DECISIONS] ?? [];
+    return hire.decisions.flatMap((decision) => typeof decision.name === 'string' && names.includes(decision.name)
+      ? [{ hire, decision, name: decision.name, job: modelJob(decision) }] : []);
+  });
+  need(rows.length <= MAX_MODEL_HIRES, 'model hires exceed the run limit');
+  const uses = new Map<string, number>();
+  for (const { job } of rows) if (job) uses.set(job.escrow, (uses.get(job.escrow) ?? 0) + 1);
+  const adverts = new Map<string, Promise<Awaited<ReturnType<typeof readAdvert>>>>();
+  const capabilities = new Map<string, Promise<Awaited<ReturnType<typeof readCapability>>>>();
+  const results = new Map<Obj, Proof<ModelHire>>();
+  const { koiosUrl, fetchImpl, deployment } = s.chain;
+  for (let start = 0; start < rows.length; start += 4) {
+    await Promise.all(rows.slice(start, start + 4).map(async ({ hire, decision, name, job }) => {
+      const checked = await proof('model hire', async (): Promise<ModelHire> => {
+        need(job && uses.get(job.escrow) === 1, 'model hire: each signed decision needs its own well-formed escrow reference');
+        const parentPost = at(a, hire.entry.post_tx);
+        const parentSubmit = submissions.get(hire.entry.escrow_ref);
+        need(parentPost !== undefined && parentSubmit !== undefined, 'model hire: the parent Post and Submit are unproven');
+        const [keys, advert, posted, post] = await Promise.all([
+          manifest(hire),
+          cached(adverts, job.advert, (r) => readAdvert(r, fetchImpl, koiosUrl, deployment.advert.address)),
+          readEscrowOutput(koiosUrl, job.escrow, fetchImpl, deployment),
+          scripts(s, txOf(job.escrow)),
+        ]);
+        const datum = posted.datum;
+        const identity = isIdentityEscrow(datum);
+        const layout = identity ? 'identity' : 'legacy';
+        const site = escrowCredentialOf(layout, deployment);
+        need(!('error' in advert) && advert.layout === layout && advert.advert.status === 'Active'
+          && advert.advert.capability_id === MODEL_CAPABILITY && advert.advert.supplier_pkh === job.supplier && advert.advert.model === job.receipt.model
+          && (!identity || advert.agentId === datum.agent_id), 'model hire: the exact advert does not name the model, capability and supplier');
+        need(posted.spent && datum.state === 'Open' && formatOutRef(datum.advert_ref.txHash, datum.advert_ref.index) === job.advert
+          && datum.capability_id === MODEL_CAPABILITY && datum.supplier_pkh === job.supplier && datum.request_spec_hash === requestSpecHash(advert.advert)
+          && datum.buyer_pkh === keys.service_pkh && post.inputs.some((input) => input.credential === datum.buyer_pkh)
+          && post.outputs.some((output) => output.ref === job.escrow && output.credential === site)
+          && post.timeMs >= parentPost && post.timeMs <= parentSubmit, 'model hire: the Post does not create the exact escrow for this agent and job');
+        const { submission, accept } = await modelLineage(s, job.escrow);
+        const [submitted, submit, end] = await Promise.all([
+          readSubmittedOutput(koiosUrl, { ref: job.escrow, ...posted, layout }, submission, fetchImpl, deployment),
+          scripts(s, txOf(submission)), scripts(s, accept),
+        ]);
+        const claimed = single(submit.inputs, (one) => one.credential === site && one.ref !== job.escrow);
+        need(claimed && submitted.spent && hasSpend(submit, site, claimed.ref, REDEEMER.Submit, [{ bytes: submitted.receiptHash }])
+          && submit.outputs.some((output) => output.ref === submission && output.credential === site)
+          && hasSpend(end, site, submission, REDEEMER.Accept, []) && end.timeMs >= submit.timeMs
+          && (job.acceptance === 'pending' || end.timeMs <= parentSubmit)
+          && submit.timeMs >= post.timeMs && submit.timeMs <= parentSubmit, 'model hire: no confirmed Submit and Accept of this exact escrow');
+        const claim = await scripts(s, txOf(claimed.ref));
+        need(hasSpend(claim, site, job.escrow, REDEEMER.Claim, []) && claim.outputs.some((out) => out.ref === claimed.ref && out.credential === site)
+          && claim.timeMs >= post.timeMs && claim.timeMs <= submit.timeMs, 'model hire: no Claim connects this Post and Submit');
+        const signer = identity
+          ? (await historicalReceiptKey(envOf(s), { ref: submission, receiptHash: submitted.receiptHash, agentId: datum.agent_id, supplierPkh: job.supplier })).publicKeyHex
+          : (await cached(capabilities, advert.advert.endpoint_url, (endpoint) => readCapability(endpoint, s.fetchImpl))).pub_key_hex;
+        const { checks } = verifyReceipt({ receipt: job.receipt, signature: job.signature, escrowRef: job.escrow,
+          supplierPubKeyHex: signer, escrowSupplierPkh: job.supplier, escrowPromptHash: datum.prompt_hash,
+          escrowAgentId: identity ? datum.agent_id : null, resultReceiptHashOnChain: submitted.receiptHash });
+        // The parent signs the model choice. It does not carry the original fleet response text.
+        need(Object.entries(checks).every(([check, value]) => check === 'response_hash_matches' || value.state === 'pass'),
+          'model hire: the supplier signature or on-chain receipt commitment is wrong');
+        await Promise.all([job.advert, claimed.ref, submission, accept].map((r) => confirmed(s, txOf(r), 'model hire')));
+        return { step: hire.entry.step, name, escrow_ref: job.escrow, advert_ref: job.advert, accept_tx: accept, postedAt: post.timeMs, submittedAt: submit.timeMs };
+      });
+      results.set(decision, checked);
+    }));
+  }
+  return results;
+}
+
 /** Use the original mint output, including after an undelegation burned its token. */
 async function mintedDelegation(s: EvidenceReadSession, tx: string, id: string): Promise<DelegationDatum> {
   const site = s.chain.deployment.delegation;
@@ -193,19 +325,13 @@ async function readAuthority(s: EvidenceReadSession, a: Assembly): Promise<Autho
   const buyer = sourcing(a.use);
   const did = buyer === undefined ? undefined : didOf(a, buyer.id);
   need(did && delegation && vault && otherDelegations.length === 0 && otherVaults.length === 0, 'the run needs one Sourcing Agent, one root delegation and one vault');
-  let vaultRoot = vault.ref;
-  for (let i = 0; txOf(vaultRoot) !== vault.open_tx && i < 32; i += 1) {
-    const parent = single((await txInfo(s, txOf(vaultRoot))).inputs, (input) => input.credential === s.chain.deployment.vault.hash);
-    need(parent && REF.test(parent.ref), 'the original run vault reference is not proven');
-    vaultRoot = parent.ref;
-  }
-  need(txOf(vaultRoot) === vault.open_tx, 'the original run vault reference is not proven');
-  const [root, origin] = await Promise.all([mintedDelegation(s, delegation.tx, delegation.id), rowOf(s, vaultRoot)]);
+  const { lineage } = vault;
+  const root = await mintedDelegation(s, delegation.tx, delegation.id);
   need(root.delegate === did.slice(11) && root.parent === null && root.depth === 1 && root.actions.includes(utf8Hex('vendor.read'))
     && root.actions.includes(utf8Hex('sourcing.award.write')) && root.actions.includes(utf8Hex('marketplace.hire.v1')), 'the delegation does not authorize this Sourcing Agent and its required actions');
-  const held = decodeVaultDatum(origin.inline_datum?.bytes ?? '');
-  need(origin.address === s.chain.deployment.vault.address && held.type === 'Live' && held.delegation === delegation.id && same(held.owner, root.delegator), 'the run vault has a different owner or delegation');
-  return { delegation, vault, vaultRoot, principal: root.delegator, sourcing: did };
+  need(lineage.openTx === vault.open_tx && lineage.delegation === delegation.id && same(lineage.owner, root.delegator),
+    'the run vault has a different opening, owner or delegation');
+  return { delegation, vault, vaultRoot: lineage.rootRef, principal: root.delegator, delegateKey: root.delegateKey, sourcing: did };
 }
 
 function candidateOf(a: Assembly, row: unknown): Candidate {
@@ -228,8 +354,8 @@ function proposalOf(a: Assembly, hire: ReportedHire): Proposal {
   need(Array.isArray(result.bidders) && result.bidders.length > 0 && result.bidders.length <= desks(a.use).length, 'bidders: the result has no complete bidder files');
   const bidders = result.bidders.map((row: unknown) => candidateOf(a, row));
   const known = new Set(bidders.map(({ did }) => did));
-  const ranked = [...ranking.value.ranked, ...ranking.value.excluded];
-  need(known.size === bidders.length && ranked.length === known.size && ranked.every(({ desk_did }) => known.has(desk_did)), 'bidders: the ranking does not cover these desks once each');
+  const ranked = new Set([...ranking.value.ranked, ...ranking.value.excluded].map(({ desk_did }) => desk_did));
+  need(known.size === bidders.length && ranked.size === known.size && [...ranked].every((did) => known.has(did)), 'bidders: the ranking does not cover these desks once each');
   const decision = single(hire.decisions, (one) => one.name === 'shortlist');
   const choice = decision?.choice;
   need(isObject(choice) && Array.isArray(choice.invite) && Array.isArray(choice.not_invited), 'shortlist: the signed shortlist decision is missing');
@@ -239,27 +365,22 @@ function proposalOf(a: Assembly, hire: ReportedHire): Proposal {
   const omitted = choice.not_invited.map((row: unknown) => isObject(row) ? row.did : null);
   need(omitted.length + invites.length === known.size && new Set([...invites, ...omitted]).size === known.size
     && omitted.every((did: unknown) => typeof did === 'string' && known.has(did)), 'shortlist: the decision does not account for each desk');
-  return { hire, ranking: ranking.value, digest: p.value.proposal_digest, bidders, invites, shortlist: modelRef(decision) };
+  return { hire, ranking: ranking.value, digest: p.value.proposal_digest, bidders, invites, shortlist: decision };
 }
 
-/** Anchor the Pay input to this run's original vault, not to any vault of the same delegation. */
-async function fromRunVault(s: EvidenceReadSession, a: Assembly, hire: ReportedHire, authority: Authority, cache: Map<string, Promise<TxInfo>>): Promise<string> {
+/** The exact Pay edge must be on the same path proven by the core for this run. */
+async function fromRunVault(s: EvidenceReadSession, a: Assembly, hire: ReportedHire, authority: Authority): Promise<string> {
   const payment = await a.paidFromVault(hire.entry);
   need(payment.paid && payment.delegation === authority.delegation.id && REF.test(payment.vault_ref), 'quotes: the ledger proves no Pay from the run delegation');
-  let current = payment.vault_ref;
-  const seen = new Set<string>();
-  for (let i = 0; i < 32; i += 1) {
-    if (current === authority.vaultRoot) return payment.vault_ref;
-    if (seen.has(current)) break;
-    seen.add(current);
-    const hash = txOf(current);
-    const read = cache.get(hash) ?? txInfo(s, hash);
-    cache.set(hash, read);
-    const parents = (await read).inputs.filter((one) => one.credential === s.chain.deployment.vault.hash);
-    if (parents.length !== 1 || !REF.test(parents[0]!.ref)) break;
-    current = parents[0]!.ref;
-  }
-  throw new BidProofError('quotes: the paid vault is not in the lineage of this run vault');
+  const { path } = authority.vault.lineage;
+  const index = path.indexOf(payment.vault_ref);
+  const next = index < 0 ? undefined : path[index + 1];
+  need(next !== undefined && txOf(next) === hire.entry.post_tx, 'quotes: the Pay is not the next continuation of this run vault');
+  const post = await scripts(s, hire.entry.post_tx);
+  const created = single(post.outputs, ({ credential }) => credential === s.chain.deployment.escrow.hash);
+  need(created?.ref === hire.entry.escrow_ref && created.address === s.chain.deployment.escrow.address,
+    'quotes: the Pay does not fund a sole escrow for this quote');
+  return payment.vault_ref;
 }
 
 function quoteChallenge(value: unknown, agent: string): Challenge | null {
@@ -268,16 +389,17 @@ function quoteChallenge(value: unknown, agent: string): Challenge | null {
   return { agent, claim: value.claim, evidence: value.evidence, challenge: value.challenge };
 }
 
-async function readQuotes(s: EvidenceReadSession, a: Assembly, p: Proposal, authority: Authority, cache: Map<string, Promise<TxInfo>>): Promise<readonly CheckedQuote[]> {
+async function readQuotes(s: EvidenceReadSession, a: Assembly, p: Proposal, authority: Authority, models: Models, submissions: ReadonlyMap<string, number>): Promise<readonly CheckedQuote[]> {
   const { result } = p.hire;
   const phase = p.hire.entry.step;
   const jobs: unknown[] = Array.isArray(result.sub_jobs) ? result.sub_jobs : [];
   const rows: unknown[] = Array.isArray(result.quotes) ? result.quotes : [];
   const decisions = p.hire.decisions.filter((one) => one.name === 'accept_quote');
-  need(rows.length === p.invites.length && rows.length === decisions.length && rows.length > 0 && p.shortlist !== null, 'quotes: each invitation must have its own quote and accept_quote decision');
+  need(rows.length === p.invites.length && rows.length === decisions.length && rows.length > 0, 'quotes: each invitation must have its own quote and accept_quote decision');
+  const shortlist = checkedModel(models, p.shortlist);
   const parentPost = at(a, p.hire.entry.post_tx);
   const parentEnd = p.hire.entry.accept_tx === null ? undefined : at(a, p.hire.entry.accept_tx);
-  let lastAt = parentPost;
+  let lastAt = Math.max(parentPost ?? Infinity, shortlist.submittedAt);
   const quotes: CheckedQuote[] = [];
   for (const [i, row] of rows.entries()) {
     const hire = named(a, quoteAt(phase, i));
@@ -286,7 +408,7 @@ async function readQuotes(s: EvidenceReadSession, a: Assembly, p: Proposal, auth
       && isObject(row) && row.desk_did === desk.did && row.advert_ref === desk.advert && row.escrow_ref === hire.entry.escrow_ref
       && row.paid_from_vault === true && verified(row.verification), 'quotes: a quote report is not linked to its invited desk and escrow');
     const posted = at(a, hire.entry.post_tx);
-    need(posted !== undefined && lastAt !== undefined && posted > lastAt && parentEnd !== undefined && posted < parentEnd, 'quotes: the post order within the proposal is not proven');
+    need(posted !== undefined && posted >= lastAt && parentEnd !== undefined && posted < parentEnd, 'quotes: the post order within the proposal is not proven');
     const parsed = parseQuote(hire.result);
     const signed = receiptSha256(hire.report.receipt, hire.report.receipt_signature);
     const nested = receiptSha256(row.receipt, row.receipt_signature);
@@ -295,17 +417,19 @@ async function readQuotes(s: EvidenceReadSession, a: Assembly, p: Proposal, auth
       && parsed.value.rfq_sha256 === p.ranking.rfq_sha256 && parsed.value.desk_did === desk.did && parsed.value.sender.did === authority.sourcing
       && parsed.value.fault_mode === fault, 'quotes: the signed result, receipt, sender, request or fault does not match the proposal');
     const choice = decisions[i]?.choice;
-    const judge = modelRef(decisions[i]);
-    const writer = modelRef(single(hire.decisions, (one) => one.name === 'quote'));
+    const judge = checkedModel(models, decisions[i]);
+    const writer = checkedModel(models, single(hire.decisions, (one) => one.name === 'quote'));
     const challenge = quoteChallenge(row.challenge, desk.agent.id);
     const accepted = a.terminals.get(hire.entry.escrow_ref) ?? null;
     const rank = p.ranking.ranked.find(({ desk_did }) => desk_did === desk.did);
     const excluded = p.ranking.excluded.find(({ desk_did }) => desk_did === desk.did);
-    need(judge && writer && isObject(choice) && Array.isArray(choice.mismatch), 'quotes: the quote or accept_quote model decision is unproven');
+    const quoteSubmit = submissions.get(hire.entry.escrow_ref);
+    need(quoteSubmit !== undefined && judge.postedAt >= quoteSubmit && isObject(choice) && Array.isArray(choice.mismatch),
+      'quotes: the checked accept_quote model job does not follow the signed quote');
     if (rank) {
       const sub = single(jobs, (one): boolean => isObject(one) && one.escrow_ref === hire.entry.escrow_ref);
       const subHash = isObject(sub) ? receiptSha256(sub.receipt, sub.receipt_signature) : null;
-      need(accepted?.action === 'Accept' && accepted.tx === hire.entry.accept_tx && accepted.at >= posted && accepted.at <= parentEnd
+      need(accepted?.action === 'Accept' && accepted.tx === hire.entry.accept_tx && accepted.at >= judge.submittedAt && accepted.at <= parentEnd
         && (row.accepted === 'confirmed' || row.accepted === 'pending') && row.challenge === null && choice.accept === true && choice.mismatch.length === 0
         && rank.quote.escrow_ref === hire.entry.escrow_ref && rank.quote.receipt_sha256 === signed.value && rank.quote.total === parsed.value.total
         && rank.quote.lead_time_days === parsed.value.lead_time_days && isObject(sub) && sub.advert_ref === desk.advert && sub.capability_id === desk.agent.capability
@@ -316,12 +440,16 @@ async function readQuotes(s: EvidenceReadSession, a: Assembly, p: Proposal, auth
       need(fault === QUOTE_FAULT && excluded?.reason === 'disputed' && excluded.code === null && challenge && row.accepted === 'no' && accepted === null
         && choice.accept === false && choice.mismatch.length > 0 && choice.mismatch.every((sku) => parsed.value.lines.some((line) => line.sku === sku)),
       'quotes: the excluded quote does not show a model refusal and a challenge of this desk');
-      lastAt = posted;
+      lastAt = judge.submittedAt;
     }
-    const vault = await fromRunVault(s, a, hire, authority, cache);
-    quotes.push({ hire, desk, result: parsed.value, receiptHash: signed.value, quoteDecision: writer, acceptDecision: judge, accept: accepted, vault, challenge });
+    const vault = await fromRunVault(s, a, hire, authority);
+    quotes.push({ hire, desk, result: parsed.value, receiptHash: signed.value, quoteDecision: writer.escrow_ref, acceptDecision: judge.escrow_ref, accept: accepted, vault, challenge });
   }
-  need(jobs.length === p.ranking.ranked.length, 'quotes: sub_jobs do not match the ranked quotes');
+  const accepted = quotes.filter((q) => q.accept !== null);
+  const ranked = p.ranking.ranked;
+  need(accepted.length === ranked.length && jobs.length === accepted.length && accepted.every((q) =>
+    ranked.some(({ desk_did, quote }) => desk_did === q.desk.did && quote.escrow_ref === q.hire.entry.escrow_ref)),
+  'quotes: ranked DIDs, accepted quote hires and sub_jobs must identify the same escrows');
   return quotes;
 }
 
@@ -336,43 +464,87 @@ function logActor(line: Obj, authority: Authority, actors: readonly string[], de
 
 function logAt(line: Obj, start: number, end: number): boolean {
   const time = typeof line.at === 'string' ? Date.parse(line.at) : Number.NaN;
-  return time >= start && time <= end + 999; // Koios block time is in seconds.
+  return time >= start && time <= end;
 }
 
-async function readScores(s: EvidenceReadSession, a: Assembly, p: Proposal, quotes: readonly CheckedQuote[], auth: Authority): Promise<readonly Ref[]> {
+async function readScorers(s: EvidenceReadSession, a: Assembly, auth: Authority, publicKey: KeyNames): Promise<readonly ScorerRead[]> {
+  const agent = sourcing(a.use);
+  const identity = s.chain.deployment.identity;
+  const roster = a.use.subagents.filter(({ parent }) => parent === agent?.id);
+  const parent = await findRecord(s.chain.provider, s.chain.deployment, auth.sourcing.slice(11));
+  need(roster.length === 3 && parent && parent.record.lineage.type === 'Root' && parent.record.status.type === 'Active'
+    && activeKey(parent.record, auth.delegateKey, PURPOSE.delegation), 'scores: the configured Sourcing parent and its delegation key are unproven');
+  const seen = new Set<string>([auth.sourcing, formatOutRef(parent.utxo.txHash, parent.utxo.outputIndex), auth.delegateKey]);
+  const found: ScorerRead[] = [];
+  for (const scorer of roster) {
+    const did = didOf(a, scorer.id);
+    const delegated = single(scorer.keys, ({ purposes }) => purposes.includes('delegation'));
+    const token = single(scorer.keys, ({ purposes }) => purposes.includes('authentication'));
+    const delegateKey = delegated && publicKey(delegated.key);
+    const authKey = token && publicKey(token.key);
+    need(did && delegateKey && authKey && delegateKey !== authKey, 'scores: a scorer has no distinct configured DID and keys');
+    const record = await findRecord(s.chain.provider, s.chain.deployment, did.slice(11));
+    const reference = record && formatOutRef(record.utxo.txHash, record.utxo.outputIndex);
+    const datum = record?.record;
+    need(reference && datum && reference === a.facts.records[scorer.id]?.recordRef && datum.status.type === 'Active'
+      && datum.lineage.type === 'Subagent' && datum.lineage.parent === auth.sourcing.slice(11)
+      && datum.lineage.parentEpoch === parent.record.subagentEpoch && datum.lineage.depth === 1
+      && activeKey(datum, delegateKey, PURPOSE.delegation) && activeKey(datum, authKey, PURPOSE.authentication),
+    'scores: the token-backed scorer record does not bind the configured parent and keys');
+    const ids = [did, reference, delegateKey, authKey];
+    need(ids.every((one) => !seen.has(one)), 'scores: the scorer DIDs, records and keys must be distinct');
+    for (const one of ids) seen.add(one);
+    const hash = txOf(reference);
+    const [made, archived] = await Promise.all([scripts(s, hash), rowOf(s, reference)]);
+    need(archived.is_spent === false && tokenAt(archived, identity, did.slice(11))
+      && same(decodeIdentityDatum(archived.inline_datum?.bytes ?? ''), datum)
+      && made.outputs.some((one) => one.ref === reference && one.credential === identity.hash)
+      && made.minted.some((one) => one.policy === identity.hash && one.name === did.slice(11) && one.quantity === 1n),
+    'scores: the exact registered scorer record is not proven');
+    await confirmed(s, hash, 'scorer record');
+    found.push({ id: scorer.id, did, record: reference, delegateKey, registeredAt: made.timeMs });
+  }
+  return found;
+}
+
+async function readScores(s: EvidenceReadSession, a: Assembly, p: Proposal, quotes: readonly CheckedQuote[], auth: Authority, roster: readonly ScorerRead[], models: Models): Promise<readonly Ref[]> {
   const answers = quotes.filter((q) => q.accept !== null);
-  const scorers = a.use.subagents.filter(({ parent }) => parent === p.hire.entry.agent).slice(0, answers.length);
+  const scorers = roster.slice(0, answers.length);
   const children = a.reads.subDelegations.filter(({ hire }) => hire === p.hire.entry.step);
   const decisions = p.hire.decisions.filter((one) => one.name === 'score');
   const start = at(a, p.hire.entry.post_tx);
   const end = p.hire.entry.accept_tx === null ? undefined : at(a, p.hire.entry.accept_tx);
   const ranked = single(p.hire.decisions, (one) => one.name === 'ranking');
-  const rankRef = modelRef(ranked);
+  const rank = checkedModel(models, ranked);
   const rankChoice = ranked?.choice;
   need(start !== undefined && end !== undefined && answers.length === scorers.length && children.length === scorers.length
-    && decisions.length === scorers.length && ranked && rankRef && isObject(rankChoice) && same(rankChoice.order, p.ranking.ranked.map((one) => one.desk_did)),
+    && decisions.length === scorers.length && isObject(rankChoice) && same(rankChoice.order, p.ranking.ranked.map((one) => one.desk_did)),
   'scores: the proposal needs one checked score and sub-delegation per accepted quote and its ranking decision');
-  const out: Ref[] = [ref('escrow', rankRef)];
+  const out: Ref[] = [ref('escrow', rank.escrow_ref)];
   for (const [i, scorer] of scorers.entries()) {
     const child = single(children, ({ subagent }) => subagent === scorer.id);
-    const scorerDid = didOf(a, scorer.id);
     const score = decisions[i];
-    const scoreRef = modelRef(score);
+    const model = checkedModel(models, score);
     const rankedBid = p.ranking.ranked.find((one) => one.desk_did === answers[i]!.desk.did);
-    const inverted = p.hire.result.fault_mode === RANK_FAULT && i === 0;
-    need(child && scorerDid && scoreRef && isObject(score?.choice) && rankedBid
-      && (inverted || (score.choice.score === rankedBid.score && same(score.choice.components, rankedBid.components))),
-    'scores: a scorer, quote, model decision or sub-delegation does not match the ranking');
-    const [datum, delegated, ended, made] = await Promise.all([
-      mintedDelegation(s, child.delegate_tx, child.id), txInfo(s, child.delegate_tx), txInfo(s, child.undelegate_tx), txInfo(s, txOf(scoreRef)),
+    const scoreValue = isObject(score?.choice) ? parseScoreValue(score.choice.score) : null;
+    const components = isObject(score?.choice) ? parseComponents(score.choice.components) : null;
+    need(child && rankedBid && scoreValue?.ok && components?.ok, 'scores: the checked decision, quote or scorer sub-delegation is missing');
+    const choice = { score: scoreValue.value, components: components.value };
+    const expected = p.hire.result.fault_mode === RANK_FAULT && i === 0 ? reversedChoice(choice) : choice;
+    need(expected.score === rankedBid.score && same(expected.components, rankedBid.components) && rank.postedAt >= model.submittedAt,
+      'scores: the score and all four ranked components must match the decision or its exact reversal');
+    const [datum, delegated, ended] = await Promise.all([
+      mintedDelegation(s, child.delegate_tx, child.id), txInfo(s, child.delegate_tx), txInfo(s, child.undelegate_tx),
     ]);
     const log = (a.mock?.lines ?? []).some((line) => line.route === READ_VENDORS && line.decision === 'allowed' && line.status === 200
-      && logActor(line, auth, [scorerDid, auth.sourcing], child.id)
-      && logAt(line, Math.max(delegated.timeMs, datum.notBefore, answers[i]!.accept!.at, start), Math.min(ended.timeMs, datum.notAfter, made.timeMs, end)));
-    need(datum.delegate === scorerDid.slice(11) && datum.parent === auth.delegation.id && datum.delegator.type === 'Agent'
-      && datum.delegator.id === auth.sourcing.slice(11) && datum.depth === 2 && datum.actions.length === 1 && datum.actions[0] === utf8Hex('vendor.read')
-      && delegated.timeMs >= start && made.timeMs <= ended.timeMs && ended.timeMs <= end && log, 'scores: the ledger and log do not show the scorer reading vendors under its own two-link delegation');
-    out.push(ref('delegation', child.id), ref('transaction', child.delegate_tx), ref('transaction', child.undelegate_tx), ref('escrow', scoreRef));
+      && logActor(line, auth, [scorer.did, auth.sourcing], child.id)
+      && logAt(line, Math.max(delegated.timeMs, datum.notBefore, answers[i]!.accept!.at, start), Math.min(ended.timeMs, datum.notAfter, model.postedAt, end)));
+    need(datum.delegate === scorer.did.slice(11) && datum.delegateKey === scorer.delegateKey && datum.parent === auth.delegation.id
+      && datum.delegator.type === 'Agent' && datum.delegator.id === auth.sourcing.slice(11) && datum.depth === 2
+      && datum.actions.length === 1 && datum.actions[0] === utf8Hex('vendor.read') && delegated.timeMs >= Math.max(start, scorer.registeredAt)
+      && model.submittedAt <= ended.timeMs && ended.timeMs <= end && log,
+    'scores: the ledger and log do not show the scorer reading vendors under its own two-link delegation');
+    out.push(ref('record', scorer.record), ref('delegation', child.id), ref('transaction', child.delegate_tx), ref('transaction', child.undelegate_tx), ref('escrow', model.escrow_ref));
   }
   return out;
 }
@@ -440,7 +612,7 @@ async function readRevokedOutput(s: EvidenceReadSession, a: Assembly, agent: str
 }
 
 /** Only locate a candidate here. The core checks the case token, Finalize, resolution document and exact verdict application. */
-async function locateHold(s: EvidenceReadSession, a: Assembly, agent: string, revoked: Proof<RecordHistory | null>): Promise<HistoricalHoldCandidate | null> {
+async function locateHold(s: EvidenceReadSession, a: Assembly, agent: string, revoked: Proof<RecordHistory | null>): Promise<BidHold | null> {
   const record = a.facts.records[agent];
   if (record === undefined) return null;
   if (!revoked.ok) throw new PreconditionError(revoked.why);
@@ -458,31 +630,31 @@ async function locateHold(s: EvidenceReadSession, a: Assembly, agent: string, re
   need(apply.outputs.some((one) => one.ref === output && one.credential === site.hash), 'hold: the ledger does not show the application output');
   const consumed = single(apply.inputs, (one) => one.credential === config.m1);
   need(consumed, 'hold: the application has no exact consumed verdict output');
-  return { reason: JURY_REASON, since: hold.since, until: hold.until, record_output: output, gateway_status: null, verdict_output: consumed.ref };
+  return { appliedAt: apply.timeMs, candidate: { reason: JURY_REASON, since: hold.since, until: hold.until,
+    record_output: output, gateway_status: null, verdict_output: consumed.ref } };
 }
 
-async function configuredComplianceIssuer(s: EvidenceReadSession, a: Assembly): Promise<string> {
-  const proposal = named(a, 'propose-b');
-  const agent = sourcing(a.use);
+async function manifestKeys(s: EvidenceReadSession, a: Assembly, hire: ReportedHire): Promise<Obj> {
+  const agent = a.use.agents.find(({ id }) => id === hire.entry.agent);
   const did = agent && didOf(a, agent.id);
-  need(proposal && agent && did, 'compliance: the signed proposal and sourcing identity are missing');
-  const advert = await readAdvert(proposal.entry.advert_ref, s.chain.fetchImpl, s.chain.koiosUrl, s.chain.deployment.advert.address);
-  need(!('error' in advert) && advert.layout === 'identity' && advert.agentId === did.slice(11), 'compliance: the sourcing advert is unproven');
+  need(agent && did, 'manifest: the hiring agent is unknown');
+  const advert = await readAdvert(hire.entry.advert_ref, s.chain.fetchImpl, s.chain.koiosUrl, s.chain.deployment.advert.address);
+  need(!('error' in advert) && advert.layout === 'identity' && advert.agentId === did.slice(11) && advert.advert.capability_id === agent.capability,
+    'manifest: the hire does not name an advert of this agent');
   const { detail_uri: uri, detail_hash: hash } = advert.advert;
   const url = new URL(uri);
   need(url.origin === new URL(agent.endpoint).origin && url.protocol === 'https:' && url.username === '' && url.password === '' && url.hash === '' && HASH.test(hash),
-    'compliance: the advert does not name a bounded manifest of the sourcing service');
+    'manifest: the advert does not name a bounded HTTPS manifest of this agent');
   const answer = await s.fetchImpl(uri, { redirect: 'error', signal: AbortSignal.timeout(10_000), headers: { accept: 'application/json' } });
-  need(answer.status === 200, 'compliance: the sourcing manifest could not be read');
+  need(answer.status === 200, 'manifest: the agent manifest could not be read');
   const bytes = await readLimited(answer, 256 * 1024);
-  need(bytes !== null && createHash('sha256').update(bytes).digest('hex') === hash, 'compliance: the sourcing manifest does not match its advert hash');
+  need(bytes !== null && createHash('sha256').update(bytes).digest('hex') === hash, 'manifest: the agent manifest does not match its advert hash');
   const value: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
-  const issuer = isObject(value) && isObject(value.keys) ? value.keys.compliance_issuer_pkh : null;
-  need(typeof issuer === 'string' && POLICY.test(issuer), 'compliance: the sourcing manifest gives no configured issuer');
-  return issuer;
+  need(isObject(value) && isObject(value.keys), 'manifest: the agent manifest has no keys');
+  return value.keys;
 }
 
-async function readCompliance(s: EvidenceReadSession, a: Assembly, agent: string): Promise<ComplianceRead> {
+async function readCompliance(s: EvidenceReadSession, a: Assembly, agent: string, manifest: (h: ReportedHire) => Promise<Obj>): Promise<ComplianceRead> {
   const held = a.facts.compliance[agent];
   const subject = a.facts.records[agent];
   const spec = a.use.compliance;
@@ -490,9 +662,13 @@ async function readCompliance(s: EvidenceReadSession, a: Assembly, agent: string
     'compliance: the issue, revoke and reply facts are missing');
   need(new Set([held.tx, held.revokeTx, held.contestTx]).size === 3 && [held.id, held.tx, held.revokeTx, held.contestTx, held.replySha256, held.digest].every((h) => HASH.test(h)),
     'compliance: the facts do not name distinct transactions and valid hashes');
+  const proposal = named(a, 'propose-b');
+  need(proposal, 'compliance: the signed proposal is missing');
+  const issuer = (await manifest(proposal)).compliance_issuer_pkh;
+  need(typeof issuer === 'string' && POLICY.test(issuer), 'compliance: the sourcing manifest gives no configured issuer');
   const site = s.chain.deployment.attestation;
-  const [issue, revoke, contest, current, issuer] = await Promise.all([
-    scripts(s, held.tx), scripts(s, held.revokeTx), scripts(s, held.contestTx), readAttestation(envOf(s), held.id), configuredComplianceIssuer(s, a),
+  const [issue, revoke, contest, current] = await Promise.all([
+    scripts(s, held.tx), scripts(s, held.revokeTx), scripts(s, held.contestTx), readAttestation(envOf(s), held.id),
     ...[held.tx, held.revokeTx, held.contestTx].map((tx) => confirmed(s, tx, 'compliance')),
   ]);
   need(current && current.attestation.status.type === 'AttRevoked' && current.attestation.contested?.sha256 === held.replySha256
@@ -524,48 +700,82 @@ async function readCompliance(s: EvidenceReadSession, a: Assembly, agent: string
     reason, reply_sha256: held.replySha256, revoked_at: revoke.timeMs, contested_at: contest.timeMs };
 }
 
-function lastList(text: string): unknown {
-  need(text.length <= 512 * 1024, 'listing: the supplier list exceeds the evidence read limit');
-  const block = [...text.matchAll(/```json\r?\n([\s\S]*?)\r?\n```/g)].at(-1);
-  if (!block) throw new PreconditionError('listing: the hosted tool returned no list');
-  return JSON.parse(block[1]!) as unknown;
-}
-async function readListing(s: EvidenceReadSession, a: Assembly, agent: string): Promise<true> {
-  const desk = desks(a.use).find(({ id }) => id === agent);
-  const did = didOf(a, agent);
-  const adverts = Object.values(a.facts.adverts[agent] ?? {});
-  need(desk && did && adverts.length > 0, 'listing: the challenged desk or its adverts are missing');
-  const limit = 50;
-  const answer = await s.hosted.call(LIST, { capability_id: desk.capability, only_free: false, limit });
-  need(!answer.failed, 'listing: the supplier list could not be read');
-  const rows = lastList(answer.text);
-  need(Array.isArray(rows) && rows.length < limit, 'listing: the supplier list is not complete');
-  const available = new Map<string, string>();
-  for (const row of rows) {
-    need(isObject(row) && typeof row.advert_ref === 'string' && REF.test(row.advert_ref) && row.capability_id === desk.capability
-      && typeof row.did === 'string' && /^did:vector:[0-9a-f]{64}$/.test(row.did),
-      'listing: the tool gave an unreadable advert');
-    need(!adverts.some((entry) => entry.ref === row.advert_ref) && row.did !== did && row.agent_id !== did.slice(11), 'listing: the challenged desk still has a listed advert');
-    need(!available.has(row.advert_ref), 'listing: the supplier list repeats an advert');
-    available.set(row.advert_ref, row.did);
-  }
-  const remaining = desks(a.use).filter(({ id }) => id !== agent);
-  need(remaining.every(({ id }) => Object.values(a.facts.adverts[id] ?? {}).some(({ ref: listed }) => available.get(listed) === didOf(a, id))),
-    'listing: the other run adverts are not listed');
-  return true;
+/** Read only the operator pack's provisioned public key manifest, never the seed files. */
+function configuredPublicKeys(s: EvidenceReadSession): KeyNames {
+  const path = join(s.settings.keysDir, publicManifestFile(s.use.name));
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  let value: unknown;
+  try {
+    const file = fstatSync(fd);
+    need(file.isFile() && file.nlink === 1 && (file.mode & 0o022) === 0 && file.size > 0 && file.size <= 64 * 1024
+      && (process.getuid === undefined || file.uid === process.getuid()), 'the configured public key manifest is not a bounded, operator-owned file');
+    const bytes = Buffer.allocUnsafe(file.size + 1);
+    let length = 0;
+    for (let read; length < bytes.length && (read = readSync(fd, bytes, length, bytes.length - length, null)) > 0;) length += read;
+    need(length === file.size, 'the configured public key manifest changed during the read');
+    value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(0, length))) as unknown;
+  } finally { closeSync(fd); }
+  need(isObject(value) && value.network === s.settings.network.name && value.use_case === s.use.name && isObject(value.keys),
+    'the configured public key manifest does not match the run network and use case');
+  const { keys } = value;
+  const scopes = new Map(s.use.keys.map(({ name, scope }) => [name, scope]));
+  return (name) => {
+    const entry = Object.hasOwn(keys, name) ? keys[name] : undefined;
+    const scope = scopes.get(name);
+    if (scope === undefined || !isObject(entry) || entry.scope !== scope || typeof entry.public_key_hex !== 'string' || !HASH.test(entry.public_key_hex)
+      || typeof entry.key_hash !== 'string' || keyHashOf(entry.public_key_hex) !== entry.key_hash) return undefined;
+    return entry.key_hash;
+  };
 }
 
-async function verifyRevocation(s: EvidenceReadSession, a: Assembly, agent: string, read: RecordHistory | null): Promise<RevocationRead> {
+/** The service computes the digest from the checked input. Never copy this private log into evidence. */
+async function privateRankingLog(s: EvidenceReadSession, a: Assembly): Promise<readonly Obj[]> {
+  const { tenant } = a.loaded.record;
+  const { mockEnvFile } = s.settings;
+  need(tenant && /^[a-z0-9][a-z0-9-]{0,47}$/.test(tenant) && mockEnvFile !== null, 'execute: the private mock log is not configured');
+  const token = EnvFile.open(mockEnvFile).get('MOCK_OPERATOR_TOKEN');
+  need(token && /^[A-Za-z0-9._~+/=-]{32,128}$/.test(token), 'execute: the private mock log credential is not configured');
+  const response = await s.fetchImpl(`${MOCK_PUBLIC_BASE}/admin/tenants/${tenant}/log`, {
+    headers: { accept: 'application/json', authorization: `Bearer ${token}` }, redirect: 'error', signal: AbortSignal.timeout(15_000),
+  });
+  need(response.status === 200, 'execute: the private mock log could not be read');
+  const bytes = await readLimited(response, 1024 * 1024);
+  need(bytes, 'execute: the private mock log exceeds its read limit');
+  const log: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+  need(isObject(log) && log.tenant === tenant && log.dropped === 0 && Array.isArray(log.lines) && log.lines.every(isObject),
+    'execute: the private mock log for this tenant is unproven or incomplete');
+  return log.lines.filter((line: Obj) => line.tenant === tenant && line.route === WRITE_RANKING);
+}
+
+async function submissionTimes(s: EvidenceReadSession, a: Assembly): Promise<ReadonlyMap<string, number>> {
+  const entries = [...a.receiptAttributions];
+  const times = new Map<string, number>();
+  for (let i = 0; i < entries.length; i += 4) {
+    await Promise.all(entries.slice(i, i + 4).map(async ([escrow, { submitted_ref: output }]) => {
+      const result = await proof('submitted', async () => {
+        const tx = await scripts(s, txOf(output));
+        need(tx.outputs.some((one) => one.ref === output && one.credential === s.chain.deployment.escrow.hash), 'submitted: the output is not in the confirmed transaction');
+        return tx.timeMs;
+      });
+      if (result.ok) times.set(escrow, result.value);
+    }));
+  }
+  return times;
+}
+
+async function verifyRevocation(s: EvidenceReadSession, a: Assembly, agent: string, read: RecordHistory | null, publicKey: KeyNames): Promise<RevocationRead> {
   const fact = a.facts.revocations[agent];
   const owner = a.facts.records[agent];
   const target = desks(a.use).find(({ id }) => id === agent);
-  need(fact && owner && target?.end.record === 'revoked' && read, 'revocation: the verified fact and replacement output are missing');
+  need(fact && owner && owner.did === didOf(a, agent) && target?.end.record === 'revoked' && read, 'revocation: the verified fact and replacement output are missing');
   const { data: { status }, tx } = read;
   const before = decodeIdentityDatum((await rowOf(s, read.before)).inline_datum?.bytes ?? '');
-  const domain = a.use.organisations.find(({ id }) => target.organisation === id)?.domain;
+  const organisation = a.use.organisations.find(({ id }) => target.organisation === id);
+  const accountable = organisation && publicKey(organisation.accountableKey);
   const key = status.type === 'Revoked' && status.by.type === 'KeyHash' ? status.by.hash : null;
-  const party = before.parties.findIndex((one) => one.role === 'Accountable' && one.signer.type === 'KeyHash' && one.signer.hash === key
-    && domain !== undefined && one.organisation === utf8Hex(domain) && hasRight(one.rights, RIGHT.revoke) && one.notBefore <= tx.timeMs
+  need(organisation && accountable && key === accountable, 'revocation: the author is not the configured public Accountable key of this organisation');
+  const party = before.parties.findIndex((one) => one.role === 'Accountable' && one.signer.type === 'KeyHash' && one.signer.hash === accountable
+    && one.organisation === utf8Hex(organisation.domain) && hasRight(one.rights, RIGHT.revoke) && one.notBefore <= tx.timeMs
     && (one.notAfter === null || tx.timeMs <= one.notAfter));
   const current = await findRecord(s.chain.provider, s.chain.deployment, owner.id);
   need(status.type === 'Revoked' && key && party >= 0 && status.reason === fact.reason && status.reason !== JURY_REASON
@@ -575,15 +785,18 @@ async function verifyRevocation(s: EvidenceReadSession, a: Assembly, agent: stri
   'revocation: the node does not show the requested Accountable revocation of this record');
   const result = await s.hosted.call(RESOLVE, { did: owner.did });
   const meta = result.json?.didDocumentMetadata;
+  const resolution = result.json?.didResolutionMetadata;
   const effective = isObject(meta) && isObject(meta.vectorStatus) ? meta.vectorStatus.effective : null;
-  need(!result.failed && isObject(meta) && meta.deactivated === true && typeof effective === 'string' && effective.toLowerCase() === 'revoked', 'revocation: the resolver does not show the DID as revoked');
+  need(!result.failed && isObject(resolution) && !Object.hasOwn(resolution, 'error') && result.json?.didDocument === null
+    && isObject(meta) && meta.canonicalId === owner.did && meta.deactivated === true
+    && typeof effective === 'string' && effective.toLowerCase() === 'revoked', 'revocation: the resolver does not show the exact DID as revoked');
   await confirmed(s, fact.tx, 'revocation');
-  return { tx: fact.tx, spent_output: read.before, record_output: read.output, reason: status.reason, author: key, invalid_from: status.invalidFrom, at: tx.timeMs };
+  return { tx: fact.tx, spent_output: read.before, record_output: read.output, reason: status.reason, author: key, invalid_from: status.invalidFrom, at: tx.timeMs, did: owner.did };
 }
 
-async function bidderEvidence(s: EvidenceReadSession, a: Assembly, p: Proposal): Promise<readonly Ref[]> {
-  need(p.shortlist && p.bidders.length === desks(a.use).length && p.invites.length === p.bidders.length, 'bidders: the clean shortlist does not cover every desk');
-  const refs: Ref[] = [ref('escrow', p.shortlist)];
+async function bidderEvidence(s: EvidenceReadSession, a: Assembly, p: Proposal, models: Models): Promise<readonly Ref[]> {
+  need(p.bidders.length === desks(a.use).length && p.invites.length === p.bidders.length, 'bidders: the clean shortlist does not cover every desk');
+  const refs: Ref[] = [ref('escrow', checkedModel(models, p.shortlist).escrow_ref)];
   for (const bidder of p.bidders) {
     need(bidder.status === 'active' && bidder.inCatalog !== null, 'bidders: the signed file does not show an active desk and a catalog read');
     const advert = await readAdvert(bidder.advert, s.chain.fetchImpl, s.chain.koiosUrl, s.chain.deployment.advert.address);
@@ -614,7 +827,6 @@ async function prepareBids(s: EvidenceReadSession, a: Assembly): Promise<Obj> {
   if (a.purpose === 'status') return { bids: { hold } };
   const proposals = new Map<string, Proof<Proposal>>();
   const quotes = new Map<string, Proof<readonly CheckedQuote[]>>();
-  const vaultCache = new Map<string, Promise<TxInfo>>();
   const scores = new Map<string, Proof<readonly Ref[]>>();
   const expectedQuotes = new Set<string>();
   const seen = a.loaded.hires.filter((h) => h.role === 'propose');
@@ -622,6 +834,13 @@ async function prepareBids(s: EvidenceReadSession, a: Assembly): Promise<Obj> {
   let orderedRfqs = seen.length === a.loaded.record.rfq_ids.length && (a.loaded.record.kind !== 'clean' || seen.length === expected.length);
   let lastIndex = -1;
   const authority = await proof('delegation and vault', () => readAuthority(s, a));
+  const publicKeys = await proof('configured public keys', async () => configuredPublicKeys(s));
+  const scorers = !authority.ok ? authority : !publicKeys.ok ? publicKeys : await proof('scores', () => readScorers(s, a, authority.value, publicKeys.value));
+  const submissions = await submissionTimes(s, a);
+  const keyReads = new Map<string, Promise<Obj>>();
+  const manifest = (h: ReportedHire) => cached(keyReads, h.entry.advert_ref, () => manifestKeys(s, a, h));
+  const models = await readModels(s, a, submissions, manifest);
+  const executionLog = await proof('execute', () => privateRankingLog(s, a));
   for (const [index, hire] of seen.entries()) {
     const slot = expected.findIndex((name) => name === hire.entry.step);
     const p = await proof<Proposal>('proposal', async () => {
@@ -632,17 +851,17 @@ async function prepareBids(s: EvidenceReadSession, a: Assembly): Promise<Obj> {
     if (slot <= lastIndex || (p.ok && p.value.ranking.rfq_id !== a.loaded.record.rfq_ids[index])) orderedRfqs = false;
     lastIndex = slot;
     if (p.ok) p.value.invites.forEach((_, i) => expectedQuotes.add(quoteAt(hire.entry.step, i)));
-    const observed = !p.ok ? p : !authority.ok ? authority : await proof('quotes', () => readQuotes(s, a, p.value, authority.value, vaultCache));
+    const observed = !p.ok ? p : !authority.ok ? authority : await proof('quotes', () => readQuotes(s, a, p.value, authority.value, models, submissions));
     quotes.set(hire.entry.step, observed);
-    scores.set(hire.entry.step, p.ok && observed.ok && authority.ok ? await proof('scores', () => readScores(s, a, p.value, observed.value, authority.value))
-      : missing('scores: the quote jobs or the run authority are unproven'));
+    scores.set(hire.entry.step, !p.ok ? p : !observed.ok ? observed : !authority.ok ? authority : !scorers.ok ? scorers
+      : await proof('scores', () => readScores(s, a, p.value, observed.value, authority.value, scorers.value, models)));
   }
   for (const hire of a.loaded.hires) {
     if (hire.role === 'quote' && !expectedQuotes.has(hire.entry.step)) orderedRfqs = false;
     if (hire.role === 'execute' && hire.entry.step !== (a.loaded.record.kind === 'clean' ? 'execute' : 'execute-d')) orderedRfqs = false;
   }
   const clean = proposals.get('propose');
-  const biddersRead: Proof<readonly Ref[]> = clean?.ok ? await proof('bidders', () => bidderEvidence(s, a, clean.value)) : clean ?? NOT_NEEDED;
+  const biddersRead: Proof<readonly Ref[]> = clean?.ok ? await proof('bidders', () => bidderEvidence(s, a, clean.value, models)) : clean ?? NOT_NEEDED;
   const aQuotes = quotes.get('propose-a');
   const disputed = aQuotes?.ok && challenge !== null
     ? single(aQuotes.value, (q) => q.challenge?.challenge === challenge.challenge && q.desk.agent.id === challenge.agent) : undefined;
@@ -652,12 +871,12 @@ async function prepareBids(s: EvidenceReadSession, a: Assembly): Promise<Obj> {
     need(terminal?.action === 'Release', 'release: no proven Release of this quote escrow at or after its accept cutoff');
     return terminal;
   }) : NOT_NEEDED;
-  const compliance = agent === null ? NOT_NEEDED : await proof('compliance', () => readCompliance(s, a, agent));
-  const listing = agent === null || !proposals.has('propose-c') ? NOT_NEEDED : await proof('listing', () => readListing(s, a, agent));
-  const revocation = agent === null || !revoked.ok ? NOT_NEEDED : await proof('revocation', () => verifyRevocation(s, a, agent, revoked.value));
+  const compliance = agent === null ? NOT_NEEDED : await proof('compliance', () => readCompliance(s, a, agent, manifest));
+  const revocation = agent === null || !revoked.ok ? NOT_NEEDED : !publicKeys.ok ? publicKeys
+    : await proof('revocation', () => verifyRevocation(s, a, agent, revoked.value, publicKeys.value));
   const value: BidReads = {
     proposals, orderedRfqs, authority, quotes, scores, challenge: provedChallenge, release, hold,
-    bidderEvidence: biddersRead, compliance, listing, revocation,
+    bidderEvidence: biddersRead, compliance, models, submissions, executionLog, revocation,
   };
   return { bids: value };
 }
@@ -685,19 +904,23 @@ function execution(a: Assembly, phase: 'propose' | 'propose-d', step: 'execute' 
   const h = named(a, step);
   const answered = get(a).quotes.get(phase);
   if (!p?.ok || !auth.ok || !h || !answered?.ok || !get(a).scores.get(phase)?.ok) return 'execute: the matching proposal, quote jobs, scorers or run delegation are unproven';
+  const log = get(a).executionLog;
+  if (!log.ok) return log.why;
   const request = a.committedExecutes.get(step);
   if (!request || request.escrow_ref !== h.entry.escrow_ref || request.digest !== p.value.digest || h.result.proposal_digest !== request.digest
     || h.result.use_case !== a.use.name || h.result.handoff !== null || h.result.challenge !== null) return 'execute: the exact committed request does not answer the signed proposal';
   const started = at(a, h.entry.post_tx);
+  const submitted = get(a).submissions.get(h.entry.escrow_ref);
   const endTx = h.entry.accept_tx;
   const ended = endTx === null ? undefined : at(a, endTx);
   const proposalEnd = p.value.hire.entry.accept_tx === null ? undefined : at(a, p.value.hire.entry.accept_tx);
   const final = a.terminals.get(h.entry.escrow_ref);
-  if (started === undefined || ended === undefined || proposalEnd === undefined || proposalEnd > started || final?.tx !== endTx || final.action !== 'Accept'
-    || a.mock === null) return 'execute: the ordered jobs, accepted result and tenant reads are unproven';
+  if (started === undefined || submitted === undefined || ended === undefined || proposalEnd === undefined || proposalEnd > started
+    || submitted < started || submitted > ended || final?.tx !== endTx || final.action !== 'Accept'
+    || a.mock === null) return 'execute: the ordered Post, Submit, Accept and tenant reads are unproven';
   const { rfq_id: rfq, ranked } = p.value.ranking;
   const rows = rankingRows(a.mock.state);
-  const calls = a.mock.lines.filter((line) => line.route === WRITE_RANKING && logAt(line, started, ended)
+  const calls = log.value.filter((line) => line.proposal_digest === request.digest && logAt(line, started, submitted)
     && logActor(line, auth.value, [auth.value.sourcing], auth.value.delegation.id));
   const writes = h.result.writes;
   if (!rows || !Array.isArray(writes)) return 'execute: the ranking state or signed write list is unreadable';
@@ -705,7 +928,7 @@ function execution(a: Assembly, phase: 'propose' | 'propose-d', step: 'execute' 
     if (request.approval !== null || a.loaded.record.approvals.length !== 0 || p.value.hire.result.fault_mode !== RANK_FAULT
       || h.result.outcome !== 'refused_by_system' || h.result.reason !== 'approval_not_found' || h.result.exit_state !== 'Rejected'
       || writes.length !== 0 || rows.some((row) => row.rfq_id === rfq) || calls.length !== 1
-      || !calls.some((line) => line.decision === 'refused' && line.code === 'approval_not_found' && line.status === 403)) {
+      || !calls.some((line) => line.decision === 'refused' && line.code === 'approval_not_found' && line.rule === 'approval.missing' && line.status === 403)) {
       return 'execute: the null approval, approval_not_found log, Rejected result and absence of a ranking are not all proven';
     }
     return hireRefs(h);
@@ -720,7 +943,7 @@ function execution(a: Assembly, phase: 'propose' | 'propose-d', step: 'execute' 
     || !saved || saved.ranking_id !== write.ref || !isObject(saved.top) || saved.top.rank !== 1 || saved.top.desk_did !== first.desk_did
     || saved.top.organisation !== (first.organisation ?? null) || !same(saved.ranking, p.value.ranking) || !same(saved.approval, request.approval)
     || !isObject(saved.by) || saved.by.kind !== 'token' || !logActor({ ...saved.by, credential: saved.by.kind }, auth.value, [auth.value.sourcing], auth.value.delegation.id)
-    || !logAt({ at: saved.recorded_at }, started, ended) || calls.length !== 1
+    || !logAt({ at: saved.recorded_at }, started, submitted) || calls.length !== 1
     || !calls.some((line) => line.decision === 'allowed' && line.status === 201)) return 'execute: the approved write, its actor and the stored rank are not proven';
   return [...hireRefs(h), ref('ranking', write.ref)];
 }
@@ -783,17 +1006,20 @@ const RULES: EvidenceModule['rules'] = {
   'r2-c': (a) => {
     const p = get(a).proposals.get('propose-c');
     const q = get(a).quotes.get('propose-c');
-    const listed = get(a).listing;
     const hold = a.caseRead?.hold;
-    if (!listed.ok) return listed.why;
-    if (!p?.ok || !q?.ok || hold == null) return 'listing: the held RFQ, its quote jobs or the exact hold are unproven';
-    if (!get(a).scores.get('propose-c')?.ok) return 'listing: the ranked quote scores are unproven';
+    const observed = get(a).hold;
+    if (!p?.ok || !q?.ok || hold == null || !observed.ok || observed.value?.candidate.record_output !== hold.record_output) {
+      return 'held proposal: the signed RFQ result, its quote jobs or the exact hold are unproven';
+    }
+    if (!get(a).scores.get('propose-c')?.ok) return 'held proposal: the ranked quote scores are unproven';
     const post = at(a, p.value.hire.entry.post_tx);
-    const submitted = a.receiptAttributions.get(p.value.hire.entry.escrow_ref)?.submitted_at_ms;
-    if (post === undefined || submitted === undefined || post < hold.since || post >= hold.until || submitted >= hold.until
-      || p.value.ranking.ranked.length !== desks(a.use).length - 1
-      || p.value.bidders.length !== p.value.ranking.ranked.length || p.value.bidders.some(({ agent }) => agent.id === a.loaded.record.challenged)) {
-      return 'listing: the proposal does not show the other desks only during the hold';
+    const submitted = get(a).submissions.get(p.value.hire.entry.escrow_ref);
+    const challenged = a.loaded.record.challenged;
+    const other = desks(a.use).filter(({ id }) => id !== challenged);
+    if (post === undefined || submitted === undefined || post <= observed.value.appliedAt || post < hold.since || post > submitted || submitted >= hold.until
+      || challenged === null || other.length !== 2 || p.value.ranking.ranked.length !== other.length || p.value.bidders.length !== other.length
+      || !other.every(({ id }) => p.value.bidders.some(({ agent }) => agent.id === id))) {
+      return 'held proposal: the signed result does not name just the two other desks within the verified hold';
     }
     return [...hireRefs(p.value.hire), ref('hold', hold.record_output)];
   },
@@ -859,11 +1085,18 @@ function moduleDocument(a: Assembly): Readonly<Obj> & { readonly run: string } {
       return c === undefined ? [] : [[id, { claim_ref: c.claimRef, document_tx: c.documentTx, claim_tx: c.claimTx, claim_token: c.claimToken,
         stake_lovelace: c.stakeLovelace, window_ms: c.windowMs, staked_at: c.stakedAt, withdrawable_from: c.withdrawableFrom, withdraw_tx: c.withdrawTx }]];
     })),
-    fault_mode: Object.fromEntries(a.use.agents.map(({ id, kind }) => [id, kind === 'sourcing-agent' && fault === RANK_FAULT ? RANK_FAULT : challenged === id && read.challenge.ok ? QUOTE_FAULT : ''])),
+    fault_mode: Object.fromEntries(a.use.agents.map(({ id, kind }) => [id, kind === 'sourcing-agent' && fault === RANK_FAULT && read.scores.get('propose-d')?.ok
+      ? RANK_FAULT : challenged === id && read.challenge.ok ? QUOTE_FAULT : ''])),
     rfq_ids: proposals.map((p) => p.ranking.rfq_id),
     bidders: proposals.map((p) => ({ step: p.hire.entry.step, files: p.bidders.map((b) => ({
       did: b.did, advert_ref: b.advert, status: b.status, in_catalog: b.inCatalog, compliance_state: b.compliance.state, file_sha256: b.sha256,
     })) })),
+    model_hires: a.loaded.hires.flatMap(({ decisions }) => decisions.flatMap((decision) => {
+      const model = read.models.get(decision);
+      if (!model?.ok) return [];
+      const { step, name, escrow_ref, advert_ref, accept_tx } = model.value;
+      return [{ step, name, escrow_ref, advert_ref, accept_tx }];
+    })),
     quotes: quoteGroups.flatMap(([step, checked]) => checked.ok ? checked.value.map((q) => ({
       step: q.hire.entry.step, propose: step, desk_did: q.desk.did, escrow_ref: q.hire.entry.escrow_ref, vault_ref: q.vault,
       accepted: q.accept !== null, reason: q.challenge === null ? null : 'disputed',
@@ -880,7 +1113,7 @@ function moduleDocument(a: Assembly): Readonly<Obj> & { readonly run: string } {
     outcomes: a.loaded.hires.flatMap((h) => h.role === 'execute' && h.report !== null ? [{ step: h.entry.step, escrow_ref: h.entry.escrow_ref, ...projectPublicResult(h).fields }] : []),
     compliance: Array.isArray(RULES['r2-b']!(a)) && read.compliance.ok ? read.compliance.value : null,
     revocation: Array.isArray(RULES['r2-e']!(a)) && read.revocation.ok ? read.revocation.value : null,
-    resolutions: read.revocation.ok && challenged !== null ? [{ did: didOf(a, challenged), status: 'revoked', deactivated: true }] : [],
+    resolutions: read.revocation.ok ? [{ did: read.revocation.value.did, status: 'revoked', deactivated: true }] : [],
     release: read.release.ok && read.challenge.ok ? { action: 'Release', escrow_ref: read.challenge.value.hire.entry.escrow_ref,
       tx: read.release.value.tx, spent_output: read.release.value.spent_output, at: read.release.value.at } : null,
     route_evidence: routeEvidence.filter(({ step }) => (a.loaded.record.kind === 'clean' ? step.startsWith('r1-') : step.startsWith('r2-')) && Array.isArray(RULES[step]!(a))),
@@ -894,9 +1127,8 @@ function projectPublicResult(h: ReportedHire): PublicResultProjection {
     if (h.result.reason === 'approval_not_found' || h.result.reason === null) fields.reason = h.result.reason;
     if (h.result.exit_state === 'Completed' || h.result.exit_state === 'Rejected' || h.result.exit_state === 'Failed') fields.exit_state = h.result.exit_state;
     if (typeof h.result.proposal_digest === 'string' && HASH.test(h.result.proposal_digest)) fields.proposal_digest = h.result.proposal_digest;
-    return { fields, decisionNames: [] };
   }
-  return { fields, decisionNames: h.role === 'quote' ? ['quote'] : ['shortlist', 'accept_quote', 'score', 'ranking'] };
+  return { fields, decisionNames: [] };
 }
 
 /** A separate part can add the lifecycle rules without changing the other runs. */
@@ -909,7 +1141,7 @@ export interface BidEvidencePart {
   moduleDocument: EvidenceModule['moduleDocument'];
 }
 
-const RUNS: BidEvidencePart = { runKinds: ['clean', 'failure'], rules: RULES, hosted: [LIST, RESOLVE], prepare: prepareBids, moduleDocument };
+const RUNS: BidEvidencePart = { runKinds: ['clean', 'failure'], rules: RULES, hosted: [RESOLVE], prepare: prepareBids, moduleDocument };
 const PARTS: readonly BidEvidencePart[] = [RUNS];
 function partFor(a: Assembly): BidEvidencePart {
   const part = single(PARTS, (candidate) => candidate.runKinds.includes(a.loaded.record.kind));
@@ -932,7 +1164,7 @@ export const bidEvaluation: EvidenceModule = {
     if (source.indexed?.finalized_result !== 'AuditorWins') return null;
     const hold = get(a).hold;
     if (!hold.ok) throw new PreconditionError(hold.why);
-    return hold.value;
+    return hold.value?.candidate ?? null;
   },
   hireOfApproval(a, index) {
     const entry = a.loaded.record.approvals[index];
