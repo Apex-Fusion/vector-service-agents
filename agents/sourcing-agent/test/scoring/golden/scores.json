@@ -1,0 +1,170 @@
+[
+  {
+    "did": "did:vector:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+    "decision": {
+      "name": "score",
+      "choice": {
+        "components": {
+          "price": 80.2,
+          "lead_time": 70.1,
+          "reliability": 97,
+          "compliance": 100
+        },
+        "score": 86.1
+      },
+      "reasoning": "The price is close to the list, the lead time is long, and the vendor delivers on time.",
+      "inference": {
+        "path": "marketplace",
+        "sub_job": {
+          "capability_id": "llm.text.generate.v1",
+          "advert_ref": "4141414141414141414141414141414141414141414141414141414141414141#0",
+          "escrow_ref": "5151515151515151515151515151515151515151515151515151515151515151#0",
+          "supplier_pkh": "abababababababababababababababababababababababababababab",
+          "receipt": {
+            "escrow_ref": "5151515151515151515151515151515151515151515151515151515151515151#0",
+            "supplier_pkh": "abababababababababababababababababababababababababababab",
+            "prompt_hash": "5151515151515151515151515151515151515151515151515151515151515151",
+            "response_hash": "6161616161616161616161616161616161616161616161616161616161616161",
+            "model": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 701,
+            "completion_tokens": 120,
+            "wallclock_ms": 3000
+          },
+          "receipt_signature": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "verification": {
+            "escrow_ref_matches": true,
+            "response_hash_matches": true,
+            "supplier_key_matches": true,
+            "signature_valid": true,
+            "on_chain_hash_matches": true,
+            "prompt_hash_matches": true,
+            "model_matches": true,
+            "fields_match": true
+          }
+        },
+        "accepted": "confirmed"
+      }
+    },
+    "choice": {
+      "components": {
+        "price": 80.2,
+        "lead_time": 70.1,
+        "reliability": 97,
+        "compliance": 100
+      },
+      "score": 86.1
+    }
+  },
+  {
+    "did": "did:vector:b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+    "decision": {
+      "name": "score",
+      "choice": {
+        "components": {
+          "price": 65,
+          "lead_time": 55.5,
+          "reliability": 92,
+          "compliance": 100
+        },
+        "score": 72.4
+      },
+      "reasoning": "The price is higher, and the vendor delivers a little later.",
+      "inference": {
+        "path": "marketplace",
+        "sub_job": {
+          "capability_id": "llm.text.generate.v1",
+          "advert_ref": "4242424242424242424242424242424242424242424242424242424242424242#0",
+          "escrow_ref": "5252525252525252525252525252525252525252525252525252525252525252#0",
+          "supplier_pkh": "abababababababababababababababababababababababababababab",
+          "receipt": {
+            "escrow_ref": "5252525252525252525252525252525252525252525252525252525252525252#0",
+            "supplier_pkh": "abababababababababababababababababababababababababababab",
+            "prompt_hash": "5252525252525252525252525252525252525252525252525252525252525252",
+            "response_hash": "6262626262626262626262626262626262626262626262626262626262626262",
+            "model": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 702,
+            "completion_tokens": 120,
+            "wallclock_ms": 3000
+          },
+          "receipt_signature": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "verification": {
+            "escrow_ref_matches": true,
+            "response_hash_matches": true,
+            "supplier_key_matches": true,
+            "signature_valid": true,
+            "on_chain_hash_matches": true,
+            "prompt_hash_matches": true,
+            "model_matches": true,
+            "fields_match": true
+          }
+        },
+        "accepted": "confirmed"
+      }
+    },
+    "choice": {
+      "components": {
+        "price": 65,
+        "lead_time": 55.5,
+        "reliability": 92,
+        "compliance": 100
+      },
+      "score": 72.4
+    }
+  },
+  {
+    "did": "did:vector:c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+    "decision": {
+      "name": "score",
+      "choice": {
+        "components": {
+          "price": 45.5,
+          "lead_time": 90,
+          "reliability": 85,
+          "compliance": 0
+        },
+        "score": 58.8
+      },
+      "reasoning": "The lead time is short, and no compliance attestation backs the bidder.",
+      "inference": {
+        "path": "marketplace",
+        "sub_job": {
+          "capability_id": "llm.text.generate.v1",
+          "advert_ref": "4343434343434343434343434343434343434343434343434343434343434343#0",
+          "escrow_ref": "5353535353535353535353535353535353535353535353535353535353535353#0",
+          "supplier_pkh": "abababababababababababababababababababababababababababab",
+          "receipt": {
+            "escrow_ref": "5353535353535353535353535353535353535353535353535353535353535353#0",
+            "supplier_pkh": "abababababababababababababababababababababababababababab",
+            "prompt_hash": "5353535353535353535353535353535353535353535353535353535353535353",
+            "response_hash": "6363636363636363636363636363636363636363636363636363636363636363",
+            "model": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 703,
+            "completion_tokens": 120,
+            "wallclock_ms": 3000
+          },
+          "receipt_signature": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "verification": {
+            "escrow_ref_matches": true,
+            "response_hash_matches": true,
+            "supplier_key_matches": true,
+            "signature_valid": true,
+            "on_chain_hash_matches": true,
+            "prompt_hash_matches": true,
+            "model_matches": true,
+            "fields_match": true
+          }
+        },
+        "accepted": "confirmed"
+      }
+    },
+    "choice": {
+      "components": {
+        "price": 45.5,
+        "lead_time": 90,
+        "reliability": 85,
+        "compliance": 0
+      },
+      "score": 58.8
+    }
+  }
+]
