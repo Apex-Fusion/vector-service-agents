@@ -9,7 +9,7 @@ import { envInt, given, hexOf, requiredEnv, shown } from '@vsa/service-kit';
 import type { MockBases } from '@vsa/usecase-kit/access';
 import { checkLimits as checkHireLimits } from '@vsa/usecase-kit/buyer';
 import type { HireLimits } from '@vsa/usecase-kit/buyer';
-import { COSIGN_SETTINGS, parseCosignSettings } from '@vsa/usecase-kit/cosign';
+import { COSIGN_SETTINGS, parseAllowlist, parseCosignSettings } from '@vsa/usecase-kit/cosign';
 import type { CosignSettings } from '@vsa/usecase-kit/cosign';
 import { checkLimits, parseMaxPrice, parseModelAllowlist } from '@vsa/usecase-kit/decision';
 import type { ModelLimits } from '@vsa/usecase-kit/decision';
@@ -312,9 +312,12 @@ export function disputeOf(env: NodeJS.ProcessEnv): DisputeSettings {
 
 /**
  * The settings of the co-sign route. The allowlist is required: the empty text is a list that holds nobody, and a setting that is not set is refused, so a route never signs for nobody by a slip. A limit that is
- * not set, or is blank, takes the default of the kit. The kit gives a typed refusal for a wrong value, and the start stops with its detail, which names the setting and never a key.
+ * not set, or is blank, takes the default of the kit. The kit gives a typed refusal for a wrong value. It names a limit by its setting and the allowlist by its word, so the allowlist is read first here, and a
+ * refusal of it names COSIGN_ALLOWLIST. A message never repeats a key hash or a token.
  */
 export function cosignSettingsOf(env: NodeJS.ProcessEnv): CosignSettings {
+  const list = env.COSIGN_ALLOWLIST === undefined ? null : parseAllowlist(env.COSIGN_ALLOWLIST);
+  if (list !== null && !list.ok) throw new Error(`environment variable COSIGN_ALLOWLIST is refused: ${list.detail}`);
   const limit = (name: string): string | undefined => (given(env[name]) === '' ? undefined : given(env[name]));
   const parsed = parseCosignSettings({
     [COSIGN_SETTINGS.allowlist]: env.COSIGN_ALLOWLIST,
