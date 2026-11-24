@@ -21,7 +21,7 @@ import { readGuideline } from '../../src/evidence/guideline.ts';
 import type { EvidenceDeps, EvidenceRequest, EvidenceResult, EvidenceRun, LeftEntry, LeftSink, SubagentName } from '../../src/evidence/ports.ts';
 import { readEvidence } from '../../src/evidence/read.ts';
 import { readRecords } from '../../src/evidence/records.ts';
-import type { SubreadResult } from '../../src/evidence/subread.ts';
+import type { EndState, SubreadResult } from '../../src/evidence/subread.ts';
 
 export { AGENT_KEY, BASES, DAY, FakeClock, NOW, OTHER_KEY, PARENT_ID, SCRIPT, SUBAGENT_KEY, WALLET, markSigner, parentDatum, slotOf };
 
@@ -384,6 +384,9 @@ export function runEvidence(w: World, over: RunOptions = {}): Promise<EvidenceRe
 
 /** The line that a failed read writes to the log: the name of its subagent and its code, and nothing else. */
 export const failureLine = (read: ReadCase, code: string): string => `evidence: ${read.name}: the read failed with ${code}`;
+
+/** What a read gives for the golden body: the checked copy and the end of its sub-delegation, which is `ended` unless the test says another. */
+export const gives = (read: ReadCase, end: EndState = 'ended'): SubreadResult<unknown> => ({ ok: true, value: read.expected, end });
 
 /** The operations of the records, in order. */
 export const opsOf = (w: World): string[] => w.steps.map((step) => step.op);

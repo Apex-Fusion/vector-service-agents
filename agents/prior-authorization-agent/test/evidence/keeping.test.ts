@@ -3,17 +3,18 @@
 // the janitor, which then takes it. The id leaves the set on every path: ended, not made, not ended, and a throw. Each failure has its twin: the same read in which nothing goes wrong.
 import { describe, expect, it } from 'vitest';
 import type { LeftEntry } from '../../src/evidence/ports.ts';
-import { AGENT_KEY, BASES, NOW, PARENT_ID, READS, SCRIPT, expectFailed, expectRecordedAndEnded, failureLine, janitorOnce, janitorPass, opsOf, showing, world } from './support.ts';
+import { AGENT_KEY, BASES, NOW, PARENT_ID, READS, SCRIPT, expectFailed, expectRecordedAndEnded, failureLine, gives, janitorOnce, janitorPass, opsOf, showing, world } from './support.ts';
 import type { World } from './support.ts';
 
 describe.each(READS)('the records of the $name read', (read) => {
-  const works = { ok: true, value: read.expected };
+  const works = gives(read);
+  const left = gives(read, 'not_ended');
 
   describe('an end that did not work', () => {
     it('leaves the entry with the Undelegate that was tried when the Undelegate never lands, takes the id out of use, still gives the value, and the janitor then takes the entry', async () => {
       const w = world();
       w.chain.faults.undelegateNeverLands = true;
-      expect(await read.run(w)).toStrictEqual(works);
+      expect(await read.run(w)).toStrictEqual(left);
       expect(w.chain.submitted.map((sent) => sent.kind)).toStrictEqual(['delegate', 'undelegate']);
       expect(opsOf(w)).toStrictEqual(['add', 'put', 'put', 'delete']);
       expect(w.sink.entries.size).toBe(1);
@@ -27,7 +28,7 @@ describe.each(READS)('the records of the $name read', (read) => {
     it('leaves the entry when the node refuses the Undelegate, with the hash of the Undelegate that was tried', async () => {
       const w = world();
       w.chain.faults.submitUndelegateThrows = true;
-      expect(await read.run(w)).toStrictEqual(works);
+      expect(await read.run(w)).toStrictEqual(left);
       expect(opsOf(w)).toStrictEqual(['add', 'put', 'put', 'delete']);
       expect(w.sink.entries.get(w.chain.subId!)).toMatchObject({ left: { id: w.chain.subId, endTxHash: w.chain.builtUndelegates[0]!.txHash } });
       expect(w.live.size).toBe(0);
@@ -38,7 +39,7 @@ describe.each(READS)('the records of the $name read', (read) => {
       const w = world();
       w.chain.faults.undelegateNeverLands = true;
       w.sink.failPutAt.add(2);
-      expect(await read.run(w)).toStrictEqual(works);
+      expect(await read.run(w)).toStrictEqual(left);
       expect(opsOf(w)).toStrictEqual(['add', 'put', 'put', 'delete']);
       expect(w.sink.entries.get(w.chain.subId!)).toMatchObject({ left: { id: w.chain.subId, endTxHash: null } });
       expect(w.live.size).toBe(0);

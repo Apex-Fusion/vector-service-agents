@@ -2,12 +2,13 @@
 // folder with the other jobs of the agent through its ports, so a name that leaves it, an import that comes in, or a read of the environment is a change of its contract.
 import { readdirSync, readFileSync } from 'node:fs';
 import { describe, expect, test } from 'vitest';
+import { STATUS_OF } from '../../../../services/mock-systems/src/errors.ts';
 import { DEFAULT_CONFIRMATION_WAIT_MS, DEFAULT_END_TIMEOUT_MS, DEFAULT_STEP_TIMEOUT_MS, GATEWAY_FAILURES, SUB_DELEGATION_FAILURES } from '@vsa/usecase-kit/access';
 import { MemoryLeftStore } from '@vsa/usecase-kit/janitor';
 import * as evidence from '../../src/evidence/index.ts';
 import type { InFlight, LeftSink } from '../../src/evidence/index.ts';
 import { BOOKKEEPING_TIMEOUT_MS, LIST_TIMEOUT_MS } from '../../src/evidence/bookkeeping.ts';
-import { CONFIRMATION_WAIT_MS, END_TIMEOUT_MS, JOB_TIMEOUT_MS, LEAST_READ_MS, MIN_CONFIRMATION_WAIT_MS, TOKEN_PATIENCE_MS, VALIDITY_SLACK_MS } from '../../src/evidence/subread.ts';
+import { CONFIRMATION_WAIT_MS, END_TIMEOUT_MS, JOB_TIMEOUT_MS, LEAST_READ_MS, MIN_CONFIRMATION_WAIT_MS, MOCK_CODES, TOKEN_PATIENCE_MS, VALIDITY_SLACK_MS } from '../../src/evidence/subread.ts';
 
 const FOLDER = new URL('../../src/evidence/', import.meta.url);
 const files = readdirSync(FOLDER).filter((name) => name.endsWith('.ts')).sort();
@@ -55,15 +56,19 @@ describe('the evidence folder', () => {
   });
 
   test('lists the codes that it gives, and each has the form of a code', () => {
-    const own = [
-      'record_read_timeout', 'guideline_read_timeout', 'record_set_invalid', 'guideline_invalid', 'order_not_found', 'guideline_not_found', 'mock_system_failed', 'deadline', 'aborted', 'internal',
-    ];
-    expect(evidence.EVIDENCE_FAILURES).toStrictEqual([...own, ...SUB_DELEGATION_FAILURES.map((code) => `sub_delegation_${code}`), ...GATEWAY_FAILURES.map((code) => `token_${code}`)]);
+    const own = ['record_read_timeout', 'guideline_read_timeout', 'record_set_invalid', 'guideline_invalid', 'mock_system_failed', 'sub_delegation_not_ended', 'deadline', 'aborted', 'internal'];
+    const mock = ['order_not_found', 'guideline_not_found', 'token_invalid', 'not_covered', 'delegation_ended', 'chain_too_deep', 'actor_not_active'];
+    expect(evidence.EVIDENCE_FAILURES).toStrictEqual([...own, ...mock, ...SUB_DELEGATION_FAILURES.map((code) => `sub_delegation_${code}`), ...GATEWAY_FAILURES.map((code) => `token_${code}`)]);
     expect(evidence.EVIDENCE_FAILURES).toContain('sub_delegation_confirmation_timeout');
     expect(evidence.EVIDENCE_FAILURES).toContain('token_delegation_too_young');
     expect(new Set(evidence.EVIDENCE_FAILURES).size).toBe(evidence.EVIDENCE_FAILURES.length);
     for (const code of evidence.EVIDENCE_FAILURES) expect(code).toMatch(/^[a-z0-9_]{1,64}$/);
     expect(Object.isFrozen(evidence.EVIDENCE_FAILURES)).toBe(true);
+    expect([...MOCK_CODES]).toStrictEqual(mock);
+  });
+
+  test('passes on the codes that the mock gives for an id that it does not know and for the credential of a token route, each with the status that the mock gives it', () => {
+    expect(MOCK_CODES.map((code) => STATUS_OF[code])).toStrictEqual([404, 404, 401, 403, 403, 403, 403]);
   });
 
   test('has the budgets of a read: 360,000 ms for the confirmations, at least 180,000, 120,000 of patience for the token, 240,000 for the job, 120,000 for the end, 300,000 of validity after the job', () => {

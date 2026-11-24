@@ -6,10 +6,11 @@ import { resolveKey } from '@vsa/id-kit/client';
 import type { GatewayRefused, KeyInput } from '@vsa/id-kit/client';
 import { agentIdOf } from '@vsa/usecase-kit/protocol';
 import { describe, expect, it } from 'vitest';
+import { STATUS_OF } from '../../../../services/mock-systems/src/errors.ts';
 import { EVIDENCE_FAILURES } from '../../src/evidence/subread.ts';
 import {
-  AGENT_KEY, LEAST_MS, NOW, PARENT_ID, READS, expectFailed, expectNoSecrets, expectRecordedAndEnded, expectUntouched, failureLine, gatewayDown, gatewayRefused, hex, issued, json, markSigner, parentDatum, tooYoung,
-  world,
+  AGENT_KEY, DEADLINE_MS, LEAST_MS, NOW, PARENT_ID, READS, expectFailed, expectNoSecrets, expectRecordedAndEnded, expectUntouched, failureLine, gatewayDown, gatewayRefused, gives, hex, issued, json, markSigner,
+  parentDatum, tooYoung, world,
 } from './support.ts';
 import type { ReadCase, RunOptions, World } from './support.ts';
 
@@ -17,11 +18,11 @@ const keyHashOf = (key: KeyInput): string => resolveKey(key, 'a key').keyHash;
 
 /**
  * The read ended with this code after the Delegate was sent: the sub-delegation is ended with its entry removed, the log has the one line of the failure, and the result and the log show no key, no token and
- * no part of a record. `listed` is true for a code that the table of the folder lists.
+ * no part of a record. The code is one that `EVIDENCE_FAILURES` lists: no other code gets out.
  */
-async function expectReadFailure(w: World, read: ReadCase, result: unknown, code: string, listed = true): Promise<void> {
+async function expectReadFailure(w: World, read: ReadCase, result: unknown, code: string): Promise<void> {
   expectFailed(result, code);
-  if (listed) expect(EVIDENCE_FAILURES).toContain(code);
+  expect(EVIDENCE_FAILURES).toContain(code);
   await expectRecordedAndEnded(w);
   expect(w.logs).toStrictEqual([failureLine(read, code)]);
   expectNoSecrets(w, result);
@@ -33,7 +34,7 @@ describe.each(READS)('the $name read', (read) => {
   describe('a read that works', () => {
     it('gives the checked copy of the body from one call, ends its sub-delegation, and writes nothing to the log', async () => {
       const w = world();
-      expect(await read.run(w)).toStrictEqual({ ok: true, value: read.expected });
+      expect(await read.run(w)).toStrictEqual(gives(read));
       expect(w.fetched).toStrictEqual([{ url: read.url, method: 'GET', authorization: expect.stringMatching(/^DPoP /), dpop: expect.any(String) }]);
       await expectRecordedAndEnded(w);
       expect(w.logs).toStrictEqual([]);
@@ -113,7 +114,7 @@ describe.each(READS)('the $name read', (read) => {
     it('goes on when the gateway sees the 30 confirmations a little later: the twin', async () => {
       const w = world();
       w.script.requestToken = async (request, attempt) => (attempt < 3 ? tooYoung() : issued(request, w.clock.now()));
-      expect(await read.run(w)).toStrictEqual({ ok: true, value: read.expected });
+      expect(await read.run(w)).toStrictEqual(gives(read));
       expect(w.tokenRequests).toHaveLength(3);
       expect(w.tokenTimes[1]! - w.tokenTimes[0]!).toBe(5_000);
       expect(w.fetched).toHaveLength(1);
@@ -121,33 +122,60 @@ describe.each(READS)('the $name read', (read) => {
   });
 
   describe('the call', () => {
+    const SAID = 'words that the system wrote';
     const REFUSED: [string, () => Response, string][] = [
-      ['a 403 with a code', () => json({ error: 'not_covered', message: 'words that the system wrote' }, 403), 'not_covered'],
-      ['a 401 with a code', () => json({ error: 'token_invalid', message: 'words that the system wrote' }, 401), 'token_invalid'],
-      ['a 403 with no code', () => json({ message: 'words that the system wrote' }, 403), 'refusal_without_code'],
+      ['a 401 with token_invalid', () => json({ error: 'token_invalid', message: SAID }, 401), 'token_invalid'],
+      ['a 403 with not_covered', () => json({ error: 'not_covered', message: SAID }, 403), 'not_covered'],
+      ['a 403 with delegation_ended', () => json({ error: 'delegation_ended', message: SAID }, 403), 'delegation_ended'],
+      ['a 403 with chain_too_deep', () => json({ error: 'chain_too_deep', message: SAID }, 403), 'chain_too_deep'],
+      ['a 403 with actor_not_active', () => json({ error: 'actor_not_active', message: SAID }, 403), 'actor_not_active'],
       ['a 403 with a body that says ok', () => json({ ok: true, error: 'not_covered', body: read.body }, 403), 'not_covered'],
-      ['a 403 whose body is the golden body', () => json(read.body, 403), 'refusal_without_code'],
+      ['a 403 with no code', () => json({ message: SAID }, 403), 'mock_system_failed'],
+      ['a 403 with a code that no token route gives', () => json({ error: 'approval_revoked', message: SAID }, 403), 'mock_system_failed'],
+      ['a 401 with a code that no token route gives', () => json({ error: 'svid_invalid', message: SAID }, 401), 'mock_system_failed'],
+      ['a 403 whose body is the golden body', () => json(read.body, 403), 'mock_system_failed'],
     ];
-    it.each(REFUSED)('is a failed read with the code of the system for %s, and never a value', async (_name, answer, code) => {
+    it.each(REFUSED)('is a failed read with the wanted code for %s, and never a value', async (_name, answer, code) => {
       const w = world();
       w.script.fetch = async () => answer();
-      await expectReadFailure(w, read, await read.run(w), code, false);
+      await expectReadFailure(w, read, await read.run(w), code);
       expect(w.fetched).toHaveLength(1);
     });
 
     const FAILED: [string, () => Response, string][] = [
-      ['a 404 with the code of an id that the system does not know', () => json({ error: read.notFound, message: 'words that the system wrote' }, 404), read.notFound],
+      ['a 404 with the code of an id that the system does not know', () => json({ error: read.notFound, message: SAID }, 404), read.notFound],
       ['a 500 with no code', () => json({}, 500), 'mock_system_failed'],
-      ['a 500 with a body that is not JSON', () => new Response('words that the system wrote', { status: 500 }), 'mock_system_failed'],
+      ['a 500 with a body that is not JSON', () => new Response(SAID, { status: 500 }), 'mock_system_failed'],
       ['a 200 with a body that is not JSON', () => new Response('<p>words that the system wrote</p>', { status: 200 }), 'mock_system_failed'],
       ['a redirect', () => new Response(null, { status: 302, headers: { location: 'https://elsewhere.example/' } }), 'mock_system_failed'],
       ['a 500 whose body is the golden body', () => json(read.body, 500), 'mock_system_failed'],
+      ['a 500 with internal, which is a code of this agent too', () => json({ error: 'internal', message: SAID }, 500), 'mock_system_failed'],
+      ['a 503 with ledger_unavailable', () => json({ error: 'ledger_unavailable', message: SAID }, 503), 'mock_system_failed'],
+      ['a 503 with gateway_unavailable', () => json({ error: 'gateway_unavailable', message: SAID }, 503), 'mock_system_failed'],
+      ['a 503 with service_busy', () => json({ error: 'service_busy', message: SAID }, 503), 'mock_system_failed'],
+      ['a 400 with bad_request', () => json({ error: 'bad_request', message: SAID }, 400), 'mock_system_failed'],
+      ['a 404 with tenant_not_found', () => json({ error: 'tenant_not_found', message: SAID }, 404), 'mock_system_failed'],
+      ['a 421 with wrong_host', () => json({ error: 'wrong_host', message: SAID }, 421), 'mock_system_failed'],
     ];
     it.each(FAILED)('is a failed read for %s, with one call and no second try', async (_name, answer, code) => {
       const w = world();
       w.script.fetch = async () => answer();
       await expectReadFailure(w, read, await read.run(w), code);
       expect(w.fetched).toHaveLength(1);
+    });
+
+    it('passes on a code of the system only for an id that it does not know and for the credential of a token route, and gives mock_system_failed for every other code of the status table of the mock', async () => {
+      const passes = ['order_not_found', 'guideline_not_found', 'token_invalid', 'not_covered', 'delegation_ended', 'chain_too_deep', 'actor_not_active'];
+      for (const code of passes) expect(STATUS_OF, code).toHaveProperty(code);
+      expect(Object.keys(STATUS_OF).length).toBeGreaterThan(40);
+      for (const [code, status] of Object.entries(STATUS_OF)) {
+        const w = world();
+        w.script.fetch = async () => json({ error: code, message: SAID }, status);
+        const wanted = passes.includes(code) ? code : 'mock_system_failed';
+        expect(await read.run(w), `${code} with ${status}`).toStrictEqual({ ok: false, code: wanted });
+        expect(EVIDENCE_FAILURES, code).toContain(wanted);
+        await expectRecordedAndEnded(w);
+      }
     });
 
     it('is a failed read when the request gets no answer, with one call', async () => {
@@ -162,7 +190,7 @@ describe.each(READS)('the $name read', (read) => {
     it('reads the body when the system answers 200 with it: the twin', async () => {
       const w = world();
       w.script.fetch = async () => json(read.body, 200);
-      expect(await read.run(w)).toStrictEqual({ ok: true, value: read.expected });
+      expect(await read.run(w)).toStrictEqual(gives(read));
       expect(w.fetched).toHaveLength(1);
     });
   });
@@ -197,7 +225,7 @@ describe.each(READS)('the $name read', (read) => {
         seen = body;
         return real(body);
       });
-      expect(await read.run(w)).toStrictEqual({ ok: true, value: read.expected });
+      expect(await read.run(w)).toStrictEqual(gives(read));
       expect(seen).toStrictEqual(read.body);
     });
   });
@@ -280,7 +308,7 @@ describe.each(READS)('the $name read', (read) => {
       expectUntouched(short);
       expect(short.logs).toStrictEqual([failureLine(read, 'deadline')]);
       const exact = world();
-      expect(await read.run(exact, { deadline: NOW + LEAST_MS })).toStrictEqual({ ok: true, value: read.expected });
+      expect(await read.run(exact, { deadline: NOW + LEAST_MS })).toStrictEqual(gives(read));
       await expectRecordedAndEnded(exact);
       expect(exact.clock.now()).toBeLessThanOrEqual(NOW + LEAST_MS);
     });
@@ -292,7 +320,7 @@ describe.each(READS)('the $name read', (read) => {
         expectUntouched(w);
       }
       const w = world();
-      expect(await read.run(w, { deadline: Number.POSITIVE_INFINITY })).toStrictEqual({ ok: true, value: read.expected });
+      expect(await read.run(w, { deadline: Number.POSITIVE_INFINITY })).toStrictEqual(gives(read));
     });
 
     it('trims the wait for the confirmations so that the end step is inside the deadline, and gives the full wait to a read that has the time: the twin', async () => {
@@ -321,7 +349,7 @@ describe.each(READS)('the $name read', (read) => {
       expectFailed(await read.run(hungUp, { signal: controller.signal }), 'aborted');
       expectUntouched(hungUp);
       expect(hungUp.logs).toStrictEqual([failureLine(read, 'aborted')]);
-      expect(await read.run(world(), { signal: new AbortController().signal })).toStrictEqual({ ok: true, value: read.expected });
+      expect(await read.run(world(), { signal: new AbortController().signal })).toStrictEqual(gives(read));
     });
 
     it('still ends the sub-delegation when the caller hangs up during the token request, and then never calls the system', async () => {
@@ -371,7 +399,7 @@ describe.each(READS)('the $name read', (read) => {
         controller.abort();
         return json(read.body);
       };
-      expect(await read.run(w, { signal: controller.signal })).toStrictEqual({ ok: true, value: read.expected });
+      expect(await read.run(w, { signal: controller.signal })).toStrictEqual(gives(read));
       expect(w.fetched).toHaveLength(1);
       await expectRecordedAndEnded(w);
     });

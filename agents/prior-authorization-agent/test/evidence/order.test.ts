@@ -1,8 +1,8 @@
 // agents/prior-authorization-agent/test/evidence/order.test.ts: the two reads of the evidence, one after the other. The review questions: is a sub-delegation ever left alive, can the agent read a record or a
 // guideline with its own token, can the id of the second Delegate equal the id of the first, and is a refused or failed call ever read as a success? The record reader runs first. The drafter runs second, with
-// the service code of the order that the first read gave. The first sub-delegation is ended, and its records are up to date, before the second Delegate is built, so no more than one sub-delegation of a
-// job is alive. A failed first read ends the evidence and the second sub-delegation is never made. A failed second read gives its code and none of the first evidence, and both sub-delegations are ended. Each
-// failure has its twin.
+// the service code of the order that the first read gave. Each sub-delegation ends before the next one starts: the second Delegate is built only when the first sub-delegation is ended or was never made, so no
+// more than one sub-delegation of a job is alive. A failed first read ends the evidence and the second sub-delegation is never made. A first read whose sub-delegation does not end stops the evidence too, and its
+// entry stays for the janitor. A failed second read gives its code and none of the first evidence, and both sub-delegations are ended. Each failure has its twin.
 import type { GatewayResult, IssuedToken } from '@vsa/id-kit/client';
 import { MemoryLeftStore } from '@vsa/usecase-kit/janitor';
 import { accepted } from '@vsa/usecase-kit/protocol';
@@ -10,7 +10,7 @@ import { describe, expect, it } from 'vitest';
 import { EVIDENCE_FAILURES } from '../../src/evidence/subread.ts';
 import {
   DEADLINE_MS, DRAFTER_DID, GUIDELINES_RESOURCE, KINDS, KNEE_GUIDELINE, KNEE_RECORD_SET, NOW, ORDER_ID, PARENT_ID, READS, RECORDS_RESOURCE, RECORD_READER_DID, GUIDELINE, RECORD_SET, actionOf, expectFailed,
-  AGENT_KEY, expectNoSecrets, expectRecordedAndEnded, expectUntouched, failureLine, gatewayRefused, issued, janitorPass, json, opsOf, runEvidence, startEvidence, systemAnswer, world,
+  AGENT_KEY, expectNoSecrets, expectRecordedAndEnded, expectUntouched, failureLine, gatewayRefused, issued, janitorOnce, janitorPass, json, opsOf, runEvidence, showing, startEvidence, systemAnswer, world,
 } from './support.ts';
 import type { RunOptions, World } from './support.ts';
 
@@ -149,7 +149,7 @@ describe('a first read that fails', () => {
     setup(w);
     const result = await runEvidence(w, over);
     expectFailed(result, code);
-    if (code !== 'not_covered') expect(EVIDENCE_FAILURES).toContain(code);
+    expect(EVIDENCE_FAILURES).toContain(code);
     expect(w.chain.builtDelegates).toHaveLength(sent ? 1 : 0);
     expect(w.tokenRequests.map(actionOf)).not.toContain('guideline.read');
     expect(w.fetched.filter((call) => call.url.includes('/guidelines/'))).toStrictEqual([]);
@@ -240,7 +240,7 @@ describe('a second read that fails', () => {
     const result = await runEvidence(w);
     expectFailed(result, code);
     expect(result).not.toHaveProperty('record_set');
-    if (code !== 'not_covered') expect(EVIDENCE_FAILURES).toContain(code);
+    expect(EVIDENCE_FAILURES).toContain(code);
     expect(w.fetched[0]!.url).toBe(RECORDS.url);
     await expectRecordedAndEnded(w, 2);
     expect(w.logs).toStrictEqual([failureLine(GUIDELINES, code)]);
@@ -331,7 +331,8 @@ describe('the id of the second Delegate', () => {
 
   it('is refused by the hook when it equals the id of the first, nothing is sent for it, and the entry of the first stays recorded', async () => {
     const w = world();
-    w.chain.faults.undelegateNeverLands = true;
+    // The first read ends, and the removal of its entry fails: the list still holds the id of the first Delegate when the builder makes the second Delegate.
+    w.sink.failRemove = true;
     sameIdTwice(w);
     expectFailed(await runEvidence(w), 'sub_delegation_journal_failed');
     const [first, second] = w.chain.builtDelegates;
@@ -339,8 +340,8 @@ describe('the id of the second Delegate', () => {
     expect(second!.id).toBe(first!.id);
     expect(second!.txHash).not.toBe(first!.txHash);
     expect(w.chain.submitted.map((sent) => sent.kind)).toStrictEqual(KINDS(1));
-    expect(w.sink.entries.get(first!.id)).toMatchObject({ left: { id: first!.id, delegateTxHash: first!.txHash, endTxHash: w.chain.builtUndelegates[0]!.txHash } });
-    expect(opsOf(w)).toStrictEqual(['add', 'put', 'put', 'delete']);
+    expect(w.sink.entries.get(first!.id)).toMatchObject({ left: { id: first!.id, delegateTxHash: first!.txHash, endTxHash: null } });
+    expect(opsOf(w)).toStrictEqual(['add', 'put', 'remove', 'delete']);
     expect(w.live.size).toBe(0);
     expect(w.tokenRequests).toHaveLength(1);
     expect(w.fetched).toHaveLength(1);
@@ -360,6 +361,76 @@ describe('the id of the second Delegate', () => {
     expect(second!.id).toBe(first!.id);
     expect(w.chain.submitted.map((sent) => sent.kind)).toStrictEqual(KINDS(2));
     expect(w.sink.entries.size).toBe(0);
+  });
+});
+
+describe('a first read whose sub-delegation does not end', () => {
+  interface Case {
+    readonly name: string;
+    readonly setup: (w: World) => void;
+  }
+  const CASES: Case[] = [
+    { name: 'the Undelegate never lands', setup: (w) => void (w.chain.faults.undelegateNeverLands = true) },
+    { name: 'the node refuses the Undelegate', setup: (w) => void (w.chain.faults.submitUndelegateThrows = true) },
+    {
+      name: 'the node refuses the Undelegate and the update of the entry fails too',
+      setup: (w) => {
+        w.chain.faults.submitUndelegateThrows = true;
+        w.sink.failPutAt.add(2);
+      },
+    },
+  ];
+  it.each(CASES)('stops the evidence before the second read when $name: no second sub-delegation, and the entry stays for the janitor', async ({ setup }) => {
+    const w = world();
+    setup(w);
+    const result = await runEvidence(w);
+    expectFailed(result, 'sub_delegation_not_ended');
+    expect(EVIDENCE_FAILURES).toContain('sub_delegation_not_ended');
+    const [first] = w.chain.builtDelegates;
+    expect(w.chain.builtDelegates).toHaveLength(1);
+    expect(w.chain.submitted.map((sent) => sent.kind)).toStrictEqual(KINDS(1));
+    expect(w.tokenRequests.map(actionOf)).toStrictEqual(['record.read']);
+    expect(w.fetched.map((call) => call.url)).toStrictEqual([RECORDS.url]);
+    expect(opsOf(w)).toStrictEqual(['add', 'put', 'put', 'delete']);
+    expect(w.sink.entries.get(first!.id)).toMatchObject({ signer_key_hash: AGENT_KEY, left: { id: first!.id, delegateTxHash: first!.txHash } });
+    expect(w.live.size).toBe(0);
+    expect(janitorPass(w.sink.entries, w.live)).toStrictEqual({ skipped: [], taken: [first!.id] });
+    expect(w.logs).toStrictEqual([failureLine(RECORDS, 'sub_delegation_not_ended')]);
+    expectNoSecrets(w, result);
+  });
+
+  it('leaves a sub-delegation that is alive on the ledger, and one pass of the janitor then ends it with the entry that the read left', async () => {
+    const w = world();
+    w.chain.faults.submitUndelegateThrows = true;
+    expectFailed(await runEvidence(w), 'sub_delegation_not_ended');
+    const [first] = w.chain.builtDelegates;
+    expect(await w.chain.readDelegation(first!.id)).not.toBeNull();
+    w.chain.faults.submitUndelegateThrows = false;
+    expect((await janitorOnce(w)).entries).toMatchObject([{ id: first!.id, state: 'ended' }]);
+    expect(await w.chain.readDelegation(first!.id)).toBeNull();
+    expect(w.sink.entries.size).toBe(0);
+  });
+
+  it('goes on to the second read when the end of the first read is not_made, because nothing of that read is alive: the twin', async () => {
+    const w = world();
+    // After the job of the first read, the ledger shows ANOTHER transaction under its id. Nothing of that read can land, and the end step builds no Undelegate.
+    let other = false;
+    showing(w.chain, () => (other ? 'ee'.repeat(32) : w.chain.builtDelegates.at(-1)!.txHash));
+    const build = w.chain.buildDelegate.bind(w.chain);
+    w.chain.buildDelegate = async (params) => {
+      other = false;
+      return build(params);
+    };
+    w.script.fetch = async (url) => {
+      other = url === RECORDS.url;
+      return systemAnswer(url);
+    };
+    expect(await runEvidence(w)).toStrictEqual(BOTH);
+    expect(w.chain.submitted.map((sent) => sent.kind)).toStrictEqual(['delegate', 'delegate', 'undelegate']);
+    expect(opsOf(w)).toStrictEqual(['add', 'put', 'remove', 'delete', 'add', 'put', 'remove', 'delete']);
+    expect(w.sink.entries.size).toBe(0);
+    expect(w.live.size).toBe(0);
+    expect(w.logs).toStrictEqual([]);
   });
 });
 

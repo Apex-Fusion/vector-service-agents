@@ -31,7 +31,7 @@ describe('the value of a read', () => {
         },
       }),
     );
-    expect(result).toStrictEqual({ ok: true, value: 42 });
+    expect(result).toStrictEqual({ ok: true, value: 42, end: 'ended' });
     expect(seen).toStrictEqual(RECORD_SET_BODY);
     await expectRecordedAndEnded(w);
   });

@@ -7,14 +7,19 @@
 //   2. The sub-delegation, through `withSubDelegation` of the kit: one action on one resource, one hop below the delegation of the hirer, no value, made by the delegation key of this agent and the delegation key
 //      of the subagent. The subagent asks the gateway for its token after the 30 confirmations and reads the document with it. The sub-delegation is ENDED in every case: after the document, after a refusal,
 //      after a failure, after a throw and after a timeout. The records of the sub-delegation are the ones that `bookkeeping.ts` says.
-//   3. The job of the subagent: a token for the route under the sub-delegation (`requestSubagentToken`, so the holder is always `subagent`), the call of the system, and the parser of the read.
+//   3. The job of the subagent: a token for the route under the sub-delegation (`requestSubagentToken`, so the holder is always `subagent`), the call of the system, and the parser of the read. A refusal or a
+//      failure of the call gives the code of the system only when it is one of `MOCK_CODES`. Any other code of a system, such as its `internal` or its `ledger_unavailable`, is `mock_system_failed`, so that a
+//      code of a system never looks like a code of this agent.
+//
+// A read that gives its document also says how its sub-delegation ended (`end`). An end that is `not_ended` means that the sub-delegation may be alive: its entry is in the list of left sub-delegations, and the
+// janitor ends it. The caller decides what that means for the next read.
 //
 // Time. A read starts only when the deadline leaves it the least budget: the least wait for the confirmations, the job under the sub-delegation, and the end step. The wait for the confirmations is trimmed so that
-// the end step is inside the deadline. The first read ends, and its sub-delegation is ended, before the second read asks for its time.
+// the end step is inside the deadline. The sub-delegation stays valid for that wait, the job and `VALIDITY_SLACK_MS` more, and it ends by itself then.
 import {
   DEFAULT_CONFIRMATION_WAIT_MS, DEFAULT_END_TIMEOUT_MS, DEFAULT_POLL_MS, GATEWAY_FAILURES, SUB_DELEGATION_FAILURES, askWhileTooYoung, callWithToken, requestSubagentToken, withSubDelegation,
 } from '@vsa/usecase-kit/access';
-import type { RouteTokenResult, SubDelegationHandle, TokenTarget } from '@vsa/usecase-kit/access';
+import type { RouteTokenResult, SubDelegationEnd, SubDelegationHandle, SystemFailed, SystemRefused, TokenTarget } from '@vsa/usecase-kit/access';
 import type { DelegationId, ProtocolResult } from '@vsa/usecase-kit/protocol';
 import { beforeSendOf, leave, note, updateList } from './bookkeeping.ts';
 import type { Book } from './bookkeeping.ts';
@@ -35,24 +40,44 @@ export const VALIDITY_SLACK_MS = 300_000;
 /** The least time that a read needs from its start to the end of its end step: 540,000 ms. A read with less time left is `deadline`, and it sends nothing. */
 export const LEAST_READ_MS = MIN_CONFIRMATION_WAIT_MS + JOB_TIMEOUT_MS + END_TIMEOUT_MS;
 
-/** The codes that this folder gives itself, for the two reads. A code of a mock system for a refusal of a credential passes through too, and it is not in this list. */
+/**
+ * The codes that this folder gives itself, for the two reads. `mock_system_failed` is the one code for every answer of a system that is not a document and not one of `MOCK_CODES`.
+ * `sub_delegation_not_ended` is for an evidence that stops because the first sub-delegation did not end: it may be alive, and the janitor ends it.
+ */
 const OWN_FAILURES = [
-  'record_read_timeout', 'guideline_read_timeout', 'record_set_invalid', 'guideline_invalid', 'order_not_found', 'guideline_not_found', 'mock_system_failed', 'deadline', 'aborted', 'internal',
+  'record_read_timeout', 'guideline_read_timeout', 'record_set_invalid', 'guideline_invalid', 'mock_system_failed', 'sub_delegation_not_ended', 'deadline', 'aborted', 'internal',
 ] as const;
 
 /**
- * Every code that `readEvidence` gives as the reason of a failed read, except the codes of a mock system for the refusal of a credential. A failure of a sub-delegation is `sub_delegation_` and the code of
- * the access folder, and a failure of a token is `token_` and its code. The two codes of the mock systems for an id that they do not know (`order_not_found`, `guideline_not_found`) and for a call that failed
- * (`mock_system_failed`) are in the list, because the records system and the guideline store give them for these two routes. The name of the subagent is in the log and not in the code.
+ * The codes of a mock system that a read passes on as its reason, and no other code of a mock system: the two codes for an id that the system does not know, and the five refusals of the credential of a token
+ * route, which are the codes that the mock gives with the status 401 or 403 for a token (`tokenRefusal` of its identity source). Every other code of a mock system, also its `internal`, `bad_request`,
+ * `ledger_unavailable` and `tenant_not_found`, is `mock_system_failed`: a code of a mock system must never look like a code of this agent.
+ */
+export const MOCK_CODES = ['order_not_found', 'guideline_not_found', 'token_invalid', 'not_covered', 'delegation_ended', 'chain_too_deep', 'actor_not_active'] as const;
+const PASSED_ON: ReadonlySet<string> = new Set(MOCK_CODES);
+
+/**
+ * Every code that `readEvidence` gives as the reason of a failed read, and no other code: the own codes, the codes of a mock system that a read passes on (`MOCK_CODES`), `sub_delegation_` and the code of the
+ * access folder for the failure of a sub-delegation, and `token_` and the code of the access folder for the failure of a token. The name of the subagent is in the log and not in the code.
  */
 export const EVIDENCE_FAILURES: readonly string[] = Object.freeze([
   ...OWN_FAILURES,
+  ...MOCK_CODES,
   ...SUB_DELEGATION_FAILURES.map((code) => `sub_delegation_${code}`),
   ...GATEWAY_FAILURES.map((code) => `token_${code}`),
 ]);
 
-/** What one read gives: the parsed document, or the code of the failure. */
-export type SubreadResult<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly code: string };
+/**
+ * How the sub-delegation of a read ended. `ended`: the ledger no longer shows it. `not_made`: nothing of the read is on the ledger and nothing can land. `not_ended`: it may be alive, and its entry is in the
+ * list of left sub-delegations for the janitor.
+ */
+export type EndState = SubDelegationEnd['state'];
+
+/** What one read gives: the parsed document with the end of its sub-delegation, or the code of the failure. */
+export type SubreadResult<T> = { readonly ok: true; readonly value: T; readonly end: EndState } | { readonly ok: false; readonly code: string };
+
+/** What the job under the sub-delegation gives: the parsed document, or the code of the failure. */
+type JobResult<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly code: string };
 
 /**
  * What a read of the evidence is made of. `name` is the name of the subagent, which the log shows. `target` is the route, its action and its resource, and `parse` is the parser of the body that the system
@@ -84,12 +109,21 @@ export function failedRead(deps: EvidenceDeps, name: SubagentName, code: unknown
 class HungUp extends Error {}
 
 /**
+ * The reason of a call that the system refused or failed: the code of the system when it is one of `MOCK_CODES`, and `mock_system_failed` for any other code and for no code. A refusal has its code in
+ * `reason`, and a failure has it in `systemCode`.
+ */
+function reasonOf(answer: SystemRefused | SystemFailed): string {
+  const code = answer.code === 'refused_by_system' ? answer.reason : answer.systemCode;
+  return code !== null && PASSED_ON.has(code) ? code : 'mock_system_failed';
+}
+
+/**
  * The job of the subagent: a token for the route under the sub-delegation, the call of the system, and the parser of the body. The gateway may need some time to see the 30 confirmations, so a token request
  * that gets `delegation_too_young` is asked again for the patience of the job. A call is made once. A job that ran past its time makes no further request: the sub-delegation is ended by then. A job whose
  * caller hung up makes no further request either, and it gives `aborted`. The token is the token of the SUBAGENT: `requestSubagentToken` takes the DID and the keys of the subagent and the id of its
  * sub-delegation, and this folder holds no other key.
  */
-async function readJob<T>(deps: EvidenceDeps, run: EvidenceRun, spec: SubreadSpec<T>, handle: SubDelegationHandle): Promise<SubreadResult<T>> {
+async function readJob<T>(deps: EvidenceDeps, run: EvidenceRun, spec: SubreadSpec<T>, handle: SubDelegationHandle): Promise<JobResult<T>> {
   let token: RouteTokenResult;
   try {
     token = await askWhileTooYoung(
@@ -112,7 +146,7 @@ async function readJob<T>(deps: EvidenceDeps, run: EvidenceRun, spec: SubreadSpe
   if (handle.signal.aborted) throw new Error('the time of the job ended');
   if (run.signal?.aborted === true) return { ok: false, code: 'aborted' };
   const answer = await callWithToken(deps.calls, token.value, spec.target);
-  if (answer.ok !== true) return { ok: false, code: answer.code === 'refused_by_system' ? answer.reason : (answer.systemCode ?? 'mock_system_failed') };
+  if (answer.ok !== true) return { ok: false, code: reasonOf(answer) };
   const parsed = spec.parse(answer.body);
   return parsed.ok === true ? { ok: true, value: parsed.value } : { ok: false, code: spec.invalidCode };
 }
@@ -140,7 +174,7 @@ async function readUnder<T>(book: Book, request: EvidenceRequest, run: EvidenceR
       (handle) => readJob(deps, run, spec, handle),
     );
     await updateList(book, sent.id, key.signer.keyHash, result.end);
-    if (result.kind === 'returned') return result.value;
+    if (result.kind === 'returned') return result.value.ok ? { ok: true, value: result.value.value, end: result.end.state } : result.value;
     if (result.kind === 'timed_out') return { ok: false, code: spec.timeoutCode };
     if (result.kind === 'threw') return { ok: false, code: 'internal' };
     return { ok: false, code: `sub_delegation_${result.failure.code}` };
@@ -151,10 +185,10 @@ async function readUnder<T>(book: Book, request: EvidenceRequest, run: EvidenceR
 
 /**
  * Reads one document through one subagent, and ends the sub-delegation. The sub-delegation is made by the delegation key of this agent (`request.key`) and the delegation key of the subagent, and the records of
- * the sub-delegation are kept as the head of `bookkeeping.ts` says. The result is the parsed document, or the code of the failure: `aborted` for a caller that hung up before the read started, `deadline` for a
- * read that has not the least time, a code of the sub-delegation, the code of the token, the code of the system for a refusal or a failure of the call, the invalid code of the spec for a body that the parser
- * refuses, the timeout code of the spec for a job that ran out of time, and `internal` for a job that threw. A failed read writes one line to the log, and it makes no read after it. A throw of the code of
- * the sub-delegation itself is not hidden: the id leaves the set of the sub-delegations in use, and the entry stays for the janitor.
+ * the sub-delegation are kept as the head of `bookkeeping.ts` says. The result is the parsed document with the end of its sub-delegation, or the code of the failure: `aborted` for a caller that hung up
+ * before the read started, `deadline` for a read that has not the least time, a code of the sub-delegation, the code of the token, a code of `MOCK_CODES` or `mock_system_failed` for a refusal or a failure of
+ * the call, the invalid code of the spec for a body that the parser refuses, the timeout code of the spec for a job that ran out of time, and `internal` for a job that threw. A failed read writes one line to
+ * the log, and it makes no read after it. A throw of the code of the sub-delegation itself is not hidden: the id leaves the set of the sub-delegations in use, and the entry stays for the janitor.
  */
 export async function readThroughSubagent<T>(deps: EvidenceDeps, request: EvidenceRequest, run: EvidenceRun, spec: SubreadSpec<T>): Promise<SubreadResult<T>> {
   const result = await readUnder({ deps, name: spec.name }, request, run, spec);

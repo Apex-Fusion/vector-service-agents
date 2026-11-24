@@ -5,11 +5,11 @@
 import { DamagedLeftEntriesError } from '@vsa/usecase-kit/janitor';
 import { describe, expect, it } from 'vitest';
 import type { LeftEntry } from '../../src/evidence/ports.ts';
-import { AGENT_KEY, NOW, PARENT_ID, READS, expectFailed, expectNoSecrets, failureLine, world } from './support.ts';
+import { AGENT_KEY, NOW, PARENT_ID, READS, expectFailed, expectNoSecrets, failureLine, gives, world } from './support.ts';
 import type { World } from './support.ts';
 
 describe.each(READS)('the list of left sub-delegations, for the $name read', (read) => {
-  const works = { ok: true, value: read.expected };
+  const works = gives(read);
 
   /** The entry of a left sub-delegation with this id. */
   const entryFor = (id: string): LeftEntry => ({
