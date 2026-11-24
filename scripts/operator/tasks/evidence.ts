@@ -452,7 +452,8 @@ async function checkApproval(session: TaskSession<Extra>, loaded: Loaded, facts:
 
 // ---- 5. the mock service ----
 
-interface MockRead { readonly lines: readonly Obj[]; readonly counts: { readonly purchase_orders: number; readonly supplier_orders: number } }
+/** The lines of the log that name a verified caller, the number of lines that the file leaves out, and the counts of the state. */
+interface MockRead { readonly lines: readonly Obj[]; readonly unattributed: number; readonly counts: { readonly purchase_orders: number; readonly supplier_orders: number } }
 
 async function mockGet(session: TaskSession<Extra>, tenant: string, what: 'log' | 'state'): Promise<unknown> {
   let response: Response;
@@ -476,10 +477,12 @@ async function readMock(session: TaskSession<Extra>, loaded: Loaded, facts: Read
     if (log.dropped > 0) problems.add('mock.log', `the mock service dropped ${log.dropped} line(s) of the log: the log is not whole`);
     const lines = log.lines;
     if (!lines.every(isObject)) { problems.add('mock.log', 'holds a line that is no object'); return null; }
+    // A line with no verified identity is the call of a caller that proved nothing, and its path is a text that the caller chose: the file counts such lines and never copies them.
+    const attributed = lines.filter((line: Obj) => typeof line.sub === 'string');
     const purchaseOrders = isObject(state) ? countOf(state.po_store) : null;
     const supplierOrders = isObject(state) ? countOf(state.supplier) : null;
     if (purchaseOrders === null || supplierOrders === null) { problems.add('mock.state', 'is not the state of the tenant that the mock service documents'); return null; }
-    return { lines: structuredClone(lines), counts: { purchase_orders: purchaseOrders, supplier_orders: supplierOrders } };
+    return { lines: structuredClone(attributed), unattributed: lines.length - attributed.length, counts: { purchase_orders: purchaseOrders, supplier_orders: supplierOrders } };
   } catch (err) {
     problems.add('mock', shown(err));
     return null;
@@ -921,7 +924,7 @@ function documentOf(session: TaskSession<Extra>, a: Assembly, steps: readonly St
       reclaim_tx: hire.entry.reclaim_tx, verdict: hire.report.verdict, result_sha256: hire.sha256,
     })),
     delegation: a.reads.delegations, vault: a.reads.vaults, approval: a.reads.approval, sub_delegations: a.reads.subDelegations,
-    mock: { tenant: record.tenant, log: a.mock?.lines ?? [], state: a.mock?.counts ?? null },
+    mock: { tenant: record.tenant, log: a.mock?.lines ?? [], unattributed_lines: a.mock?.unattributed ?? 0, state: a.mock?.counts ?? null },
     decisions: hires.filter((hire) => hire.decisions.length > 0).map((hire) => ({ step: hire.entry.step, decisions: hire.decisions })),
     claims: { reorder_agent: claimsOf(reorder), order_desk: claimsOf(agentOf(session.use, 'order-desk')) },
     challenge,

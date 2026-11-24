@@ -811,6 +811,7 @@ describe('check 5: the mock service', () => {
     const doc = JSON.parse(r.read(publicFile())!) as Obj;
     expect((doc.mock as Obj).log).toEqual(scenario('clean').log);
     expect((doc.mock as Obj).state).toEqual({ purchase_orders: 1, supplier_orders: 1 });
+    expect((doc.mock as Obj).unattributed_lines).toBe(0);
     const mocks = r.calls.filter((call) => call.url.startsWith(MOCK_PUBLIC_BASE));
     expect(mocks.map((call) => call.url)).toEqual([`${MOCK_PUBLIC_BASE}/t/tenant-1/log`, `${MOCK_PUBLIC_BASE}/t/tenant-1/state`]);
     for (const call of mocks) expect(Object.keys(call.headers).map((name) => name.toLowerCase())).toEqual(['accept']);
@@ -820,6 +821,24 @@ describe('check 5: the mock service', () => {
     s.log.push({ ...logLine('GET /erp/stock/{sku}', 'token', ['a']), code: 'the header was Bearer abc123' });
     const r = await refuses(s, ['Bearer']);
     expect(r.err).toContain('mark of a secret');
+  });
+  it('copies no line of a caller with no verified identity into the file, and counts it', async () => {
+    const stranger = (path: string): Obj => ({ ...logLine('GET /erp/stock/{sku}', 'none', []), path, sub: null, delegation: null, decision: 'refused', status: 401, code: 'missing_token', rule: 'token.missing' });
+    const s = scenario('clean');
+    s.log.push(stranger('/t/tenant-1/erp/stock/any-text-a-stranger-chooses'));
+    const r = await go(s);
+    expect(r.exit).toBe(0);
+    const text = r.read(publicFile())!;
+    expect(text).not.toContain('any-text-a-stranger-chooses');
+    const doc = JSON.parse(text) as { mock: Obj };
+    expect(doc.mock.log).toEqual(scenario('clean').log);
+    expect(doc.mock.unattributed_lines).toBe(1);
+    const marked = scenario('clean');
+    marked.log.push(stranger('/t/tenant-1/erp/stock/authorization'));
+    const blocked = await go(marked);
+    expect(blocked.exit).toBe(0);
+    const second = JSON.parse(blocked.read(publicFile())!) as { mock: Obj };
+    expect(second.mock.unattributed_lines).toBe(1);
   });
   it('refuses a log that dropped lines, a tenant that is not the tenant of the facts, and a mock service that fails', async () => {
     const s = scenario('clean');

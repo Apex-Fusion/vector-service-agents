@@ -161,6 +161,7 @@
         "token_status": null
       }
     ],
+    "unattributed_lines": 0,
     "state": {
       "purchase_orders": 1,
       "supplier_orders": 1
