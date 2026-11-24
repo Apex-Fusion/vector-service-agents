@@ -24,7 +24,7 @@ import type { HireLedger, PayingKey } from '@vsa/hire-kit';
 import { createGatewayClient } from '@vsa/id-kit/client';
 import type { GatewayClient } from '@vsa/id-kit/client';
 import { createVerifier } from '@vsa/id-kit/verify';
-import { koios, safeFetch } from '@vsa/vector-read';
+import { safeFetch } from '@vsa/vector-read';
 import type { KoiosUtxo } from '@vsa/vector-read';
 import { systemClock } from '@vsa/usecase-kit/access';
 import type { Clock, MockBases } from '@vsa/usecase-kit/access';
@@ -44,7 +44,7 @@ import { BIDDER_READ_BUDGET_MS, parseArdCatalog, readBidders } from '../bidders/
 import type { AdvertRead, BidderRow, BiddersDeps } from '../bidders/index.ts';
 import { readCompliance } from '../compliance/index.ts';
 import type { DelegationKeyDeps, ExecuteDeps } from '../execute/index.ts';
-import { casesAgainst, readCredential, readStake } from '../facts/index.ts';
+import { FACT_READ_TIMEOUT_MS, casesAgainst, readCredential, readStake } from '../facts/index.ts';
 import { ACCEPT_QUOTE_DECISION, RANKING_DECISION, SCORE_DECISION, SHORTLIST_DECISION, acceptQuoteInput, rankingInput, scoreInput, shortlistInput } from '../model/index.ts';
 import { PROPOSE_DEADLINE_MS } from '../propose/index.ts';
 import type { DiscoverResult, ProposeDeps } from '../propose/index.ts';
@@ -94,14 +94,18 @@ export interface WiringSettings {
 }
 
 /**
- * The readers under the bidder reader, by the shapes that the reader uses of them. The real readers of buyer-core, of vector-read and of the kit have more members, and each of them fits. A test replaces them:
- * the service uses the real ones.
+ * The readers under the bidder reader, by the shapes that the reader uses of them. The real readers of buyer-core, of vector-read and of the kit have more members, and each of them fits, except the reader of the stake
+ * (see `assetUtxos`). A test replaces them: the service uses the real ones.
  */
 export interface BidderSources {
   readonly fetchSuppliers: (options: { fetchImpl: typeof fetch; capability_id: string }) => Promise<readonly BidderRow[]>;
   readonly readAdvert: (ref: string, fetchImpl: typeof fetch, koiosUrl: string, identityAdvertAddress: string | null) => Promise<AdvertRead>;
   readonly safeFetch: (url: string, init: RequestInit, options: { maxResponseBytes: number; timeoutMs: number; fetchImpl: typeof fetch }) => Promise<{ readonly status: number; readonly text: string }>;
-  readonly assetUtxos: (policy: string, name: string, fetchImpl: typeof fetch) => Promise<readonly KoiosUtxo[]>;
+  /**
+   * The unspent outputs at Koios that hold one token, read at the Koios address `koiosUrl` of the settings (the address with no `/api/v1`). `koios.assetUtxos` of vector-read takes no such address: it reads at the variable
+   * KOIOS_URL of its own, so it does not fit, and the service makes its own reader (`assetUtxosAt`).
+   */
+  readonly assetUtxos: (koiosUrl: string, policy: string, name: string, fetchImpl: typeof fetch) => Promise<readonly KoiosUtxo[]>;
   readonly listAttestations: (env: LedgerEnv, query: AttestationQuery) => Promise<AttestationPage>;
 }
 
@@ -164,6 +168,22 @@ export interface Wired {
 function checkPaying(key: PayingKey, material: KeyMaterial, what: string): PayingKey {
   if (key.keyHash !== material.pkh) throw new Error(`the chain of the ${what} key does not belong to that key: its key hash is not the key hash of the key`);
   return key;
+}
+
+/**
+ * The unspent outputs that hold one token, from Koios at `<koiosUrl>/api/v1/asset_utxos`. The request is the one of `koios.assetUtxos` of vector-read, sent to the address of the settings. That reader takes its address from the
+ * variable KOIOS_URL, which this service does not set, so the stake would come from another host than the one that the rest of the service reads. The call has the bound of one fact read, and an answer that is not a success is
+ * an error.
+ */
+async function assetUtxosAt(koiosUrl: string, policy: string, name: string, fetchImpl: typeof fetch): Promise<readonly KoiosUtxo[]> {
+  const response = await fetchImpl(`${koiosUrl}/api/v1/asset_utxos`, {
+    method: 'POST',
+    headers: { accept: 'application/json', 'content-type': 'application/json', 'user-agent': 'vector-service-agents' },
+    body: JSON.stringify({ _asset_list: [[policy, name]], _extended: true }),
+    signal: AbortSignal.timeout(FACT_READ_TIMEOUT_MS),
+  });
+  if (!response.ok) throw new Error(`Koios asset_utxos answered ${response.status}`);
+  return (await response.json()) as KoiosUtxo[];
 }
 
 /**
@@ -253,7 +273,7 @@ export async function wire(settings: WiringSettings, options: WiringOptions = {}
   const indexer = endpoints.indexerUrl === undefined ? {} : { indexerUrl: endpoints.indexerUrl };
   const decisionDeps = (deadlineMs: number): DecisionDeps => ({ key: service, limits: settings.modelLimits, clock: now, sleep, deadlineMs, fetchImpl, ledger: hireLedger, log: note, ...indexer });
 
-  const sources: BidderSources = { fetchSuppliers, readAdvert, safeFetch, assetUtxos: koios.assetUtxos, listAttestations, ...options.sources };
+  const sources: BidderSources = { fetchSuppliers, readAdvert, safeFetch, assetUtxos: assetUtxosAt, listAttestations, ...options.sources };
   // The ports of the bidder reader. Each fact reader gets the clock for its bounds of time, and no reader reads another source than the one that its port names.
   const biddersDeps: BiddersDeps = {
     // `fetchSuppliers` of buyer-core takes no address of an indexer: it reads the one that VECTOR_MARKETPLACE_INDEXER_URL gave it when it loaded, and the configured one when that is not set.
@@ -280,8 +300,8 @@ export async function wire(settings: WiringSettings, options: WiringOptions = {}
         return null;
       }
     },
-    // The reader of the stake takes the id of the agent, which is the 64 hex characters of its DID.
-    stake: (agentId) => readStake({ assetUtxos: (policy, name) => sources.assetUtxos(policy, name, fetchImpl), clock }, agentId),
+    // The reader of the stake takes the id of the agent, which is the 64 hex characters of its DID. It reads at the Koios address of the settings.
+    stake: (agentId) => readStake({ assetUtxos: (policy, name) => sources.assetUtxos(endpoints.koiosUrl, policy, name, fetchImpl), clock }, agentId),
     cases: (did) => casesAgainst({ claims: () => port.readClaims(), challenges: () => port.readChallenges(), clock }, did),
     compliance: (did, nowMs) => readCompliance({ list: (query) => sources.listAttestations(ledger, query), issuerPkh: settings.complianceIssuerPkh, clock }, did, nowMs),
     credential: (did) => readCredential({ fetchCredential: (agent) => gateway.credential(agent), verify: (jwt, policy) => verifier.credential(jwt, policy), clock }, did),

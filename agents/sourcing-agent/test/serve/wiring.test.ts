@@ -18,7 +18,7 @@ import type { ModelLimits } from '@vsa/usecase-kit/decision';
 import type { Module1PortDeps, Module1Provider } from '@vsa/usecase-kit/dispute';
 import { agentIdOf, isPlainObject } from '@vsa/usecase-kit/protocol';
 import type { Decision } from '@vsa/usecase-kit/protocol';
-import { REPUTATION_SCRIPT_HASH, stakeTokenName } from '@vsa/vector-read';
+import { KOIOS_URL, REPUTATION_SCRIPT_HASH, stakeTokenName } from '@vsa/vector-read';
 import type { KoiosUtxo } from '@vsa/vector-read';
 import { DELEG_A, DEPLOYMENT, liveDelegation, world } from '../../../../packages/usecase-kit/test/cosign/support.ts';
 import { ScriptedPort } from '../../../../packages/usecase-kit/test/dispute/support.ts';
@@ -651,7 +651,7 @@ interface Asked {
   readonly list: string[];
   readonly read: { readonly ref: string; readonly address: string | null; readonly koios: string }[];
   readonly files: { readonly url: string; readonly max: number; readonly timeout: number }[];
-  readonly stakes: { readonly policy: string; readonly name: string }[];
+  readonly stakes: { readonly koios: string; readonly policy: string; readonly name: string }[];
   readonly attestations: AttestationQuery[];
 }
 
@@ -678,8 +678,8 @@ function sourcesOf(bidders: World, desks: readonly Desk[], asked: Asked): Bidder
       if (file === undefined || file instanceof Error) throw new Error('no file');
       return { status: file.status, text: Buffer.from(file.bytes).toString('utf8') };
     },
-    assetUtxos: async (policy, name) => {
-      asked.stakes.push({ policy, name });
+    assetUtxos: async (koios, policy, name) => {
+      asked.stakes.push({ koios, policy, name });
       return desks.filter((desk) => stakeTokenName(desk.agent) === name).map((desk, n) => stakeOf(desk, n + 1));
     },
     listAttestations: async (_env, query) => {
@@ -691,7 +691,7 @@ function sourcesOf(bidders: World, desks: readonly Desk[], asked: Asked): Bidder
 
 describe('the read of the bidders, through the real readers over fake sources', () => {
   /** The three desks, their sources, a Module-1 port with one case against the second desk, and the wiring over all of them. */
-  async function reading(over: { sources?: (sources: BidderSources) => BidderSources } = {}) {
+  async function reading(over: { sources?: (sources: BidderSources) => Partial<BidderSources>; env?: NodeJS.ProcessEnv; fetch?: (next: typeof fetch, desks: readonly Desk[]) => typeof fetch } = {}) {
     // The clock of the stub gateway stands still at the start time of the marketplace, as the clock of the wiring does while no hire waits.
     const gateway = createStubGateway({ now: () => T0 });
     const { world: bidders, desks } = bidderWorld(gateway);
@@ -703,7 +703,13 @@ describe('the read of the bidders, through the real readers over fake sources', 
     port.claims = [claim];
     port.challenges = [challengeView(1, claim)];
     const sources = sourcesOf(bidders, desks, asked);
-    const run = await setup({ gateway, options: { sources: over.sources === undefined ? sources : over.sources(sources), createPort: (deps) => { made.push(deps); return port; } } });
+    const wrap = over.fetch;
+    const run = await setup({
+      gateway,
+      ...(over.env === undefined ? {} : { env: over.env }),
+      ...(wrap === undefined ? {} : { fetch: (next: typeof fetch) => wrap(next, desks) }),
+      options: { sources: over.sources === undefined ? sources : over.sources(sources), createPort: (deps) => { made.push(deps); return port; } },
+    });
     expect(run.settings.endpoints.gatewayUrl).toBe(gateway.baseUrl);
     return { ...run, desks, asked, events, made };
   }
@@ -733,15 +739,61 @@ describe('the read of the bidders, through the real readers over fake sources', 
       expect(file.max, file.url).toBe(file.url === CATALOG_URL ? CATALOG_MAX_BYTES : BIDDER_FILE_MAX_BYTES);
       expect(file.timeout, file.url).toBe(file.url === CATALOG_URL ? CATALOG_TIMEOUT_MS : BIDDER_FETCH_TIMEOUT_MS);
     }
-    // The stake is read for the id of each agent, at the stake policy.
+    // The stake is read for the id of each agent, at the stake policy and at the Koios address of the settings.
     expect(asked.stakes.map((entry) => entry.name).sort()).toStrictEqual(desks.map((desk) => stakeTokenName(desk.agent)).sort());
-    expect(asked.stakes.every((entry) => entry.policy === REPUTATION_SCRIPT_HASH)).toBe(true);
+    expect(asked.stakes.every((entry) => entry.policy === REPUTATION_SCRIPT_HASH && entry.koios === settings.endpoints.koiosUrl)).toBe(true);
     // The compliance attestations are those of the issuer that the settings name, in type 0, and the cases are read from the one port.
     expect(asked.attestations).toHaveLength(3);
     for (const query of asked.attestations) expect(query).toMatchObject({ issuer: { type: 'key_hash', hash: ISSUER.keyHash }, attType: 0, limit: 50 });
     expect(settings.complianceIssuerPkh).toBe(ISSUER.keyHash);
     expect(events.filter((event) => event === 'readClaims')).toHaveLength(3);
     expect(events.filter((event) => event === 'readChallenges')).toHaveLength(3);
+  });
+
+  /** A Koios address that a setting gives. It is not the address that vector-read takes from its own variable. */
+  const KOIOS = 'https://koios.example.test';
+  const ASSET_UTXOS = `${KOIOS}/api/v1/asset_utxos`;
+  /** The sources of the bidder reader with no reader of the stake: the wiring then reads the stake with its own reader. */
+  const withOwnStakeReader = ({ fetchSuppliers, readAdvert, safeFetch, listAttestations }: BidderSources): Partial<BidderSources> => ({ fetchSuppliers, readAdvert, safeFetch, listAttestations });
+
+  test('reads the stake at the Koios address of the settings, with the request of vector-read, and never at the address that vector-read takes from its own variable', async () => {
+    const requests: { readonly url: string; readonly method: string | undefined; readonly body: string; readonly signal: AbortSignal | null | undefined }[] = [];
+    const { wired, settings, desks } = await reading({
+      env: { VECTOR_KOIOS_URL: KOIOS },
+      sources: withOwnStakeReader,
+      fetch: (next, all) => async (input, init) => {
+        if (!String(input).endsWith('/asset_utxos')) return next(input, init);
+        requests.push({ url: String(input), method: init?.method, body: String(init?.body), signal: init?.signal });
+        const { _asset_list: [[, name]] } = JSON.parse(String(init?.body)) as { _asset_list: [[string, string]] };
+        const rows = all.filter((desk) => stakeTokenName(desk.agent) === name).map((desk, n) => stakeOf(desk, n + 1));
+        return new Response(JSON.stringify(rows), { status: 200, headers: { 'content-type': 'application/json' } });
+      },
+    });
+    expect(settings.endpoints.koiosUrl).toBe(KOIOS);
+    expect(`${KOIOS}/api/v1`).not.toBe(KOIOS_URL);
+    const found = await wired.proposeDeps(T0).discover();
+    if (!found.ok) throw new Error(`the read failed with ${found.code}`);
+    expect(found.value.bidders.map((bidder) => bidder.file.stake_lovelace)).toStrictEqual(['11000000', '11000000', '11000000']);
+    // One request for each bidder, and each goes to the address of the settings, with the body and the method of vector-read and a bound of time.
+    expect(requests.map((request) => request.url)).toStrictEqual([ASSET_UTXOS, ASSET_UTXOS, ASSET_UTXOS]);
+    expect(requests.every((request) => request.method === 'POST' && request.signal instanceof AbortSignal)).toBe(true);
+    expect(requests.map((request) => request.body).sort()).toStrictEqual(desks.map((desk) => JSON.stringify({ _asset_list: [[REPUTATION_SCRIPT_HASH, stakeTokenName(desk.agent)]], _extended: true })).sort());
+  });
+
+  test.each([
+    ['the status 503', () => new Response('{"error":"down"}', { status: 503 })],
+    ['a body that is no JSON', () => new Response('not json', { status: 200 })],
+    ['a fetch that throws', (): Response => { throw new Error('the connection failed'); }],
+  ] as const)('gives a stake of null, and never 0, for %s from Koios, and the other facts stay', async (_what, fails) => {
+    const { wired } = await reading({
+      env: { VECTOR_KOIOS_URL: KOIOS },
+      sources: withOwnStakeReader,
+      fetch: (next) => async (input, init) => (String(input) === ASSET_UTXOS ? fails() : next(input, init)),
+    });
+    const found = await wired.proposeDeps(T0).discover();
+    if (!found.ok) throw new Error(`the read failed with ${found.code}`);
+    expect(found.value.bidders.map((bidder) => bidder.file.stake_lovelace)).toStrictEqual([null, null, null]);
+    expect(found.value.bidders.map((bidder) => bidder.file.credential)).toStrictEqual(['valid', 'valid', 'valid']);
   });
 
   test('reads the cases against the bidders and stakes the claim of the agent through one Module-1 port, made one time', async () => {
