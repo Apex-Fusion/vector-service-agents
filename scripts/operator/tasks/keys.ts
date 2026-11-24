@@ -3,20 +3,21 @@
 // The task never prints, logs, returns or stores a seed: the screen, the errors, the state file, the evidence file and the machine line hold names, key hashes and addresses only.
 // The folders have mode 700 and the files mode 600. A dry run writes nothing, not even a folder, and it reads no approval.
 // The runner loads the run key for a submit approval. Before the key exists, only this task can use an approval that says `unset` for the run wallet.
-// Existing public key files protect recorded identities. A repair uses recorded public addresses, not the presence of key files.
-import { lstatSync, readFileSync } from 'node:fs';
+// Validate each public key file against the declared keys of its use case. A damaged file must be restored before a run can make keys or write a public key file.
+import { lstatSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { keyCredentialOf } from '../../checks/lib/addresses.ts';
+import { enterpriseAddressOf, keyHashOf } from '../../checks/lib/platform.ts';
 import { PreconditionError } from '../../checks/lib/session.ts';
 import { units } from '../../checks/lib/format.ts';
-import type { TaskDefinition, TaskSession, UseCase } from '../lib/contract.ts';
+import type { OperatorSettings, TaskDefinition, TaskSession, UseCase } from '../lib/contract.ts';
+import { loadUseCase } from '../lib/load.ts';
 import { KeyStoreError, LEGACY_PUBLIC_MANIFEST, checkPublicManifest, codeOf, findPublicManifest, loadRegistry, makeMissingKeys, publicManifestFile, writePublicManifest } from '../lib/registry.ts';
-import type { KeyStoreIo, PublicKeyEntry, Registry } from '../lib/registry.ts';
+import type { KeyStoreIo, Registry } from '../lib/registry.ts';
+import { repeatedMember } from '../lib/strict-json.ts';
 import { USE_CASE_NAMES } from '../usecases/names.ts';
 
 const RUN = 'run';
-const KNOWN_MANIFESTS = USE_CASE_NAMES.map((useCase) => ({ useCase, file: publicManifestFile(useCase) }));
-const MANIFEST_NAME = /^[a-z][a-z0-9-]{0,47}$/;
+const KNOWN_MANIFESTS = USE_CASE_NAMES.map((useCase) => [publicManifestFile(useCase), useCase] as const);
 const PUBLIC_KEY_HEX = /^[0-9a-f]{64}$/;
 const NAME_WIDTH = 24;
 const SCOPE_WIDTH = 9;
@@ -53,95 +54,128 @@ const plural = (count: number): string => (count === 1 ? 'key' : 'keys');
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 const folderOf = (use: UseCase, name: string): string => (use.keys.find((spec) => spec.name === name)?.scope === 'shared' ? 'shared' : use.name);
 
-// ---- the public key file that is there ----
+// ---- public key files ----
 
-interface RecordedKey { address: string; scope: PublicKeyEntry['scope'] | null; intact: boolean }
-type OldManifest = { kind: 'absent' } | { kind: 'found' | 'damaged'; useCase: string | null; keys: ReadonlyMap<string, RecordedKey> };
+type Addresses = ReadonlyMap<string, string>;
 
-/** Keep readable addresses even when a different part of the file is damaged. An incomplete entry cannot prove a key's identity. */
-function readOldManifest(path: string, network: string, expectedUseCase?: string): OldManifest {
-  const keys = new Map<string, RecordedKey>();
-  let useCase: string | null = null;
-  const damaged = (): OldManifest => ({ kind: 'damaged', useCase, keys });
+const badManifest = (file: string, problem: string): PreconditionError =>
+  new PreconditionError(`the public key file ${file} ${problem}. Restore the original public key file. Nothing was made`);
+
+function keyFolderFiles(dir: string): Set<string> {
+  try { return new Set(readdirSync(dir)); } catch (err) {
+    if (codeOf(err) === 'ENOENT') return new Set();
+    throw new PreconditionError(`the key folder cannot be read (${codeOf(err)}). Nothing was made`);
+  }
+}
+
+function readManifest(dir: string, file: string): Record<string, unknown> {
+  const path = join(dir, file);
   let found: unknown;
+  let text: string;
   try {
-    const file = lstatSync(path, { throwIfNoEntry: false });
-    if (file === undefined) return { kind: 'absent' };
-    if (!file.isFile()) return damaged();
-    found = JSON.parse(readFileSync(path, 'utf8'));
-  } catch { return damaged(); }
-  if (!isObject(found)) return damaged();
-  if (typeof found.use_case === 'string' && MANIFEST_NAME.test(found.use_case)) useCase = found.use_case;
-  const identityKnown = useCase !== null && (expectedUseCase === undefined || expectedUseCase === useCase) && found.network === network;
-  if (!identityKnown) useCase = null;
-  if (!isObject(found.keys)) return damaged();
-  let complete = identityKnown;
-  for (const [name, entry] of Object.entries(found.keys)) {
-    if (!MANIFEST_NAME.test(name) || !isObject(entry)) {
-      complete = false;
-      continue;
-    }
-    const { address } = entry;
-    const credential = typeof address === 'string' && address.length <= 200 && address.startsWith('addr1') ? keyCredentialOf(address) : null;
-    if (typeof address !== 'string' || credential === null) {
-      complete = false;
-      continue;
-    }
-    const scope = entry.scope === 'shared' || entry.scope === 'use-case' ? entry.scope : null;
-    const intact = identityKnown && scope !== null && entry.key_hash === credential && typeof entry.public_key_hex === 'string' && PUBLIC_KEY_HEX.test(entry.public_key_hex);
-    if (!intact) complete = false;
-    keys.set(name, { address, scope, intact });
+    if (!lstatSync(path).isFile()) throw new Error();
+    text = readFileSync(path, 'utf8');
+    found = JSON.parse(text);
+  } catch {
+    throw badManifest(file, 'cannot be read');
   }
-  return complete && keys.get(RUN)?.intact === true ? { kind: 'found', useCase, keys } : damaged();
+  if (!isObject(found) || repeatedMember(text) !== null) throw badManifest(file, 'is not a JSON object with unique members');
+  return found;
 }
 
-/**
- * Stops the run when it would replace the recorded run wallet. Funds may be at that address. A damaged file that shows no address cannot prove that a missing run key is safe to make.
- */
-function requireRunWalletStays(kept: Registry, old: OldManifest): void {
-  if (old.kind === 'absent') return;
-  const shown = old.keys.get(RUN)?.address;
-  if (!kept.has(RUN)) {
-    if (shown !== undefined) {
-      throw new PreconditionError(`the run key file is missing, and the public key file shows the run wallet ${shown}: funds may be there, and a new key has another address. Restore the run key file. Nothing was made`);
-    }
-    if (old.kind === 'damaged') {
-      throw new PreconditionError('the run key file is missing, and the public key file cannot be read, so it is not known whether the run wallet holds funds. Restore the original public key file and run key. Nothing was made');
-    }
-    return;
-  }
-  if (shown !== undefined && shown !== kept.addressOf(RUN)) {
-    throw new PreconditionError(`the run key file gives another wallet than the public key file shows (${shown}): funds may be there. Restore the run key file that matches the public key file. Nothing was made`);
-  }
-}
-
-/** Check each recorded address. Only a matching, intact entry can prove the identity of a key. */
-function requireRecordedKeysStay(use: UseCase, kept: Registry, prior: OldManifest, sharedOnly: boolean, verified: Set<string>): void {
-  if (prior.kind === 'absent') return;
+/** A file proves absence only when it contains every key that its use case declares. */
+function addressesOf(file: string, manifest: Record<string, unknown>, use: UseCase, network: string): Addresses {
+  const { keys } = manifest;
+  if (manifest.network !== network || typeof manifest.note !== 'string') throw badManifest(file, 'has an invalid network or note');
+  if (!isObject(keys) || Object.keys(keys).length !== use.keys.length) throw badManifest(file, 'does not list exactly the declared keys');
+  const addresses = new Map<string, string>();
+  const seen = new Set<string>();
   for (const { name, scope } of use.keys) {
-    const recorded = prior.keys.get(name);
-    if (recorded === undefined || (sharedOnly && (scope !== 'shared' || recorded.scope === 'use-case'))) continue;
+    const entry = Object.hasOwn(keys, name) ? keys[name] : undefined;
+    if (!isObject(entry) || entry.scope !== scope || typeof entry.about !== 'string') throw badManifest(file, `has no valid entry for ${name}`);
+    const { public_key_hex: pub, key_hash: hash, address } = entry;
+    if (typeof pub !== 'string' || !PUBLIC_KEY_HEX.test(pub) || typeof hash !== 'string' || keyHashOf(pub) !== hash ||
+        typeof address !== 'string' || enterpriseAddressOf(hash) !== address || seen.has(address)) {
+      throw badManifest(file, `has an invalid or duplicate identity for ${name}`);
+    }
+    seen.add(address);
+    addresses.set(name, address);
+  }
+  return addresses;
+}
+
+interface PriorManifests {
+  readonly ownsFile: boolean;
+  readonly ownsFolder: boolean;
+  readonly ownKeys: Addresses | undefined;
+  readonly shared: Addresses;
+}
+
+async function priorManifests(settings: OperatorSettings, use: UseCase, ownFile: string): Promise<PriorManifests> {
+  const files = keyFolderFiles(settings.keysDir);
+  const names = new Map<string, string>(KNOWN_MANIFESTS);
+  names.set(ownFile, use.name);
+  const definitions = new Map([[use.name, use]]);
+  const recorded = new Map<string, Addresses>();
+  const shared = new Map<string, string>();
+  const sharedNames = new Map<string, string>();
+  for (const file of files) {
+    const legacy = file === LEGACY_PUBLIC_MANIFEST;
+    if (!legacy && (!file.startsWith('keys-public.') || !file.endsWith('.json'))) continue;
+    const expected = names.get(file);
+    if (!legacy && expected === undefined) throw new PreconditionError('the key folder has a public key file for an unrecognized use case. Nothing was made');
+    const manifest = readManifest(settings.keysDir, file);
+    const name = manifest.use_case;
+    if (typeof name !== 'string' || (legacy ? name !== use.name && !USE_CASE_NAMES.some((known) => known === name) : name !== expected)) {
+      throw badManifest(file, 'does not name its recognized use case');
+    }
+    let owner = definitions.get(name);
+    if (owner === undefined) {
+      owner = await loadUseCase(name);
+      definitions.set(name, owner);
+    }
+    const addresses = addressesOf(file, manifest, owner, settings.network.name);
+    const before = recorded.get(name);
+    for (const { name: key, scope } of owner.keys) {
+      const address = addresses.get(key)!;
+      if (before !== undefined && before.get(key) !== address) throw badManifest(file, `disagrees with another public key file for ${key}`);
+      if (scope !== 'shared') continue;
+      const knownAddress = shared.get(key);
+      const knownName = sharedNames.get(address);
+      if ((knownAddress !== undefined && knownAddress !== address) || (knownName !== undefined && knownName !== key)) {
+        throw badManifest(file, `disagrees with another public key file for the shared key ${key}`);
+      }
+      shared.set(key, address);
+      sharedNames.set(address, key);
+    }
+    recorded.set(name, addresses);
+  }
+  for (const name of USE_CASE_NAMES) {
+    if (name !== use.name && files.has(name) && !recorded.has(name)) throw badManifest(publicManifestFile(name), 'is missing for an existing use case');
+  }
+  return { ownsFile: files.has(ownFile), ownsFolder: files.has(use.name), ownKeys: recorded.get(use.name), shared };
+}
+
+function requireRecordedKeysStay(use: UseCase, kept: Registry, prior: PriorManifests): void {
+  for (const { name, scope } of use.keys) {
+    const address = scope === 'shared' ? prior.shared.get(name) : prior.ownKeys?.get(name);
     const present = kept.has(name);
-    if (present && kept.addressOf(name) === recorded.address) {
-      if (recorded.intact && recorded.scope === scope) verified.add(name);
+    if (address === undefined) {
+      if (!present && scope === 'shared' && prior.ownsFolder && prior.ownKeys === undefined) {
+        throw badManifest(publicManifestFile(use.name), 'is missing for the existing key folder of this use case');
+      }
       continue;
+    }
+    if (present && kept.addressOf(name) === address) continue;
+    if (name === RUN && prior.ownKeys !== undefined) {
+      const problem = present ? `the run key file gives another wallet than the public key file shows (${address})`
+        : `the run key file is missing, and the public key file shows the run wallet ${address}`;
+      throw new PreconditionError(`${problem}: funds may be there. Restore the run key file that matches the public key file. Nothing was made`);
     }
     const label = scope === 'shared' ? `the shared key ${name}` : `the key ${name}`;
     const problem = present ? 'gives another wallet than a public key file records' : 'is missing, but a public key file records it';
     throw new PreconditionError(`${label} ${problem}. Restore the matching key file. Nothing was made`);
   }
-}
-
-/** Why the public key file changes. A recorded address cannot change. */
-function changesOf(old: OldManifest, registry: Registry): string[] {
-  if (old.kind === 'absent') return ['the public key file is new'];
-  if (old.kind === 'damaged') return ['the public key file was damaged and is written again'];
-  const reasons: string[] = [];
-  for (const name of registry.names()) {
-    if (!old.keys.has(name)) reasons.push(`the key ${name} is new`);
-  }
-  for (const name of old.keys.keys()) if (!registry.has(name)) reasons.push(`the key ${name} is no longer in the use case`);
-  return reasons;
 }
 
 // ---- what the task prints ----
@@ -186,39 +220,11 @@ const task: TaskDefinition<KeysExtra> = {
     const { settings, use, out } = session;
     const name = publicManifestFile(use.name);
     const path = join(settings.keysDir, name);
-    // The file that this run reads is the file of the use case, or the file of the earlier name when the use case has none yet. The file that it writes is the file of the use case.
-    const found = findPublicManifest(settings.keysDir, use.name);
-    const earlier = found !== path;
-    // What this run would do, over a file system that writes nothing. A refusal here (a folder or a key file that is not as the pack makes it, a run wallet that would change) stops the run before any key is made.
+    // Plan before checking public files. The plan writes nothing.
     const plan = makeMissingKeys(settings.keysDir, use.name, use.keys, DRY_IO);
+    const prior = await priorManifests(settings, use, name);
     const existing = loadRegistry({ dir: settings.keysDir, useCase: use.name, specs: use.keys, need: plan.kept });
-    const network = settings.network.name;
-    const old = readOldManifest(found, network, use.name);
-    requireRunWalletStays(existing, old);
-    const verified = new Set<string>();
-    let verifyAll = false;
-    let verifyShared = false;
-    const check = (prior: OldManifest, sharedOnly: boolean): void => {
-      requireRecordedKeysStay(use, existing, prior, sharedOnly, verified);
-      if (sharedOnly) verifyShared ||= prior.kind === 'damaged';
-      else if (prior.kind !== 'absent') {
-        verifyAll ||= prior.kind === 'damaged' || use.keys.some(({ name: key, scope }) => prior.keys.get(key)?.scope !== scope);
-      }
-    };
-    check(old, false);
-    // Another use case may be the only record of a shared key.
-    for (const prior of KNOWN_MANIFESTS) {
-      const other = join(settings.keysDir, prior.file);
-      if (other !== found) check(readOldManifest(other, network, prior.useCase), true);
-    }
-    const legacyPath = join(settings.keysDir, LEGACY_PUBLIC_MANIFEST);
-    if (legacyPath !== found) {
-      const legacy = readOldManifest(legacyPath, network);
-      if (legacy.kind !== 'absent') check(legacy, legacy.useCase !== null && legacy.useCase !== use.name);
-    }
-    if ((verifyAll || verifyShared) && use.keys.some(({ name: key, scope }) => (verifyAll || scope === 'shared') && !verified.has(key))) {
-      throw new PreconditionError('a public key file is damaged, and the pack cannot verify every affected key identity. Restore the original public key file. Nothing was made');
-    }
+    requireRecordedKeysStay(use, existing, prior);
 
     if (session.mode === 'dry') {
       out.out(`the key folder is ${settings.keysDir}`);
@@ -240,16 +246,15 @@ const task: TaskDefinition<KeysExtra> = {
     out.out(made.length === 0 ? 'made no key' : `made ${made.length} ${plural(made.length)}: ${made.join(', ')}`);
     out.out(`kept ${kept.length} ${plural(kept.length)}: a key file is never replaced`);
     let unchanged = false;
-    if (old.kind === 'found' && !earlier) {
+    if (prior.ownsFile) {
       try { checkPublicManifest(path, registry); unchanged = true; } catch (err) {
         if (!(err instanceof KeyStoreError)) throw err;
       }
     }
     if (!unchanged) {
-      const reasons = changesOf(old, registry);
-      if (earlier) out.out(`the public key file is written under the name ${name}: the file ${LEGACY_PUBLIC_MANIFEST} of the earlier name is kept`);
-      if (old.kind !== 'found') out.out(reasons.join('; '));
-      else if (reasons.length > 0 || !earlier) out.out(`the public key file changed: ${(reasons.length > 0 ? reasons : ['the text of the public key file did not equal what the key files give']).join('; ')}`);
+      if (prior.ownsFile) out.out('the public key file changed: the text of the public key file did not equal what the key files give');
+      else if (prior.ownKeys !== undefined) out.out(`the public key file is written under the name ${name}: the file ${LEGACY_PUBLIC_MANIFEST} of the earlier name is kept`);
+      else out.out('the public key file is new');
       writePublicManifest(path, registry, { network: settings.network.name, useCase: use.name });
     }
     const runWallet = registry.addressOf(RUN);
