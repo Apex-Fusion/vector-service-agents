@@ -114,7 +114,10 @@ describe('the task end-state', () => {
 
     it('shows the same lines with status, and ends the machine line with the outcome done and exit 0', async () => {
       const rig = await makeRig();
-      expect(await rig.observe('status')).toMatchObject({ exit: 0, signatures: 0, submissions: 0 });
+      const status = await rig.observe('status');
+      expect(status).toMatchObject({ exit: 0, signatures: 0, submissions: 0 });
+      expect(status.lines).toEqual(rig.world.screen.lines);
+      expect(status.lines.flatMap((line) => /^OK\s+(\S+): /.exec(line)?.[1] ?? [])).toEqual(ALL_CHECKS);
       expectChecks(rig);
       expect(rig.world.screen.lines).toContain('end state: DONE: every check is ok');
       expect(rig.world.machine()).toMatchObject({ command: 'status', outcome: 'done', exit: 0 });

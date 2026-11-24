@@ -100,6 +100,7 @@ type ArchiveSpend = (tx: string, before: Output, after: Output | null, script: s
 interface EndStateObservation {
   readonly exit: number;
   readonly machine: MachineLine;
+  readonly lines: readonly string[];
   readonly errors: string;
   /** Attempts, refused before the fixture signs or changes the ledger. */
   readonly signatures: number;
@@ -429,7 +430,7 @@ export async function makeRig(options: RigOptions = {}, use: UseCase = data): Pr
   // Select the fixture case without changing which defaults the production settings allow.
   const selector = ['--use-case', use.name];
   const observe: EndStateWorld['observe'] = async (command) => {
-    const start = { web: webCalls.length, koios: koiosReads.length, tools: hosted.calls.length, errors: world.screen.errors.length };
+    const start = { web: webCalls.length, koios: koiosReads.length, tools: hosted.calls.length, lines: world.screen.lines.length, errors: world.screen.errors.length };
     let signatures = 0;
     let submissions = 0;
     const refuseSignature = (): never => { signatures += 1; throw new Error('the end-state world signs nothing'); };
@@ -452,6 +453,7 @@ export async function makeRig(options: RigOptions = {}, use: UseCase = data): Pr
       });
       return {
         exit, machine: world.machine(), errors: world.screen.errors.slice(start.errors).join('\n'), signatures, submissions,
+        lines: world.screen.lines.slice(start.lines),
         reads: { web: webCalls.slice(start.web), koios: koiosReads.slice(start.koios), tools: hosted.calls.slice(start.tools).map(({ name }) => name) },
       };
     } finally {
