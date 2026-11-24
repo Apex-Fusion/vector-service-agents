@@ -32,6 +32,7 @@ import type { BidderFile, BidderView } from '../src/bidders/index.ts';
 import { EXECUTE_DEADLINE_MS, EXECUTE_FAILURES } from '../src/execute/index.ts';
 import { ACCEPT_QUOTE_DECISION, MAX_INVITED, RANKING_DECISION, SCORE_DECISION, SHORTLIST_DECISION, acceptQuoteInput, parseProposeFields, rankingInput, scoreInput, shortlistInput } from '../src/model/index.ts';
 import { bidderFacts } from '../src/model/bidder.ts';
+import { EFFECTIVE_REASONS } from '../src/bidders/lineage.ts';
 import { PROPOSE_DEADLINE_MS, PROPOSE_FAILURES, ProposeRefusal, RANKING_RESERVE_MS, SCORING_RESERVE_MS, runPropose } from '../src/propose/index.ts';
 import type { ProposeDeps, ProposeRequest, QuoteRecord } from '../src/propose/index.ts';
 import { BID_DESK_REFUSALS, CHALLENGE_CODES, CODE, NOT_ACTIVE_STATUSES } from '../src/quotes/ports.ts';
@@ -281,6 +282,7 @@ describe('specs/sourcing-agent.md', () => {
       'With slow Bid Desks the job proposes from fewer quotes, and a job with no accepted quote ends `failed` with `no_quotes`.',
       'The scoring starts only when 1080000 ms are left, and the ranking decision only when 120000 ms are left. The job ends `failed` with `deadline` when they are not.',
       'A typical job is expected to end in about 20 minutes. No run has measured that yet, and the window is the longest time and not the usual time.',
+      'The escrow and the vault payment of the hirer stay locked up to the window of the advert, 5400000 ms (90 minutes), when a job runs to its end.',
     ]) expect(terms, part).toContain(part);
     // The README holds the same rule.
     expect(readme).toContain('A quote hire starts only when the deadline of the job is at least 2910000 ms away, so it starts in the first 2310000 ms of the job.');
@@ -628,6 +630,9 @@ describe('specs/sourcing-agent.md, Interface, Request', () => {
     expect(acceptInput.price_list.map((entry) => entry.sku)).toStrictEqual(RFQ.items.map((item) => item.sku));
     expect([ACCEPT_QUOTE_DECISION.parse({ accept: true, mismatch: [] }).ok, ACCEPT_QUOTE_DECISION.parse({ accept: false, mismatch: ['GLV-NIT-M'] }).ok, ACCEPT_QUOTE_DECISION.parse({ accept: true, mismatch: ['GLV-NIT-M'] }).ok, ACCEPT_QUOTE_DECISION.parse({ accept: false, mismatch: [] }).ok]).toStrictEqual([true, true, false, false]);
     expect(text('agents/sourcing-agent/src/quotes/evidence.ts')).toContain('statement_text: BID_DESK_CLAIM.statements[0].text,');
+    // The scorers are used in the order of the quotes: subject `k` goes to scorer `k + 1`, so with fewer than three quotes the later scorers get none.
+    expect(text('agents/sourcing-agent/src/propose/ports.ts')).toContain('Subject `k` goes to the scorer `k + 1`.');
+    expect(request).toContain('With fewer than three accepted quotes, the later scorers do not start.');
     // `score` reads the date of today, the weights, the request, the lines and totals of the quote, the file of the bidder and the vendor entry, and `ranking` the weights and the numbers of each scored bidder.
     const scored = scoreInput({ today: '2026-11-24', weights: WEIGHTS, rfq: RFQ, quote: QUOTE, file: ALFA_FILE, vendor: null }) as Record<string, unknown>;
     expect(Object.keys(scored)).toStrictEqual(['today', 'weights', 'request', 'quote', 'lines_quoted', 'items_requested', 'bidder', 'vendor']);
@@ -790,6 +795,8 @@ describe('specs/sourcing-agent.md, Interface, The bidder file', () => {
     const states = (name: string): string[] => [...(text(`agents/sourcing-agent/src/bidders/types.ts`).split(`export type ${name} = `)[1] ?? '').split(';')[0].matchAll(/'([a-z_]+)'/g)].map((hit) => hit[1]);
     expect(states('FactState')).toStrictEqual(['valid', 'invalid', 'absent', 'unreadable']);
     expect(states('BidderStatus')).toStrictEqual(['active', 'suspended', 'revoked', 'retired', 'not_found', 'unreadable']);
+    for (const word of EFFECTIVE_REASONS) expect(row(body, '`status_reason`'), word).toContain(`\`${word}\``);
+    expect(EFFECTIVE_REASONS).toHaveLength(7);
     for (const part of [
       'The states of a fact are `valid`, `invalid`, `absent` and `unreadable`. `unreadable` means that the source gave no answer in time or gave an answer that the agent cannot read. It is never `absent`, never `valid` and never a number: a stake that cannot be read is `null` and never `"0"`, and a catalog that cannot be read is `null` and never "not in the catalog".',
       'Only an attestation of the issuer `keys.compliance_issuer_pkh` of the manifest counts. An attestation of another issuer is not counted and not shown.',
@@ -1042,6 +1049,11 @@ describe('specs/sourcing-agent.md, Interface, Outcomes, Errors and the co-sign r
     // The 60 seconds of `llm_out_of_time`.
     expect(HIRE_MIN_MS).toBe(60_000);
     expect(cell('`llm_out_of_time`, `hire_threw`')[2]).toContain(`less than ${HIRE_MIN_MS / 1000} s were left`);
+    // `bad_document` in `propose` has three causes: a choice that cannot be read as data, an invitation that holds a DID two times, and a ranking that the kit refuses.
+    expect(text('agents/sourcing-agent/src/propose/propose.ts')).toContain("if (new Set(list).size !== list.length) return { ok: false, code: 'bad_document' };");
+    expect(text('agents/sourcing-agent/src/propose/propose.ts')).toContain("return { ok: false, code: 'bad_document' };");
+    expect(cell('`bad_document`')[2]).toContain('a choice of the model that the job cannot read as data, an invitation that holds a DID two times, or a ranking that the kit refuses as the document of a proposal');
+    expect(readme).toContain('The escrow and the vault payment of a hirer stay locked up to the window of the advert, 5400000 ms (90 minutes) by default, when a job runs to its end.');
     // The window of the reasons of a failed hire: the interrupted hire and the unconfirmed Pay.
     expect([INTERRUPTION_REASONS.decision_error, INTERRUPTION_REASONS.other, PAY_UNCONFIRMED]).toStrictEqual(['decision_error', 'hire_interrupted', 'pay_unconfirmed']);
   });
