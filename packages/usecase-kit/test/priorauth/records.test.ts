@@ -7,7 +7,7 @@ import { canonicalSha256 } from '@vsa/usecase-kit/protocol';
 import type { ProtocolResult } from '@vsa/usecase-kit/protocol';
 import { parseGuideline, parsePriorAuthRequest, parseRecordSet, parseRequirementSet, recordSetSha256 } from '@vsa/usecase-kit/priorauth';
 import type { RecordSet } from '@vsa/usecase-kit/priorauth';
-import { DAY_BAD, DAY_GOOD, ID_BAD, ID_GOOD, MARKER, NOT_TEXT, change, expectRefused, golden, goldenText, must, objectAt, valueAt, withGetter, withPrototype, withProtoKey } from './support.ts';
+import { DAY_BAD, DAY_GOOD, ID_BAD, ID_GOOD, MARKER, NOT_TEXT, change, expectRefused, golden, goldenText, messageOf, must, objectAt, valueAt, withGetter, withPrototype, withProtoKey } from './support.ts';
 import type { Json, Step } from './support.ts';
 
 type Parser = (value: unknown) => ProtocolResult<unknown>;
@@ -55,7 +55,7 @@ function reversedMembers(value: unknown): unknown {
 /** The canonical text of a JSON value, written here again: the keys in order, each text in the NFC form, no white space. The hash of a record set is the SHA-256 of this text. */
 function canonicalText(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalText).join(',')}]`;
-  if (typeof value === 'object' && value !== null) return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalText((value as Json)[key])}`).join(',')}}`;
+  if (typeof value === 'object' && value !== null) return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalText(Reflect.get(value, key))}`).join(',')}}`;
   return JSON.stringify(typeof value === 'string' ? value.normalize('NFC') : value);
 }
 
@@ -193,12 +193,7 @@ describe('recordSetSha256', () => {
   it('throws a TypeError for a value that is not a record set, and the message never repeats the value', () => {
     const BAD: readonly unknown[] = [undefined, null, 'set', 1, [], {}, change(golden('record-set'), ['records'], []), change(golden('record-set'), ['order', 'order_id'], MARKER)];
     for (const value of BAD) expect(() => recordSetSha256(value as RecordSet), JSON.stringify(value)).toThrow(TypeError);
-    let message = '';
-    try {
-      recordSetSha256(change(golden('record-set'), ['order', 'order_id'], MARKER) as unknown as RecordSet);
-    } catch (error) {
-      message = (error as Error).message;
-    }
+    const message = messageOf(() => recordSetSha256(change(golden('record-set'), ['order', 'order_id'], MARKER) as unknown as RecordSet));
     expect(message).toContain('record set.order.order_id');
     expect(message).not.toContain('zq9');
   });
@@ -418,14 +413,14 @@ describe.each(LISTS)('the list of $label', ({ file, parse, path, min, max, entry
     it('refuses an entry whose key is the key of an earlier entry, names the second place, and never repeats the key', () => {
       const key = unique;
       const entries = Array.from({ length: 3 }, (_, index) => entry(index));
-      const twice = change(golden(file), path, entries.map((value, index) => (index === 2 ? { ...(value as Json), [key]: (entries[0] as Json)[key] } : value)));
+      const twice = change(golden(file), path, entries.map((value, index) => (index === 2 ? Object.assign({}, value, { [key]: valueAt(entries[0], [key]) }) : value)));
       expectRefused(parse(twice), `${where}[2].${key}`);
       expect(parse(change(golden(file), path, entries)).ok).toBe(true);
     });
 
     it('counts a key as it is written: two keys that differ in case are two keys', () => {
       const key = unique;
-      const low = { ...(entry(1) as Json), [key]: String((entry(0) as Json)[key]).toLowerCase() };
+      const low = Object.assign({}, entry(1), { [key]: String(valueAt(entry(0), [key])).toLowerCase() });
       expect(parse(change(golden(file), path, [entry(0), low])).ok).toBe(true);
     });
   }

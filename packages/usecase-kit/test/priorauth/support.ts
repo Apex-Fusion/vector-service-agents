@@ -15,7 +15,7 @@ export const goldenText = (name: string): string => readFileSync(new URL(`./gold
 export const golden = (name: string): Json => JSON.parse(goldenText(name)) as Json;
 
 /** The value at `path` of `record`. A path that does not exist is an error of the test. */
-export function valueAt(record: Json, path: readonly Step[]): unknown {
+export function valueAt(record: unknown, path: readonly Step[]): unknown {
   let at: unknown = record;
   for (const step of path) {
     if (typeof at !== 'object' || at === null) throw new Error(`the sample has no value at ${path.join('.')}`);
@@ -114,6 +114,16 @@ export function expectRefused(result: ProtocolResult<unknown, string>, where: st
   expect(result.detail).toContain(where);
   expect(result.detail).not.toContain('zq9');
   expect(result.detail).not.toContain('marker');
+}
+
+/** The message of the error that `run` throws, or an empty text when it throws nothing. A thrown value that is not an `Error` has no message. */
+export function messageOf(run: () => unknown): string {
+  try {
+    run();
+    return '';
+  } catch (error) {
+    return error instanceof Error ? error.message : '';
+  }
 }
 
 /** Defines the members on `target`, runs `body`, and removes the members in a `finally`. */

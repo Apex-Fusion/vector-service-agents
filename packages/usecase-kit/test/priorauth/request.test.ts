@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { DOCUMENT_SCHEMAS, canonicalSha256, makeProposal, parseHandoff, proposalDigest } from '@vsa/usecase-kit/protocol';
 import { MAX_JUSTIFICATION_CHARS, PRIORAUTH_REQUEST_SCHEMA, parsePriorAuthRequest, requestNumberKey, requestNumberOf } from '@vsa/usecase-kit/priorauth';
-import { BAD_TEXT, ID_BAD, ID_GOOD, MARKER, NOT_TEXT, change, expectRefused, golden, goldenText, must, withGetter, withPrototype, withProtoKey } from './support.ts';
+import { BAD_TEXT, ID_BAD, ID_GOOD, MARKER, NOT_TEXT, change, expectRefused, golden, goldenText, messageOf, must, withGetter, withPrototype, withProtoKey } from './support.ts';
 import type { Json } from './support.ts';
 
 /** The SHA-256 of the bytes of the golden file. A change of the file shows here. */
@@ -250,7 +250,7 @@ describe('the lists', () => {
 });
 
 describe('the justification', () => {
-  const justification = (text: string) => parsePriorAuthRequest(withValue(['justification'], text));
+  const justification = (text: unknown) => parsePriorAuthRequest(withValue(['justification'], text));
   const WHERE = `${REQUEST}.justification`;
 
   it('has the limit of 4,000 characters', () => {
@@ -332,7 +332,7 @@ describe('the justification', () => {
   });
 
   it('refuses a value that is not a text, and never repeats the text that it refuses', () => {
-    for (const value of [1, 0, true, null, {}, [], ['a']]) expectRefused(justification(value as string), WHERE);
+    for (const value of NOT_TEXT) expectRefused(justification(value), WHERE);
     expectRefused(justification(BAD_TEXT), WHERE);
     expectRefused(justification(`zq9 marker ${'y'.repeat(4001)}`), WHERE);
   });
@@ -366,7 +366,7 @@ describe('the Unicode form of a text', () => {
       if (name === 'justification' || name === 'diagnosis_codes') continue;
       for (const text of Array.isArray(value) ? value : [value]) {
         expect(text, name).toMatch(/^[\x20-\x7e]+$/);
-        expect(text, name).toBe((text as string).normalize('NFC'));
+        expect(text, name).toBe(String(text).normalize('NFC'));
       }
     }
   });
@@ -498,12 +498,7 @@ describe('requestNumberOf', () => {
 
   it('throws a message that never repeats the tenant or the counter that it refuses', () => {
     for (const [tenant, counter] of [[MARKER, 1], ['run1', Number(`1${'0'.repeat(30)}`)], ['T'.repeat(30), 1]] as const) {
-      let message = '';
-      try {
-        requestNumberOf(tenant, counter);
-      } catch (error) {
-        message = (error as Error).message;
-      }
+      const message = messageOf(() => requestNumberOf(tenant, counter));
       expect(message).not.toBe('');
       expect(message).not.toContain('zq9');
       expect(message).not.toContain('TTTT');
