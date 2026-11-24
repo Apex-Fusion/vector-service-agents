@@ -5,7 +5,8 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, st
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { KeySpec } from '../lib/registry.ts';
-import { checkPublicManifest, loadRegistry } from '../lib/registry.ts';
+import { LEGACY_PUBLIC_MANIFEST, checkPublicManifest, loadRegistry, publicManifestFile } from '../lib/registry.ts';
+import { FactsFile } from '../lib/facts.ts';
 import { loadTask } from '../lib/load.ts';
 import { parseArguments } from '../lib/runner.ts';
 import keysTask from '../tasks/keys.ts';
@@ -23,7 +24,7 @@ const SPECS: readonly KeySpec[] = [
   { name: 'beta', scope: 'use-case', about: 'Another key of the use case of a test.' },
 ];
 const NAMES = SPECS.map((spec) => spec.name);
-const MANIFEST = 'keys-public.json';
+const MANIFEST = publicManifestFile(USE_CASE);
 
 /** A world whose key folder is empty (it exists, with mode 700, as the settings need). The use case has the keys of SPECS unless a test says others. */
 async function emptyWorld(keys: readonly KeySpec[] = SPECS): Promise<{ w: TaskWorld; root: string }> {
@@ -455,5 +456,100 @@ describe('the cleanup', () => {
     expect(w.screen.lines).toContain('nothing can be taken back: the pack never deletes a key file');
     expect([...SPECS.map((spec) => readFileSync(fileOf(root, spec), 'utf8')), manifestOf(root)]).toEqual(before);
     expect(w.machine()).toMatchObject({ command: 'cleanup', outcome: 'done', exit: 0, result: {} });
+  });
+});
+
+describe('two use cases in one key folder', () => {
+  const SECOND = 'second-case';
+  const SECOND_SPECS: readonly KeySpec[] = [
+    { name: 'run', scope: 'shared', about: 'The run wallet of a test.' },
+    { name: 'fee', scope: 'shared', about: 'The fee wallet of a test.' },
+    { name: 'gamma', scope: 'use-case', about: 'A key of the second use case of a test.' },
+  ];
+  /** Two worlds over one key folder: the first has the use case of the tests, the second has another name. */
+  async function twoWorlds(): Promise<{ first: TaskWorld; second: TaskWorld; root: string }> {
+    const root = makeKeyRoot();
+    const first = await taskWorld({ env: { OPERATOR_KEYS_DIR: root }, use: { keys: SPECS } });
+    // The closed list of use case names holds one name, so a run of the second world takes the setting of the first. Its use case is the name of its data all the same.
+    const second = await taskWorld({ env: { OPERATOR_KEYS_DIR: root, OPERATOR_USE_CASE: USE_CASE }, use: { name: SECOND, keys: SECOND_SPECS } });
+    return { first, second, root };
+  }
+  it('gives each use case a public key file of its own: the run of the second does not change the file of the first, and the status of the first still says that its file equals the key files', async () => {
+    const { first, second, root } = await twoWorlds();
+    expect(await submit(first), first.screen.errorText).toBe(0);
+    const firstFile = join(root, publicManifestFile(USE_CASE));
+    const before = [readFileSync(firstFile, 'utf8'), statSync(firstFile).mtimeMs];
+    approve(second);
+    expect(await submitAsIs(second)).toBe(0);
+    expect(readdirSync(root).sort()).toEqual([USE_CASE, publicManifestFile(USE_CASE), publicManifestFile(SECOND), 'shared', SECOND].sort());
+    expect([readFileSync(firstFile, 'utf8'), statSync(firstFile).mtimeMs]).toEqual(before);
+    expect(JSON.parse(readFileSync(join(root, publicManifestFile(SECOND)), 'utf8')).use_case).toBe(SECOND);
+    expect(Object.keys(JSON.parse(readFileSync(firstFile, 'utf8')).keys)).toEqual(NAMES);
+    reset(first);
+    expect(await first.run(keysTask, 'status')).toBe(0);
+    expect(first.screen.text).toContain('the public key file equals the key files');
+    reset(second);
+    expect(await second.run(keysTask, 'status')).toBe(0);
+    expect(second.screen.text).toContain('the public key file equals the key files');
+  });
+  it('lets a world take its use case from its data: the setting, the folder of its test keys and the reader of its facts', async () => {
+    const first = await taskWorld({ use: { keys: SPECS } });
+    const second = await taskWorld({ use: { name: SECOND, keys: SECOND_SPECS } });
+    expect([first.use.name, first.env.OPERATOR_USE_CASE]).toEqual([USE_CASE, USE_CASE]);
+    expect([second.use.name, second.env.OPERATOR_USE_CASE]).toEqual([SECOND, SECOND]);
+    expect(readdirSync(first.keys.root).sort()).toEqual([USE_CASE, 'shared']);
+    expect(readdirSync(second.keys.root).sort()).toEqual([SECOND, 'shared']);
+    FactsFile.open(join(second.stateDir, 'facts.json'), { useCase: SECOND, network: 'vector-mainnet' }).put('holds', ['clean'], { suspendTx: null, liftTx: null });
+    expect(second.facts().holds).toEqual({ clean: { suspendTx: null, liftTx: null } });
+    expect(first.facts().holds).toEqual({});
+  });
+});
+
+describe('a public key file of the earlier name', () => {
+  /** A key folder with the keys made and the public key file under the earlier name only, as an earlier run of the pack left it. */
+  async function earlierWorld(): Promise<{ w: TaskWorld; root: string; earlier: string }> {
+    const { w, root } = await emptyWorld();
+    expect(await submit(w)).toBe(0);
+    const earlier = join(root, LEGACY_PUBLIC_MANIFEST);
+    const text = manifestOf(root);
+    rmSync(join(root, MANIFEST));
+    writeFileSync(earlier, text, { mode: 0o600 });
+    reset(w);
+    return { w, root, earlier };
+  }
+  it('is read by the status, which says that it equals the key files and which file a submit run writes', async () => {
+    const { w, root } = await earlierWorld();
+    expect(await w.run(keysTask, 'status')).toBe(0);
+    expect(w.screen.text).toContain(`the public key file equals the key files (it is the file ${LEGACY_PUBLIC_MANIFEST} of the earlier name: a run with --submit writes ${MANIFEST})`);
+    expect(existsSync(join(root, MANIFEST))).toBe(false);
+  });
+  it('is read by a submit run, which writes the file of the use case with the same content, keeps the earlier file as it is, and finds nothing to change at the next run', async () => {
+    const { w, root, earlier } = await earlierWorld();
+    const text = readFileSync(earlier, 'utf8');
+    expect(await submit(w)).toBe(0);
+    expect(manifestOf(root)).toBe(text);
+    expect(readFileSync(earlier, 'utf8')).toBe(text);
+    expect(w.screen.text).toContain(`the public key file is written under the name ${MANIFEST}`);
+    expect(w.machine()).toMatchObject({ outcome: 'done', result: { made: [], kept: NAMES } });
+    reset(w);
+    expect(await submit(w)).toBe(0);
+    expect(w.machine()).toMatchObject({ outcome: 'finished' });
+  });
+  it('still guards the run wallet: a lost run key stops the run, in a dry run too, while only the earlier file shows its address', async () => {
+    const { w, root } = await earlierWorld();
+    const runAddress = registryOf(root).addressOf('run');
+    rmSync(fileOf(root, SPECS[0]!));
+    for (const argv of [['--submit'], []]) {
+      reset(w);
+      expect(await w.run(keysTask, ...argv)).toBe(2);
+      expect(w.screen.errorText).toContain(`the run key file is missing, and the public key file shows the run wallet ${runAddress}: funds may be there`);
+      expect(existsSync(fileOf(root, SPECS[0]!))).toBe(false);
+    }
+  });
+  it('is no public key file of a use case that it does not name', async () => {
+    const { w, earlier } = await earlierWorld();
+    writeFileSync(earlier, readFileSync(earlier, 'utf8').split(`"use_case": "${USE_CASE}"`).join('"use_case": "another-case"'), { mode: 0o600 });
+    expect(await w.run(keysTask, 'status')).toBe(0);
+    expect(w.screen.text).toContain('the public key file does not exist');
   });
 });

@@ -9,11 +9,10 @@ import { join } from 'node:path';
 import { PreconditionError } from '../../checks/lib/session.ts';
 import { units } from '../../checks/lib/format.ts';
 import type { TaskDefinition, TaskSession, UseCase } from '../lib/contract.ts';
-import { KeyStoreError, checkPublicManifest, codeOf, loadRegistry, makeMissingKeys, writePublicManifest } from '../lib/registry.ts';
+import { KeyStoreError, LEGACY_PUBLIC_MANIFEST, checkPublicManifest, codeOf, findPublicManifest, loadRegistry, makeMissingKeys, publicManifestFile, writePublicManifest } from '../lib/registry.ts';
 import type { KeyStoreIo, Registry } from '../lib/registry.ts';
 
 const RUN = 'run';
-const MANIFEST = 'keys-public.json';
 const NAME_WIDTH = 24;
 const SCOPE_WIDTH = 9;
 /** The length of a key hash: 28 bytes in hex. */
@@ -103,7 +102,7 @@ function changesOf(old: OldManifest, registry: Registry, network: string): strin
     else if (before !== address) reasons.push(`the address of the key ${name} changed from ${before} to ${address}`);
   }
   for (const name of old.addresses.keys()) if (!registry.has(name)) reasons.push(`the key ${name} is no longer in the use case`);
-  return reasons.length > 0 ? reasons : ['the text of the public key file did not equal what the key files give'];
+  return reasons;
 }
 
 // ---- what the task prints ----
@@ -146,11 +145,15 @@ const task: TaskDefinition<KeysExtra> = {
 
   async next(session) {
     const { settings, use, out } = session;
-    const path = join(settings.keysDir, MANIFEST);
+    const name = publicManifestFile(use.name);
+    const path = join(settings.keysDir, name);
+    // The file that this run reads is the file of the use case, or the file of the earlier name when the use case has none yet. The file that it writes is the file of the use case.
+    const found = findPublicManifest(settings.keysDir, use.name);
+    const earlier = found !== path;
     // What this run would do, over a file system that writes nothing. A refusal here (a folder or a key file that is not as the pack makes it, a run wallet that would change) stops the run before any key is made.
     const plan = makeMissingKeys(settings.keysDir, use.name, use.keys, DRY_IO);
     const existing = loadRegistry({ dir: settings.keysDir, useCase: use.name, specs: use.keys, need: plan.kept });
-    const old = readOldManifest(path);
+    const old = readOldManifest(found);
     requireRunWalletStays(plan.made, existing, old);
 
     if (session.mode === 'dry') {
@@ -168,14 +171,16 @@ const task: TaskDefinition<KeysExtra> = {
     out.out(made.length === 0 ? 'made no key' : `made ${made.length} ${plural(made.length)}: ${made.join(', ')}`);
     out.out(`kept ${kept.length} ${plural(kept.length)}: a key file is never replaced`);
     let unchanged = false;
-    if (old.kind === 'found') {
+    if (old.kind === 'found' && !earlier) {
       try { checkPublicManifest(path, registry); unchanged = true; } catch (err) {
         if (!(err instanceof KeyStoreError)) throw err;
       }
     }
     if (!unchanged) {
       const reasons = changesOf(old, registry, settings.network.name);
-      out.out(old.kind === 'found' ? `the public key file changed: ${reasons.join('; ')}` : reasons.join('; '));
+      if (earlier) out.out(`the public key file is written under the name ${name}: the file ${LEGACY_PUBLIC_MANIFEST} of the earlier name is kept, and no run reads it while ${name} is there`);
+      if (old.kind !== 'found') out.out(reasons.join('; '));
+      else if (reasons.length > 0 || !earlier) out.out(`the public key file changed: ${(reasons.length > 0 ? reasons : ['the text of the public key file did not equal what the key files give']).join('; ')}`);
       writePublicManifest(path, registry, { network: settings.network.name, useCase: use.name });
     }
     const runWallet = registry.addressOf(RUN);
@@ -192,7 +197,8 @@ const task: TaskDefinition<KeysExtra> = {
 
   async status(session) {
     const { settings, use } = session;
-    const path = join(settings.keysDir, MANIFEST);
+    const name = publicManifestFile(use.name);
+    const path = findPublicManifest(settings.keysDir, use.name);
     const plan = makeMissingKeys(settings.keysDir, use.name, use.keys, DRY_IO);
     const registry = loadRegistry({ dir: settings.keysDir, useCase: use.name, specs: use.keys, need: plan.kept });
     const lines = [plan.made.length === 0 ? `all ${use.keys.length} key files exist` : `${plan.made.length} of ${use.keys.length} key files are missing: ${plan.made.join(', ')}`];
@@ -201,7 +207,12 @@ const task: TaskDefinition<KeysExtra> = {
       lines.push('the public key file is not checked: a key file is missing');
       return lines;
     }
-    try { checkPublicManifest(path, registry); lines.push('the public key file equals the key files'); } catch (err) {
+    try {
+      checkPublicManifest(path, registry);
+      lines.push(path === join(settings.keysDir, name)
+        ? 'the public key file equals the key files'
+        : `the public key file equals the key files (it is the file ${LEGACY_PUBLIC_MANIFEST} of the earlier name: a run with --submit writes ${name})`);
+    } catch (err) {
       if (!(err instanceof KeyStoreError)) throw err;
       lines.push(err.message);
     }
