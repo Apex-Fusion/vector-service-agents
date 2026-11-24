@@ -29,7 +29,7 @@ export const BUYER_PKH = 'c9'.repeat(28);
 export const LIMIT = { perTx: 7_000_000n, total: 14_000_000n, periodMs: 86_400_000 };
 /** The three limits of a hire of a Bid Desk: its price and the bonds of its advert. */
 export const LIMITS: HireLimits = { maxPriceLovelace: 1_000_000n, maxSupplierBondLovelace: 2_000_000n, maxBuyerBondLovelace: 2_000_000n };
-/** The window of the adverts: the `deliver_by` window of a Bid Desk is 480,000 ms of work and 180,000 ms for the Accept. */
+/** The `max_processing_ms` of the adverts: 480,000 ms of work. The `deliver_by` of an escrow adds a buffer of 180,000 ms, so a job may answer 660,000 ms after its Pay. */
 const WINDOW_MS = 480_000;
 
 const json = (status: number, body: unknown): Response => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });

@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { BID_CAPABILITIES } from '@vsa/usecase-kit/bids';
 import { QUOTE_HIRE_RESERVE_MS } from '../../src/quotes/index.ts';
 import type { BidderStatus, QuotesDeps, QuotesInput } from '../../src/quotes/index.ts';
-import { ALFA, BRAVO, CHARLIE, DESKS, LIST, LIST_SHA, bidderOf, priced, quoteDocument, quoteText, rightAnswer } from './support.ts';
+import { ALFA, BRAVO, CHARLIE, DESKS, LIST, bidderOf, priced, quoteDocument, quoteText, rightAnswer } from './support.ts';
 import { NOTHING, T0, cleanWorlds, footprint, words, world } from './world.ts';
 import type { World } from './world.ts';
 
@@ -128,7 +128,7 @@ describe('the price list of a bidder', () => {
 
   it('twin: a bidder with a price list is paid', async () => {
     const w = await world();
-    const result = await w.run(w.input({ invited: [bidderOf(BRAVO, { price_list: { list: LIST, sha256: LIST_SHA } })] }));
+    const result = await w.run(w.input({ invited: [bidderOf(BRAVO)] }));
     expect(result.outcomes.map(words)).toStrictEqual(['accepted']);
     expect(footprint(w).paid).toBe(1);
   });
@@ -173,6 +173,28 @@ describe('the deadline', () => {
     const result = await w.run(w.input(), { ...w.deps, clock: () => Number.NaN });
     expect(result.outcomes.map(words)).toStrictEqual(['excluded failed deadline', 'excluded failed deadline', 'excluded failed deadline']);
     expect(footprint(w)).toStrictEqual(NOTHING);
+  });
+
+  it('keeps a reserve that covers the whole window of the advert and what follows the last possible answer: the work, the buffer of deliver_by, and the decision and the Accept, which end 600,000 ms after the answer', () => {
+    expect(QUOTE_HIRE_RESERVE_MS).toBe(480_000 + 180_000 + 600_000);
+  });
+
+  it('reads the deadline again right before the Pay: a read of the status that takes 60 s must not lead to a Pay with less than the reserve left', async () => {
+    const w = await world();
+    const slow: QuotesDeps = { ...w.deps, recheck: async (did) => { w.clock.now += 60_000; return w.deps.recheck(did); } };
+    // The deadline leaves the reserve and 30 s: the first read of the deadline passes, and the one right before the Pay does not.
+    const result = await w.run(w.input({ invited: [bidderOf(ALFA)], deadline_ms: T0 + QUOTE_HIRE_RESERVE_MS + 840_000 + 30_000 }), slow);
+    expect(result.outcomes.map(words)).toStrictEqual(['excluded failed deadline']);
+    expect(footprint(w)).toStrictEqual({ ...NOTHING, rechecked: 1 });
+    expect(result.stopped).toBeNull();
+  });
+
+  it('twin: the same read of 60 s with 90 s to spare leads to a Pay', async () => {
+    const w = await world();
+    const slow: QuotesDeps = { ...w.deps, recheck: async (did) => { w.clock.now += 60_000; return w.deps.recheck(did); } };
+    const result = await w.run(w.input({ invited: [bidderOf(ALFA)], deadline_ms: T0 + QUOTE_HIRE_RESERVE_MS + 840_000 + 90_000 }), slow);
+    expect(result.outcomes.map(words)).toStrictEqual(['accepted']);
+    expect(footprint(w).paid).toBe(1);
   });
 });
 

@@ -16,10 +16,11 @@ import { COUNTERPARTY_REFUSALS, ERROR_STATUS } from '@vsa/usecase-kit/protocol';
 import type { ChallengeRecord, DelegationId, Decision, Did, Digest, JsonObject, OutputRef, ReceiptVerification, SubJob } from '@vsa/usecase-kit/protocol';
 
 /**
- * The time that a hire of a quote can take, from the Pay to the end: the `deliver_by` window of the advert of a Bid Desk, which is 480,000 ms of work and 180,000 ms for the Accept. A hire starts only when
- * the deadline of the job leaves this time and the time that the caller keeps for the scoring.
+ * The time that a hire of a quote can take, from the Pay to the end. A Bid Desk may answer as late as `deliver_by`: its advert allows 480,000 ms of work, and `deliver_by` adds a buffer of 180,000 ms, so the
+ * answer comes 660,000 ms after the Pay at the latest. The hire kit then runs the decision of the model and the Accept, and both end at most 600,000 ms after the answer. A hire starts only when the deadline of
+ * the job leaves this time and the time that the caller keeps for the scoring.
  */
-export const QUOTE_HIRE_RESERVE_MS = 660_000;
+export const QUOTE_HIRE_RESERVE_MS = 660_000 + 600_000;
 
 /** A bidder that the model invited, with what the job needs to hire it. The list is in the order of the invitation. */
 export interface BidderToHire {

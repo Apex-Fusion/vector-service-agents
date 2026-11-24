@@ -198,9 +198,10 @@ function skipped(job: Job, bidder: BidderToHire, at: string, reason: ExcludedWor
 /** The turn of one bidder: the checks before the Pay, the hire, and the outcome. */
 async function turn(job: Job, bidder: BidderToHire, at: string): Promise<Settled> {
   const { deps, input, note } = job;
-  if (job.hungUp()) return skipped(job, bidder, at, 'failed', CODE.aborted);
   // The comparison fails closed: a clock that gives no number is a deadline that has passed.
-  if (!(input.deadline_ms - deps.clock() >= QUOTE_HIRE_RESERVE_MS + input.keep_ms)) return skipped(job, bidder, at, 'failed', CODE.deadline);
+  const hasTime = (): boolean => input.deadline_ms - deps.clock() >= QUOTE_HIRE_RESERVE_MS + input.keep_ms;
+  if (job.hungUp()) return skipped(job, bidder, at, 'failed', CODE.aborted);
+  if (!hasTime()) return skipped(job, bidder, at, 'failed', CODE.deadline);
   const price = bidder.price_list;
   // A list whose hash is no digest cannot be checked against a quote, as a missing list cannot: the quote would fail a check after the Pay, so nothing is paid.
   if (price === null || !parseDigest(price.sha256).ok) return skipped(job, bidder, at, 'failed', CODE.noPriceList);
@@ -214,8 +215,9 @@ async function turn(job: Job, bidder: BidderToHire, at: string): Promise<Settled
     const word = NOT_ACTIVE_STATUSES.find((candidate) => candidate === status);
     return word === undefined ? skipped(job, bidder, at, 'failed', CODE.statusUnreadable) : skipped(job, bidder, at, 'not_active', word);
   }
-  // A hang-up while the status was read ends the loop too: the signal is read once more, right before the Pay.
+  // The read of the status takes time. A hang-up while it was read ends the loop, and a deadline that came while it was read stops the Pay: the signal and the deadline are read once more, right before the Pay.
   if (job.hungUp()) return skipped(job, bidder, at, 'failed', CODE.aborted);
+  if (!hasTime()) return skipped(job, bidder, at, 'failed', CODE.deadline);
   const judge = judgeQuote({ acceptQuote: (given) => deps.acceptQuote(given), note }, input.rfq, bidder, price);
   const step = await hireCounterparty({ key: deps.key, hire: { ...deps.hire, deadlineMs: input.deadline_ms }, reads: deps.reads }, {
     message: job.message, counterparty_did: bidder.did, capability_id: BID_CAPABILITIES.quote, model: BID_DESK_MODEL, advert_ref: bidder.advert_ref, limits: job.limits, decide: judge.decide,

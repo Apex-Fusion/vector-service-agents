@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AcceptWindowClosedError, TxNotConfirmedError } from '@vsa/buyer-core';
 import { DECISION_WINDOW_MS } from '@vsa/hire-kit';
 import { COUNTERPARTY_REFUSALS } from '@vsa/usecase-kit/protocol';
+import { QUOTE_HIRE_RESERVE_MS } from '../../src/quotes/index.ts';
 import { ALFA, BRAVO, DELEGATION, acceptDecision, bidderOf } from './support.ts';
 import { NOTHING, T0, cleanWorlds, footprint, hired, lockOf, words, world } from './world.ts';
 
@@ -178,9 +179,9 @@ describe('an error after the Pay was confirmed', () => {
 
   it('is excluded failed timeout when the deadline of the job comes while the job of the bidder runs: the record names the escrow, and no bidder after it is paid', async () => {
     const w = await world();
-    w.desks.alfa.running = 2;
+    w.desks.alfa.running = 4;
     const deps = { ...w.deps, hire: { ...w.deps.hire, sleep: async (ms: number): Promise<void> => { w.clock.now += ms + 2_000_000; } } };
-    const result = await w.run(w.input({ deadline_ms: T0 + 1_500_000 }), deps);
+    const result = await w.run(w.input({ deadline_ms: T0 + QUOTE_HIRE_RESERVE_MS + 840_000 }), deps);
     expect(result.outcomes.map(words)).toStrictEqual(['excluded failed timeout', 'excluded failed deadline', 'excluded failed deadline']);
     expect(hired(result.outcomes, 0).record).toMatchObject({ accepted: null, receipt: null });
     expect(result.outcomes[1]).toMatchObject({ record: null });
