@@ -17,7 +17,7 @@ import type { DelegationId } from '@vsa/usecase-kit/protocol';
 import { canonicalize, sha256Utf8Hex } from '@vsa/vector-read';
 import type { IdentityAdvertDatum } from '@vsa/vector-read';
 import { runQuotes } from '../../src/quotes/index.ts';
-import type { BidderStatus, QuotesDeps, QuotesInput, QuotesResult } from '../../src/quotes/index.ts';
+import type { BidderStatus, QuoteOutcome, QuotesDeps, QuotesInput, QuotesResult } from '../../src/quotes/index.ts';
 import { DELEGATION, DESKS, RFQ, SENDER_DID, SENDER_ID, ScriptedAccept, ScriptedDispute, bidderOf, quoteText } from './support.ts';
 import type { DeskSpec } from './support.ts';
 
@@ -33,6 +33,8 @@ export const LIMITS: HireLimits = { maxPriceLovelace: 1_000_000n, maxSupplierBon
 const WINDOW_MS = 480_000;
 
 const json = (status: number, body: unknown): Response => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+/** Not the key of any advert: what a forged receipt is signed with. */
+const FORGER = stubKey('sourcing quotes test: somebody else');
 
 /** The reads of the ledger that follow the FakeChain: the Live vaults of a delegation are the unspent Live vault outputs of the chain. A test sets the delegation, or makes a read fail. */
 export class FakeReads implements LedgerReads {
@@ -57,6 +59,7 @@ interface DeskJob {
   readonly escrowRef: string;
   readonly payload: string;
   finished?: Record<string, unknown>;
+  polls: number;
 }
 
 /** A Bid Desk as the runtime of the agent template serves it: `GET /capability`, `GET /status`, `POST /v1/job` and `GET /v1/job/:id`. It plays the Claim and the Submit on the FakeChain. */
@@ -68,6 +71,10 @@ export class DeskSupplier {
   refuse: { status: number; code: string } | null = null;
   /** The job fails after its Claim: the poll says that it failed, and nothing is submitted. */
   failJob = false;
+  /** Sign the receipt with another key than the key of the advert: the hash on the chain is still the one of what was signed, as a supplier with the wrong key would submit it. */
+  forge = false;
+  /** The number of polls that the job answers with 202 before it is done. */
+  running = 0;
   /** The text that the job answers. The quote that prices the request from the list, unless a test says otherwise. */
   answer: () => string;
 
@@ -100,7 +107,7 @@ export class DeskSupplier {
     if (sha256Utf8Hex(payload) !== datum.prompt_hash) return json(409, { reason: 'prompt_mismatch', message: 'the payload does not hash to the prompt_hash of the escrow' });
     this.chain.markClaimed(escrowRef);
     const id = `00000000-0000-4000-8000-${String(this.jobs.size + 1).padStart(12, '0')}`;
-    this.jobs.set(id, { escrowRef, payload });
+    this.jobs.set(id, { escrowRef, payload, polls: 0 });
     return json(202, { job_id: id, status: 'accepted', escrow_ref: escrowRef });
   }
 
@@ -108,13 +115,15 @@ export class DeskSupplier {
     const job = this.jobs.get(id);
     if (job === undefined) return json(404, { reason: 'job_not_found', message: `no job found with id ${id}` });
     if (this.failJob) return json(502, { status: 'failed', reason: 'service_failure', message: 'the service did not answer', escrow_ref: job.escrowRef });
+    job.polls += 1;
+    if (job.polls <= this.running) return json(202, { status: 'running', escrow_ref: job.escrowRef });
     if (job.finished === undefined) {
       const text = this.answer();
       const receipt = {
         escrow_ref: job.escrowRef, supplier_pkh: this.key.pkh, prompt_hash: sha256Utf8Hex(job.payload), response_hash: sha256Utf8Hex(text), model: BID_DESK_MODEL, prompt_tokens: 0, completion_tokens: 0,
         wallclock_ms: 1204, agent_did: this.spec.did,
       };
-      const signature = this.key.sign(receipt);
+      const signature = (this.forge ? FORGER : this.key).sign(receipt);
       this.chain.markSubmitted(job.escrowRef, sha256Utf8Hex(canonicalize({ receipt, signature })));
       job.finished = {
         choices: [{ index: 0, message: { role: 'assistant', content: text }, finish_reason: 'stop' }], usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
@@ -261,4 +270,22 @@ export const NOTHING: Footprint = { paid: 0, sends: 0, asked: 0, challenges: 0, 
 /** One word for an outcome: its kind and, for an excluded bidder, its reason and its code. */
 export function words(outcome: QuotesResult['outcomes'][number]): string {
   return outcome.kind === 'accepted' ? 'accepted' : `excluded ${outcome.reason} ${outcome.code ?? 'none'}`;
+}
+
+/** An excluded bidder that was hired: the outcome at `index`, with the record of its hire. The test fails when the outcome is no excluded bidder or holds no record. */
+export type HiredBidder = Extract<QuoteOutcome, { kind: 'excluded' }> & { readonly record: NonNullable<Extract<QuoteOutcome, { kind: 'excluded' }>['record']> };
+
+export function hired(outcomes: readonly QuoteOutcome[], index: number): HiredBidder {
+  const outcome = outcomes[index];
+  if (outcome === undefined || outcome.kind !== 'excluded' || outcome.record === null) throw new Error(`the outcome ${index} of the test is no excluded bidder with a record of its hire`);
+  return { ...outcome, record: outcome.record };
+}
+
+/** The lock of one Pay from the vault of the world: what a Pay takes from the limit of the delegation. */
+export async function lockOf(): Promise<bigint> {
+  const w = await world();
+  await w.run(w.input({ invited: [bidderOf(DESKS[0]!)] }));
+  const spent = w.chain.vaults().find((vault) => vault.kind === 'Live' && !vault.consumed)?.spent;
+  if (spent === undefined || spent === 0n) throw new Error('the Pay of the test left no spent amount');
+  return spent;
 }
