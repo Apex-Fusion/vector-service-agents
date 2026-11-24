@@ -15,7 +15,7 @@ import { SHARED_CHECK_NAMES } from '@vsa/usecase-kit/checks';
 import type { ChecksPorts } from '@vsa/usecase-kit/checks';
 import { COUNTERPARTY_REFUSALS, ERROR_STATUS, canonicalSha256, isPlainObject, parseJsonText, parseRfq } from '@vsa/usecase-kit/protocol';
 import type { RfqMessage } from '@vsa/usecase-kit/protocol';
-import { FileRfqBook, HOOK_READS, MemoryRfqBook, PASSED_CHECKS_TTL_MS, PassedChecks, createPrecheck } from '../../src/checks/index.ts';
+import { FileRfqBook, HOOK_READS, MemoryRfqBook, PASSED_CHECKS_TTL_MS, PassedChecks, RFQ_BOOK_LIMIT, createPrecheck } from '../../src/checks/index.ts';
 import type { PrecheckDeps, RfqBook } from '../../src/checks/index.ts';
 import { QUOTE_SHA256, rfqOf } from './samples.ts';
 import { PLAIN_ESCROW_REF, T, failing, makeWorld, withLedger } from './support.ts';
@@ -464,6 +464,41 @@ describe('a source that cannot be read', () => {
       const second = makeWorld();
       unavailable(await rigOf(second, { book }).run(), 'rfq book');
       expect(second.faults.map(([source]) => source)).toEqual(['rfq book']);
+    } finally {
+      rmSync(folder, { recursive: true, force: true });
+    }
+  });
+
+  it('is 503 check_unavailable when the real book holds its limit of entries and has none for the request, in memory and in a file, and the escrow stays open', async () => {
+    const folder = mkdtempSync(join(tmpdir(), 'bid-desk-hook-'));
+    try {
+      // The entries of a full book for the sender of a world. With `holding`, the first entry has the identifier of the request of the world. Without it, no entry has that identifier.
+      const quotes = (world: World, holding: boolean): Array<{ sender_did: string; rfq_id: string; quote_sha256: string }> =>
+        Array.from({ length: RFQ_BOOK_LIMIT }, (_, n) => ({ sender_did: world.sender.did, rfq_id: holding && n === 0 ? 'run1-rfq-1' : `rfq-${n}`, quote_sha256: QUOTE_SHA256 }));
+      const forms: Array<[string, (world: World, holding: boolean) => Promise<RfqBook>]> = [
+        ['memory, filled through record', async (world, holding) => {
+          const book = new MemoryRfqBook();
+          for (const quote of quotes(world, holding)) await book.record(world.sender.did, quote.rfq_id, quote.quote_sha256);
+          return book;
+        }],
+        // One write for each entry is too slow, so the file is written whole.
+        ['file, written whole', async (world, holding) => {
+          const file = join(folder, holding ? 'holding.json' : 'lacking.json');
+          writeFileSync(file, JSON.stringify({ schema: 'bid-desk.rfq-book.v1', quotes: quotes(world, holding) }));
+          return new FileRfqBook(file);
+        }],
+      ];
+      for (const [form, make] of forms) {
+        // The twin: a full book that holds the request refuses it with 403, and not with 503.
+        const holding = makeWorld();
+        expect(refusalOf(await rigOf(holding, { book: await make(holding, true) }).run()), form).toMatchObject({ status: 403, error: 'duplicate_rfq' });
+        const world = makeWorld();
+        const rig = rigOf(world, { book: await make(world, false) });
+        unavailable(await rig.run(), 'rfq book');
+        expect(world.faults, form).toEqual([['rfq book', expect.any(RangeError)]]);
+        expect(rig.logs, form).toEqual(['bid desk: the rfq book failed (RangeError)']);
+        expect(rig.passed.take(rig.context.escrowRef, T), form).toBeNull();
+      }
     } finally {
       rmSync(folder, { recursive: true, force: true });
     }

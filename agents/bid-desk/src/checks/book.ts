@@ -14,7 +14,8 @@
 // A file that is there and is damaged is an error too.
 //
 // A book holds at most RFQ_BOOK_LIMIT entries. It never drops an entry to make room, because a dropped entry reads as a new request. The record of a key that the book holds is a no-op for the same quote hash, and
-// an error for another quote hash: the agent never gives two quotes for one request of one sender.
+// an error for another quote hash: the agent never gives two quotes for one request of one sender. A book that is full cannot take a new entry, so `has` rejects with a RangeError for a key that the book lacks,
+// and it never answers false: a false gives a go, the service claims the escrow, and the record of that entry fails. A key that the book holds still answers true.
 import { randomBytes } from 'node:crypto';
 import { accessSync, closeSync, constants, existsSync, fsyncSync, mkdirSync, openSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { open, readFile, rename, unlink, writeFile } from 'node:fs/promises';
@@ -25,7 +26,10 @@ import type { Did, Digest } from '@vsa/usecase-kit/protocol';
 
 /** The requests for quotation that the Bid Desk answered, by sender and identifier. */
 export interface RfqBook {
-  /** Did this sender send this request, and did the agent answer it? The identifier counts as it is written. A book that cannot answer rejects. */
+  /**
+   * Did this sender send this request, and did the agent answer it? The identifier counts as it is written. A book that cannot answer rejects. A book that is full and has no entry for the key rejects too
+   * (a RangeError): the job could not record a new entry, so the book must not read the request as new. A key that the book holds is true also when the book is full.
+   */
   has(sender: Did, rfqId: string): Promise<boolean>;
   /** Records the quote that the agent gave for the request. It resolves when the record is stored. */
   record(sender: Did, rfqId: string, quoteSha256: Digest): Promise<void>;
@@ -69,6 +73,19 @@ function quoteHashOf(value: unknown): Digest {
 
 const keyOf = (sender: Did, rfqId: string): string => JSON.stringify([sender, rfqId]);
 
+/** The error of a book that is full. It names the book and the limit, and never a sender or an identifier. */
+const full = (): RangeError => new RangeError(`the rfq book holds ${RFQ_BOOK_LIMIT} entries and is full`);
+
+/**
+ * Does the book hold the key? A book that is full and lacks the key rejects, and never answers false: the job could not record an entry for that request, so the book must not read it as new. A key that the book
+ * holds is true also when the book is full.
+ */
+function holds(entries: Entries, key: string): boolean {
+  if (entries.has(key)) return true;
+  if (entries.size >= RFQ_BOOK_LIMIT) throw full();
+  return false;
+}
+
 /**
  * Decides what the record of an entry does. It is true when the entry is new and the caller stores it. It is false when the book holds the same quote for the key already. It throws for another quote hash of a key
  * that the book holds, and for a book that is full.
@@ -79,7 +96,7 @@ function isNew(entries: Entries, entry: BookEntry): boolean {
     if (held.quote_sha256 === entry.quote_sha256) return false;
     throw new Error('the rfq book holds another quote for this request');
   }
-  if (entries.size >= RFQ_BOOK_LIMIT) throw new RangeError(`the rfq book holds ${RFQ_BOOK_LIMIT} entries and is full`);
+  if (entries.size >= RFQ_BOOK_LIMIT) throw full();
   return true;
 }
 
@@ -88,7 +105,7 @@ export class MemoryRfqBook implements RfqBook {
   readonly #entries: Entries = new Map();
 
   async has(sender: Did, rfqId: string): Promise<boolean> {
-    return this.#entries.has(keyOf(senderOf(sender), rfqIdOf(rfqId)));
+    return holds(this.#entries, keyOf(senderOf(sender), rfqIdOf(rfqId)));
   }
 
   async record(sender: Did, rfqId: string, quoteSha256: Digest): Promise<void> {
@@ -267,7 +284,7 @@ export class FileRfqBook implements RfqBook {
 
   async has(sender: Did, rfqId: string): Promise<boolean> {
     const key = keyOf(senderOf(sender), rfqIdOf(rfqId));
-    return (await this.#read()).has(key);
+    return holds(await this.#read(), key);
   }
 
   async record(sender: Did, rfqId: string, quoteSha256: Digest): Promise<void> {
