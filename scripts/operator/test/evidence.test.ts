@@ -3,7 +3,7 @@
 // records), the mock service, and the hosted tools. Each of the ten checks has a test that breaks one input and names the member, and an accepted twin. No test uses the network or the real clock.
 import { createHash } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { attestation, attestationUtxo, CAPTURE_MS, DAY, delegation, delegationUtxo, koiosRow, ledgerWorld, liveRecord, MAINNET, recordUtxo, vaultUtxo } from '../../../packages/buyer-core/test/fixtures/ledger-read-world.ts';
@@ -18,7 +18,12 @@ import { canonicalize } from '../../../packages/vector-read/src/index.ts';
 import { parseKeyText } from '../../checks/lib/keys.ts';
 import { MOCK_PUBLIC_BASE } from '../lib/mock-hosts.ts';
 import { runTask } from '../lib/runner.ts';
-import evidence, { CASE_DURATION_MS, CONFIRMATION_SCHEMA, EXPLORER_TX, JURY_HOLD_REASON, MARKETPLACE_INDEXER, PROPOSAL_SCHEMA, RESULT_SCHEMA, RULE_STEP_IDS, secretMarkIn } from '../tasks/evidence.ts';
+import evidence, { CASE_DURATION_MS, EXPLORER_TX, JURY_HOLD_REASON, MARKETPLACE_INDEXER, createEvidenceTask, ruleStepIds, secretMarkIn } from '../tasks/evidence.ts';
+import { evidenceModuleOf } from '../lib/evidence/index.ts';
+import { CONFIRMATION_SCHEMA, PROPOSAL_SCHEMA, RESULT_SCHEMA, inventory } from '../lib/evidence/inventory.ts';
+import { lastHire, ref as evidenceRef } from '../lib/evidence/types.ts';
+import type { EvidenceModule } from '../lib/evidence/types.ts';
+import type { UseCase } from '../lib/contract.ts';
 import data from '../usecases/inventory-reorder.ts';
 import { PackHosted } from './support/pack-hosted.ts';
 import { ScriptedNode, hashOf, taskWorld } from './support/task-world.ts';
@@ -30,12 +35,6 @@ const ESCROW_CREDENTIAL = MAINNET.escrow.hash;
 const WALLET_CREDENTIAL = 'aa'.repeat(28);
 const S0 = CAPTURE_MS / 1000;
 const GOLDEN = (name: string): string => fileURLToPath(new URL(`./golden/evidence-${name}.json`, import.meta.url));
-/** Writes a golden file when the run says so (WRITE_GOLDEN=1). A golden file is never written by an ordinary run. */
-function writeGolden(name: string, text: string): void {
-  if (process.env.WRITE_GOLDEN !== '1') return;
-  mkdirSync(dirname(GOLDEN(name)), { recursive: true });
-  writeFileSync(GOLDEN(name), text);
-}
 
 const h = (text: string): string => hashOf(`evidence ${text}`);
 const ref = (text: string, index = 0): string => `${h(text)}#${index}`;
@@ -60,6 +59,10 @@ interface Scenario {
   faultEntries: Obj[] | null; cases: Obj[]; deskHold: 'held' | 'none'; juryFailed: boolean; unconfirmed: Set<string>; extraRows: TxRow[]; skipKoiosTx: Set<string>; eventualDeskFault: string;
   challengeKnown: boolean; spendOverride: Map<string, string>; indexed: Obj[]; indexerStatus: number; indexerBody: unknown; holdSince?: number; payFromWallet: boolean; recordsHoldKeys: boolean;
   challengeMint: Obj[];
+  modern?: boolean;
+  extraApprovals?: Obj[];
+  holdAgent?: 'reorder-agent' | 'order-desk';
+  reclaimToWallet?: boolean;
 }
 
 const txOf = (step: string, what: 'post' | 'claim' | 'submit' | 'accept' | 'reclaim'): string => h(`${what} of ${step}`);
@@ -180,10 +183,13 @@ function caseRow(over: Obj = {}): Obj {
   };
 }
 
-interface Outcome { exit: number; out: string; err: string; machine: MachineLine; stateDir: string; world: TaskWorld; read(name: string): string | null; calls: Array<{ url: string; headers: Record<string, string> }> }
+interface Outcome { exit: number; out: string; err: string; machine: MachineLine; stateDir: string; world: TaskWorld; recordText: string; read(name: string): string | null; calls: Array<{ url: string; headers: Record<string, string> }> }
 
-async function go(s: Scenario, argv: string[] = ['run', '--run', s.label, '--number', '1'], over: { cases?: Obj[]; clockMs?: number; world?: TaskWorld; runs?: typeof data.runs; env?: Record<string, string> } = {}): Promise<Outcome> {
-  const w = over.world ?? await taskWorld({ keys: ['run', 'fee'], use: { title: data.title, runs: over.runs ?? data.runs, evidenceSteps: data.evidenceSteps, agents: data.agents }, env: { VECTOR_KOIOS_URL: KOIOS, ...over.env } });
+async function go(s: Scenario, argv: string[] = ['run', '--run', s.label, '--number', '1'], over: {
+  cases?: Obj[]; clockMs?: number; world?: TaskWorld; runs?: typeof data.runs; env?: Record<string, string>; use?: Partial<UseCase>; task?: typeof evidence;
+} = {}): Promise<Outcome> {
+  const w = over.world ?? await taskWorld({ keys: ['run', 'fee'], use: { title: data.title, runs: over.runs ?? data.runs, evidenceSteps: data.evidenceSteps, agents: data.agents, subagents: data.subagents, ...over.use },
+    env: { OPERATOR_USE_CASE: data.name, VECTOR_KOIOS_URL: KOIOS, ...over.env } });
   mkdirSync(w.stateDir, { recursive: true, mode: 0o700 });
   chmodSync(w.stateDir, 0o700);
   const dir = join(w.stateDir, 'runs');
@@ -192,6 +198,7 @@ async function go(s: Scenario, argv: string[] = ['run', '--run', s.label, '--num
   const confirmed = new Set<string>();
   const rows: TxRow[] = [...s.extraRows];
   const posted: Row[] = [];
+  const historic: Row[] = [];
   const entries: Obj[] = [];
   const row = (hash: string, minute: number, inputs: TxIo[], more: Partial<TxRow> = {}): void => {
     if (!s.skipKoiosTx.has(hash)) rows.push({ tx_hash: hash, tx_timestamp: S0 + minute * 60, inputs, outputs: [], plutus_contracts: [], assets_minted: [], tx_info_note: 'made up', ...more });
@@ -222,7 +229,7 @@ async function go(s: Scenario, argv: string[] = ['run', '--run', s.label, '--num
       verdict: 'VERIFIED', checks: { escrow_ref_matches: 'pass', response_hash_matches: 'pass', supplier_key_matches: 'pass', signature_valid: 'pass' },
       receipt, receipt_signature: signer.signMessage(Buffer.from(canonicalize(receipt), 'utf8')), result: resultText, ...one.reportOver,
     };
-    writeFileSync(join(dir, s.label, `${one.step}.report.json`), JSON.stringify(report));
+    if (one.entryOver.report_file !== null) writeFileSync(join(dir, s.label, `${one.step}.report.json`), JSON.stringify(report));
     const claim = txOf(one.step, 'claim'); const submit = txOf(one.step, 'submit');
     if (one.role === 'order-desk' && !s.payFromWallet) {
       const spent = vaultHead[0]!;
@@ -237,10 +244,18 @@ async function go(s: Scenario, argv: string[] = ['run', '--run', s.label, '--num
       const escrowOutput: TxIo = { tx_hash: post, tx_index: 0, value: '5200000', payment_addr: { cred: ESCROW_CREDENTIAL, bech32: 'addr1test' }, inline_datum: null };
       row(post, one.minute, [input(ref('wallet', 1), WALLET_CREDENTIAL)], one.role === 'order-desk' ? { outputs: [escrowOutput] } : {});
     }
-    row(claim, one.minute + 1, [input(`${post}#0`, ESCROW_CREDENTIAL)]);
-    row(submit, one.minute + 2, [input(`${claim}#0`, ESCROW_CREDENTIAL)]);
+    if (one.entryOver.report_file !== null) {
+      row(claim, one.minute + 1, [input(`${post}#0`, ESCROW_CREDENTIAL)]);
+      row(submit, one.minute + 2, [input(`${claim}#0`, ESCROW_CREDENTIAL)]);
+    }
     if (end !== null) row(end, one.minute + 3, [input(s.spendOverride.get(end) ?? `${submit}#0`, ESCROW_CREDENTIAL)]);
     for (const hash of [post, end]) if (hash !== null) confirmed.add(hash);
+    const reclaim = one.entryOver.reclaim_tx;
+    if (typeof reclaim === 'string') {
+      const credential = s.reclaimToWallet === true ? WALLET_CREDENTIAL : VAULT_CREDENTIAL;
+      row(reclaim, one.minute + 3, [input(`${post}#0`, ESCROW_CREDENTIAL)], { outputs: [input(`${reclaim}#0`, credential)] });
+      confirmed.add(reclaim);
+    }
     for (const decided of (one.result.decisions as Obj[])) confirmed.add(((decided.inference as Obj).sub_job as Obj).escrow_ref!.toString().slice(0, 64));
     const datum = identityEscrow(CAPTURE_MS, { advert_ref: { txHash: advert.slice(0, 64), index: 0 }, agent_id: AGENTS[agent], supplier_pkh: signer.keyHash, ...one.datumOver });
     posted.push(koiosRow(escrowUtxo(post, datum, { address: MAINNET.escrow.address }), { is_spent: true }));
@@ -260,14 +275,28 @@ async function go(s: Scenario, argv: string[] = ['run', '--run', s.label, '--num
   const vaults: Obj[] = [];
   s.vaults.forEach((v) => { if (v.utxo !== null) { utxos.push(v.utxo); vaults.push({ ref: `${v.utxo.txHash}#${v.utxo.outputIndex}` }); } });
   if (s.approvalVisible) {
-    const datum = attestation({ subject: AGENTS['reorder-agent'], attType: 5, digest: s.digest, issuedAt: CAPTURE_MS, validUntil: CAPTURE_MS + RUN_APPROVAL_VALIDITY_MS, ...(s.approval.datum as Obj | undefined) });
-    utxos.push(attestationUtxo(s.approval.attestation as string, datum, { txHash: s.approval.tx as string }));
+    for (const value of [s.approval, ...s.extraApprovals ?? []]) {
+      const datum = attestation({ subject: AGENTS['reorder-agent'], attType: 5, digest: s.digest, issuedAt: CAPTURE_MS, validUntil: CAPTURE_MS + RUN_APPROVAL_VALIDITY_MS, ...(value.datum as Obj | undefined) });
+      const id = value.attestation as string;
+      const issue = value.tx as string;
+      const revoke = value.revokedTx as string | undefined;
+      row(issue, Number(value.issueMinute ?? 0), []);
+      confirmed.add(issue);
+      utxos.push(attestationUtxo(id, datum, { txHash: revoke ?? issue }));
+      if (revoke !== undefined) {
+        const old = attestationUtxo(id, { ...datum, status: { type: 'AttActive' } }, { txHash: issue });
+        historic.push(koiosRow(old, { is_spent: true }));
+        row(revoke, Number(value.revokeMinute ?? 2), [input(`${old.txHash}#${Number(value.revokeIndex ?? old.outputIndex)}`, MAINNET.attestation.hash)]);
+        confirmed.add(revoke);
+      }
+    }
   }
   const holdSince = s.holdSince ?? CAPTURE_MS + 3600_000;
   const held = { status: { type: 'Suspended' as const, holds: [{ by: { type: 'Script' as const, hash: 'ab'.repeat(28) }, reason: JURY_HOLD_REASON, since: holdSince, until: holdSince + 7 * DAY }] } };
   const listed = (agent: 'reorder-agent' | 'order-desk'): string[] => (s.recordsHoldKeys ? [SUPPLIERS[agent].publicKeyHex] : []);
-  utxos.push({ ...recordUtxo(AGENTS['order-desk'], liveRecord(s.deskHold === 'held' ? held : {}, listed('order-desk'))), txHash: h('order desk record output') });
-  utxos.push({ ...recordUtxo(AGENTS['reorder-agent'], liveRecord({}, listed('reorder-agent'))), txHash: h('reorder agent record output') });
+  const heldAgent = s.holdAgent ?? 'order-desk';
+  utxos.push({ ...recordUtxo(AGENTS['order-desk'], liveRecord(s.deskHold === 'held' && heldAgent === 'order-desk' ? held : {}, listed('order-desk'))), txHash: h('order desk record output') });
+  utxos.push({ ...recordUtxo(AGENTS['reorder-agent'], liveRecord(s.deskHold === 'held' && heldAgent === 'reorder-agent' ? held : {}, listed('reorder-agent'))), txHash: h('reorder agent record output') });
   if (kind(s) === 'failure') {
     const challengeTx = CHALLENGE.challenge.slice(0, 64);
     row(challengeTx, 45, [], { assets_minted: s.challengeMint });
@@ -278,8 +307,17 @@ async function go(s: Scenario, argv: string[] = ['run', '--run', s.label, '--num
     format: 1, label: s.label, kind: s.kind, date: '2026-12-01', tenant: s.tenant,
     delegations: s.delegations.map((d, i) => ({ id: d.id, tx: h(`delegation tx ${i}`), ended_tx: d.live ? null : h(`delegation end ${i}`) })),
     vaults: s.vaults.map((v, i) => ({ ref: v.utxo === null ? vaultRoot[i]! : `${v.utxo.txHash}#${v.utxo.outputIndex}`, open_tx: h(`vault open ${i}`), close_tx: v.utxo === null ? h(`vault close ${i}`) : null })),
-    approval: s.approval.attestation === undefined ? undefined : { attestation: s.approval.attestation, tx: s.approval.tx },
-    sub_delegations: [{ id: h('sub delegation'), delegate_tx: h('sub delegate tx'), undelegate_tx: h('sub undelegate tx') }],
+    ...(s.modern === true ? {
+      use_case: w.use.name, challenged: s.kind === 'failure' ? 'order-desk' : null, rfq_ids: [],
+      approvals: [s.approval, ...s.extraApprovals ?? []].map((a) => ({
+        role: 'approval', attestation: a.attestation, tx: a.tx, valid_until: (a.datum as Obj | undefined)?.validUntil ?? CAPTURE_MS + RUN_APPROVAL_VALIDITY_MS,
+        revoked_tx: a.revokedTx ?? null, supersedes: a.supersedes ?? null,
+      })),
+    } : { approval: s.approval.attestation === undefined ? undefined : { attestation: s.approval.attestation, tx: s.approval.tx } }),
+    sub_delegations: [{
+      id: h('sub delegation'), delegate_tx: h('sub delegate tx'), undelegate_tx: h('sub undelegate tx'),
+      ...(s.modern === true ? { subagent: 'stock-reader', hire: s.hires.find((one) => one.role === 'propose')?.step } : {}),
+    }],
     hires: entries, refusals: s.kind === 'clean' ? [] : [
       { step: 'r2-a', kind: 'ledger', evaluation_error: 'the vault script failed: the payment is above the limit', transaction_body: 'a1b2c3d4' },
       { step: 'r2-b', kind: 'ledger', evaluation_error: 'the vault script failed: the total is spent', transaction_body: 'a1b2c3d5' },
@@ -292,8 +330,9 @@ async function go(s: Scenario, argv: string[] = ['run', '--run', s.label, '--num
   for (const v of record.vaults) { confirmed.add(v.open_tx); if (v.close_tx !== null) confirmed.add(v.close_tx); }
   confirmed.add(s.approval.tx as string);
   for (const sub of record.sub_delegations) { confirmed.add(sub.delegate_tx); confirmed.add(sub.undelegate_tx); }
-  writeFileSync(join(dir, `${s.label}.json`), JSON.stringify(record, null, 2));
-  const facts = FactsFile.open(join(w.stateDir, 'facts.json'), { useCase: 'inventory-reorder', network: 'vector-mainnet' });
+  const recordText = JSON.stringify(record, null, 2);
+  writeFileSync(join(dir, `${s.label}.json`), recordText);
+  const facts = FactsFile.open(join(w.stateDir, 'facts.json'), { useCase: w.use.name, network: 'vector-mainnet' });
   for (const agent of Object.keys(AGENTS)) {
     facts.put('records', [agent], { did: `did:vector:${AGENTS[agent as keyof typeof AGENTS]}`, id: AGENTS[agent as keyof typeof AGENTS], tx: h(`record tx ${agent}`), recordRef: ref(`record ${agent}`), depositLovelace: '10000000', registeredAt: stamp(S0 - 9000) });
     if (s.facts.claims[agent] !== undefined) facts.put('claims', [s.label, agent], s.facts.claims[agent]);
@@ -307,12 +346,12 @@ async function go(s: Scenario, argv: string[] = ['run', '--run', s.label, '--num
   if (s.facts.holds !== null) { confirmed.add(s.facts.holds.suspendTx as string); confirmed.add(s.facts.holds.liftTx as string); }
   if (s.faultEntries !== null || s.kind !== undefined) {
     const entriesOfFile = s.faultEntries ?? goodFaultEntries(s.kind);
-    writeFileSync(join(w.stateDir, `fault.${s.label}.evidence.json`), JSON.stringify({ format: 1, check: 'fault', network: 'vector-mainnet', record: `inventory-reorder:${s.label}`, started_at: stamp(S0), entries: entriesOfFile }), { mode: 0o600 });
+    writeFileSync(join(w.stateDir, `fault.${s.label}.evidence.json`), JSON.stringify({ format: 1, check: 'fault', network: 'vector-mainnet', record: `${w.use.name}:${s.label}`, started_at: stamp(S0), entries: entriesOfFile }), { mode: 0o600 });
   }
   for (const row of s.indexed) for (const point of [row.opened, row.finalized, row.closed] as Array<Obj | null>) if (point !== null) confirmed.add(point.tx as string);
   for (const hash of s.unconfirmed) confirmed.delete(hash);
   // -- the fakes
-  const ledger = ledgerWorld(utxos, { txs: rows, utxoInfo: posted });
+  const ledger = ledgerWorld(utxos, { txs: rows, utxoInfo: [...posted, ...historic] });
   const calls: Outcome['calls'] = [];
   const mock = (url: string): Response => {
     if (s.mockStatus !== 200) return new Response('{"error":"internal"}', { status: s.mockStatus });
@@ -343,10 +382,16 @@ async function go(s: Scenario, argv: string[] = ['run', '--run', s.label, '--num
   });
   w.clock.t = over.clockMs ?? CAPTURE_MS + 3 * 3600_000;
   const chain = { provider: ledger.provider, deployment: MAINNET, koiosUrl: KOIOS, fetchImpl, context: async () => { throw new Error('not used'); }, liveVaultsOf: async () => [] };
-  const exit = await runTask(evidence, argv, w.deps({ chain, node, hosted, fetchImpl }));
+  const exit = await runTask(over.task ?? evidence, argv, w.deps({ chain, node, fetchImpl, hosted: {
+    call(name, args) {
+      if (name !== 'test_evidence_read') return hosted.call(name, args);
+      expect(args).toEqual({});
+      return Promise.resolve({ json: { confirmed: h('module read') }, text: '', failed: false, message: '' });
+    },
+  } }));
   const read = (name: string): string | null => { const path = join(w.stateDir, name); return existsSync(path) ? readFileSync(path, 'utf8') : null; };
   void vaults;
-  return { exit, out: w.screen.text, err: w.screen.errorText, machine: w.machine(), stateDir: w.stateDir, world: w, read, calls };
+  return { exit, out: w.screen.text, err: w.screen.errorText, machine: w.machine(), stateDir: w.stateDir, world: w, recordText, read, calls };
 }
 
 const kind = (s: Scenario): 'clean' | 'failure' => s.kind;
@@ -386,12 +431,12 @@ function closedCase(result = 'AuditorWins', hold: 'held' | 'none' = 'held', over
 describe('the golden files', () => {
   it('writes the evidence of a complete clean run, equal to its golden file, with mode 600 in a folder with mode 700', async () => {
     const s = scenario('clean');
+    s.modern = true;
     const r = await go(s);
     expect(r.err).toBe('');
     expect(r.exit).toBe(0);
     const text = r.read(publicFile());
     expect(text).not.toBeNull();
-    writeGolden('clean', text!);
     expect(text).toBe(readFileSync(GOLDEN('clean'), 'utf8'));
     expect(statSync(join(r.stateDir, publicFile())).mode & 0o777).toBe(0o600);
     expect(statSync(join(r.stateDir, 'evidence')).mode & 0o777).toBe(0o700);
@@ -403,11 +448,12 @@ describe('the golden files', () => {
   });
 
   it('writes the evidence of a complete failure run, equal to its golden file', async () => {
-    const r = await go(closedCase());
+    const s = closedCase();
+    s.modern = true;
+    const r = await go(s);
     expect(r.err).toBe('');
     expect(r.exit).toBe(0);
     const text = r.read(publicFile());
-    writeGolden('failure', text!);
     expect(text).toBe(readFileSync(GOLDEN('failure'), 'utf8'));
     const doc = JSON.parse(text!) as Obj;
     expect(doc.run).toBe('use-case-1-failure');
@@ -461,11 +507,300 @@ describe('the golden files', () => {
   });
 
   it('keeps the rule table of the steps equal to the steps of the data', () => {
-    expect(new Set(RULE_STEP_IDS)).toEqual(new Set(data.evidenceSteps.map((step) => step.id)));
+    expect(new Set(ruleStepIds(data.name))).toEqual(new Set(data.evidenceSteps.filter((step) => step.run === 'both' || inventory.runKinds.includes(step.run)).map((step) => step.id)));
+    expect(evidenceModuleOf(data.name)).toBe(inventory);
+    expect(() => evidenceModuleOf('unregistered')).toThrow('no evidence module');
+    expect(() => evidenceModuleOf('constructor')).toThrow('no evidence module');
   });
 
   it('keeps the three schemas of the results equal to the schemas of the kit', () => {
     expect([PROPOSAL_SCHEMA, RESULT_SCHEMA, CONFIRMATION_SCHEMA]).toEqual([KIT_PROPOSAL, KIT_RESULT, KIT_CONFIRMATION]);
+  });
+
+  it('uses files written in the first record shape without rewriting them, and emits the same two goldens', async () => {
+    for (const input of [scenario('clean'), closedCase()]) {
+      const r = await go(input);
+      expect(r.err).toBe('');
+      expect(r.exit).toBe(0);
+      expect(r.read(publicFile())).toBe(readFileSync(GOLDEN(input.kind), 'utf8'));
+      expect(r.read(`runs/${input.label}.json`)).toBe(r.recordText);
+      const old = JSON.parse(r.read(`runs/${input.label}.json`)!) as Obj;
+      expect(old).toHaveProperty('approval');
+      expect(old).not.toHaveProperty('approvals');
+      expect(old).not.toHaveProperty('use_case');
+    }
+  });
+});
+
+const TEST_USE = 'fixture-evidence';
+const testUse = (evidenceSteps: UseCase['evidenceSteps']): Partial<UseCase> => ({
+  name: TEST_USE, agents: [...data.agents].reverse(), evidenceSteps,
+});
+
+const testModule: EvidenceModule = {
+  ...inventory,
+  readLegacy: false,
+  reportOptional: [],
+  carriedOf: (hires) => lastHire(hires, 'execute')?.entry ?? null,
+  challengeOf: () => null,
+  holdOf: () => { throw new Error('a run without a challenge must not read a hold'); },
+  faultProblems: () => [],
+  hosted: ['test_evidence_read'],
+  async prepare(session) {
+    const reply = await session.hosted.call('test_evidence_read', {});
+    if (reply.failed || typeof reply.json?.confirmed !== 'string') throw new Error('the test source cannot be read');
+    return { confirmed: reply.json.confirmed };
+  },
+  moduleDocument: (a) => ({
+    run: `fixture-${a.loaded.record.kind}`,
+    state_at_hire: a.approvalStates.map((entry) => entry === null ? null : { state: entry.state, checked_at: entry.checked_at, hire: entry.hire }),
+  }),
+};
+
+const testStep = { id: 'checked', run: 'both', what: 'check the source', primitive: 'test', actor: 'operator' } as const;
+const secondStep = { ...testStep, id: 'terminal' };
+
+describe('modules of the evidence task', () => {
+  it('reads a registered module, uses its async read before the rules, and takes the last execute without a handoff', async () => {
+    const task = createEvidenceTask({ [TEST_USE]: {
+      ...testModule,
+      rules: {
+        checked: (a) => a.extra.confirmed === h('module read') ? [evidenceRef('transaction', a.loaded.carried!.entry.post_tx)] : 'no source was read',
+        terminal: (a) => [evidenceRef('escrow', a.loaded.carried!.entry.escrow_ref)],
+      },
+    } });
+    expect(task.needs.hosted).toEqual(['vector_get_jury_cases', 'vector_resolve_did', 'test_evidence_read']);
+    const s = scenario('clean');
+    s.modern = true;
+    s.hires[1]!.result.handoff = null;
+    s.record = { approvals: [] };
+    s.hires.push(hire('execute-last', 'execute', 60, { ...vaultRefused(s.digest, 'Cancelled'), exit_state: 'Cancelled' }));
+    const r = await go(s, undefined, { use: testUse([testStep, secondStep]), task });
+    expect(r.err).toBe('');
+    expect(r.exit).toBe(0);
+    const doc = JSON.parse(r.read(publicFile())!) as Obj;
+    expect(doc).toMatchObject({ post_tx: txOf('execute-last', 'post'), exit_state: 'Cancelled', challenge: null, case: null });
+    expect(doc.steps).toEqual([
+      { id: 'checked', status: 'shown', refs: [evidenceRef('transaction', txOf('execute-last', 'post'))], note: '' },
+      { id: 'terminal', status: 'shown', refs: [evidenceRef('escrow', escrowOf('execute-last'))], note: '' },
+    ]);
+    expect(r.calls.some(({ url }) => url.includes('/jury/cases'))).toBe(false);
+  });
+
+  it('does not turn a failed source, a missing rule, or a malformed reference into an evidence file', async () => {
+    const s = scenario('failure');
+    s.modern = true;
+    s.record = { approvals: [], challenged: null };
+    const scenarios = [
+      [{ ...testModule, rules: {} }, 'no rule for the step'],
+      [{ ...testModule, rules: { checked: () => [{ kind: 'transaction', value: 'a free text' }] } }, 'not in their required form'],
+      [{ ...testModule, rules: { checked: () => [evidenceRef('transaction', h('ref'))] }, async prepare() { throw new Error('synthetic failed read'); } }, 'prepare.read_failed'],
+    ] as const;
+    for (const [module, message] of scenarios) {
+      const r = await go(s, undefined, { use: testUse([testStep]), task: createEvidenceTask({ [TEST_USE]: module }) });
+      expect(r.exit).toBe(2);
+      expect(r.err).toContain(message);
+      expect(r.read(publicFile())).toBeNull();
+    }
+  });
+
+  it('reads the case and the record hold of the agent that the module names, not the counterparty', async () => {
+    const s = closedCase('AuditorWins', 'held', { claim: CLAIM_TOKEN('reorder-agent') });
+    s.modern = true;
+    s.holdAgent = 'reorder-agent';
+    s.record = { approvals: [], challenged: 'reorder-agent' };
+    const module: EvidenceModule = {
+      ...testModule,
+      challengeOf: () => ({ agent: 'reorder-agent', claim: `${h('claim tx reorder-agent')}#0`, ...CHALLENGE }),
+      holdOf: (_a, source) => source.readRecordHold(),
+      rules: { checked: (a) => a.caseRead?.hold === null || a.caseRead === null ? 'no hold' : [evidenceRef('hold', a.caseRead.hold.record_output)] },
+    };
+    const use = testUse([testStep]);
+    const task = createEvidenceTask({ [TEST_USE]: module });
+    const r = await go(s, undefined, { use, task });
+    expect(r.err).toBe('');
+    expect(r.exit).toBe(0);
+    expect(JSON.parse(r.read(publicFile())!)).toMatchObject({ case: { hold: { record_output: ref('reorder agent record output') } } });
+    s.record.challenged = 'order-desk';
+    const wrong = await go(s, undefined, { use, task });
+    expect(wrong.exit).toBe(2);
+    expect(wrong.err).toContain('does not match the named challenged agent');
+    expect(wrong.read(publicFile())).toBeNull();
+    s.record.challenged = 'reorder-agent';
+    const badHook = createEvidenceTask({ [TEST_USE]: { ...module, holdOf() { throw new Error('hold source unavailable'); } } });
+    const failed = await go(s, undefined, { use, task: badHook });
+    expect(failed.exit).toBe(2);
+    expect(failed.err).toContain('hold.read_failed');
+    expect(failed.read(publicFile())).toBeNull();
+  });
+
+  it('uses a historical hold from the module without requiring a hold on the current record', async () => {
+    const s = closedCase('AuditorWins', 'none');
+    s.modern = true;
+    s.record = { approvals: [] };
+    const holdRef = ref('case finalize tx', 2);
+    const task = createEvidenceTask({ [TEST_USE]: {
+      ...testModule,
+      challengeOf: (a) => ({ agent: 'order-desk', claim: a.facts.claims[s.label]!['order-desk']!.claimRef, ...CHALLENGE }),
+      async holdOf(_a, source) {
+        const since = await source.blockTime();
+        if (!source.indexed?.finalized_tx) throw new Error('the case has no finalized transaction');
+        return { reason: JURY_HOLD_REASON, since, until: since + DAY, record_output: `${source.indexed.finalized_tx}#2`, gateway_status: null };
+      },
+      rules: { checked: (a) => a.caseRead?.hold?.record_output === holdRef ? [evidenceRef('hold', holdRef)] : 'no historical hold' },
+    } });
+    const r = await go(s, undefined, { use: testUse([testStep]), task });
+    expect(r.err).toBe('');
+    expect(r.exit).toBe(0);
+    expect(JSON.parse(r.read(publicFile())!)).toMatchObject({ case: { hold: { record_output: holdRef } } });
+  });
+
+  it('requires the no-report hire to have a confirmed reclaim to the vault and not a receipt', async () => {
+    const s = scenario('failure');
+    s.modern = true;
+    s.record = { approvals: [], challenged: null };
+    const desk = s.hires.find((one) => one.step === 'order-desk-c')!;
+    const reclaim = txOf(desk.step, 'reclaim');
+    desk.entryOver = { report_file: null, reclaim_tx: reclaim };
+    const task = createEvidenceTask({ [TEST_USE]: {
+      ...testModule, reportOptional: ['order-desk'],
+      rules: { checked: (a) => {
+        const hire = a.loaded.hires.find((one) => one.entry.step === desk.step);
+        return hire?.report === null && hire.entry.reclaim_tx === reclaim ? [evidenceRef('transaction', reclaim)] : 'no reclaimed hire';
+      } },
+    } });
+    const opts = { use: testUse([testStep]), task };
+    const r = await go(s, undefined, opts);
+    expect(r.err).toBe('');
+    expect(r.exit).toBe(0);
+    expect(r.read(`runs/${s.label}/${desk.step}.report.json`)).toBeNull();
+    expect(JSON.parse(r.read(publicFile())!)).toMatchObject({ hires: expect.arrayContaining([expect.objectContaining({ step: desk.step, verdict: null, result_sha256: null })]) });
+    s.reclaimToWallet = true;
+    const refused = await go(s, undefined, opts);
+    expect(refused.exit).toBe(2);
+    expect(refused.err).toContain('does not reclaim the unclaimed escrow to the vault');
+    expect(refused.read(publicFile())).toBeNull();
+  });
+
+  it('judges two approvals at the blocks of their own hires and fails closed on a false revoke or expiry', async () => {
+    const s = scenario('failure');
+    s.modern = true;
+    s.record.challenged = null;
+    const revoked = h('revoked approval tx');
+    Object.assign(s.approval, { revokedTx: revoked, datum: { status: { type: 'AttRevoked', at: CAPTURE_MS + 60_000, reason: 1 } } });
+    const other = { attestation: h('other approval'), tx: h('other approval tx'),
+      supersedes: s.approval.attestation, datum: { validUntil: CAPTURE_MS + 20 * 60_000, links: [{ rel: 0, target: s.approval.attestation }] } };
+    s.extraApprovals = [other];
+    const module: EvidenceModule = {
+      ...testModule, hireOfApproval: (_a, i) => i === 0 ? 'execute-a' : 'execute-c',
+      approvalExpectations: () => ({}), rules: { checked: (a) => a.approvalStates.every((one) => one !== null) ? [evidenceRef('transaction', a.approvalStates[0]!.entry.tx)] : 'unchecked approval' },
+    };
+    const opts = { use: testUse([testStep]), task: createEvidenceTask({ [TEST_USE]: module }) };
+    const r = await go(s, undefined, opts);
+    expect(r.err).toBe('');
+    expect(r.exit).toBe(0);
+    expect(JSON.parse(r.read(publicFile())!)).toMatchObject({ state_at_hire: [
+      { state: 'revoked', checked_at: CAPTURE_MS + 5 * 60_000, hire: 'execute-a' },
+      { state: 'expired', checked_at: CAPTURE_MS + 40 * 60_000, hire: 'execute-c' },
+    ] });
+    s.unconfirmed.add(revoked);
+    const unread = await go(s, undefined, opts);
+    expect(unread.exit).toBe(2);
+    expect(unread.err).toContain('approvals[0].revoked_tx');
+    expect(unread.read(publicFile())).toBeNull();
+    s.unconfirmed.clear();
+    s.approval.revokeIndex = 3;
+    const wrongInput = await go(s, undefined, opts);
+    expect(wrongInput.exit).toBe(2);
+    expect(wrongInput.err).toContain('does not spend the output of this attestation');
+    expect(wrongInput.read(publicFile())).toBeNull();
+    delete s.approval.revokeIndex;
+    s.approval.issueMinute = 6;
+    const late = await go(s, undefined, opts);
+    expect(late.exit).toBe(2);
+    expect(late.err).toContain('approvals[0].tx: the attestation is issued after the hire');
+    expect(late.read(publicFile())).toBeNull();
+    delete s.approval.issueMinute;
+    s.record.approvals = [
+      { role: 'approval', attestation: s.approval.attestation, tx: s.approval.tx, valid_until: CAPTURE_MS + RUN_APPROVAL_VALIDITY_MS, revoked_tx: null, supersedes: null },
+      { role: 'approval', attestation: other.attestation, tx: other.tx, valid_until: CAPTURE_MS + RUN_APPROVAL_VALIDITY_MS, revoked_tx: null, supersedes: s.approval.attestation },
+    ];
+    const wrong = await go(s, undefined, opts);
+    expect(wrong.exit).toBe(2);
+    expect(wrong.err).toContain('the approval is revoked at its hire, not active');
+    expect(wrong.err).toContain('the approval is expired at its hire, not active');
+    expect(wrong.read(publicFile())).toBeNull();
+  });
+
+  it('passes every fault value to the module and requires one start for every service in each entry', async () => {
+    const s = scenario('failure');
+    s.modern = true;
+    s.record = { approvals: [], challenged: null };
+    const mode = 'fixture_fault';
+    const second = cleanEntries(S0 + 1900);
+    setAt(second, ['shows', 'check'], mode);
+    setAt(second, ['shows', 'agent'], 'reorder-agent');
+    setAt(second, ['shows', 'services', 0, 'value'], mode);
+    s.faultEntries = [...goodFaultEntries('failure'), second];
+    const agents = data.agents.map((agent) => agent.id === 'reorder-agent' ? { ...agent, faultValues: [mode] } : agent);
+    const use = { ...testUse([testStep]), agents };
+    const task = createEvidenceTask({ [TEST_USE]: {
+      ...testModule,
+      rules: { checked: (a) => [evidenceRef('transaction', a.loaded.carried!.entry.post_tx)] },
+      faultProblems: (a) => ['confirm_wrong_lot', mode].every((value) => a.faults.some((entry) => entry.ok && entry.check === value))
+        ? [] : [{ member: 'fault_check', detail: 'one fault is absent' }],
+    } });
+    const r = await go(s, undefined, { use, task });
+    expect(r.err).toBe('');
+    expect(r.exit).toBe(0);
+    setAt(second, ['shows', 'services'], [{ service: 'reorder-service', started_at: stamp(S0), value: mode }]);
+    const missing = await go(s, undefined, { use, task });
+    expect(missing.exit).toBe(2);
+    expect(missing.err).toContain('fault_check.services.orders-service');
+    expect(missing.read(publicFile())).toBeNull();
+  });
+
+  it('confirms only the named lifecycle facts and names the file for the lifecycle subject', async () => {
+    const step = { ...testStep, run: 'lifecycle' } as const;
+    const name = 'controller-change';
+    const tx = h('lifecycle tx');
+    const use: Partial<UseCase> = {
+      ...testUse([step]), runs: [{ ...data.runs[0]!, id: 'lifecycle' }],
+      lifecycle: { agent: 'order-desk', successor: 'successor', controllers: ['first', 'second'], guardians: ['first', 'second'], waitMs: DAY },
+    };
+    const task = createEvidenceTask({ [TEST_USE]: {
+      ...testModule, runKinds: ['lifecycle'],
+      carriedOf() { throw new Error('a lifecycle run does not read hires'); },
+      challengeOf() { throw new Error('a lifecycle run does not read a challenge'); },
+      hireOfApproval() { throw new Error('a lifecycle run does not read an approval'); },
+      faultProblems() { throw new Error('a lifecycle run does not read faults'); },
+      async prepare(_session, a) {
+        expect(a.mock).toBeNull();
+        expect(a.faults).toEqual([]);
+        expect(a.reads.delegations).toEqual([]);
+        expect(a.reads.vaults).toEqual([]);
+        return { checked: a.facts.lifecycle[name]?.tx };
+      },
+      rules: { checked: (a) => typeof a.extra.checked === 'string' ? [evidenceRef('transaction', a.extra.checked)] : 'no confirmed step' },
+    } });
+    const world = await taskWorld({ use, env: { OPERATOR_USE_CASE: data.name } });
+    mkdirSync(join(world.stateDir, 'runs'), { recursive: true, mode: 0o700 });
+    writeFileSync(join(world.stateDir, 'runs', 'l1.json'), JSON.stringify({
+      format: 1, label: 'l1', use_case: TEST_USE, kind: 'lifecycle', date: '2026-12-01', tenant: null, challenged: null, rfq_ids: [],
+      lifecycle: [name], hires: [], approvals: [], delegations: [], vaults: [], sub_delegations: [], refusals: [],
+    }));
+    const facts = FactsFile.open(join(world.stateDir, 'facts.json'), { useCase: TEST_USE, network: 'vector-mainnet' });
+    facts.put('lifecycle', [name], { tx, at: stamp(S0) });
+    facts.put('lifecycle', ['other'], { tx: h('unrelated transaction'), at: stamp(S0) });
+    const seen: string[] = [];
+    Object.defineProperty(world.node, 'txStatus', { value: async (hash: string) => { seen.push(hash); return { confirmations: hash === tx ? 3 : null }; } });
+    const exit = await world.run(task, 'run', '--run', 'l1', '--number', '1');
+    expect(exit, world.screen.errorText).toBe(0);
+    expect(seen).toEqual([tx]);
+    const file = join(world.stateDir, publicFile('2026-12-01-order-desk-run-1.json'));
+    const doc = JSON.parse(readFileSync(file, 'utf8')) as Obj;
+    for (const field of ['hires', 'approval', 'vault', 'mock', 'fault_mode', 'case', 'challenge', 'claims', 'escrow_ref']) expect(doc).not.toHaveProperty(field);
+    expect(doc.steps).toEqual([{ id: 'checked', status: 'shown', refs: [evidenceRef('transaction', tx)], note: '' }]);
   });
 });
 
@@ -1268,6 +1603,12 @@ describe('the secret scan', () => {
     const s = scenario('clean');
     (s.hires[0]!.result.decisions as Obj[])[0]!.reasoning = 'the Authorization header';
     await refuses(s, ['mark of a secret', 'Authorization']);
+  });
+  it('takes a hyphenated identifier but still refuses an authorization header or assignment', () => {
+    expect(secretMarkIn('{"use_case":"prior-authorization"}')).toBeNull();
+    for (const text of ['proxy-authorization', 'X-Authorization', 'authorization=none', 'custom-authorization: none']) {
+      expect(secretMarkIn(text)).toBe('Authorization');
+    }
   });
   it('refuses a JWT in a line of the log and in a result, writes no file, and shows no value', async () => {
     const jwt = ['eyJhbGciOiJFZERTQSJ9', 'eyJzdWIiOiJkaWQ6dmVjdG9yOngifQ', 'c2lnbmF0dXJl'].join('.');
