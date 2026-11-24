@@ -335,6 +335,18 @@ describe('the behaviour', () => {
       else expect(line, member).not.toContain(member);
     }
   });
+
+  test('the line about the ledger says that the service writes to it for each model hire and after a digest mismatch, and it does not say that the writes are only after a mismatch', () => {
+    const parties = manifestOf().behaviour.third_parties;
+    const line = parties.at(-1) ?? '';
+    expect(line).toBe('the Vector ledger (the escrow of each model hire, which carries only hashes, and, after a digest mismatch, the evidence document and the challenge)');
+    expect(line).toContain('the escrow of each model hire');
+    expect(line).toContain('after a digest mismatch');
+    expect(parties.filter((party) => party.includes('written only'))).toStrictEqual([]);
+    // The other line about the ledger is the line of the reads.
+    expect(parties.filter((party) => party.includes('ledger'))).toHaveLength(2);
+    expect(parties[1].startsWith('the ledger, read only')).toBe(true);
+  });
 });
 
 describe('the gaps', () => {

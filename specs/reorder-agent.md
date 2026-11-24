@@ -36,7 +36,7 @@ The table gives the design of the record. A value that the registration fixes re
 
 The model string in the advert and in every receipt is `reorder-agent-v1`.
 
-The agent runs behind the template runtime (`vector-agent-template`, `CAPABILITY_KIND=custom`). The runtime claims the escrow, asks the service whether to take the job, calls the service, signs the receipt and submits its hash. The service does the work. It holds five keys and no API key of any third party. It does not hold the supplier key: it knows only its key hash and its public key.
+The agent runs behind the template runtime (`vector-agent-template`, `CAPABILITY_KIND=custom`). The runtime asks the service whether to take the job, claims the escrow, calls the service, signs the receipt and submits its hash. The service does the work. It holds five keys and no API key of any third party. It does not hold the supplier key: it knows only its key hash and its public key.
 
 ## Terms
 

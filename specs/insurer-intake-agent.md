@@ -55,7 +55,7 @@ The price is the default of the setting `ADVERT_PRICE_LOVELACE`. The two bonds a
 |---|---|
 | Processing window, advert `max_processing_ms` | 480000 ms |
 | Service timeout, `SERVICE_TIMEOUT_MS` of the runtime | 360000 ms |
-| Job deadline, set by the service when a request arrives | 300000 ms |
+| Deadline of the model hire, set by the service when a request arrives | 300000 ms after the request arrives, or 60 s before `deliver_by`, whichever is earlier |
 | Request | at most 900000 bytes of wire payload |
 | Model calls | one for each job: the decision `completeness` |
 | Jobs at a time | one: a second job gets 409 `busy` |
@@ -185,7 +185,7 @@ When the check `approval_digest` fails, the approval is for another authorizatio
 
 ### What it does
 
-After the Claim the runtime posts the job to the service. The job has a deadline of 300000 ms after its request arrives, and it runs these steps in this order. A failure ends the job with an error, and no later step runs.
+After the Claim the runtime posts the job to the service. The job runs these steps in this order. A failure ends the job with an error, and no later step runs. The service sets one deadline when the request arrives, and it holds the model hire only: the earlier of 300000 ms after the request arrives and 60 s before `deliver_by`. The 60 s are 30 s for the runtime, which stops waiting then, 20 s for the filing call, and 10 s for a new JWT-SVID. The filing of the request can end later than the 300000 ms. When less than 60 s are left before the deadline of the model hire, no hire starts, and the job fails with 502 `inference_failed`.
 
 1. The job takes the record of the checks that the hook kept for its escrow, and it compares the hash of its own body with the hash that the hook checked. A job with no record, or with the record of another body, fails with `precheck_missing` and files nothing. It reads the sender, the approval and the 15 checks of the intake record from that record.
 2. It gets a JWT-SVID for the service key from the identity gateway. The audience of the JWT-SVID is the insurer system of the tenant of the request.
@@ -382,7 +382,7 @@ The service stakes no claim: no code of the service calls the staking. No comman
 | S2 | An intake record names the hash of the request this agent received. |
 | S3 | This agent files one entry per request number. |
 
-S2 is the statement that a wrong intake record breaks. When the intake record names another hash than the hash of the request that the Prior Authorization Agent sent, that agent declines the delivery and challenges the claim of this agent on S2. Until a command stakes a claim for this agent, that challenge ends with `no_open_claim`. No run covers that challenge, because this agent has no fault value (see Known gaps).
+S2 is the statement that a wrong intake record breaks. When the intake record names another hash than the hash of the request that the Prior Authorization Agent sent, and the model of that agent says no, that agent declines the delivery and challenges the claim of this agent on S2. A challenge needs two things: an open claim of this agent, and two hashes that differ. A no of the model for two equal hashes gives `no_contradiction`, and an accept of the model for two hashes that differ gives `decision_failed`. Neither files a challenge. Until a command stakes a claim for this agent, a challenge ends with `no_open_claim`. No run covers that challenge, because this agent has no fault value (see Known gaps).
 
 ## Fault switch
 
@@ -406,6 +406,8 @@ The service keeps these files and folders in its state directory (`INTAKE_STATE_
 | `dispute/` | the journal of the dispute code: one file for each escrow job, so one escrow has at most one challenge |
 | `requests.json` | the intake book: the tenant, the request number and the intake id of each request that the service filed. It holds at most 10000 entries and never drops one |
 
+A book that holds 10000 entries cannot take a new entry. For a request number that the book does not hold, the hook answers 503 `check_unavailable` and the escrow stays open. For a number that the book holds, the hook still answers 403 `duplicate_request`.
+
 What leaves the service to third parties:
 
 | Party | What it receives |
@@ -414,7 +416,7 @@ What leaves the service to third parties:
 | the ledger, read only (the delegation, the escrow paid from a vault, the sign-off and the other attestations of the sender) | the reads of the hook (the delegation, the escrow and the approval attestation) and of the report (the record of the sender, the delegation and the attestations about the sender). Each read names identifiers, key hashes and DIDs, and never a text of the request |
 | the insurer portal of the mock service (the read of the requirements and the filing of the request, with the JWT-SVID) | the service code, for the read of the requirements. For the filing: the whole authorization request, without the salt and without the approval, with the status and the ids of the missing requirements. Both calls present the JWT-SVID as the bearer credential |
 | a model supplier on the Vector marketplace, hired through a bonded escrow, and the model provider behind it (the prompt of the decision: the members ordering_clinician_ref, diagnosis_codes, justification, guideline_refs, record_refs and record_set_sha256 of the request, and the requirements, and no other member of the request) | one job: the instruction of the decision, six members of the request and the requirement set, and the reference of the escrow |
-| the ledger, written only after a digest mismatch (the evidence document and the challenge) | the evidence document (the statement S1 of the claim of the sender, the digest that the approval holds, the digest of the request that was sent, and the references of the claim, the two agents, the escrow and the approval; no text of the request and no salt) and the challenge |
+| the Vector ledger (the escrow of each model hire, which carries only hashes, and, after a digest mismatch, the evidence document and the challenge) | the Post and the Accept transactions of the escrow of each model hire, and the Reclaim transaction of an escrow that a failed hire leaves. After a digest mismatch it also writes the evidence document (the statement S1 of the claim of the sender, the digest that the approval holds, the digest of the request that was sent, and the references of the claim, the two agents, the escrow and the approval; no text of the request and no salt) and the challenge. Each stays in the history of the ledger |
 
 What each decision receives:
 

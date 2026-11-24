@@ -12,8 +12,9 @@ import { STRANDED_FILE } from '@vsa/hire-kit';
 import { BUSY_TEXT, CONTEXT_HEADERS, HEARTBEAT_MS, JobSlot, MAX_BODY, RESERVATION_MS, STOPPING_TEXT, operatorsText, parseWire } from '@vsa/service-kit';
 import { systemClock } from '@vsa/usecase-kit/access';
 import { CheckUnavailableError, SHARED_CHECK_NAMES, checkApproval } from '@vsa/usecase-kit/checks';
-import { INPUT_OPEN, buildPrompt } from '@vsa/usecase-kit/decision';
+import { HIRE_MIN_MS, INPUT_OPEN, buildPrompt } from '@vsa/usecase-kit/decision';
 import { EVIDENCE_STATEMENTS, evidenceDocument } from '@vsa/usecase-kit/dispute';
+import type { EvidenceDocumentInput } from '@vsa/usecase-kit/dispute';
 import { faultGap } from '@vsa/usecase-kit/manifest';
 import {
   ATTESTATION_STATES, INTAKE_CHECKS, INTAKE_CLAIM, INTAKE_RECORD_SCHEMA, INTAKE_STATUSES, PRIORAUTH_CAPABILITIES, PRIORAUTH_CLAIM, PRIORAUTH_MODELS, PRIORAUTH_REQUEST_SCHEMA, parseIntakeRecord, parsePriorAuthRequest,
@@ -39,6 +40,7 @@ import {
   PORT_DEFAULT, PRICE_DEFAULT_LOVELACE, RUNTIME_PRECHECK_WAIT_MS, STATE_DIR_DEFAULT, SUPPLIER_BOND_LOVELACE, checksReadBudgetOf, faultOf, module1SourceOf, priceOf, supplierKeyOf,
 } from '../src/serve/settings.ts';
 import { JANITOR_INTERVAL_MS, SETTINGS } from '../src/serve/start.ts';
+import { GATEWAY_DEFAULT_TIMEOUT_MS } from '../src/serve/wiring.ts';
 import { INTAKE_BOOK_LIMIT, MemoryIntakeBook, PASSED_CHECKS_TTL_MS } from '../src/store/index.ts';
 import { makeRig, refusalOf } from './job/rig.ts';
 import type { Rig } from './job/rig.ts';
@@ -212,7 +214,7 @@ describe('specs/insurer-intake-agent.md: the Terms', () => {
     expect(row(runbook, 'Insurer Intake')).toContain(`| ${price / 1_000_000} | ${supplier / 1_000_000} and ${buyer / 1_000_000} | ${lock / 1_000_000} |`);
   });
 
-  test('the window, the timeout of the runtime and the deadline of a job are the constants, the manifest, the example environment and the compose file', () => {
+  test('the window, the timeout of the runtime and the deadline of the model hire are the constants, the manifest, the example environment and the compose file', () => {
     const timeout = JOB_DEADLINE_MS + 60_000;
     expect(manifest.terms.max_processing_ms).toBe(MIN_PROCESSING_WINDOW_MS);
     expect(envExample.split('\n')).toContain(`ADVERT_MAX_PROCESSING_MS=${MIN_PROCESSING_WINDOW_MS}`);
@@ -221,7 +223,15 @@ describe('specs/insurer-intake-agent.md: the Terms', () => {
     expect([MIN_PROCESSING_WINDOW_MS, timeout, JOB_DEADLINE_MS]).toStrictEqual([480_000, 360_000, 300_000]);
     expect(row(terms, 'Processing window, advert `max_processing_ms`')).toBe(`| Processing window, advert \`max_processing_ms\` | ${MIN_PROCESSING_WINDOW_MS} ms |`);
     expect(row(terms, 'Service timeout, `SERVICE_TIMEOUT_MS` of the runtime')).toBe(`| Service timeout, \`SERVICE_TIMEOUT_MS\` of the runtime | ${timeout} ms |`);
-    expect(row(terms, 'Job deadline, set by the service when a request arrives')).toBe(`| Job deadline, set by the service when a request arrives | ${JOB_DEADLINE_MS} ms |`);
+    expect(row(terms, 'Deadline of the model hire, set by the service when a request arrives')).toBe(
+      `| Deadline of the model hire, set by the service when a request arrives | ${JOB_DEADLINE_MS} ms after the request arrives, or ${(RUNTIME_MARGIN_MS + CALL_TIMEOUT_MS + GATEWAY_DEFAULT_TIMEOUT_MS) / 1000} s before \`deliver_by\`, whichever is earlier |`,
+    );
+    // The deadline of the model hire is the earlier of two times: JOB_DEADLINE_MS after the request arrives, and 60 s before deliver_by (30 s of the runtime, 20 s of the filing call and 10 s of a new JWT-SVID). It holds the hire only: the
+    // filing has its own check of the time. A hire does not start with less than HIRE_MIN_MS before its deadline: the decision gives `inference_failed`, and the job answers it with 502.
+    expect([RUNTIME_MARGIN_MS, CALL_TIMEOUT_MS, GATEWAY_DEFAULT_TIMEOUT_MS]).toStrictEqual([30_000, 20_000, 10_000]);
+    expect(readFileSync(new URL('../src/serve/wiring.ts', import.meta.url), 'utf8')).toContain('deadlineMs: Math.min(arrivedAt + JOB_DEADLINE_MS, context.deliverByMs - RUNTIME_MARGIN_MS - CALL_TIMEOUT_MS - GATEWAY_DEFAULT_TIMEOUT_MS),');
+    expect(HIRE_MIN_MS).toBe(60_000);
+    expect(INTAKE_REFUSAL_STATUS.inference_failed).toBe(502);
   });
 
   test('the other limits: the one model call, one job at a time, the reservation, the budget of a read of the hook and the budget of the report', () => {
@@ -528,7 +538,10 @@ describe('specs/insurer-intake-agent.md: what the job does', () => {
     expect(steps[3]).toContain('The report never refuses the job, and its result never reaches the model.');
     expect(steps[4]).toContain('The model gets a fixed instruction, six members of the request and the requirement set. It answers with a choice, `{ "complete": true | false, "missing": ["<requirement id>"] }`, and its reasons.');
     expect(steps[6]).toContain('It writes the intake book, after the portal took the entry, and it answers with the intake record.');
-    expect(does).toContain(`The job has a deadline of ${JOB_DEADLINE_MS} ms after its request arrives, and it runs these steps in this order. A failure ends the job with an error, and no later step runs.`);
+    const [margin, call, svid] = [RUNTIME_MARGIN_MS / 1000, CALL_TIMEOUT_MS / 1000, GATEWAY_DEFAULT_TIMEOUT_MS / 1000];
+    expect(does).toContain('After the Claim the runtime posts the job to the service. The job runs these steps in this order. A failure ends the job with an error, and no later step runs.');
+    expect(does).toContain(`The service sets one deadline when the request arrives, and it holds the model hire only: the earlier of ${JOB_DEADLINE_MS} ms after the request arrives and ${margin + call + svid} s before \`deliver_by\`. The ${margin + call + svid} s are ${margin} s for the runtime, which stops waiting then, ${call} s for the filing call, and ${svid} s for a new JWT-SVID.`);
+    expect(does).toContain(`The filing of the request can end later than the ${JOB_DEADLINE_MS} ms. When less than ${HIRE_MIN_MS / 1000} s are left before the deadline of the model hire, no hire starts, and the job fails with 502 \`inference_failed\`.`);
   });
 
   test('a job with no record of passed checks for its body fails with precheck_missing and files nothing, and the first step reads the sender, the approval and the 15 checks from the record', async () => {
@@ -916,7 +929,17 @@ describe('specs/insurer-intake-agent.md: the receipt, the claim and the fault sw
     expect(EVIDENCE_STATEMENTS.intake_record).toBe('S2');
     expect(INTAKE_CLAIM.statements[1].text).toBe('An intake record names the hash of the request this agent received.');
     expect(NOT_SHOWN_GAP).toContain('the challenge of the Prior Authorization Agent against this agent (this agent has no fault value)');
-    expect(claim).toContain('S2 is the statement that a wrong intake record breaks. When the intake record names another hash than the hash of the request that the Prior Authorization Agent sent, that agent declines the delivery and challenges the claim of this agent on S2. Until a command stakes a claim for this agent, that challenge ends with `no_open_claim`. No run covers that challenge, because this agent has no fault value (see Known gaps).');
+    expect(claim).toContain('S2 is the statement that a wrong intake record breaks. When the intake record names another hash than the hash of the request that the Prior Authorization Agent sent, and the model of that agent says no, that agent declines the delivery and challenges the claim of this agent on S2. A challenge needs two things: an open claim of this agent, and two hashes that differ. A no of the model for two equal hashes gives `no_contradiction`, and an accept of the model for two hashes that differ gives `decision_failed`. Neither files a challenge. Until a command stakes a claim for this agent, a challenge ends with `no_open_claim`. No run covers that challenge, because this agent has no fault value (see Known gaps).');
+    // The two codes. The evidence of an intake record that names the hash of the request that was sent shows no contradiction, and nothing is filed. The Prior Authorization Agent gives `decision_failed` for a model that accepts while the hashes differ.
+    const intakeEvidence = (named: string) => evidenceDocument({
+      claim: `${'a5'.repeat(32)}#0`, claim_token: `636c6d5f${'b6'.repeat(28)}`, against_did: INSURER_DID, by_did: SENDER_DID, escrow_ref: ESCROW_REF, statement_text: INTAKE_CLAIM.statements[1].text, kind: 'intake_record',
+      request: PRIOR_REQUEST, intake_record: { request_number: PRIOR_REQUEST.request_number, request_sha256: named }, intake_record_sha256: 'cc'.repeat(32),
+    } as unknown as EvidenceDocumentInput);
+    expect(intakeEvidence(PRIOR_REQUEST_SHA256)).toMatchObject({ ok: false, code: 'no_contradiction' });
+    expect(intakeEvidence('dd'.repeat(32))).toMatchObject({ ok: true });
+    const priorDecision = readFileSync(new URL('../../prior-authorization-agent/src/execute/decision.ts', import.meta.url), 'utf8');
+    expect(priorDecision).toContain("failed: 'decision_failed',");
+    expect(priorDecision).toContain('if (read.accept && record.request_sha256 !== sent.request_sha256) return failed(CHOICE_AGAINST_HASHES);');
   });
 
   test('the Fault switch says that the agent has none, the service stops at start for any value, and every intake record carries the empty text', async () => {
@@ -970,12 +993,28 @@ describe('specs/insurer-intake-agent.md: the operator, the data and the gaps', (
     expect(wiring).toContain('authenticationKey: service.keyObject');
     expect(state[0][1]).toContain(`every ${JANITOR_INTERVAL_MS / 1000} s`);
     expect(state[2][1]).toContain(`It holds at most ${INTAKE_BOOK_LIMIT} entries and never drops one`);
+    // A book that holds INTAKE_BOOK_LIMIT entries cannot take a new entry. The page and the README say so in the same words, and the next test makes the full book answer the check of the hook.
+    const full = `A book that holds ${INTAKE_BOOK_LIMIT} entries cannot take a new entry. For a request number that the book does not hold, the hook answers 503 \`check_unavailable\` and the escrow stays open. For a number that the book holds, the hook still answers 403 \`duplicate_request\`.`;
+    expect(operator).toContain(full);
+    expect(readme).toContain(full);
     // The one file that the start fetches, and the services that the service calls.
     for (const name of ['VECTOR_MODULE1_MANIFEST', 'VECTOR_OGMIOS_URL', 'VECTOR_KOIOS_URL', 'VECTOR_SUBMIT_URL', 'VECTOR_MARKETPLACE_INDEXER_URL', 'IDENTITY_GATEWAY_URL']) expect(SETTINGS).toContain(name);
     expect(() => module1SourceOf({ VECTOR_MODULE1_MANIFEST: 'https://example.test/vector-agent-modules/main/manifest.json' })).toThrow('must be pinned to a commit');
     expect(module1SourceOf({ VECTOR_MODULE1_MANIFEST: `https://example.test/vector-agent-modules/${'ab'.repeat(20)}/manifest.json` })).toContain('ab'.repeat(20));
     expect(operator).toContain('At start the service fetches one file: the Module-1 deployment manifest, at an https address that a commit pins. It sends no data of a job there.');
     expect(operator).toContain('the node (Ogmios) and the Koios indexer');
+  });
+
+  test('a book that holds its limit of entries answers the check not_duplicate with 503 check_unavailable for a number that it lacks, and with 403 duplicate_request for a number that it holds', async () => {
+    const rig = makeRig();
+    const book = new MemoryIntakeBook();
+    for (let at = 1; at <= INTAKE_BOOK_LIMIT; at += 1) await book.record('run1', `run1-${at}`, `IN-run1-${at}`);
+    const [, , notDuplicate] = intakeChecks({ book, self: String(PRIOR_REQUEST.insurer_did) });
+    // The number of the sample is in the book: the check refuses it as a duplicate.
+    expect(await notDuplicate.run(handoffOf(), rig.context)).toMatchObject({ ok: false, code: 'duplicate_request' });
+    // A number that the book lacks cannot be recorded, so the book never reads it as new: the check gives CheckUnavailableError, which the hook answers with 503 check_unavailable.
+    await expect(notDuplicate.run(handoffOf(priorRequest({ request_number: `run1-${INTAKE_BOOK_LIMIT + 1}` })), rig.context)).rejects.toBeInstanceOf(CheckUnavailableError);
+    expect([ERROR_STATUS.check_unavailable, ERROR_STATUS.duplicate_request]).toStrictEqual([503, 403]);
   });
 
   test('what leaves the service: the request for the JWT-SVID, the two calls to the portal with the bearer credential, and the evidence of a challenge', async () => {
@@ -1014,7 +1053,9 @@ describe('specs/insurer-intake-agent.md: the operator, the data and the gaps', (
     for (const reference of [`${'a5'.repeat(32)}#0`, `636c6d5f${'b6'.repeat(28)}`, SENDER_DID, INSURER_DID, ESCROW_REF, ATTESTATION_ID, ISSUER_DID]) expect(evidence.text, reference).toContain(reference);
     expect(evidence.text).not.toContain(String(PRIOR_REQUEST.justification));
     expect(evidence.text).not.toContain(SALT);
-    expect(parties[4]).toContain('the evidence document (the statement S1 of the claim of the sender, the digest that the approval holds, the digest of the request that was sent, and the references of the claim, the two agents, the escrow and the approval; no text of the request and no salt) and the challenge');
+    expect(parties[4]).toBe('the Post and the Accept transactions of the escrow of each model hire, and the Reclaim transaction of an escrow that a failed hire leaves. After a digest mismatch it also writes the evidence document (the statement S1 of the claim of the sender, the digest that the approval holds, the digest of the request that was sent, and the references of the claim, the two agents, the escrow and the approval; no text of the request and no salt) and the challenge. Each stays in the history of the ledger');
+    // Each model hire posts its escrow, and the janitor of the service key reclaims an escrow that a failed hire leaves (the stranded file of the State table).
+    expect(readFileSync(new URL('../../../packages/hire-kit/src/janitor.ts', import.meta.url), 'utf8')).toContain('reclaimed (everything locked comes back)');
   });
 
   test('What each decision receives: the names of the data block are the members of the input of the decision, the request leaves out its identifiers, and no text of a party reaches an instruction', async () => {

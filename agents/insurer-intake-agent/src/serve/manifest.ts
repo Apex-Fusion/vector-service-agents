@@ -112,7 +112,7 @@ const THIRD_PARTIES = [
   'the insurer portal of the mock service (the read of the requirements and the filing of the request, with the JWT-SVID)',
   'a model supplier on the Vector marketplace, hired through a bonded escrow, and the model provider behind it (the prompt of the decision: the members ordering_clinician_ref, diagnosis_codes, justification, '
   + 'guideline_refs, record_refs and record_set_sha256 of the request, and the requirements, and no other member of the request)',
-  'the ledger, written only after a digest mismatch (the evidence document and the challenge)',
+  'the Vector ledger (the escrow of each model hire, which carries only hashes, and, after a digest mismatch, the evidence document and the challenge)',
 ];
 
 const NOTES = [

@@ -103,7 +103,10 @@ describe('specs/reorder-agent.md', () => {
     expect(runtimeEnv.CAPABILITY_KIND).toBe('custom');
     expect(capability).toContain('`CAPABILITY_KIND=custom`');
     expect(runtimeEnv.SERVICE_PRECHECK_URL.endsWith('/precheck')).toBe(true);
-    expect(capability).toContain('The runtime claims the escrow, asks the service whether to take the job, calls the service, signs the receipt and submits its hash.');
+    expect(capability).toContain('The runtime asks the service whether to take the job, claims the escrow, calls the service, signs the receipt and submits its hash.');
+    // The runtime asks the service before it claims the escrow: the shared server describes `POST /precheck` as the question that the runtime asks before it claims an escrow, and the compose file calls its URL the check before the Claim.
+    expect(text('packages/service-kit/src/server.ts')).toContain('the question the runtime asks before it claims an escrow');
+    expect(text('deploy/server/docker-compose.reorder-agent.yml')).toContain('SERVICE_PRECHECK_URL is the check before the Claim.');
     const keys = SETTINGS.filter((name) => name.endsWith('_PRIV_KEY_HEX'));
     expect(keys).toHaveLength(5);
     expect(capability).toContain('It holds five keys and no API key of any third party.');

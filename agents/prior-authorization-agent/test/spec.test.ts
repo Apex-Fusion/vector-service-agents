@@ -19,6 +19,8 @@ import {
 import type { LedgerReads } from '@vsa/usecase-kit/buyer';
 import { COSIGN_SETTINGS, COSIGN_STATUS, parseAllowlist, parseCosignSettings } from '@vsa/usecase-kit/cosign';
 import { HIRE_MIN_MS, INPUT_OPEN, buildPrompt } from '@vsa/usecase-kit/decision';
+import { evidenceDocument } from '@vsa/usecase-kit/dispute';
+import type { EvidenceDocumentInput } from '@vsa/usecase-kit/dispute';
 import { readFaultSwitch, withFaultMode } from '@vsa/usecase-kit/fault';
 import { faultGap } from '@vsa/usecase-kit/manifest';
 import {
@@ -28,7 +30,7 @@ import {
 import {
   AFTER_CLAIM_REFUSALS, APPROVAL_ATT_TYPE, APPROVAL_DEPOSIT_LOVELACE, COSIGN_ROUTE, COSIGN_RULE, COUNTERPARTY_REFUSALS, ERROR_STATUS, EXECUTE_OUTCOMES, EXIT_STATES, FAULT_MODES, MAX_REQUEST_BYTES, NO_OPEN_CLAIM,
   PROPOSE_OUTCOMES, RECEIPT_CHECKS, RUNTIME_BODY_LIMIT_BYTES,
-  canonicalJson, checkRequestSize, exitStateOf, makeProposal, parseOutputRef, parseProposal, parseRequest,
+  canonicalJson, canonicalSha256, checkRequestSize, exitStateOf, makeProposal, parseOutputRef, parseProposal, parseRequest,
 } from '@vsa/usecase-kit/protocol';
 import type { Decision, ExecuteOutcome, ExecuteRequest, ExecuteResult, HandoffRecord, JsonObject, ProtocolResult, ReceiptVerification, SubJob, WriteRecord } from '@vsa/usecase-kit/protocol';
 import { CLAIM_STAKE_LOVELACE, CLAIM_WINDOW_MS, RUN_APPROVAL_VALIDITY_MS } from '../../../scripts/operator/lib/claim-constants.ts';
@@ -105,7 +107,10 @@ describe('specs/prior-authorization-agent.md: the frame, the identity and the te
     expect(runtimeEnv.CAPABILITY_KIND).toBe('custom');
     expect(capability).toContain('`CAPABILITY_KIND=custom`');
     expect(runtimeEnv.SERVICE_PRECHECK_URL.endsWith('/precheck')).toBe(true);
-    expect(capability).toContain('The runtime claims the escrow, asks the service whether to take the job, calls the service, signs the receipt and submits its hash.');
+    expect(capability).toContain('The runtime asks the service whether to take the job, claims the escrow, calls the service, signs the receipt and submits its hash.');
+    // The runtime asks the service before it claims the escrow: the shared server describes `POST /precheck` as the question that the runtime asks before it claims an escrow, and the compose file calls its URL the check before the Claim.
+    expect(text('packages/service-kit/src/server.ts')).toContain('the question the runtime asks before it claims an escrow');
+    expect(text('deploy/server/docker-compose.prior-authorization-agent.yml')).toContain('SERVICE_PRECHECK_URL is the check before the Claim.');
     const keys = SETTINGS.filter((name) => name.endsWith('_PRIV_KEY_HEX'));
     expect(keys).toHaveLength(7);
     expect(capability).toContain('It holds seven keys and no API key of any third party.');
@@ -402,13 +407,16 @@ const callsIn = (path: string, pattern: RegExp): string[] => [...text(path).matc
 /**
  * The reasons that each job writes for a result that is not a proposal or a recorded submission, read from the code. `propose` writes the codes of its own list, the codes of the evidence (its own codes, the
  * seven codes of a mock system that it passes on, and the two prefixed lists), and the reasons of the model decision of the kit. `execute` writes the codes of its own list `EXECUTE_REASONS`, the constants of the
- * buyer flow, the codes of the checks before the Pay, and the codes of the hire kit. The codes of the sub-delegation and of the token are two lists of the access folder, written with a prefix: the page names them as
+ * buyer flow, the codes of the checks before the Pay, and the nine codes of the hire kit that a hire of an agent gives (see `agentHire`). The codes of the sub-delegation and of the token are two lists of the access folder, written with a prefix: the page names them as
  * two prefixes, and the list of the job holds them apart from its own codes.
  */
 function reasonsOfJobs(): { readonly propose: ReadonlySet<string>; readonly execute: ReadonlySet<string> } {
   const kit = 'packages/usecase-kit/src/';
   const prefixed = [...SUB_DELEGATION_FAILURES.map((code) => `sub_delegation_${code}`), ...GATEWAY_FAILURES.map((code) => `token_${code}`)];
   const hireKit = unionOf('packages/hire-kit/src/hire.ts', 'HireFailure');
+  // A hire of an agent (`hireAgent` of the hire kit) turns the kit codes `busy` and `refused` into an outcome before the Claim, or into `send_lost`. `refused` is no code of the protocol either, so `execute` never writes it. `busy` stays: it is a
+  // code of the protocol, and the flow writes it as the code of a 409 answer. The hire of a model keeps `refused`, so the reason `llm_refused` of `propose` stands.
+  const agentHire = hireKit.filter((code) => code !== 'refused');
   const decision = [
     ...hireKit.map((code) => `llm_${code}`),
     ...unionOf(`${kit}decision/answer.ts`, 'AnswerFault'),
@@ -422,7 +430,7 @@ function reasonsOfJobs(): { readonly propose: ReadonlySet<string>; readonly exec
   const execute = [
     ...EXECUTE_REASONS, COUNTERPARTY_REFUSED, EARLIER_PAY_MAY_LAND, PAY_UNCONFIRMED, ...Object.values(INTERRUPTION_REASONS),
     ...unionOf(`${kit}buyer/vault.ts`, 'VaultRefusal'), ...unionOf(`${kit}buyer/advert.ts`, 'AdvertRefusal'), ...callsIn(`${kit}buyer/hire.ts`, /failure\('([a-z_]+)'/g),
-    ...hireKit,
+    ...agentHire,
   ];
   return { propose: new Set([...own, ...decision]), execute: new Set(execute) };
 }
@@ -610,6 +618,17 @@ describe('specs/prior-authorization-agent.md, Interface', () => {
     // Step 9: the challenge is against the second statement of the claim of the Insurer Intake Agent.
     expect(INTAKE_CLAIM.statements[1].text).toBe('An intake record names the hash of the request this agent received.');
     expect(text('agents/prior-authorization-agent/src/execute/dispute.ts')).toContain('statement_text: INTAKE_CLAIM.statements[1].text');
+    // The challenge needs an open claim of the Insurer Intake Agent (the kit looks for it first, and says `no_open_claim`) and two hashes that differ. The evidence of an intake record that names the hash of the request that was sent shows no
+    // contradiction (`no_contradiction`), and nothing is filed. A record that names another hash gives the evidence. A model that accepts while the hashes differ is no no: step 7 gives `decision_failed` for it.
+    const evidenceOf = (named: string) => evidenceDocument({
+      claim: `${made('the claim')}#0`, claim_token: `636c6d5f${made('the claim token').substring(0, 56)}`, against_did: INSURER, by_did: didOf('the Prior Authorization Agent'), escrow_ref: INTAKE_ESCROW,
+      statement_text: INTAKE_CLAIM.statements[1].text, kind: 'intake_record', request: DOCUMENT, intake_record: { ...INTAKE_JSON, request_number: DOCUMENT.request_number, request_sha256: named },
+      intake_record_sha256: made('the intake record'),
+    } as unknown as EvidenceDocumentInput);
+    expect(evidenceOf(must(canonicalSha256(DOCUMENT, 'request')))).toMatchObject({ ok: false, code: 'no_contradiction' });
+    expect(evidenceOf(made('another request'))).toMatchObject({ ok: true });
+    expect(NO_OPEN_CLAIM).toBe('no_open_claim');
+    expect(request).toContain('9. When the model does not accept, it does not accept the escrow, and it returns `disputed`. A challenge needs two things: an open claim of the Insurer Intake Agent, and two hashes that differ. With both, the agent publishes the evidence and challenges that claim with the second statement of the claim. With no open claim, the agent files no challenge, and the reason is `no_open_claim`. With an open claim and two equal hashes, the evidence shows no contradiction, the agent files no challenge, and the reason is `no_contradiction`. A model that accepts while the two hashes differ is not a no: step 7 gives `decision_failed` for it, and the agent files no challenge.');
   });
 
   test('the Response example is the result that the kit makes of the request, the decision and the sub-job, byte for byte', () => {
@@ -815,6 +834,22 @@ describe('specs/prior-authorization-agent.md, Interface', () => {
     expect(EXECUTE_REASONS).toContain('port_error');
     expect(text('agents/prior-authorization-agent/src/execute/execute.ts')).toContain('return disputedResult(pieces, { reason: PORT_ERROR });');
     expect(cell('`port_error`')[2]).toContain('It is the `reason` of a `disputed` result that holds no challenge');
+    // `inconsistent_outcome`: the hire kit said completed, and its parts do not hold together. The Accept can already be on the chain, and the step keeps what the hire kit said of it in `handoff.accepted`.
+    expect(text('packages/usecase-kit/src/buyer/outcome.ts')).toContain('const no = (detail: string): FailedStep => inconsistent(context, detail, escrow, paidFromVault, accepted);');
+    expect(cell('`inconsistent_outcome`')[2]).toBe('the hire kit gave an outcome that does not hold together, so the job trusts none of it. The submission is not written. The Accept can already be on the chain. Read `handoff.accepted`. Do not run `execute` again');
+    // The ten codes of the hire kit: `execute` writes nine of them, as the comment of `agentHire` says, and the model hire of `propose` writes all ten with the prefix `llm_`.
+    const kitCodes = unionOf('packages/hire-kit/src/hire.ts', 'HireFailure');
+    expect(kitCodes).toHaveLength(10);
+    expect(text('packages/hire-kit/src/agent.ts')).toContain("if (what === 'busy' || what === 'refused') {");
+    expect(text('packages/hire-kit/src/agent.ts')).toContain("return { outcome: 'failed_after_claim', reason: 'send_lost', message: stop.message, ...escrow };");
+    expect([Object.hasOwn(ERROR_STATUS, 'refused'), Object.hasOwn(ERROR_STATUS, 'busy')]).toStrictEqual([false, true]);
+    const agentRow = rows.find((cells) => cells[0].startsWith('`post_failed`')) ?? [];
+    expect(namesOf([agentRow[0]])).toStrictEqual(kitCodes.filter((code) => code !== 'refused'));
+    expect(agentRow[1]).toBe('`execute`');
+    expect(agentRow[2]).toContain('The flow takes these nine codes from the hire kit, and it turns any other code into `inconsistent_outcome`. The tenth code of the hire kit, `refused`, is not a reason of `execute`: the hire of an agent turns it into a refusal before the Claim, or into `send_lost`');
+    const modelRow = rows.find((cells) => cells[0].startsWith('`llm_post_failed`')) ?? [];
+    expect(namesOf([modelRow[0]])).toStrictEqual(kitCodes.map((code) => `llm_${code}`));
+    expect(modelRow[2]).toContain('The hire kit has ten codes: the nine of the row of the hire of the Insurer Intake Agent, and `refused`');
   });
 
   test('the co-sign route: the path, the rule, the allowlist and the codes are the kit and the manifest', () => {
@@ -1055,8 +1090,8 @@ describe('specs/prior-authorization-agent.md, the hire and the links', () => {
     const hosted = text('scripts/specs.test.mjs');
     const tools = [...how.matchAll(/`(vector_[a-z_]+)`/g)].map((hit) => hit[1]);
     expect(tools).toStrictEqual([
-      'vector_build_delegation_delegate', 'vector_delegation_request_cosign', 'vector_build_attestation_attest', 'vector_build_vault_open', 'vector_build_attestation_attest', 'vector_build_vault_close',
-      'vector_build_delegation_undelegate',
+      'vector_build_delegation_delegate', 'vector_delegation_request_cosign', 'vector_build_attestation_attest', 'vector_build_vault_open', 'vector_build_attestation_attest', 'vector_build_attestation_withdraw',
+      'vector_build_vault_close', 'vector_build_delegation_undelegate',
     ]);
     for (const tool of tools) expect(hosted.includes(`'${tool}'`), tool).toBe(true);
     expect(how.split('\n').filter((line) => /^\d\. \*\*/.test(line))).toHaveLength(7);
@@ -1094,7 +1129,9 @@ describe('specs/prior-authorization-agent.md, the hire and the links', () => {
     expect(validityReaders.map(({ file }) => file)).toStrictEqual(['protocol/approval.ts']);
     expect(text('packages/usecase-kit/src/protocol/approval.ts')).toContain('It returns 90 days after the attestation ends.');
     expect(RUN_APPROVAL_VALIDITY_MS).toBe(4 * 60 * 60 * 1000);
-    expect(how).toContain('Set `valid_until` yourself: the tool sets no end. The runs use 4 hours. The attestation holds a deposit of 5000000 lovelace, and the deposit returns 90 days after the attestation ends.');
+    expect(how).toContain('Set `valid_until` yourself: the tool sets no end. The runs use 4 hours. The attestation holds a deposit of 5000000 lovelace. The deposit comes back only through `vector_build_attestation_withdraw`, 90 days after the attestation ends.');
+    // The tool builds the Withdraw of an attestation with the Burn of its token, and the deposit returns to the wallet.
+    expect(text('packages/buyer-core/src/vendored/mcp/attestation-build.ts')).toContain('Builds the unsigned Withdraw of an attestation with the Burn of its token (`[(id, -1)]`): the deposit returns to the wallet.');
     // Step 1: a delegation that the ledger does not show ends `propose` with `delegation_not_found`, and the sub-delegation needs 30 confirmations on every link of its chain.
     expect(how).toContain('Submit the transaction that comes back. Wait until the ledger shows the delegation: a `propose` job on a delegation that the ledger does not show ends with `delegation_not_found`. Then wait for 30 confirmations of the delegation. Each sub-delegation of `propose` needs 30 confirmations on every link of its chain, and a subagent gets no token before that.');
     expect(text('packages/usecase-kit/src/live/chain.ts')).toContain('Every link of the chain must have 30 confirmations or more for `ready`.');
