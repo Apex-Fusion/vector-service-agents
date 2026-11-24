@@ -21,7 +21,7 @@
 import { BID_CAPABILITIES, BID_DESK_MODEL, parseQuote, parseRfqDocument } from '@vsa/usecase-kit/bids';
 import { INTERRUPTION_REASONS, checkLimits, hireCounterparty } from '@vsa/usecase-kit/buyer';
 import type { CompletedStep, HireStep, NotAcceptedStep, VerifiedDelivery } from '@vsa/usecase-kit/buyer';
-import { RFQ_SCHEMA, isKeyHash, parseRfq } from '@vsa/usecase-kit/protocol';
+import { RFQ_SCHEMA, isKeyHash, parseDigest, parseRfq } from '@vsa/usecase-kit/protocol';
 import type { ChallengeRecord, Decision, Did, HandoffRecord, RfqMessage, SubJob } from '@vsa/usecase-kit/protocol';
 import { flatText } from '@vsa/service-kit/text';
 import { sha256Utf8Hex } from '@vsa/vector-read';
@@ -202,7 +202,8 @@ async function turn(job: Job, bidder: BidderToHire, at: string): Promise<Settled
   // The comparison fails closed: a clock that gives no number is a deadline that has passed.
   if (!(input.deadline_ms - deps.clock() >= QUOTE_HIRE_RESERVE_MS + input.keep_ms)) return skipped(job, bidder, at, 'failed', CODE.deadline);
   const price = bidder.price_list;
-  if (price === null) return skipped(job, bidder, at, 'failed', CODE.noPriceList);
+  // A list whose hash is no digest cannot be checked against a quote, as a missing list cannot: the quote would fail a check after the Pay, so nothing is paid.
+  if (price === null || !parseDigest(price.sha256).ok) return skipped(job, bidder, at, 'failed', CODE.noPriceList);
   let status: BidderStatus;
   try {
     status = await deps.recheck(bidder.did);
