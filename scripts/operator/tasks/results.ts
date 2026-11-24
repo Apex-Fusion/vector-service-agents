@@ -32,6 +32,7 @@ const MOST_RUNS = 16;
 const MOST_REFS = 32;
 const MOST_NOTE_CHARS = 2000;
 const LABEL = /^[a-z0-9][a-z0-9-]{0,31}$/;
+const PUBLIC_LABEL = /^(\d{4}-\d{2}-\d{2})-([a-z][a-z0-9-]{0,62})-run-[1-9][0-9]?$/;
 const STEP_ID = /^[a-z0-9][a-z0-9-]{0,31}$/;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const HASH = /^[0-9a-f]{64}$/;
@@ -74,8 +75,8 @@ export const SHOWS: Readonly<Record<string, Sentences>> = {
     doesNotShow: 'That the hirer read the proposal. The attestation covers the digest only.',
   },
   'Escrow': {
-    shows: 'The hire settled through the escrow. The ledger holds each transaction of the escrow.',
-    doesNotShow: 'That the order is right. The steps of the Order Desk show the order.',
+    shows: 'The evidence names the escrow for the hire.',
+    doesNotShow: 'That the work met the request or that the buyer accepted it.',
   },
   'Vault payment, agent hires agent': {
     shows: 'The agent paid the advert of the Order Desk from the vault of the hirer. The payment is inside the limit.',
@@ -86,8 +87,8 @@ export const SHOWS: Readonly<Record<string, Sentences>> = {
     doesNotShow: 'That the supplier portal is a real system. The portal is a mock service.',
   },
   'Receipt checks, accept, token for a route': {
-    shows: 'The agent ran the receipt checks and accepted the work. It wrote the purchase order with a token for that route.',
-    doesNotShow: 'That the store of purchase orders is a real system. It is a mock service.',
+    shows: 'The evidence links the receipt checks and acceptance to a write with a token for that route.',
+    doesNotShow: 'That the write reached a real system. The route is part of a mock service.',
   },
   'Vault close, undelegate': {
     shows: 'The ledger holds the close of the vault and the end of the delegation.',
@@ -98,11 +99,11 @@ export const SHOWS: Readonly<Record<string, Sentences>> = {
     doesNotShow: 'That the limit suits the hirer. It shows only that the script holds the limit.',
   },
   'Module-1 challenge': {
-    shows: 'The agent challenged the claim of the Order Desk. The evidence is on the ledger.',
+    shows: 'The ledger records a challenge and its evidence.',
     doesNotShow: 'That the challenge is right. The jury decides that.',
   },
   'Module-1 verdict and hold': {
-    shows: 'The jury decided. The Order Desk got a hold of 7 days with the reason 64.',
+    shows: 'The recorded verdict puts a time-limited hold on the challenged agent.',
     doesNotShow: 'That another jury decides the same way. The jury result is a sample.',
   },
   'Escrow: release': {
@@ -110,8 +111,8 @@ export const SHOWS: Readonly<Record<string, Sentences>> = {
     doesNotShow: 'That a verdict moves escrow funds. A verdict never moves them.',
   },
   'Hold removes the agent from the listing': {
-    shows: 'During the hold the marketplace listed no advert of the Order Desk. A new proposal found none.',
-    doesNotShow: 'That the listing returns after the hold. The end-state check reads that.',
+    shows: 'The marketplace listing during the hold did not show the held agent.',
+    doesNotShow: 'That the listing will show the advert again after the hold.',
   },
   'Hold and lift by a party': {
     shows: 'The Accountable key of the organisation put a hold on the Order Desk and lifted it.',
@@ -120,6 +121,124 @@ export const SHOWS: Readonly<Record<string, Sentences>> = {
   'End of a delegation, token refusal': {
     shows: 'After the hirer ended the delegation, the payment failed. The gateway refused a token request under that delegation.',
     doesNotShow: 'That a system that holds a live token refuses it after the end. Tests alone cover that case.',
+  },
+  'Delegation with a co-signature, attestation: principal binding, vault': {
+    shows: 'The delegation, binding attestation and vault link the hirer to the agent.',
+    doesNotShow: 'The private document or salt behind the binding digest.',
+  },
+  'Escrow, two sub-delegations, token exchange with the delegation chain, model call from the marketplace': {
+    shows: 'The evidence links the proposal hire to two delegated reads and the model call for the justification.',
+    doesNotShow: 'That the records or guideline came from real systems, or that the justification is correct.',
+  },
+  'Escrow, vault payment, agent hires agent': {
+    shows: 'The execute hire led to a vault payment for a separate intake hire.',
+    doesNotShow: 'That the insurer decided to cover the request.',
+  },
+  'Pre-claim check, attestation reads, JWT-SVID, model call': {
+    shows: 'The intake evidence records the checks, the model decision and an allowed filing with a JWT identity.',
+    doesNotShow: 'That the attestations were mandatory or that the request reached a real insurer.',
+  },
+  'Attestation: revoke and approve again, refusal before the claim, reclaim to a vault': {
+    shows: 'The evidence links the revoked approval to a refusal and reclaim, and the linked approval to the later hire.',
+    doesNotShow: 'That a new approval can change the old one or make it valid again.',
+  },
+  'Attestation: approval that ends, refusal before the claim': {
+    shows: 'The approval had expired when the handoff was refused before the claim.',
+    doesNotShow: 'That an expired approval was the cause of any other refusal.',
+  },
+  'Digest check of an approval, refusal before the claim': {
+    shows: 'Intake refused the changed request before the claim. The mock system records no filing for it.',
+    doesNotShow: 'That the check decides whether the request is medically correct.',
+  },
+  'End of the subagents, token refusal': {
+    shows: 'The evidence ties the end transaction to revoked subagent resolutions and a refused token request.',
+    doesNotShow: 'That a relying party stops accepting a token that it already holds.',
+  },
+  'Delegation with a co-signature, vault': {
+    shows: 'The ledger records the co-signed delegation and the vault it authorizes.',
+    doesNotShow: 'That the agent used or exhausted the vault limit.',
+  },
+  'Marketplace list, catalog and status list reads, model call from the marketplace': {
+    shows: 'The evidence links the bidder facts to the model call for the shortlist.',
+    doesNotShow: 'That every possible bidder was listed or that the shortlist is optimal.',
+  },
+  'Vault payment, pre-claim check, model call, accept': {
+    shows: 'The evidence links three vault-paid quote hires to the checks, model decisions and accept transactions.',
+    doesNotShow: 'That the quotes were the best available or that the agents guarantee delivery.',
+  },
+  'Three sub-delegations, token exchange with the delegation chain, model call': {
+    shows: 'The evidence links three distinct delegated reads to the proposal and the model call for the ranking.',
+    doesNotShow: 'That the ranking is optimal or that this model repeats it.',
+  },
+  'Escrow, token for a route': {
+    shows: 'The execute hire and the allowed token write are recorded for this ranking.',
+    doesNotShow: 'That the write made an award in a real procurement system.',
+  },
+  'Attestation: revoke and reply': {
+    shows: 'The attestation is revoked. The bidder facts record the hash of its reply.',
+    doesNotShow: 'That the reply restores the attestation or that either party is right.',
+  },
+  'Refusal by a system with no approval': {
+    shows: 'The mock system refused the write when the request had no approval.',
+    doesNotShow: 'That the system would refuse a valid approval or check the ranking itself.',
+  },
+  'Revoke of a record by a party': {
+    shows: 'The party revoke created a tombstone. It sets a reason and an invalidation time.',
+    doesNotShow: 'That the revoke refunded an escrow.',
+  },
+  'Change of the controller': {
+    shows: 'The record shows the new controller after the change transaction.',
+    doesNotShow: 'That this controller can recover the record without the required guardians.',
+  },
+  'Recovery start': {
+    shows: 'The recorded recovery start names the next controller and when recovery can complete.',
+    doesNotShow: 'That the recovery has completed.',
+  },
+  'Waiting time of a recovery': {
+    shows: 'The tool refused to build a completion before the recovery window opened.',
+    doesNotShow: 'That the ledger refused a submitted completion. None was submitted early.',
+  },
+  'Recovery completion': {
+    shows: 'The completion after the wait put the next controller in control.',
+    doesNotShow: 'That a recovery can bypass the waiting period.',
+  },
+  'Retire of a record': {
+    shows: 'The record became a tombstone. The retire transaction left its deposit.',
+    doesNotShow: 'That this transaction set a successor or reclaimed the deposit.',
+  },
+  'Successor of an ended record': {
+    shows: 'The tombstone names the successor record.',
+    doesNotShow: 'That the successor inherits a claim, delegation or advert.',
+  },
+  'Reclaim of an ended record': {
+    shows: 'The reclaim took the deposit above the ledger minimum and left the tombstone.',
+    doesNotShow: 'That this operation returns funds from a hire escrow.',
+  },
+};
+
+// Preserve the published wording for shared primitives of the original page.
+const HISTORICAL_SHOWS: Readonly<Partial<Record<UseCase['name'], Readonly<Record<string, Sentences>>>>> = {
+  'inventory-reorder': {
+    'Escrow': {
+      shows: 'The hire settled through the escrow. The ledger holds each transaction of the escrow.',
+      doesNotShow: 'That the order is right. The steps of the Order Desk show the order.',
+    },
+    'Receipt checks, accept, token for a route': {
+      shows: 'The agent ran the receipt checks and accepted the work. It wrote the purchase order with a token for that route.',
+      doesNotShow: 'That the store of purchase orders is a real system. It is a mock service.',
+    },
+    'Module-1 challenge': {
+      shows: 'The agent challenged the claim of the Order Desk. The evidence is on the ledger.',
+      doesNotShow: SHOWS['Module-1 challenge']!.doesNotShow,
+    },
+    'Module-1 verdict and hold': {
+      shows: 'The jury decided. The Order Desk got a hold of 7 days with the reason 64.',
+      doesNotShow: SHOWS['Module-1 verdict and hold']!.doesNotShow,
+    },
+    'Hold removes the agent from the listing': {
+      shows: 'During the hold the marketplace listed no advert of the Order Desk. A new proposal found none.',
+      doesNotShow: 'That the listing returns after the hold. The end-state check reads that.',
+    },
   },
 };
 
@@ -136,12 +255,6 @@ export const PAGE_TEXT = {
   noReference: 'Not shown. The evidence file holds no reference for this step.',
   wholeStep: 'The whole step.',
   notCovered: 'Not covered',
-  notCoveredLead: 'No run covers these three items:',
-  notCoveredItems: [
-    'The refund of the escrow of a revoked agent.',
-    'The reclaim of an escrow by its buyer.',
-    'A relying party that refuses a live token after its authority ended. Tests alone cover this item.',
-  ],
   limitsLead: 'The runs have these limits:',
   limitsItems: [
     'The model decisions are a sample. Another run can decide another way.',
@@ -209,9 +322,9 @@ function refText(ref: Ref): string {
 }
 
 /** The six cells of the row of a step. A step is shown only when the evidence file holds a reference for it. */
-function rowOf(step: UseCase['evidenceSteps'][number], found: EvidenceStep | undefined): string[] {
-  const text = SHOWS[step.primitive];
-  if (text === undefined) throw new PreconditionError(`the table of shows and does not show has no entry for the primitive of the step ${step.id}`);
+function rowOf(step: UseCase['evidenceSteps'][number], found: EvidenceStep | undefined, overrides: Readonly<Partial<Record<string, Sentences>>> | undefined): string[] {
+  if (!Object.hasOwn(SHOWS, step.primitive)) throw new PreconditionError(`the table of shows and does not show has no entry for the primitive of the step ${step.id}`);
+  const text = overrides !== undefined && Object.hasOwn(overrides, step.primitive) ? overrides[step.primitive]! : SHOWS[step.primitive]!;
   const head = [step.id, cell(step.what), cell(step.primitive)];
   if (found === undefined) return [...head, PAGE_TEXT.none, `${PAGE_TEXT.notRun} ${PAGE_TEXT.noEntry}`, PAGE_TEXT.wholeStep];
   if (found.status === 'not_run') {
@@ -222,14 +335,18 @@ function rowOf(step: UseCase['evidenceSteps'][number], found: EvidenceStep | und
 }
 
 /** The page: the header, the title, one table for each run, and the section "Not covered". The header comes first and verbatim. */
-export function renderPage(input: { header: string; use: Pick<UseCase, 'title' | 'evidenceSteps'>; runs: readonly PageRun[] }): string {
+export function renderPage(input: { header: string; use: Pick<UseCase, 'name' | 'title' | 'evidenceSteps' | 'notCovered'>; runs: readonly PageRun[] }): string {
+  const { lead, items } = input.use.notCovered;
+  const overrides = Object.hasOwn(HISTORICAL_SHOWS, input.use.name) ? HISTORICAL_SHOWS[input.use.name] : undefined;
   const body: string[] = [`# ${input.use.title}: ${PAGE_TEXT.results}`, '', PAGE_TEXT.intro, ''];
   for (const run of input.runs) {
     body.push(`## ${PAGE_TEXT.run} ${run.label}: ${run.kind}, ${run.date}`, '', `| ${PAGE_TEXT.columns.join(' | ')} |`, `|${PAGE_TEXT.columns.map(() => '---').join('|')}|`);
-    for (const step of input.use.evidenceSteps.filter((spec) => spec.run === run.kind || spec.run === 'both')) body.push(`| ${rowOf(step, run.steps.get(step.id)).join(' | ')} |`);
+    for (const step of input.use.evidenceSteps.filter((spec) => spec.run === run.kind || spec.run === 'both')) {
+      body.push(`| ${rowOf(step, run.steps.get(step.id), overrides).join(' | ')} |`);
+    }
     body.push('');
   }
-  body.push(`## ${PAGE_TEXT.notCovered}`, '', PAGE_TEXT.notCoveredLead, '', ...PAGE_TEXT.notCoveredItems.map((item) => `- ${item}`), '', PAGE_TEXT.limitsLead, '', ...PAGE_TEXT.limitsItems.map((item) => `- ${item}`));
+  body.push(`## ${PAGE_TEXT.notCovered}`, '', lead, '', ...items.map((item) => `- ${item}`), '', PAGE_TEXT.limitsLead, '', ...PAGE_TEXT.limitsItems.map((item) => `- ${item}`));
   return `${input.header}${input.header.endsWith('\n') ? '' : '\n'}\n${body.join('\n')}\n`;
 }
 
@@ -273,8 +390,16 @@ function readHeader(path: string, keysDir: string): string {
 
 interface Found { readonly label: string; readonly path: string; readonly folder: 'public' | 'private' }
 
+/** The evidence writer uses longer names for public files of some agents. Private labels keep their own limit. */
+function publicLabel(label: string, use: Pick<UseCase, 'agents'>): boolean {
+  const match = PUBLIC_LABEL.exec(label);
+  if (match === null || !use.agents.some(({ id }) => id === match[2])) return false;
+  const day = Date.parse(match[1]!);
+  return Number.isFinite(day) && new Date(day).toISOString().slice(0, 10) === match[1];
+}
+
 /** The evidence files of the state folder by label: the public files of `evidence/` and the private files of `evidence/private/`. A name that is no label, a link and two files with one label are refused. */
-function listEvidence(stateDir: string): Map<string, Found> {
+function listEvidence(stateDir: string, use: Pick<UseCase, 'agents'>): Map<string, Found> {
   const found = new Map<string, Found>();
   for (const folder of ['public', 'private'] as const) {
     const dir = folder === 'public' ? join(stateDir, 'evidence') : join(stateDir, 'evidence', 'private');
@@ -287,7 +412,9 @@ function listEvidence(stateDir: string): Map<string, Found> {
       if (entry.name.startsWith('.') || !entry.name.endsWith('.json')) continue;
       if (!entry.isFile()) throw new PreconditionError(`a ${folder} evidence file is not a regular file: a link or a folder is refused`);
       const label = entry.name.slice(0, -'.json'.length);
-      if (!LABEL.test(label)) throw new PreconditionError(`the name of a ${folder} evidence file is no label: a label has 1 to 32 lower-case letters, digits and hyphens`);
+      if (!LABEL.test(label) && !(folder === 'public' && publicLabel(label, use))) {
+        throw new PreconditionError(`the name of a ${folder} evidence file is no label: use a short label or the standard public file name of an agent`);
+      }
       if (found.has(label)) throw new PreconditionError(`two evidence files have the label ${label}: keep one`);
       found.set(label, { label, path: join(dir, entry.name), folder });
     }
@@ -310,7 +437,11 @@ function loadRuns(files: ReadonlyMap<string, Found>, wanted: readonly string[] |
   const runs = labels.map((label) => {
     const file = files.get(label);
     if (file === undefined) throw new PreconditionError(`there is no evidence file for the label ${label}: the evidence folders hold ${[...files.keys()].join(', ') || 'no file'}`);
-    return parseEvidence(readEvidence(file), label, use);
+    const value = readEvidence(file);
+    if (isObject(value) && value.capability_id !== undefined && !use.agents.some(({ capability }) => capability === value.capability_id)) {
+      throw new PreconditionError(`the evidence file ${label} is not usable: its capability is not a capability of this use case`);
+    }
+    return parseEvidence(value, label, use);
   });
   return wanted === null ? runs.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : a.label < b.label ? -1 : a.label > b.label ? 1 : 0)) : runs;
 }
@@ -332,7 +463,7 @@ async function produce(session: TaskSession<ResultsExtra>): Promise<StepOutcome>
   const { extra, use } = session;
   if (extra.headerFile === null) throw new FlagError('--header-file is required: the page names the group that the results go to, and that name comes from a text file of the operator');
   const header = readHeader(extra.headerFile, session.settings.keysDir);
-  const runs = loadRuns(listEvidence(session.settings.stateDir), extra.runs, use);
+  const runs = loadRuns(listEvidence(session.settings.stateDir, use), extra.runs, use);
   const page = renderPage({ header, use, runs });
   if (holdsSecret(page)) throw new PreconditionError('the page holds a mark of a secret: it is not shown and not written');
   const bytes = Buffer.byteLength(page, 'utf8');
@@ -356,14 +487,16 @@ const results: TaskDefinition<ResultsExtra> = {
   valued: ['header-file', 'runs'],
   needs: { keys: () => [], chain: false, hosted: [], approval: 'never' },
   steps: () => ['run'],
-  parse(_env, _settings, _use, flags) {
+  parse(_env, _settings, use, flags) {
     const headerFile = flags.value('header-file');
     if (headerFile === '') throw new FlagError('--header-file needs the path of a text file');
     const list = flags.value('runs');
     let labels: string[] | null = null;
     if (list !== undefined) {
       labels = list.split(',');
-      if (labels.length > MOST_RUNS || labels.some((label) => !LABEL.test(label))) throw new FlagError(`--runs is a comma list of at most ${MOST_RUNS} labels: each has 1 to 32 lower-case letters, digits and hyphens`);
+      if (labels.length > MOST_RUNS || labels.some((label) => !LABEL.test(label) && !publicLabel(label, use))) {
+        throw new FlagError(`--runs needs at most ${MOST_RUNS} comma-separated labels: short labels or public file names of agents`);
+      }
       if (new Set(labels).size !== labels.length) throw new FlagError('--runs names a label twice');
     }
     return { headerFile: headerFile ?? null, runs: labels, page: null };
@@ -373,7 +506,7 @@ const results: TaskDefinition<ResultsExtra> = {
   async status(session) {
     const where = pageFile(session.use);
     let files: ReadonlyMap<string, Found>;
-    try { files = listEvidence(session.settings.stateDir); } catch (err) { return [`evidence files: cannot list them (${err instanceof Error ? err.message : 'an error'})`]; }
+    try { files = listEvidence(session.settings.stateDir, session.use); } catch (err) { return [`evidence files: cannot list them (${err instanceof Error ? err.message : 'an error'})`]; }
     const labels = [...files.values()].map((file) => `${file.label} (${file.folder})`);
     let page: string;
     try { page = `${where} exists, ${lstatSync(join(session.settings.stateDir, where)).size} bytes`; } catch { page = `${where} does not exist yet`; }

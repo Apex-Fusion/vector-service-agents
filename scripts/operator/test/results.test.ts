@@ -7,8 +7,10 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 import results, { EXPLORER_TX, HEADER_LIMIT_BYTES, PAGE_TEXT, SHOWS, parseEvidence, renderPage } from '../tasks/results.ts';
 import data from '../usecases/inventory-reorder.ts';
+import priorAuthorization from '../usecases/prior-authorization.ts';
+import bidEvaluation from '../usecases/bid-evaluation.ts';
 import type { UseCase } from '../lib/contract.ts';
-import { hashOf, taskWorld } from './support/task-world.ts';
+import { USE_CASE, hashOf, taskWorld } from './support/task-world.ts';
 import type { TaskWorld } from './support/task-world.ts';
 import { KEY_TEXT } from './support/secrets.ts';
 
@@ -29,10 +31,15 @@ vi.mock('node:fs', async (importOriginal) => {
 });
 
 const GOLDEN = fileURLToPath(new URL('./golden/results-page.md', import.meta.url));
+const GOLDEN_PRIOR = new URL('./golden/results-page-prior-authorization.md', import.meta.url);
+const GOLDEN_BIDS = new URL('./golden/results-page-bid-evaluation.md', import.meta.url);
 const HEADER = 'Results for a made-up group of the tests\nDate of the page: 2026-12-05\n';
 const CLEAN = '2026-12-01-reorder-agent-run-1';
 const FAILURE = 'r2';
 const NOTE = 'The jury has no verdict yet.';
+const PRIOR_LABEL = '2026-12-01-prior-authorization-agent-run-1';
+const BIDS_LABEL = '2026-12-04-bid-desk-bravo-run-1';
+const USE_CASES = [data, priorAuthorization, bidEvaluation] as const;
 
 const tx = (name: string): string => hashOf(`results tx ${name}`);
 
@@ -54,7 +61,7 @@ const failureSteps = (): StepInput[] => data.evidenceSteps.filter((step) => step
 });
 
 /** An evidence file as the assembler writes it, with members that the page never reads. */
-const doc = (kind: 'clean' | 'failure', date: string, steps: unknown, over: Record<string, unknown> = {}): Record<string, unknown> => ({
+const doc = (kind: UseCase['runs'][number]['id'], date: string, steps: unknown, over: Record<string, unknown> = {}): Record<string, unknown> => ({
   run: `use-case-1-${kind}`, kind, date, capability_id: 'supplychain.reorder.po.v1', builder: 'https://hosted.test/mcp', result: 'a text that the page never reads', hires: [{ step: 'propose' }], steps, ...over,
 });
 
@@ -77,7 +84,8 @@ interface Rig {
 }
 
 async function makeRig(over: Partial<UseCase> = {}): Promise<Rig> {
-  const world = await taskWorld({ keys: ['run', 'fee'], use: { title: data.title, runs: data.runs, evidenceSteps: data.evidenceSteps, ...over } });
+  const { name, title, runs, agents, evidenceSteps, notCovered } = { ...data, ...over };
+  const world = await taskWorld({ keys: ['run', 'fee'], env: { OPERATOR_USE_CASE: USE_CASE }, use: { name, title, runs, agents, evidenceSteps, notCovered } });
   mkdirSync(world.stateDir, { recursive: true, mode: 0o700 });
   chmodSync(world.stateDir, 0o700);
   const header = join(world.dir, 'header.txt');
@@ -89,11 +97,11 @@ async function makeRig(over: Partial<UseCase> = {}): Promise<Rig> {
     writeFileSync(path, typeof value === 'string' ? value : `${JSON.stringify(value, null, 2)}\n`);
     return path;
   };
-  const pagePath = join(world.stateDir, 'results', 'inventory-reorder.md');
+  const pagePath = join(world.stateDir, 'results', `${world.use.name}.md`);
   return {
     world, header, pagePath, put,
     seed: () => { put('public', CLEAN, cleanDoc()); put('private', FAILURE, failureDoc()); },
-    run: (...argv) => world.run(results, ...argv),
+    run: (...argv) => world.run(results, ...argv, '--use-case', name),
     page: () => readFileSync(pagePath, 'utf8'),
   };
 }
@@ -171,7 +179,7 @@ describe('the task results', () => {
   });
 
   describe('a step and its reference', () => {
-    const use = { title: data.title, evidenceSteps: data.evidenceSteps };
+    const use = data;
     const runOf = (steps: unknown[]) => parseEvidence(doc('clean', '2026-12-01', steps), 'x', data);
     const shown = (id: string, refs: unknown[]): unknown => ({ id, status: 'shown', refs });
 
@@ -232,6 +240,85 @@ describe('the task results', () => {
       const page = renderPage({ header: HEADER, use, runs: [failure] });
       const ids = page.split('\n').filter((line) => /^\| r\d-/.test(line)).map((line) => line.split(' | ')[0]!.slice(2));
       expect(ids).toEqual(data.evidenceSteps.filter((step) => step.run !== 'clean').map((step) => step.id));
+    });
+  });
+
+  describe('the new results pages', () => {
+    it('reads the long public label and writes the prior authorization page', async () => {
+      const rig = await makeRig(priorAuthorization);
+      rig.put('public', PRIOR_LABEL, doc('clean', '2026-12-01', [
+        { id: 'r1-01', status: 'shown', refs: [{ kind: 'delegation', value: 'example-delegation' }] },
+        { id: 'r1-04', status: 'shown', refs: [] },
+        { id: 'r1-05', status: 'not_run', refs: [], note: 'The filing did not run.' },
+        { id: 'r1-06', status: 'shown', refs: [{ kind: 'receipt', value: 'example-receipt' }] },
+      ], { run: 'use-case-2-clean', capability_id: priorAuthorization.agents[0]!.capability }));
+      expect(await rig.run(...NO_ARGUMENTS(rig), '--submit')).toBe(0);
+      expect(rig.page()).toBe(readFileSync(GOLDEN_PRIOR, 'utf8'));
+      expect(await rig.run(...NO_ARGUMENTS(rig), '--runs', PRIOR_LABEL, '--submit')).toBe(0);
+      expect(rig.world.machine().result).toMatchObject({ labels: [PRIOR_LABEL] });
+      expect(await rig.run('status')).toBe(0);
+      expect(rig.world.screen.text).toContain(`${PRIOR_LABEL} (public)`);
+      expect(rowOf(rig.page(), 'r1-04')[4]).toBe(PAGE_TEXT.noReference);
+      expect(rowOf(rig.page(), 'r1-06')[4]).toBe(SHOWS['Receipt checks, accept, token for a route']!.shows);
+    });
+
+    it('writes the bid evaluation lifecycle page from only the recorded evidence', async () => {
+      const rig = await makeRig(bidEvaluation);
+      rig.put('public', BIDS_LABEL, doc('lifecycle', '2026-12-04', [
+        { id: 'l1-03', status: 'shown', refs: [{ kind: 'refusal', value: 'example-refusal' }] },
+        { id: 'l1-06', status: 'shown', refs: [{ kind: 'successor', value: 'example-successor' }] },
+        { id: 'l1-07', status: 'shown', refs: [] },
+      ], { run: 'use-case-3-lifecycle', capability_id: bidEvaluation.agents[2]!.capability }));
+      expect(await rig.run(...NO_ARGUMENTS(rig), '--submit')).toBe(0);
+      expect(rig.page()).toBe(readFileSync(GOLDEN_BIDS, 'utf8'));
+      expect(rowOf(rig.page(), 'l1-07')[4]).toBe(PAGE_TEXT.noReference);
+    });
+
+    it('uses the shared primitive text for the other cases, not the original page wording', () => {
+      for (const use of [priorAuthorization, bidEvaluation]) {
+        const run = (kind: 'clean' | 'failure') => parseEvidence(doc(kind, '2026-12-01', use.evidenceSteps
+          .filter((step) => step.run === kind)
+          .map(({ id }) => ({ id, status: 'shown', refs: ['example-ref'] }))), kind, use);
+        const page = renderPage({ header: HEADER, use, runs: [run('clean'), run('failure')] });
+        expect(page).not.toContain('Order Desk');
+        expect(page).not.toContain('purchase order');
+        expect(page).toContain(SHOWS['Module-1 challenge']!.shows);
+        expect(page).toContain(SHOWS['Hold removes the agent from the listing']!.shows);
+        expect(page).toContain(SHOWS['Module-1 verdict and hold']!.shows);
+      }
+    });
+
+    it('reads the lead and items from the case data', () => {
+      const use = { ...priorAuthorization, notCovered: { lead: 'This is the test lead:', items: ['This is the test gap.'] } };
+      const page = renderPage({ header: HEADER, use, runs: [] });
+      expect(page).toContain('## Not covered\n\nThis is the test lead:\n\n- This is the test gap.');
+      expect(page).not.toContain(priorAuthorization.notCovered.lead);
+      expect(PAGE_TEXT).not.toHaveProperty('notCoveredLead');
+      expect(PAGE_TEXT).not.toHaveProperty('notCoveredItems');
+    });
+
+    it('refuses long private labels and public labels with a foreign agent, invalid date or run number', async () => {
+      const evidence = doc('clean', '2026-12-01', [], { capability_id: priorAuthorization.agents[0]!.capability });
+      const privateFile = await makeRig(priorAuthorization);
+      privateFile.put('private', PRIOR_LABEL, evidence);
+      expect(await privateFile.run(...NO_ARGUMENTS(privateFile), '--runs', PRIOR_LABEL, '--submit')).toBe(2);
+      expect(privateFile.world.screen.errorText).toContain('the name of a private evidence file is no label');
+      for (const label of ['2026-12-01-other-authorization-agent-run-1', '2026-02-31-prior-authorization-agent-run-1', '2026-12-01-prior-authorization-agent-run-01']) {
+        const rig = await makeRig(priorAuthorization);
+        rig.put('public', label, evidence);
+        expect(await rig.run(...NO_ARGUMENTS(rig), '--submit')).toBe(2);
+        expect(rig.world.screen.errorText).toContain('the name of a public evidence file is no label');
+        expect(await rig.run(...NO_ARGUMENTS(rig), '--runs', label, '--submit')).toBe(2);
+        expect(existsSync(rig.pagePath)).toBe(false);
+      }
+    });
+
+    it('refuses an evidence file that declares a capability of another case', async () => {
+      const rig = await makeRig(priorAuthorization);
+      rig.put('public', PRIOR_LABEL, doc('clean', '2026-12-01', [{ id: 'r1-01', status: 'shown', refs: ['example'] }]));
+      expect(await rig.run(...NO_ARGUMENTS(rig), '--submit')).toBe(2);
+      expect(rig.world.screen.errorText).toContain('its capability is not a capability of this use case');
+      expect(existsSync(rig.pagePath)).toBe(false);
     });
   });
 
@@ -513,7 +600,7 @@ describe('the task results', () => {
 
   describe('the table of what a primitive shows and does not show', () => {
     it('has exactly the primitives of the data, each with two sentences and no dash that is not a hyphen', () => {
-      expect(new Set(Object.keys(SHOWS))).toEqual(new Set(data.evidenceSteps.map((step) => step.primitive)));
+      expect(new Set(Object.keys(SHOWS))).toEqual(new Set(USE_CASES.flatMap((use) => use.evidenceSteps.map((step) => step.primitive))));
       for (const [primitive, text] of Object.entries(SHOWS)) {
         expect(text.shows.length, primitive).toBeGreaterThan(20);
         expect(text.doesNotShow.length, primitive).toBeGreaterThan(20);
@@ -522,12 +609,14 @@ describe('the task results', () => {
     });
 
     it('stops a run with exit 2 when a step of the data has a primitive that the table lacks, and passes with the primitive in the table', async () => {
-      const added = { id: 'r1-12', run: 'clean' as const, what: 'A step that the table does not know.', primitive: 'A primitive that is new', actor: 'agent' as const };
-      const rig = await makeRig({ evidenceSteps: [...data.evidenceSteps, added] });
-      rig.put('public', CLEAN, cleanDoc());
-      expect(await rig.run(...NO_ARGUMENTS(rig), '--submit')).toBe(2);
-      expect(rig.world.screen.errorText).toContain('no entry for the primitive of the step r1-12');
-      expect(existsSync(rig.pagePath)).toBe(false);
+      for (const primitive of ['A primitive that is new', 'constructor']) {
+        const added = { id: 'r1-12', run: 'clean' as const, what: 'A step that the table does not know.', primitive, actor: 'agent' as const };
+        const rig = await makeRig({ evidenceSteps: [...data.evidenceSteps, added] });
+        rig.put('public', CLEAN, cleanDoc());
+        expect(await rig.run(...NO_ARGUMENTS(rig), '--submit')).toBe(2);
+        expect(rig.world.screen.errorText).toContain('no entry for the primitive of the step r1-12');
+        expect(existsSync(rig.pagePath)).toBe(false);
+      }
       const plain = await makeRig();
       plain.seed();
       expect(await plain.run(...NO_ARGUMENTS(plain), '--submit')).toBe(0);
@@ -550,16 +639,19 @@ describe('the task results', () => {
       expect(await rig.run(...NO_ARGUMENTS(rig), '--runs', `${CLEAN},${FAILURE}`, '--submit')).toBe(0);
       const page = rig.page();
       const refs = [...cleanSteps(), ...failureSteps()].flatMap((step) => step.refs).flatMap((ref) => (typeof ref === 'string' ? [ref] : isLabelled(ref) ? [ref.kind, ref.value] : []));
+      const historicalPrimitives = ['Escrow', 'Receipt checks, accept, token for a route', 'Module-1 challenge', 'Module-1 verdict and hold', 'Hold removes the agent from the listing'];
+      const historicalText = readFileSync(GOLDEN, 'utf8').split('\n').map((line) => line.split(' | '))
+        .filter((columns) => historicalPrimitives.includes(columns[2] ?? '')).flatMap((columns) => [columns[4]!, columns[5]!.slice(0, -2)]);
       const known = [
         HEADER, data.title, EXPLORER_TX, CLEAN, FAILURE, 'clean', 'failure', '2026-12-01', '2026-12-03', NOTE, ...refs,
-        ...Object.values(PAGE_TEXT).flat(), ...Object.values(SHOWS).flatMap((text) => [text.shows, text.doesNotShow]), ...data.evidenceSteps.flatMap((step) => [step.id, step.what, step.primitive]),
+        ...Object.values(PAGE_TEXT).flat(), data.notCovered.lead, ...data.notCovered.items, ...historicalText,
+        ...Object.values(SHOWS).flatMap((text) => [text.shows, text.doesNotShow]), ...data.evidenceSteps.flatMap((step) => [step.id, step.what, step.primitive]),
       ];
       let rest = page;
       for (const text of [...new Set(known)].sort((a, b) => b.length - a.length)) rest = rest.split(text).join('');
       expect(rest.match(/[A-Za-z0-9]/g)).toBeNull();
       const tail = page.slice(page.indexOf('## Not covered'));
-      for (const item of [...PAGE_TEXT.notCoveredItems, ...PAGE_TEXT.limitsItems]) expect(tail).toContain(item);
-      expect(PAGE_TEXT.notCoveredItems).toHaveLength(3);
+      for (const item of [...data.notCovered.items, ...PAGE_TEXT.limitsItems]) expect(tail).toContain(item);
       expect(page.trimEnd().endsWith(PAGE_TEXT.limitsItems.at(-1)!)).toBe(true);
     });
 
