@@ -5,7 +5,7 @@ In both ways, the agents of this folder share no container, no folder and no por
 The snippet of the mock service is for Caddy on the host: its upstream is `127.0.0.1:9120`. On a host whose proxy runs in a container, the block of the mock service uses `mock-systems:9120` (section "A host whose proxy runs in a container").
 
 The plan for the host is 19 containers: 8 services, 10 runtimes and 1 mock service. One agent has three runtimes in front of one service, so there are 10 runtimes. The memory of the host holds the mock service and the six containers of use case 1 at the planning sizes. The four containers of use case 2 do not all pass the gate at the planning sizes. The other 8 containers wait for a new count (section "The host").
-The agents of this folder build no image on the host. CI builds each image. A compose file names the image by its digest.
+The agents of this folder build no image on the host. CI publishes the images. A compose file names the image by its digest.
 
 The operator's steps are in [RUNBOOK.md](RUNBOOK.md). This note gives the facts.
 
@@ -100,30 +100,53 @@ The containers of later agents come after these ten. Add them to the table, and 
 
 ## The runtime image
 
-CI builds one runtime image. Every runtime of the host runs it. The image comes from the agent template at one pinned commit.
+Every runtime of the host runs one `linux/amd64` image. CI reads the image by digest and checks its platform and labels. CI does not build it again.
 
 | Item | Value |
 |---|---|
 | Image | `ghcr.io/apex-fusion/vector-service-agents/agent-runtime` |
-| Source | The repository `Apex-Fusion/vector-agent-template`, at the commit in the `ref` of `.github/workflows/ci.yml`. A step fails the job when the checkout is not at that commit. |
-| Tags | `:latest` and `:<full git commit sha>`. Only the `publish` job pushes them. The `build` job builds the image on every pull request and pushes nothing. |
-| Label | `vector-agent-template.commit` holds the full commit of the template. |
+| Source | `Apex-Fusion/vector-agent-template` at `AGENT_RUNTIME_TEMPLATE_COMMIT` in `.github/workflows/ci.yml`. |
+| Pin | `AGENT_RUNTIME_DIGEST` in `.github/workflows/ci.yml`. Use the digest of the full index. It keeps the image manifest and the provenance. |
+| Tags | `:latest` and `:<full git commit sha>` of the service repository. The `publish` job sets both tags to the same digest and checks their digests. |
+| Labels | `vector-agent-template.commit` gives the full template commit. `org.opencontainers.image.source` gives `https://github.com/Apex-Fusion/vector-service-agents`. |
 | In a compose file | `ghcr.io/apex-fusion/vector-service-agents/agent-runtime@sha256:<digest>`. A tag moves, so a compose file never names the image by a tag. |
 
-The operator takes the digest of the image that CI pushed for the reviewed commit, as for the mock service (RUNBOOK, step 6, "Run the mock service").
+On pull requests, CI builds the images of this repository without pushing them. On `main`, CI builds and pushes those images once after the tests pass. It adds the two tags to the pinned runtime in the same job.
 
-The host pulls with no login, so the package must be public. The first publish of a new package can make it private. After the first publish, check that the package is public: an anonymous `docker manifest inspect ghcr.io/apex-fusion/vector-service-agents/agent-runtime:latest` works. Run it with no login to `ghcr.io`. If the answer says `denied`, the package is private. An admin of the organisation then makes it public.
+A new push to `main` can replace a run that has not started. Use the tag of a reviewed service commit with a successful `publish` job.
+
+The host pulls without a login. Keep the package public. Check that `docker buildx imagetools inspect ghcr.io/apex-fusion/vector-service-agents/agent-runtime:latest` works without a login. If the package is private, ask a package admin to make it public.
 
 ### Move the pin
 
-The pin is one full commit of 40 hex digits. BuildKit does not resolve a short commit. Change the commit in one pull request, in all of these places:
+Publish a candidate image before you open the pull request that moves the pin. Use a Buildx builder that supports `linux/amd64` and provenance. Sign in to `ghcr.io` with write access to the `agent-runtime` package.
 
-1. The `ref` of the checkout of the template, in the job `build` and in the job `publish` of `.github/workflows/ci.yml`.
-2. The check step after each of the two checkouts.
-3. The label `vector-agent-template.commit` in the job `publish`.
-4. The build context of each compose file in `deploy/host`. Each context ends with `#<commit>`.
+1. Set `commit` to the full 40-digit SHA of the reviewed template commit. Build from that Git context. Push only the template tag.
 
-The compose files of `deploy/host` build the runtime on their own host from the same commit. They do not use this image. A test in `scripts/deploy.test.mjs` compares the four files with the workflow. The test fails when one place names another commit.
+   ```sh
+   image=ghcr.io/apex-fusion/vector-service-agents/agent-runtime
+   commit='<full template commit>'
+   metadata=$(mktemp)
+   docker buildx build --platform linux/amd64 --provenance=mode=min \
+     --file agent/Dockerfile \
+     --label org.opencontainers.image.source=https://github.com/Apex-Fusion/vector-service-agents \
+     --label "vector-agent-template.commit=$commit" \
+     --tag "$image:template-$commit" --push --metadata-file "$metadata" \
+     "https://github.com/Apex-Fusion/vector-agent-template.git#$commit"
+   ```
+
+2. After the push succeeds, read the digest from the build output file. Inspect the published image by digest. Check the platform and the labels in the table above.
+
+   ```sh
+   digest=$(jq -er '."containerimage.digest"' "$metadata")
+   rm "$metadata"
+   printf '%s\n' "$digest"
+   docker buildx imagetools inspect --format '{{json .Image}}' "$image@$digest"
+   ```
+
+3. Change `AGENT_RUNTIME_TEMPLATE_COMMIT` and `AGENT_RUNTIME_DIGEST` in `.github/workflows/ci.yml`. Set each runtime build context in `deploy/host` to the same template commit. Set `runtimeCommit` in `scripts/operator/usecases/inventory-reorder.ts` to that commit.
+
+Keep the template tag while the image is in use. Only CI sets `:latest` and the full service commit tag. The compose files of `deploy/host` still build the runtime on their own host from the pinned template commit.
 
 ## The operator image
 
@@ -381,5 +404,5 @@ A call needs the right host. `POST /admin/tenants` and every route of a system t
   Make each tenant again after such a restart (RUNBOOK, step 6, "Make or reset a tenant").
 - **Keys are made on the host and stay on it.** No key is made on another machine. No key leaves the host.
   A key file is in `/srv/agents/keys`, or in an env file with mode 600. See the RUNBOOK, section "Keys".
-- **The agents of this folder build no image on the host.** CI builds the images. A compose file names an image by its digest.
+- **The agents of this folder build no image on the host.** CI publishes the images. A compose file names an image by its digest.
 - **No container port is public.** See the section "Folders and ports".

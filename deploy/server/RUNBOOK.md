@@ -159,7 +159,7 @@ Do these steps after the snippet is installed.
 
    The output must be `600 agents:agents .env.mock-systems`, then `ok: no placeholder is left`, then `ok: the token has the right form`.
 
-5. Pull the image, and put its digest in the compose file. CI pushes the image under `:latest` and under `:<full git commit sha>`. Use the tag of the commit that was reviewed. The pull needs no login when the package is public. If the answer says `denied`, the package is private: make it public in the settings of the package, or log in to `ghcr.io` with a token that has the scope `read:packages`.
+5. Pull the image, and put its digest in the compose file. CI pushes the image under `:latest` and `:<full git commit sha>`. Use the tag of a reviewed commit with a successful `publish` job. The pull needs no login when the package is public. If the answer says `denied`, the package is private: make it public in the settings of the package, or log in to `ghcr.io` with a token that has the scope `read:packages`.
 
    ```sh
    IMAGE=ghcr.io/apex-fusion/vector-service-agents/mock-systems
