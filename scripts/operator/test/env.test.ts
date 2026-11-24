@@ -1,13 +1,13 @@
 // The task env, run through the real runner over the real examples of the env files (read from deploy/server at test time), a registry of test keys for the 18 keys of use case 1 (inventory
 // reorder), the facts of the two records, and the world of the pack tests. The tests look for each seed and each token in every file and every stream that the task must not write them to.
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { iso } from '../../checks/lib/format.ts';
 import type { AgentSpec, UseCase } from '../lib/contract.ts';
-import { EnvFile } from '../lib/envfile.ts';
+import { EnvFile, EnvFileError } from '../lib/envfile.ts';
 import { FactsFile } from '../lib/facts.ts';
 import { loadTask } from '../lib/load.ts';
 import { MOCK_MTLS_BASE, MOCK_PUBLIC_BASE } from '../lib/mock-hosts.ts';
@@ -371,7 +371,7 @@ describe('the preconditions', () => {
     const e = await envWorld();
     rmSync(e.path('order-desk'), { recursive: true });
     expect(await submit(e)).toBe(2);
-    expect(e.w.screen.errorText).toContain('order-desk: the folder of the agent does not exist');
+    expect(e.w.screen.errorText).toContain('order-desk: the folder of the agent is missing or is not a real folder');
     expect(existsSync(e.path(REORDER))).toBe(false);
   });
 
@@ -411,6 +411,135 @@ describe('the preconditions', () => {
     e.w.writeGo({ tasks: ['fund'] });
     seedFile(e, SERVICE, { OPERATOR_CONTACT: 'someone-else@example.org' });
     expect(await submit(e)).toBe(2);
+  });
+});
+
+/** A folder in the temporary directory, outside the agents folder, that a test fills. It is removed after the tests. */
+function outside(): string {
+  const folder = mkdtempSync(join(tmpdir(), 'operator-outside-'));
+  roots.push(folder);
+  return folder;
+}
+
+describe('a folder or a file that is a link', () => {
+  it('refuses the folder of an agent that is a link, and writes no file, also not into the folder that the link names', async () => {
+    const e = await envWorld();
+    const real = outside();
+    for (const name of ['.env.order-desk.example', '.env.order-desk-runtime.example']) copyFileSync(join(SERVER, name), join(real, name));
+    rmSync(e.path('order-desk'), { recursive: true });
+    symlinkSync(real, e.path('order-desk'));
+    expect(await submit(e)).toBe(2);
+    expect(e.w.screen.errorText).toContain('order-desk: the folder of the agent is missing or is not a real folder');
+    expect(readdirSync(real).sort()).toEqual(['.env.order-desk-runtime.example', '.env.order-desk.example']);
+    expect(existsSync(e.path(REORDER))).toBe(false);
+  });
+
+  it('refuses an env file that is a link, also a link that points nowhere, follows neither, and writes no file', async () => {
+    for (const dangling of [false, true]) {
+      const e = await envWorld();
+      const target = join(outside(), 'target.env');
+      if (!dangling) {
+        copyFileSync(join(SERVER, EXAMPLE_OF(RUNTIMES[0]!)), target);
+        chmodSync(target, 0o600);
+      }
+      symlinkSync(target, e.path(RUNTIMES[0]!));
+      const before = dangling ? null : readFileSync(target, 'utf8');
+      expect(await submit(e), `dangling ${dangling}`).toBe(2);
+      expect(e.w.screen.errorText).toContain(`${RUNTIMES[0]}: the path is not a regular file`);
+      expect(existsSync(target)).toBe(!dangling);
+      if (before !== null) expect(readFileSync(target, 'utf8')).toBe(before);
+      for (const file of ALL.filter((one) => one !== RUNTIMES[0])) expect(existsSync(e.path(file)), file).toBe(false);
+    }
+  });
+});
+
+describe('a write that fails, and a check that fails after the writes', () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  /** Lets each write of an env file run for real. `before` can throw in place of the write, and `after` can change the file that the write made. */
+  function aroundWrites(hooks: { before?: (path: string) => void; after?: (path: string) => void }): void {
+    const real = EnvFile.prototype.write;
+    vi.spyOn(EnvFile.prototype, 'write').mockImplementation(function (this: EnvFile, path?: string): void {
+      if (path !== undefined) hooks.before?.(path);
+      real.call(this, path);
+      if (path !== undefined) hooks.after?.(path);
+    });
+  }
+
+  it('stops when a write fails after files are written, names the file, says that the written files stay written, and a second run finishes the files', async () => {
+    const e = await envWorld();
+    aroundWrites({ before: (path) => { if (path === e.path(RUNTIMES[1]!)) throw new EnvFileError('write', 'the env file could not be written (EIO), and the old file is as it was'); } });
+    expect(await submit(e)).toBe(2);
+    const errors = e.w.screen.errorText;
+    expect(errors).toContain(`${RUNTIMES[1]}: the env file could not be written (EIO)`);
+    expect(errors).toContain('the files that were written stay written. Run the task env again');
+    expect(errors).not.toContain('no env file was written');
+    expect(e.w.machine()).toMatchObject({ outcome: 'stopped', exit: 2 });
+    expect(e.w.machine().result).toEqual({});
+    for (const file of [REORDER, SERVICE, RUNTIMES[0]!]) expect(existsSync(e.path(file)), file).toBe(true);
+    for (const file of [RUNTIMES[1]!, RUNTIMES[2]!]) expect(existsSync(e.path(file)), file).toBe(false);
+    const tokens = tokensOf(e);
+    vi.restoreAllMocks();
+    expect(await submit(e)).toBe(0);
+    expect(tokensOf(e)).toEqual(tokens);
+    expect(e.w.machine().result).toEqual({ files: ALL, made: [RUNTIMES[1], RUNTIMES[2]], linesSet: 10 });
+    for (const file of ALL) expect(existsSync(e.path(file)), file).toBe(true);
+  });
+
+  it('says that no file was written when the first write fails, with the reason of the env file or the short code of a system error and never its message', async () => {
+    const failures: ReadonlyArray<readonly [Error, string]> = [
+      [new EnvFileError('write', 'the env file could not be written (EIO), and the old file is as it was'), `${REORDER}: the env file could not be written (EIO)`],
+      [Object.assign(new Error('the disk says a secret'), { code: 'EIO' }), `${REORDER}: the file could not be written (EIO), and the old file is as it was`],
+    ];
+    for (const [failure, words] of failures) {
+      const e = await envWorld();
+      aroundWrites({ before: (path) => { if (path === e.path(REORDER)) throw failure; } });
+      expect(await submit(e), words).toBe(2);
+      expect(e.w.screen.errorText, words).toContain(words);
+      expect(e.w.screen.errorText, words).toContain('no env file was written');
+      expect(e.w.screen.errorText, words).not.toContain('the disk says a secret');
+      for (const file of ALL) expect(existsSync(e.path(file)), file).toBe(false);
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('stops when the check after the writes fails, says that the written files stay written, names the rule, and shows no value', async () => {
+    const replaceLine = (path: string, name: string, value: string): void => {
+      const lines = readFileSync(path, 'utf8').split('\n').map((line) => (line.startsWith(`${name}=`) ? `${name}=${value}` : line));
+      writeFileSync(path, lines.join('\n'), { mode: 0o600 });
+    };
+    const table: ReadonlyArray<readonly [string, string, (e: EnvWorld, path: string) => void, string]> = [
+      ['a mode that is not 600', RUNTIMES[2]!, (_e, path) => chmodSync(path, 0o644), `${RUNTIMES[2]}: the file has mode 644 after the write, and it must have mode 600`],
+      ['a managed line that holds another value', RUNTIMES[2]!, (_e, path) => replaceLine(path, 'SUPPLIER_PKH', other('changed', 56)), `${RUNTIMES[2]}: the line SUPPLIER_PKH does not hold what the task wrote`],
+      [
+        'a secret in a line that the task does not manage', SERVICE, (e, path) => replaceLine(path, 'LLM_MODEL_ALLOWLIST', e.w.keys.seedOf('order-small-supplier')),
+        'the secret of the key order-small-supplier stands in the line LLM_MODEL_ALLOWLIST',
+      ],
+      ['a file that cannot be read again', RUNTIMES[2]!, (_e, path) => writeFileSync(path, 'this is no env file\n', { mode: 0o600 }), `${RUNTIMES[2]}: the file cannot be read again`],
+      ['a file that is gone', RUNTIMES[2]!, (_e, path) => rmSync(path), `${RUNTIMES[2]}: the file is not there after the write`],
+    ];
+    for (const [label, file, tamper, words] of table) {
+      const e = await envWorld();
+      aroundWrites({ after: (path) => { if (path === e.path(file)) tamper(e, path); } });
+      expect(await submit(e), label).toBe(2);
+      expect(e.w.screen.errorText, label).toContain(words);
+      expect(e.w.screen.errorText, label).toContain('the files that were written stay written. Run the task env again');
+      expect(e.w.screen.errorText, label).not.toContain('no env file was written');
+      expect(e.w.machine().result, label).toEqual({});
+      for (const secret of seedsOf(e)) expect(`${e.w.screen.errorText}\n${e.w.allText()}`, label).not.toContain(secret);
+      expect(existsSync(e.path(REORDER)), label).toBe(true);
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('refuses a contact with a line separator of Unicode before any write, because a file with such a line cannot be read back', async () => {
+    for (const separator of ['\u2028', '\u2029']) {
+      const e = await envWorld({ env: { OPERATOR_CONTACT: `role${separator}x@example.org` } });
+      expect(await submit(e)).toBe(2);
+      expect(e.w.screen.errorText).toContain('the line OPERATOR_CONTACT cannot be written');
+      expect(e.w.screen.errorText).toContain('holds a line break');
+      for (const file of ALL) expect(existsSync(e.path(file)), file).toBe(false);
+    }
   });
 });
 

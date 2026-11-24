@@ -347,7 +347,7 @@ function planAll(ctx: Context): { plans: FilePlan[]; problems: string[] } {
     const folder = join(ctx.settings.agentsDir, agent.folder);
     const found = lookAt(folder, (text) => problems.push(`${agent.folder}: the folder of the agent ${text.replace(/^the file/, 'the folder')}`));
     if (found === 'failed') continue;
-    if (found === undefined || !found.isDirectory()) { problems.push(`${agent.folder}: the folder of the agent does not exist: the runbook makes it before the env files`); continue; }
+    if (found === undefined || !found.isDirectory()) { problems.push(`${agent.folder}: the folder of the agent is missing or is not a real folder (a link or a file is no folder): the runbook makes the folder before the env files`); continue; }
     const mine: FilePlan[] = [];
     for (const file of agentFiles(agent).all) {
       const plan = planFile(ctx, agent, file, folder, problems);
@@ -389,9 +389,11 @@ function verifyWritten(ctx: Context, plans: readonly FilePlan[]): string[] {
   return problems;
 }
 
-function stop(out: Output, problems: readonly string[], dry: boolean): never {
+/** Prints the problems and stops with exit 2. `wrote` is true when a file of this run is written already: it stays written, and the message says so. */
+function stop(out: Output, problems: readonly string[], dry: boolean, wrote: boolean): never {
   for (const problem of problems) out.err(problem);
-  throw new PreconditionError(`${problems.length} problem${problems.length === 1 ? '' : 's'} stop the task env${dry ? ' (this dry run wrote nothing)' : ': no env file was written'}`);
+  const state = dry ? ' (this dry run wrote nothing)' : wrote ? ': the files that were written stay written. Run the task env again when the cause is fixed' : ': no env file was written';
+  throw new PreconditionError(`${problems.length} problem${problems.length === 1 ? '' : 's'} stop the task env${state}`);
 }
 
 const task: TaskDefinition<Extra> = {
@@ -415,7 +417,7 @@ const task: TaskDefinition<Extra> = {
     const { plans, problems } = planAll(ctx);
     if (problems.length > 0) {
       if (dry) for (const plan of plans) for (const line of describePlan(plan, true)) session.out.out(line);
-      stop(session.out, problems, dry);
+      stop(session.out, problems, dry, false);
     }
     // The machine line tells what the run did, so it holds the files only when the run is whole: a dry run that has no problem, and a run that wrote and checked its files.
     const outcome: Outcome = {
@@ -426,12 +428,14 @@ const task: TaskDefinition<Extra> = {
       session.extra.outcome = outcome;
       return { kind: 'dry' };
     }
+    let wrote = false;
     for (const plan of plans) {
       if (plan.set.length === 0) continue;
-      try { plan.env.write(plan.path); } catch (err) { stop(session.out, [`${plan.label}: the file could not be written (${reasonOf(err)}), and the files before it stay as they were written`], false); }
+      try { plan.env.write(plan.path); } catch (err) { stop(session.out, [`${plan.label}: ${err instanceof EnvFileError ? err.message : `the file could not be written (${codeOf(err)}), and the old file is as it was`}`], false, wrote); }
+      wrote = true;
     }
-    const written = verifyWritten(ctx, plans);
-    if (written.length > 0) stop(session.out, written, false);
+    const unchecked = verifyWritten(ctx, plans);
+    if (unchecked.length > 0) stop(session.out, unchecked, false, wrote);
     for (const plan of plans) for (const line of describePlan(plan, false)) session.out.out(line);
     session.extra.outcome = outcome;
     return { kind: 'done', message: `env files: ${outcome.made.length} made, ${outcome.linesSet} line${outcome.linesSet === 1 ? '' : 's'} set. A container reads its env files when it is created: create it again by the restart rule.` };
