@@ -636,7 +636,7 @@ describe('check 4: delegations, vaults and the approval', () => {
     ['an attestation of another type', { datum: { attType: 4 } }, 'approval.type'],
     ['an attestation about another subject', { datum: { subject: 'e1'.repeat(32) } }, 'approval.subject'],
     ['an attestation whose digest is not the proposal_digest', { datum: { digest: 'e2'.repeat(32) } }, 'approval.digest'],
-    ['an approval that lasts longer than the constant', { datum: { validUntil: CAPTURE_MS + RUN_APPROVAL_VALIDITY_MS + 1 } }, 'approval.validity'],
+    ['an approval that lasts longer than the constant and the slack for the clocks', { datum: { validUntil: CAPTURE_MS + RUN_APPROVAL_VALIDITY_MS + 60_001 } }, 'approval.validity'],
     ['an approval with no end', { datum: { validUntil: null } }, 'approval.validity'],
     ['an approval that ended before the run', { datum: { validUntil: CAPTURE_MS + 60_000 } }, 'approval.attestation'],
   ];
@@ -779,6 +779,29 @@ describe('check 3: the receipt of a hire is read against the escrow and the key 
     const doc = JSON.parse(r.read(publicFile())!) as { receipt: Obj; receipt_signature: string };
     expect(doc.receipt.supplier_pkh).toBe(SUPPLIERS['reorder-agent'].keyHash);
     expect(doc.receipt_signature).toMatch(/^[0-9a-f]{128}$/);
+  });
+});
+
+describe('check 4: the approval may last a little over the constant, for the clocks of the tool and of the member', () => {
+  const lastingOver = async (extra: number): Promise<Outcome> => {
+    const s = scenario('clean');
+    Object.assign(s.approval, { datum: { validUntil: CAPTURE_MS + RUN_APPROVAL_VALIDITY_MS + extra } });
+    return go(s);
+  };
+  it('takes an approval that lasts 1 second over the constant, and one that lasts 60 seconds over it', async () => {
+    expect((await lastingOver(1000)).exit).toBe(0);
+    expect((await lastingOver(60_000)).exit).toBe(0);
+  });
+  it('refuses an approval that lasts 60 seconds and 1 millisecond over the constant, and names the slack', async () => {
+    const r = await lastingOver(60_001);
+    expect(r.exit).toBe(2);
+    expect(r.err).toContain('approval.validity');
+    expect(r.err).toContain('60000 ms more are allowed');
+  });
+  it('takes an approval whose start the member set one second after the issue, with an end of 4 hours after that start', async () => {
+    const s = scenario('clean');
+    Object.assign(s.approval, { datum: { validFrom: CAPTURE_MS + 1000, validUntil: CAPTURE_MS + 1000 + RUN_APPROVAL_VALIDITY_MS } });
+    expect((await go(s)).exit).toBe(0);
   });
 });
 

@@ -47,6 +47,8 @@ const DEPTH_OF_SPEND_CHAIN = 4;
 /** A vault lineage is one output after the other: the open, then one output for each payment. A run has a few payments, so the walk back along it stops after this many transactions. */
 const DEPTH_OF_VAULT_CHAIN = 8;
 const NUMBER = /^[1-9][0-9]?$/;
+/** The member sets the end of the approval, and the tool sets its start from its own clock, so the span of the approval can be a little over the 4 hours that the member asked for. The task allows this much over. */
+const APPROVAL_CLOCK_SLACK_MS = 60_000;
 const REF = /^[0-9a-f]{64}#(?:0|[1-9][0-9]{0,5})$/;
 const HASH = /^[0-9a-f]{64}$/;
 const MOST_MOCK_CHARS = 8 * 1024 * 1024;
@@ -433,7 +435,7 @@ async function checkApproval(session: TaskSession<Extra>, loaded: Loaded, facts:
     const datum = view.attestation;
     const validity = datum.validUntil === null ? null : datum.validUntil - (datum.validFrom ?? datum.issuedAt);
     if (validity === null) problems.add('approval.validity', 'the approval has no end of validity');
-    else if (validity > RUN_APPROVAL_VALIDITY_MS) problems.add('approval.validity', `lasts ${validity} ms, and the approval of a run lasts at most ${RUN_APPROVAL_VALIDITY_MS} ms`);
+    else if (validity > RUN_APPROVAL_VALIDITY_MS + APPROVAL_CLOCK_SLACK_MS) problems.add('approval.validity', `lasts ${validity} ms, and the approval of a run lasts at most ${RUN_APPROVAL_VALIDITY_MS} ms, and ${APPROVAL_CLOCK_SLACK_MS} ms more are allowed for the clocks of the tool and of the member`);
     return {
       attestation: loaded.record.approval.attestation, tx: loaded.record.approval.tx, type: datum.attType, subject: subject.did, digest: datum.digest, issued_at: datum.issuedAt,
       valid_until: datum.validUntil, validity_ms: validity, checked_at: atMs,
