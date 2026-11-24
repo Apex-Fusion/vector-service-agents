@@ -44,6 +44,19 @@ export interface CommittedApproval {
   readonly attestation: string; readonly issuer_did: string; readonly digest: string;
 }
 
+/** The request whose wire hash the exact, verified execute escrow commits to. This is not a public document. */
+export interface CommittedExecute {
+  readonly escrow_ref: string;
+  readonly digest: string;
+  readonly approval: Omit<CommittedApproval, 'digest'> | null;
+}
+
+/** A module supplies only allowlisted operation fields and decision names, never arbitrary result text. */
+export interface PublicResultProjection {
+  readonly fields: Readonly<Record<string, string | number | boolean | null>>;
+  readonly decisionNames: readonly string[];
+}
+
 export interface ApprovalRead {
   readonly entry: ApprovalEntry; readonly hire: string; readonly state: 'active' | 'revoked' | 'expired'; readonly type: number;
   readonly subject: string; readonly digest: string; readonly issued_at: number; readonly valid_until: number;
@@ -102,6 +115,8 @@ export interface Assembly {
   readonly challenge: Challenge | null; readonly caseRead: CaseRead | null; readonly approvalStates: readonly (ApprovalRead | null)[];
   /** Private request metadata by execute step. An absent key is unproven. A null value means the request names no approval. */
   readonly committedApprovals: ReadonlyMap<string, CommittedApproval | null>;
+  /** Exact execute steps. An absent key is unproven, not evidence of an explicit null approval. */
+  readonly committedExecutes: ReadonlyMap<string, CommittedExecute>;
   /** Only populated for a lifecycle run, and only after the node confirms every named fact. */
   readonly lifecycleTransactions: ReadonlySet<string>;
   /** Tests the payment of this hire against the delegations of the record. This read does not submit a transaction. */
@@ -130,6 +145,8 @@ export interface EvidenceModule extends RunRecordPolicy {
   /** Keep the historical inventory evidence format. A matching approval state by itself does not prove use. */
   readonly allowApprovalStateOnly?: boolean;
   approvalExpectations?(a: Assembly, index: number): ApprovalExpectations;
+  /** With this hook the public file names `result_projection` and retains the original result hash, not the signed text. */
+  projectPublicResult?(hire: ReportedHire): PublicResultProjection;
   claimAgents?(a: Assembly): readonly string[];
   faultProblems?(a: Assembly): readonly { readonly member: string; readonly detail: string }[];
   readonly hosted: readonly string[];
