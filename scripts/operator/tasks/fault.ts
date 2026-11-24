@@ -49,9 +49,9 @@ function timeOf(value: unknown): number | null {
   const parts = typeof value === 'string' ? ISO_TIME.exec(value) : null;
   if (parts === null) return null;
   const [year, month, day, hour, minute, second] = parts.slice(1, 7).map(Number);
-  const utc = Date.UTC(year!, month! - 1, day!, hour!, minute!, second!, parts[7] === undefined ? 0 : Number(parts[7].slice(0, 3).padEnd(3, '0')));
+  const utc = Date.UTC(year, month - 1, day, hour, minute, second, parts[7] === undefined ? 0 : Number(parts[7].slice(0, 3).padEnd(3, '0')));
   const moment = new Date(utc);
-  if (moment.getUTCFullYear() !== year || moment.getUTCMonth() !== month! - 1 || moment.getUTCDate() !== day || moment.getUTCHours() !== hour || moment.getUTCMinutes() !== minute || moment.getUTCSeconds() !== second) return null;
+  if (moment.getUTCFullYear() !== year || moment.getUTCMonth() !== month - 1 || moment.getUTCDate() !== day || moment.getUTCHours() !== hour || moment.getUTCMinutes() !== minute || moment.getUTCSeconds() !== second) return null;
   const zone = parts[8]!;
   if (zone === 'Z') return utc;
   const [offsetHours, offsetMinutes] = [Number(zone.slice(1, 3)), Number(zone.slice(4, 6))];
