@@ -48,7 +48,7 @@ async function refusal(call: () => Promise<unknown>): Promise<LoadError> {
 }
 const reasonOf = async (call: () => Promise<unknown>): Promise<LoadReason> => (await refusal(call)).reason;
 
-const TASKS = ['keys', 'fund', 'register', 'stake', 'advert', 'attest', 'claim', 'allowlist', 'env', 'tenant', 'fault', 'probe', 'hold', 'end-subagents', 'revoke-record', 'lifecycle', 'delegations', 'evidence', 'results', 'end-state'];
+const TASKS = ['keys', 'fund', 'register', 'stake', 'advert', 'attest', 'compliance', 'claim', 'allowlist', 'env', 'tenant', 'fault', 'probe', 'hold', 'end-subagents', 'revoke-record', 'lifecycle', 'delegations', 'evidence', 'results', 'end-state'];
 
 describe('the closed lists', () => {
   it('lists each supported task once and enables only inventory reorder', () => {
