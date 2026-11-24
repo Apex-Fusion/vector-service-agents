@@ -3,7 +3,7 @@ import { CHALLENGE_RESERVE_LOVELACE, CLAIM_STAKE_LOVELACE, CLAIM_WINDOW_MS } fro
 import type { AgentSpec, EndSpec, KeyUse, OrganisationSpec, SubagentSpec, UseCase } from '../lib/contract.ts';
 import { BID_CAPABILITIES } from '../lib/platform.ts';
 import {
-  ALFA, BRAVO, CHARLIE, COLLATERAL, CORE_KEYS, DELTA, DEMONSTRATION_SENTENCE, ECHO, MODULE_MANIFEST_PATH, RUNTIME_COMMIT, line, organisationKeys, partiesOf,
+  ALFA, BRAVO, CHARLIE, COLLATERAL, CORE_KEYS, DELTA, DEMONSTRATION_SENTENCE, ECHO, MODULE_MANIFEST_PATH, RESULT_REFS, RESULT_WORDING, RUNTIME_COMMIT, line, organisationKeys, partiesOf,
 } from './shared.ts';
 
 const SOURCING_ENV = '.env.sourcing-agent';
@@ -224,65 +224,186 @@ const USE_CASE: UseCase = {
     {
       id: 'r1-01', run: 'clean', actor: 'hirer', primitive: 'Delegation with a co-signature, vault',
       what: 'The hirer delegates to the Sourcing Agent. The agent co-signs. The hirer submits and opens a vault under the delegation.',
+      proof: { refs: { delegation: 1, vault: 1, transaction: 2 } },
     },
-    { id: 'r1-02', run: 'clean', actor: 'hirer', primitive: 'Escrow', what: 'The hirer hires `propose` with a request for quotation and weights.' },
+    {
+      id: 'r1-02', run: 'clean', actor: 'hirer', primitive: 'Escrow', what: 'The hirer hires `propose` with a request for quotation and weights.',
+      proof: { refs: RESULT_REFS.hire },
+    },
     {
       id: 'r1-03', run: 'clean', actor: 'agent', primitive: 'Marketplace list, catalog and status list reads, model call from the marketplace',
       what: 'The agent lists the bidders of the quote capability, reads the catalog and builds a file of facts for each bidder. A model decides the shortlist.',
+      proof: { refs: { bidder: 3, escrow: 1 } },
     },
     {
       id: 'r1-04', run: 'clean', actor: 'counterparty', primitive: 'Vault payment, pre-claim check, model call, accept',
       what: 'The agent pays each of three Bid Desks from the vault, one after the other. Each Bid Desk checks the handoff before its claim, claims, and a model writes its quote. A model of the agent decides whether to accept each quote, and the agent accepts each.',
+      proof: { refs: { escrow: 9, transaction: 6 } },
     },
     {
       id: 'r1-05', run: 'clean', actor: 'agent', primitive: 'Three sub-delegations, token exchange with the delegation chain, model call',
       what: 'The agent sub-delegates the vendor read to three scorers. Each scorer reads the vendor master with its own token. A model decides the ranking. The agent returns the ranking and its digest.',
+      proof: { refs: { delegation: 3, transaction: 6, escrow: 1 }, projectedRoutes: [['GET /vendors', 'token', 'allowed', 2, 3, 200]] },
     },
-    { id: 'r1-06', run: 'clean', actor: 'hirer', primitive: 'Attestation: approval', what: 'The hirer approves the digest of the ranking.' },
+    {
+      id: 'r1-06', run: 'clean', actor: 'hirer', primitive: 'Attestation: approval', what: 'The hirer approves the digest of the ranking.',
+      proof: { refs: RESULT_REFS.approval },
+    },
     {
       id: 'r1-07', run: 'clean', actor: 'agent', primitive: 'Escrow, token for a route',
       what: 'The hirer hires `execute`. The agent writes the ranking to the sourcing record with a token. The record takes it.',
+      proof: { refs: RESULT_REFS.hire, projectedRoutes: [['POST /sourcing/rankings', 'token', 'allowed', 1, 1, 201]] },
     },
-    { id: 'r1-08', run: 'clean', actor: 'hirer', primitive: 'Vault close, undelegate', what: 'The hirer closes the vault and ends the delegation.' },
+    {
+      id: 'r1-08', run: 'clean', actor: 'hirer', primitive: 'Vault close, undelegate', what: 'The hirer closes the vault and ends the delegation.',
+      proof: { refs: RESULT_REFS.close },
+    },
     {
       id: 'r2-a', run: 'failure', actor: 'agent', primitive: 'Module-1 challenge',
       what: 'Bid Desk Charlie runs with the fault `quote_off_price_list`. A model of the Sourcing Agent refuses its quote. The agent publishes the evidence and challenges the claim of Bid Desk Charlie.',
+      proof: { refs: { escrow: 1, claim: 1, challenge: 1 } },
     },
     {
       id: 'r2-a-release', run: 'failure', actor: 'counterparty', primitive: 'Escrow: release',
-      what: 'The release watcher of Bid Desk Charlie releases the escrow of that quote. The supplier is paid.',
+      what: 'Check for a confirmed Release spend of the Bid Desk Charlie quote escrow.',
+      proof: { refs: { escrow: 1, transaction: 1 }, settlement: { type: 'release', hireRole: 'quote' } },
     },
-    { id: 'r2-a-hold', run: 'failure', actor: 'relay', primitive: 'Module-1 verdict and hold', what: 'The jury decides. Bid Desk Charlie gets a hold of 7 days, reason 64.' },
+    {
+      id: 'r2-a-hold', run: 'failure', actor: 'relay', primitive: 'Module-1 verdict and hold', what: 'The jury decides. Bid Desk Charlie gets a hold of 7 days, reason 64.',
+      proof: { refs: RESULT_REFS.verdict },
+    },
     {
       id: 'r2-b', run: 'failure', actor: 'operator', primitive: 'Attestation: revoke and reply',
       what: 'Before the hold starts, the compliance registry revokes its attestation about Bid Desk Charlie, and the controller publishes a reply. A new `propose` shows the revoked attestation and the hash of the reply in the file of Bid Desk Charlie.',
+      proof: { refs: { attestation: 1, escrow: 1, transaction: 4 } },
     },
     {
       id: 'r2-c', run: 'failure', actor: 'agent', primitive: 'Proposal during a verified hold',
       what: 'Check which Bid Desks the signed proposal names during the hold.',
+      proof: { refs: { escrow: 1, hold: 1, transaction: 2 } },
     },
     {
       id: 'r2-d', run: 'failure', actor: 'agent', primitive: 'Refusal by a system with no approval',
       what: 'The Sourcing Agent runs with the fault `invert_scores`. The hirer opens the quotes and does not approve. `execute` with no approval is refused by the sourcing record.',
+      proof: { refs: RESULT_REFS.hire, projectedRoutes: [['POST /sourcing/rankings', 'token', 'refused', 1, 1, 403]] },
     },
     {
       id: 'r2-e', run: 'failure', actor: 'operator', primitive: 'Revoke of a record by a party',
-      what: 'The Accountable key of the organisation of Bid Desk Charlie revokes its record with a reason code and a time from which its signatures are invalid. The record becomes a tombstone, and the gateway says that the DID is gone.',
+      what: 'Record the transaction and the record output for Bid Desk Charlie.',
+      proof: { refs: RESULT_REFS.record, recordFromTransaction: 'record' },
     },
-    { id: 'l1-01', run: 'lifecycle', actor: 'operator', primitive: 'Change of the controller', what: 'The old and the new controller of Bid Desk Bravo change the controller.' },
-    { id: 'l1-02', run: 'lifecycle', actor: 'operator', primitive: 'Recovery start', what: 'Both guardians and the next controller start a recovery.' },
-    { id: 'l1-03', run: 'lifecycle', actor: 'operator', primitive: 'Waiting time of a recovery', what: 'The recovery waits 7 days. The tool refuses to build an earlier completion.' },
-    { id: 'l1-04', run: 'lifecycle', actor: 'operator', primitive: 'Recovery completion', what: 'After the 7 days the wallet completes the recovery. The new controller takes over.' },
-    { id: 'l1-05', run: 'lifecycle', actor: 'operator', primitive: 'Retire of a record', what: 'The new controller retires the record. The deposit stays.' },
+    {
+      id: 'l1-01', run: 'lifecycle', actor: 'operator', primitive: 'Change of the controller', what: 'The old and the new controller of Bid Desk Bravo change the controller.',
+      proof: { refs: RESULT_REFS.record },
+    },
+    {
+      id: 'l1-02', run: 'lifecycle', actor: 'operator', primitive: 'Recovery start', what: 'Both guardians and the next controller start a recovery.',
+      proof: { refs: RESULT_REFS.record },
+    },
+    {
+      id: 'l1-03', run: 'lifecycle', actor: 'operator', primitive: 'Waiting time of a recovery', what: 'The recovery waits 7 days. The tool refuses to build an earlier completion.',
+      proof: { refs: RESULT_REFS.close, refusals: ['source-tool'] },
+    },
+    {
+      id: 'l1-04', run: 'lifecycle', actor: 'operator', primitive: 'Recovery completion', what: 'After the 7 days the wallet completes the recovery. The new controller takes over.',
+      proof: { refs: RESULT_REFS.record },
+    },
+    {
+      id: 'l1-05', run: 'lifecycle', actor: 'operator', primitive: 'Retire of a record', what: 'The new controller retires the record. The deposit stays.',
+      proof: { refs: RESULT_REFS.record },
+    },
     {
       id: 'l1-06', run: 'lifecycle', actor: 'operator', primitive: 'Successor of an ended record',
       what: 'The controller of the retired record and the controller of the successor record name the successor.',
+      proof: { refs: RESULT_REFS.record },
     },
     {
       id: 'l1-07', run: 'lifecycle', actor: 'operator', primitive: 'Reclaim of an ended record',
       what: 'The controller of the retired record takes back the deposit above the ledger minimum.',
+      proof: { refs: RESULT_REFS.record },
     },
   ],
+  results: {
+    runPrefix: 'use-case-3',
+    wording: {
+      'Delegation with a co-signature, vault': {
+        shows: 'The ledger records the co-signed delegation and the vault it authorizes.',
+        doesNotShow: 'That the agent used or exhausted the vault limit.',
+      },
+      'Escrow': {
+        shows: 'The evidence names the escrow for the hire.',
+        doesNotShow: 'That the work met the request or that the buyer accepted it.',
+      },
+      'Marketplace list, catalog and status list reads, model call from the marketplace': {
+        shows: 'The evidence links the bidder facts to the model call for the shortlist.',
+        doesNotShow: 'That every possible bidder was listed or that the shortlist is optimal.',
+      },
+      'Vault payment, pre-claim check, model call, accept': {
+        shows: 'The evidence links three vault-paid quote hires to the checks, model decisions and accept transactions.',
+        doesNotShow: 'That the quotes were the best available or that the agents guarantee delivery.',
+      },
+      'Three sub-delegations, token exchange with the delegation chain, model call': {
+        shows: 'The evidence links three distinct delegated reads to the proposal and the model call for the ranking.',
+        doesNotShow: 'That the ranking is optimal or that this model repeats it.',
+      },
+      'Attestation: approval': RESULT_WORDING.approval,
+      'Escrow, token for a route': {
+        shows: 'The execute hire and the allowed token write are recorded for this ranking.',
+        doesNotShow: 'That the write made an award in a real procurement system.',
+      },
+      'Vault close, undelegate': RESULT_WORDING.close,
+      'Module-1 challenge': RESULT_WORDING.challenge,
+      'Escrow: release': {
+        shows: 'The evidence records a confirmed Release spend of this quote escrow.',
+        doesNotShow: 'Who submitted the transaction or how much the supplier received.',
+      },
+      'Module-1 verdict and hold': RESULT_WORDING.verdict,
+      'Attestation: revoke and reply': {
+        shows: 'The attestation is revoked. The bidder facts record the hash of its reply.',
+        doesNotShow: 'That the reply restores the attestation or that either party is right.',
+      },
+      'Proposal during a verified hold': {
+        shows: 'The signed proposal during the hold names the other two Bid Desks and omits Bid Desk Charlie.',
+        doesNotShow: 'Which adverts the marketplace listed at that time.',
+      },
+      'Refusal by a system with no approval': {
+        shows: 'The mock system refused the write when the request had no approval.',
+        doesNotShow: 'That the system would refuse a valid approval or check the ranking itself.',
+      },
+      'Revoke of a record by a party': {
+        shows: 'The evidence names the transaction and its record output.',
+        doesNotShow: 'Which party authorized the transaction, the reason, or when signatures became invalid.',
+      },
+      'Change of the controller': {
+        shows: 'The record shows the new controller after the change transaction.',
+        doesNotShow: 'That this controller can recover the record without the required guardians.',
+      },
+      'Recovery start': {
+        shows: 'The recorded recovery start names the next controller and when recovery can complete.',
+        doesNotShow: 'That the recovery has completed.',
+      },
+      'Waiting time of a recovery': {
+        shows: 'The tool refused to build a completion before the recovery window opened.',
+        doesNotShow: 'That the ledger refused a submitted completion. None was submitted early.',
+      },
+      'Recovery completion': {
+        shows: 'The completion after the wait put the next controller in control.',
+        doesNotShow: 'That a recovery can bypass the waiting period.',
+      },
+      'Retire of a record': {
+        shows: 'The record became a tombstone. The retire transaction left its deposit.',
+        doesNotShow: 'That this transaction set a successor or reclaimed the deposit.',
+      },
+      'Successor of an ended record': {
+        shows: 'The tombstone names the successor record.',
+        doesNotShow: 'That the successor inherits a claim, delegation or advert.',
+      },
+      'Reclaim of an ended record': {
+        shows: 'The reclaim took the deposit above the ledger minimum and left the tombstone.',
+        doesNotShow: 'That this operation returns funds from a hire escrow.',
+      },
+    },
+  },
   moduleManifestPath: MODULE_MANIFEST_PATH,
   runtimeCommit: RUNTIME_COMMIT,
 };
