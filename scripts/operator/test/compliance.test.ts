@@ -1,12 +1,12 @@
 import { readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
-import { utf8Hex } from '../../../packages/vector-read/src/identity-codec.ts';
+import { describe, expect, it, vi } from 'vitest';
+import { encodeAttestationDatum, utf8Hex } from '../../../packages/vector-read/src/identity-codec.ts';
 import { iso } from '../../checks/lib/format.ts';
 import { factsOf } from '../../checks/lib/txfacts.ts';
 import { DEPLOYMENT, keyOf } from '../../checks/test/support/world.ts';
 import { complianceDocumentOf, replyDocumentOf, writeComplianceDocument } from '../lib/compliance-document.ts';
-import { parseArguments } from '../lib/runner.ts';
+import { parseArguments, runTask } from '../lib/runner.ts';
 import compliance from '../tasks/compliance.ts';
 import data from '../usecases/bid-evaluation.ts';
 import inventory from '../usecases/inventory-reorder.ts';
@@ -90,6 +90,8 @@ describe('compliance documents and command scope', () => {
     ['run', '--revoke', '--agent', 'another-agent'], ['run', '--contest', '--agent', CHARLIE], [...REVOKE, '--reason', '-9'],
     [...REVOKE, '--reason', '1.5'], [...REVOKE, '--reason', '9007199254740992'], [...ISSUE, '--reply-uri', REPLY],
     ['run', '--locator-base', BASE.replace(/[0-9a-f]{40}/, 'main')],
+    [...CONTEST.slice(0, -1), REPLY.replace(/[0-9a-f]{40}/, 'main')],
+    [...CONTEST.slice(0, -1), 'https://documents.example.test/reply.json'],
     ['run', '--contest', '--agent', CHARLIE, '--reply-uri', 'http://documents.example.test/reply.json'],
     ['run', '--contest', '--agent', CHARLIE, '--reply-uri', 'https://name:password@documents.example.test/reply.json'],
     ['run', '--contest', '--agent', CHARLIE, '--reply-uri', `https://documents.example.test/${'x'.repeat(256)}`],
@@ -99,6 +101,31 @@ describe('compliance documents and command scope', () => {
     expect(r.loaded).toEqual([]);
     expect(r.requests).toEqual([]);
     expect(r.hosted.calls).toEqual([]);
+  });
+
+  it('refuses run labels for every action before it opens keys, connections or another state stream', async () => {
+    const { w, registry, hosted } = await complianceWorld();
+    let keyReads = 0;
+    let connections = 0;
+    const deps = {
+      ...w.deps(), hosted,
+      readRegistry() { keyReads += 1; return registry; },
+      get node() { connections += 1; return w.node; },
+    };
+    const files = readdirSync(w.stateDir).sort();
+    for (const action of [
+      [...ISSUE, '--submit'], [...REVOKE, '--submit'], [...CONTEST, '--submit'], ['run', '--record'], ['status'],
+      ['cleanup', '--submit'], ['cleanup', '--submit', '--release', hashOf('a test transaction')],
+    ]) {
+      w.screen.errors.length = 0;
+      expect(await runTask(compliance, [...action, '--run=another'], deps), action.join(' ')).toBe(2);
+      expect(w.screen.errorText).toContain('compliance takes no --run label');
+      expect(readdirSync(w.stateDir).sort()).toEqual(files);
+    }
+    expect(keyReads).toBe(0);
+    expect(connections).toBe(0);
+    expect(hosted.calls).toEqual([]);
+    expect(w.node.submitted).toEqual([]);
   });
 });
 
@@ -145,13 +172,38 @@ describe('issue a compliance attestation', () => {
     expect(r.w.facts().compliance).toEqual({});
   });
 
+  it('keeps the single in-flight issue and reserve when a run label is refused', async () => {
+    const r = await complianceWorld();
+    r.w.node.neverConfirm = true;
+    expect(await r.run(...ISSUE, '--submit')).toBe(1);
+    const state = r.w.state('compliance');
+    expect(state.in_flight).toMatchObject({ step: `attest:${ALFA}`, tx_hash: factsOf(r.w.node.submitted[0]).txHash });
+    const reserves = r.w.exposure();
+    expect(reserves).toHaveLength(1);
+    const files = readdirSync(r.w.stateDir).sort();
+    expect(await r.run(...ISSUE, '--submit', '--run', 'another')).toBe(2);
+    expect(r.w.screen.errorText).toContain('compliance takes no --run label');
+    expect(r.w.state('compliance')).toEqual(state);
+    expect(r.w.exposure()).toEqual(reserves);
+    expect(readdirSync(r.w.stateDir).sort()).toEqual(files);
+    expect(r.w.node.submitted).toHaveLength(1);
+    r.w.node.neverConfirm = false;
+    expect(await r.run(...ISSUE, '--submit', '--all')).toBe(0);
+    expect(r.w.node.submitted).toHaveLength(3);
+    expect(r.w.state('compliance').in_flight).toBeNull();
+    expect(r.factOf(ALFA).tx).toBe(state.in_flight!.tx_hash);
+  });
+
   it('keeps a landed issue pending verification and reads it again without issuing twice', async () => {
     const r = await complianceWorld();
     r.setIssueVisible(false);
     expect(await r.run(...ISSUE, '--submit')).toBe(1);
     expect(r.w.node.submitted).toHaveLength(1);
     expect(r.w.state('compliance').notes[`part.attest:${ALFA}`]).not.toHaveProperty('verified_at');
-    expect(await r.run(...ISSUE, '--submit', '--run', 'another')).toBe(2);
+    expect(r.w.facts().compliance).toEqual({});
+    expect(await r.run('run', '--revoke', '--agent', ALFA, '--submit')).toBe(2);
+    expect(await r.run('cleanup', '--submit')).toBe(2);
+    expect(r.w.node.submitted).toHaveLength(1);
     r.setIssueVisible(true);
     expect(await r.run(...ISSUE, '--submit', '--all')).toBe(0);
     expect(r.w.node.submitted).toHaveLength(3);
@@ -254,6 +306,36 @@ describe('revoke and reply', () => {
     expect(r.w.node.submitted).toHaveLength(3);
   });
 
+  it('requires the verified revoke and the issuer of the verified issue before a reply', async () => {
+    const r = await complianceWorld();
+    expect(await r.run(...ISSUE, '--submit', '--all')).toBe(0);
+    const revoke = await r.buildRevoke();
+    const list = r.w.world.chain.getUtxos.bind(r.w.world.chain);
+    const lag = vi.spyOn(r.w.world.chain, 'getUtxos').mockImplementation(async (address) => (await list(address)).filter(({ txHash }) => txHash !== revoke.txHash));
+    expect(await r.run(...REVOKE, '--submit')).toBe(1);
+    lag.mockRestore();
+    expect((await r.view(CHARLIE)).attestation.status.type).toBe('AttRevoked');
+    expect(r.factOf(CHARLIE).revokeTx).toBeNull();
+    expect(await r.run(...CONTEST, '--submit')).toBe(2);
+    expect(r.w.screen.errorText).toContain(`the step revoke:${CHARLIE} is not verified`);
+    expect(await r.run(...REVOKE, '--submit')).toBe(0);
+    expect(r.factOf(CHARLIE).revokeTx).toBe(revoke.txHash);
+
+    const view = await r.view(CHARLIE);
+    const actual = r.w.world.chain.held;
+    r.w.world.chain.held = actual.map((out) => out.txHash === view.utxo.txHash && out.outputIndex === view.utxo.outputIndex
+      ? { ...out, datum: encodeAttestationDatum({ ...view.attestation, issuer: keyOf(17, 'agent').publicKeyHex }) } : out);
+    expect(await r.run(...CONTEST, '--submit')).toBe(2);
+    r.w.world.chain.held = actual;
+    expect(r.w.screen.errorText).toContain(`the node does not show the verified compliance output of ${CHARLIE}`);
+    expect(r.requests).toHaveLength(3);
+    expect(r.hosted.calls.every(({ name }) => name !== 'vector_build_attestation_contest')).toBe(true);
+    expect(r.w.node.submitted).toHaveLength(4);
+    await r.buildContest();
+    expect(await r.run(...CONTEST, '--submit')).toBe(0);
+    expect(r.w.node.submitted).toHaveLength(5);
+  });
+
   it('refuses a different revoke reason or attestation in the hosted body', async () => {
     const r = await complianceWorld();
     expect(await r.run(...ISSUE, '--submit', '--all')).toBe(0);
@@ -272,6 +354,9 @@ describe('revoke and reply', () => {
     expect(await r.run(...ISSUE, '--submit', '--all')).toBe(0);
     await r.buildRevoke();
     expect(await r.run(...REVOKE, '--submit')).toBe(0);
+    expect(await r.run(...CONTEST.slice(0, -1), `${BASE}${publishedOf(BRAVO, true).name}`, '--submit')).toBe(2);
+    expect(r.w.screen.errorText).toContain(`--reply-uri must name ${publishedOf(CHARLIE, true).name}`);
+    expect(r.requests).toHaveLength(3);
     r.routes.set(REPLY, () => new Response(publishedOf(BRAVO, true).text));
     expect(await r.run(...CONTEST, '--submit')).toBe(2);
     expect(r.hosted.calls.some(({ name }) => name === 'vector_build_attestation_contest')).toBe(false);
@@ -319,11 +404,52 @@ describe('compliance cleanup', () => {
     expect(tx.mint).toEqual({ [`${DEPLOYMENT.attestation.hash}${revoked.id}`]: -1n });
     expect(tx.outputs.every(({ address }) => address === r.fee)).toBe(true);
     expect(tx.witnesses.sort()).toEqual([ISSUER, 'fee'].map((key) => r.registry.hashOf(key)).sort());
+    expect(r.w.evidence('compliance')).toContainEqual(expect.objectContaining({
+      step: `withdraw:${CHARLIE}`, status: 'verified', shows: expect.objectContaining({
+        tx_hash: tx.txHash, attestation_before: revoked.ref, released_lovelace: String(revoked.lovelace), net_lovelace: String(revoked.lovelace - tx.feeLovelace),
+      }),
+    }));
     expect(r.held()).toHaveLength(2);
     r.travel(fromEnd + 60_000);
     expect(await r.run('cleanup', '--submit')).toBe(0);
     expect(r.held()).toEqual([]);
     expect(await r.run('cleanup', '--submit')).toBe(0);
     expect(r.w.node.submitted).toHaveLength(7);
+  });
+
+  it('fails cleanup for an unexplained missing output', async () => {
+    const r = await complianceWorld();
+    expect(await r.run(...ISSUE, '--submit')).toBe(0);
+    const view = await r.view(ALFA);
+    r.w.world.chain.held = r.w.world.chain.held.filter((out) => `${out.txHash}#${out.outputIndex}` !== view.ref);
+    expect(await r.run('cleanup', '--submit')).toBe(1);
+    expect(r.w.screen.errorText).toContain('the state has no withdrawal');
+    expect(r.w.screen.lines.join('\n')).not.toContain('the deposit returned');
+    expect(r.w.node.submitted).toHaveLength(1);
+  });
+
+  it('keeps the landed withdrawal pending until the ledger proves the consumed output and net repayment', async () => {
+    const r = await complianceWorld();
+    expect(await r.run(...ISSUE, '--submit')).toBe(0);
+    r.travel((await r.view(ALFA)).withdrawableFrom! + 60_000);
+    r.setWithdrawalRead((row) => ({ ...row, outputs: row.outputs.map((out) => ({ ...out, value: String(BigInt(out.value) - 1n) })) }));
+    expect(await r.run('cleanup', '--submit')).toBe(1);
+    const part = `part.withdraw:${ALFA}`;
+    expect(r.w.state('compliance').notes[part]).not.toHaveProperty('verified_at');
+    expect(r.w.screen.lines.join('\n')).not.toContain('the deposit returned');
+    expect(r.w.node.submitted).toHaveLength(2);
+    r.setWithdrawalRead((row) => ({
+      ...row, inputs: row.inputs.map((input) => input.payment_addr.bech32 === DEPLOYMENT.attestation.address ? { ...input, tx_hash: hashOf('another input') } : input),
+    }));
+    expect(await r.run('cleanup', '--submit')).toBe(1);
+    r.setWithdrawalRead((row) => ({ ...row, plutus_contracts: row.plutus_contracts.map((run) => ({ ...run, valid_contract: false })) }));
+    expect(await r.run('cleanup', '--submit')).toBe(1);
+    expect(r.w.state('compliance').notes[part]).not.toHaveProperty('verified_at');
+    expect(r.w.node.submitted).toHaveLength(2);
+    r.setWithdrawalRead((row) => row);
+    expect(await r.run('cleanup', '--submit')).toBe(0);
+    expect(r.w.state('compliance').notes[part]).toHaveProperty('verified_at');
+    expect(r.w.screen.lines.join('\n')).toContain('the deposit returned to the fee wallet');
+    expect(r.w.node.submitted).toHaveLength(2);
   });
 });

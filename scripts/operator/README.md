@@ -36,7 +36,7 @@ Each run ends with one line on the standard output: `operator-result: <JSON>`. T
 
 ## The tasks
 
-The first column is the name of the task. The flags are those of the task, besides `--submit`, `--all` and `--use-case`, which every task has, and `--run`, which every task except `fund` takes. A task whose `--submit` needs the approval refuses with exit 2 when the approval is missing, expired or too narrow.
+The table lists task flags. All tasks take `--submit`, `--all` and `--use-case`. The `fund` and `compliance` tasks do not take `--run`: each uses one state stream for the use case. A task that needs approval with `--submit` exits with code 2 if the approval is absent, expired or too narrow.
 
 | Task | What it does | Flags | With `--submit` | Writes |
 |---|---|---|---|---|
@@ -89,7 +89,7 @@ The work of a use case goes in this order. A task that has a dry run shows its s
 5. `env` makes the env files. The agent services start with them. The start is outside the pack.
 6. `advert` posts the adverts, after the services run and serve their manifest and before the runtimes start. `env` writes the reference of each advert into the env file of its runtime. The runtimes start then.
 7. `attest` with `--record` writes the documents. The documents are published outside the pack. `attest` then issues the attestations, and waits until the gateway lists them.
-   When the use case has compliance subjects, `compliance` prepares their documents. Publish the documents before issuing the attestations. A revoke or a reply is a separate action.
+   When the use case has compliance subjects, `compliance` with `--record` prepares their documents. Publish the files in `docs/attestations/` before issue. Use the raw folder URL at the commit for `--locator-base`. For `--reply-uri`, use the raw URL at the commit for the exact reply filename. Wait for verification before you start the next action for that subject. If repayment is not verified, run `cleanup` again to check the recorded transaction. Do not start a new withdrawal.
 8. For each run: `claim` stakes the claim of each agent. `allowlist` adds the key hash of a principal. `tenant` makes the tenant of the run. `fault` with `--check` shows that no switch is on before the first hire of a clean run, and again after the last hire. `fault` with `--set` turns a fault on and off for a failure run.
 9. In a failure run: `hold` puts a hold on the agent and lifts it, `delegations` shows which delegation keys are in use, and `probe` shows what the gateway answers under a delegation, before and after the hirer ends it.
 10. After a run: `evidence` writes the evidence file. `claim` with `cleanup` withdraws the claims after their window.
