@@ -2,6 +2,7 @@
 import { describe, expect, it } from 'vitest';
 import { operatorResult } from '../lib/output.ts';
 import type { OperatorResultFields } from '../lib/output.ts';
+import { LOOKALIKE_NAMES, LOOKALIKE_TEXTS, SECRET_NAMES, SECRET_TEXTS } from './support/secrets.ts';
 
 const PREFIX = 'operator-result: ';
 const FIELDS: OperatorResultFields = {
@@ -73,5 +74,38 @@ describe('operatorResult', () => {
     operatorResult(fields);
     expect(result).toEqual({ fee: 5n, nested: { n: 6n } });
     expect(fields.result).toBe(result);
+  });
+});
+
+describe('operatorResult and a secret', () => {
+  for (const { label, text } of SECRET_TEXTS) {
+    it(`writes step null and result {} for ${label}: in the step, in the result at any depth, and as the name of a member, and never the text`, () => {
+      const escaped = JSON.stringify(text).slice(1, -1);
+      const attempts: [string, Partial<OperatorResultFields>][] = [
+        ['in the step', { step: text }],
+        ['in a member of the result', { result: { note: text } }],
+        ['in the middle of a text of the result', { result: { note: `a ${text} b` } }],
+        ['deep in the result', { result: { deep: { list: ['fine', { note: text }] } } }],
+        ['as the name of a member of the result', { result: { [text]: 'x' } }],
+      ];
+      for (const [where, change] of attempts) {
+        const line = operatorResult({ ...FIELDS, ...change });
+        expect(line, where).not.toContain(escaped);
+        expect(parsed(line), where).toEqual({ ...FIELDS, step: null, result: {} });
+      }
+    });
+  }
+  it('writes both empty for a member named seed, secret, token, authorization or private, in any case, at any depth', () => {
+    for (const name of SECRET_NAMES) {
+      for (const result of [{ [name]: 'x' }, { deep: { [name]: 'x' } }, { list: [{ [name]: null }] }]) {
+        const line = operatorResult({ ...FIELDS, result });
+        expect(parsed(line), name).toEqual({ ...FIELDS, step: null, result: {} });
+      }
+    }
+  });
+  it('leaves a step and a result as they are when they hold only texts and names that look like a secret', () => {
+    const result = { ...Object.fromEntries(LOOKALIKE_TEXTS.map(({ text }, index) => [`text${index}`, text])), ...Object.fromEntries(LOOKALIKE_NAMES.map((name) => [name, 'x'])) };
+    for (const { label, text } of LOOKALIKE_TEXTS) expect(parsed(operatorResult({ ...FIELDS, step: text })), label).toEqual({ ...FIELDS, step: text });
+    expect(parsed(operatorResult({ ...FIELDS, result }))).toEqual({ ...FIELDS, result });
   });
 });

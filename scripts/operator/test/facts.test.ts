@@ -7,6 +7,7 @@ import { afterAll, describe, expect, it } from 'vitest';
 import type { WriteIo } from '../../checks/lib/files.ts';
 import type { AdvertFact, AttestationFact, ClaimFact, DeployFact, Facts, HoldFact, ManifestFact, OrganisationFact, RecordFact, StakeFact, TenantFact } from '../lib/contract.ts';
 import { FactsConflict, FactsError, FactsFile } from '../lib/facts.ts';
+import { KEY_TEXT, LOOKALIKE_NAMES, LOOKALIKE_TEXTS, SECRET_NAMES, SECRET_TEXTS } from './support/secrets.ts';
 
 const folders: string[] = [];
 afterAll(() => { for (const folder of folders.splice(0)) rmSync(folder, { recursive: true, force: true }); });
@@ -26,8 +27,6 @@ const HEX_A = 'a1'.repeat(32);
 const HEX_B = 'b2'.repeat(32);
 const HEX_C = 'c3'.repeat(32);
 const TIME = '2026-12-01T10:00:00.000Z';
-/** A text that looks like a key of the ledger, made at run time so that no source file holds it. */
-const KEY_TEXT = ['ed25519', `sk1${'q'.repeat(40)}`].join('_');
 
 const RECORD: RecordFact = { did: `did:vector:${HEX_A}`, id: HEX_A, tx: HEX_B, recordRef: `${HEX_B}#0`, depositLovelace: '10000000', registeredAt: TIME };
 const ORGANISATION: OrganisationFact = { txtName: '_did.echo.example', txtValue: `did:vector:${HEX_A}`, verifiedAt: null };
@@ -301,35 +300,40 @@ describe('sections and paths', () => {
 });
 
 describe('secrets', () => {
-  it('refuses a text that holds the start of a key of the ledger, in any case and anywhere in the text', () => {
-    const { facts, path: file } = fresh();
-    for (const text of [KEY_TEXT, KEY_TEXT.toUpperCase(), `https://agent.example/?key=${KEY_TEXT}`, `a ${KEY_TEXT} b`, ['ed25519', 'sk'].join('_')]) {
-      const err = refusal(() => put(facts, 'records', ['a'], { ...RECORD, did: text }));
-      expect(err.reason, text).toBe('secret');
-      expect(err.message).not.toContain(text);
-      expect(refusal(() => put(facts, 'records', ['a'], { ...RECORD, did: text }, true)).reason).toBe('secret');
-    }
-    expect(existsSync(file)).toBe(false);
-  });
-  it('refuses a text that holds a bearer token, in any case', () => {
-    const { facts, path: file } = fresh();
-    for (const text of ['Bearer abc123', 'bearer abc123', 'BEARER abc123', 'Authorization: Bearer abc123', `x Bearer ${HEX_A}`]) {
-      const err = refusal(() => put(facts, 'records', ['a'], { ...RECORD, did: text }));
-      expect(err.reason, text).toBe('secret');
-      expect(err.message).not.toContain('abc123');
-    }
-    expect(existsSync(file)).toBe(false);
-  });
-  it('accepts texts that only look like them: no space after the word, another word, a part of a word', () => {
+  for (const { label, text } of SECRET_TEXTS) {
+    it(`refuses ${label}: in a text of a fact, anywhere in the text, in a field, in the name of a member, in a name of the path, and when the call says replace`, () => {
+      const { facts, path: file } = fresh();
+      put(facts, 'holds', ['clean'], HOLD);
+      const before = textOf(file);
+      for (const shown of [text, `https://agent.example/?x=${text}&y=1`, `a ${text} b`]) {
+        const err = refusal(() => put(facts, 'records', ['a'], { ...RECORD, did: shown }));
+        expect(err.reason, shown).toBe('secret');
+        expect(err.message).not.toContain(text);
+        expect(refusal(() => put(facts, 'records', ['a'], { ...RECORD, did: shown }, true)).reason).toBe('secret');
+        expect(refusal(() => put(facts, 'holds', ['clean', 'liftTx'], shown)).reason).toBe('secret');
+        expect(refusal(() => put(facts, 'holds', ['clean', 'liftTx'], shown, true)).reason).toBe('secret');
+        expect(refusal(() => put(facts, 'deploy', [], { commit: DEPLOY.commit, images: { [shown]: 'registry.example/image' } })).reason).toBe('secret');
+      }
+      const isName = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(text);
+      expect(refusal(() => put(facts, 'records', [text], RECORD)).reason).toBe(isName ? 'secret' : 'path');
+      expect(textOf(file)).toBe(before);
+      expect(textOf(file)).not.toContain(text);
+    });
+  }
+  it('accepts a text that only looks like a secret, in a text of a fact and as the first value of a field', () => {
     const { facts } = fresh();
-    for (const [index, text] of ['https://agent.example/bearer', 'bearer', 'Bearers', 'ed25519', 'sk1abcdef', 'the bearerless case', 'ed25519-sk', 'ed25519 sk'].entries()) {
+    for (const [index, { label, text }] of LOOKALIKE_TEXTS.entries()) {
       put(facts, 'records', [`r${index}`], { ...RECORD, did: text });
+      expect(facts.read().records[`r${index}`]!.did, label).toBe(text);
+      put(facts, 'holds', [`h${index}`], { suspendTx: null, liftTx: null });
+      put(facts, 'holds', [`h${index}`, 'liftTx'], text);
+      expect(facts.read().holds[`h${index}`]!.liftTx, label).toBe(text);
     }
-    expect(Object.keys(facts.read().records)).toHaveLength(8);
+    expect(Object.keys(facts.read().records)).toHaveLength(LOOKALIKE_TEXTS.length);
   });
   it('refuses a member with exactly the name seed, secret, token, authorization or private, in any case, at any depth', () => {
     const { facts, path: file } = fresh();
-    for (const name of ['seed', 'secret', 'token', 'authorization', 'private', 'Seed', 'SECRET', 'Token', 'AUTHORIZATION', 'pRiVaTe']) {
+    for (const name of SECRET_NAMES) {
       const attempts: [keyof Facts, string[], unknown][] = [
         ['records', ['a'], { ...RECORD, [name]: 'x' }],
         ['deploy', [], { commit: DEPLOY.commit, images: { [name]: 'x' } }],
@@ -351,23 +355,19 @@ describe('secrets', () => {
     put(facts, 'claims', ['clean', 'a'], CLAIM);
     put(facts, 'tenants', ['clean'], TENANT);
     put(facts, 'tenants', ['custom'], { ...TENANT, seedKind: 'custom' });
-    put(facts, 'deploy', [], { commit: DEPLOY.commit, images: { 'seeded-runtime': 'registry.example/image', tokens: 'registry.example/image', privately: 'registry.example/image' } });
+    put(facts, 'deploy', [], { commit: DEPLOY.commit, images: Object.fromEntries(LOOKALIKE_NAMES.map((name) => [name, 'registry.example/image'])) });
     expect(facts.read().stakes.a!.tokenUnit).toBe(`${HEX_A}5374616b65`);
     expect(facts.read().claims.clean!.a!.claimToken).toBe(CLAIM.claimToken);
     expect(facts.read().tenants.custom!.seedKind).toBe('custom');
+    expect(Object.keys(facts.read().deploy!.images)).toEqual([...LOOKALIKE_NAMES]);
   });
-  it('refuses a secret in the value of a field, in a name of the path, and when the call says replace', () => {
+  it('refuses a name in the path that is the name of a secret or holds a key, also when the call says replace', () => {
     const { facts, path: file } = fresh();
-    put(facts, 'holds', ['clean'], HOLD);
     put(facts, 'records', ['good'], RECORD);
     const before = textOf(file);
-    for (const bad of [KEY_TEXT, 'Bearer abc123']) {
-      expect(refusal(() => put(facts, 'holds', ['clean', 'liftTx'], bad)).reason).toBe('secret');
-      expect(refusal(() => put(facts, 'holds', ['clean', 'liftTx'], bad, true)).reason).toBe('secret');
-      expect(refusal(() => put(facts, 'records', ['good'], { ...RECORD, did: bad }, true)).reason).toBe('secret');
+    for (const name of [...SECRET_NAMES, KEY_TEXT]) {
+      for (const replace of [undefined, true]) expect(refusal(() => put(facts, 'records', [name], RECORD, replace)).reason, name).toBe('secret');
     }
-    expect(refusal(() => put(facts, 'records', [KEY_TEXT], RECORD)).reason).toBe('secret');
-    for (const name of ['seed', 'secret', 'token', 'authorization', 'private', 'Seed']) expect(refusal(() => put(facts, 'records', [name], RECORD)).reason, name).toBe('secret');
     expect(textOf(file)).toBe(before);
     expect(textOf(file)).not.toContain(KEY_TEXT);
   });

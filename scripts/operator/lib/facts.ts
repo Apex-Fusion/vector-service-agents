@@ -1,6 +1,6 @@
 // scripts/operator/lib/facts.ts - the facts file of the operator pack.
 // `<state>/facts.json` keeps what one task found out and a later task needs: the records, the organisations, the stakes, the adverts and the rest (the sections of `Facts`). It holds public values
-// only: a text that holds the start of a key or a bearer token, and a member that is named seed, secret, token, authorization or private, are refused. A fact is set once. The same value again
+// only: a text that carries a mark of a secret (a key, a key variable that is set, a bearer token, a token in a URL) and a member that is named seed, secret, token, authorization or private are refused (`lib/secrets.ts`). A fact is set once. The same value again
 // changes nothing, and another value is a FactsConflict unless the call says `replace`. A later step sets one field of a fact that an earlier step wrote (a stake reference, the time at which an
 // organisation was verified, the transaction that lifts a hold or withdraws a claim): the fact must exist, the field is null until it is set, and it is set once in the same way. Every call reads
 // the file again, so that two instances over one file see each other. A file that is damaged is an error and never an empty store. A message names a section and a path, and never a value.
@@ -13,6 +13,7 @@ import type {
   AdvertFact, AttestationFact, ClaimFact, DeployFact, Facts, FactsStore, HoldFact, ManifestFact, OrganisationFact, RecordFact, StakeFact, TenantFact,
 } from './contract.ts';
 import { codeOf } from './registry.ts';
+import { holdsSecret, isSecretName } from './secrets.ts';
 
 export type FactsReason = 'section' | 'path' | 'field' | 'missing_fact' | 'value' | 'secret' | 'conflict' | 'unreadable' | 'unwritable' | 'damaged' | 'mismatch' | 'mode';
 
@@ -43,10 +44,6 @@ const ENVELOPE = ['format', 'useCase', 'network', 'facts'];
 /** A name that is a key of the file: a name of a path, or a name of a container. It cannot be `__proto__`, and it has no space, no slash and no control character. */
 const SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const LOVELACE = /^(?:0|[1-9][0-9]{0,29})$/;
-/** The two texts that mark a secret: the start of a key of the ledger, and a bearer token (the word, then a space). The match ignores the case. */
-const SECRET_TEXT = /ed25519_sk|bearer /i;
-/** A member that holds a secret has exactly one of these names, in any case. A name that only contains one of them (`tokenUnit`, `claimToken`, `seedKind`) is no secret. */
-const SECRET_NAME = /^(?:seed|secret|token|authorization|private)$/i;
 
 type Check = (value: unknown) => boolean;
 /** One check for each member of a fact: a member that the type gains and the table lacks is a type error. */
@@ -100,16 +97,6 @@ function isFact(shape: Readonly<Record<string, Check>>, value: unknown): boolean
   if (!isObject(value)) return false;
   const members = Object.keys(shape);
   return Object.keys(value).length === members.length && members.every((member) => Object.hasOwn(value, member) && shape[member](value[member]));
-}
-
-const isSecretName = (name: string): boolean => SECRET_NAME.test(name) || SECRET_TEXT.test(name);
-
-/** True when a text holds a secret marker, or an object holds a member with a secret name, at any depth. */
-function holdsSecret(value: unknown): boolean {
-  if (typeof value === 'string') return SECRET_TEXT.test(value);
-  if (Array.isArray(value)) return value.some(holdsSecret);
-  if (isObject(value)) return Object.entries(value).some(([name, member]) => isSecretName(name) || holdsSecret(member));
-  return false;
 }
 
 /** True when two values of JSON are the same value: the order of the members of an object does not count. */

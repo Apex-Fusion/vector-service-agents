@@ -1,7 +1,9 @@
 // scripts/operator/lib/output.ts - the machine line of a run. A run ends with `operator-result: ` and the JSON of its result on ONE line, also when it failed or stopped, so that the program that
-// starts the pack can always read it. The text of the result holds public values only. JSON writes a line feed, a carriage return and the other control characters of a text as escapes, and this
-// file writes the three characters that JSON leaves as they are (the next line and the two Unicode separators) as escapes too, so that no program splits the line in two.
+// starts the pack can always read it. The text of the result holds public values only: a step or a result with a mark of a secret (`lib/secrets.ts`) is written as `step: null` and `result: {}`,
+// and its text never reaches the line. JSON writes a line feed, a carriage return and the other control characters of a text as escapes, and this file writes the three characters that JSON leaves
+// as they are (the next line and the two Unicode separators) as escapes too, so that no program splits the line in two.
 import { jsonSafe } from '../../checks/lib/format.ts';
+import { holdsSecret } from './secrets.ts';
 
 export type ResultCommand = 'status' | 'run' | 'cleanup';
 export type ResultMode = 'dry' | 'submit';
@@ -25,9 +27,13 @@ const PREFIX = 'operator-result: ';
 /** The characters that some programs take for the end of a line and that JSON writes as they are. */
 const LINE_SEPARATORS = /[\u0085\u2028\u2029]/g;
 
-/** The machine line of a run: the prefix and the JSON of the seven members, in a fixed order, with each bigint as text. A member that is not one of the seven is left out. The line has no line break. */
+/**
+ * The machine line of a run: the prefix and the JSON of the seven members, in a fixed order, with each bigint as text. A member that is not one of the seven is left out. The line has no line break.
+ * When the step or the result holds a mark of a secret, the line has `step: null` and `result: {}`. The task, the command and the mode are not scanned: the caller gives a name of the list or null.
+ */
 export function operatorResult(fields: OperatorResultFields): string {
   const { task, command, mode, outcome, exit, step, result } = fields;
-  const json = JSON.stringify(jsonSafe({ task, command, mode, outcome, exit, step, result }));
+  const leaks = holdsSecret(step) || holdsSecret(result);
+  const json = JSON.stringify(jsonSafe({ task, command, mode, outcome, exit, step: leaks ? null : step, result: leaks ? {} : result }));
   return `${PREFIX}${json.replace(LINE_SEPARATORS, (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`)}`;
 }
