@@ -4,11 +4,9 @@
 //   attest run --record --commit <sha>   Makes no transaction, needs no approval and no key. For each agent it checks that the running containers run the public images of the commit and that
 //                                        the service serves the manifest that the facts hold, and it writes the document file. A docs pull request then publishes the files.
 //   attest run --commit <sha> --locator-base <url>
-//                                        The four attestations, one step each: `reorder-agent:provenance`, `reorder-agent:software`, `order-desk:provenance` and `order-desk:software`. Each
-//                                        step fetches the document at the locator and builds the attestation only when those bytes are exactly the canonical JSON of the manifest that the
-//                                        service serves now and the digest of the running service image. The digest of the attestation is the SHA-256 of the bytes that were fetched. The
-//                                        software attestation of the Reorder Agent carries an envelope: the Provider key signs the COSE Sig_structure, and the transaction is built a second
-//                                        time with that signature and the same `issued_at`. Then the four `visible:<agent>:<type>` steps wait until the gateway lists each attestation.
+//                                        Each `<agent>:<type>` step checks the document at the locator. Its digest must match the exact canonical bytes for that
+//                                        agent's served manifest and running service image. If the data requires an envelope, the Provider signs its COSE Sig_structure.
+//                                        The second build uses that signature and the same `issued_at`. Each `visible:<agent>:<type>` step then waits for the gateway.
 //   attest cleanup                       Withdraws the deposit of each attestation whose `valid_until` plus 90 days has passed. For the others it prints the date.
 //
 // The Provider key signs two kinds of bytes: an attestation transaction (through `landBuilt`) and the Sig_structure of the envelope, which this file computes itself from the five fields that
