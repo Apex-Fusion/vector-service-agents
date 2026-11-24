@@ -78,7 +78,7 @@ const ORDER_KEYS: readonly KeyUse[] = [
 // The funding of each wallet, in lovelace: one pure output of 5,000,000 as collateral, and a float. The float is the sum of the items, rounded up to a multiple of 10,000,000.
 const COLLATERAL = 5_000_000n;
 const ORDER_SUPPLIER_ITEMS: UseCase['funding'][number]['items'] = [
-  { what: 'Deposit of the advert', lovelace: 2_100_000n },
+  { what: 'Deposit of the advert', lovelace: 2_500_000n },
   { what: 'Fee of the advert', lovelace: 350_000n },
   { what: 'Supplier bond', lovelace: 1_000_000n },
   { what: 'Fees of about 4 jobs', lovelace: 3_600_000n },
@@ -123,7 +123,7 @@ const USE_CASE: UseCase = {
       keys: REORDER_KEYS, parties: partiesOf(ECHO), guardianThreshold: 2,
       adverts: [
         {
-          model: 'reorder-agent-v1', priceLovelace: 3_000_000n, supplierBondLovelace: 1_000_000n, buyerBondLovelace: 1_000_000n, windowMs: 1_800_000, maxOutputTokens: 0, depositLovelace: 2_000_000n,
+          model: 'reorder-agent-v1', priceLovelace: 3_000_000n, supplierBondLovelace: 1_000_000n, buyerBondLovelace: 1_000_000n, windowMs: 1_800_000, maxOutputTokens: 0, depositLovelace: 2_500_000n,
           supplierKey: 'reorder-supplier', origin: REORDER_ORIGIN, runtimeEnvFile: REORDER_ENV, runtimeContainer: 'reorder-runtime',
         },
       ],
@@ -138,15 +138,15 @@ const USE_CASE: UseCase = {
       keys: ORDER_KEYS, parties: partiesOf(ALFA), guardianThreshold: 2,
       adverts: [
         {
-          model: 'lot-small', priceLovelace: 2_000_000n, supplierBondLovelace: 1_000_000n, buyerBondLovelace: 1_000_000n, windowMs: 480_000, maxOutputTokens: 0, depositLovelace: 2_000_000n,
+          model: 'lot-small', priceLovelace: 2_000_000n, supplierBondLovelace: 1_000_000n, buyerBondLovelace: 1_000_000n, windowMs: 480_000, maxOutputTokens: 0, depositLovelace: 2_500_000n,
           supplierKey: 'order-small-supplier', origin: ORDERS_SMALL_ORIGIN, runtimeEnvFile: ORDER_SMALL_ENV, runtimeContainer: 'orders-small-runtime',
         },
         {
-          model: 'lot-medium', priceLovelace: 5_000_000n, supplierBondLovelace: 1_000_000n, buyerBondLovelace: 1_000_000n, windowMs: 480_000, maxOutputTokens: 0, depositLovelace: 2_000_000n,
+          model: 'lot-medium', priceLovelace: 5_000_000n, supplierBondLovelace: 1_000_000n, buyerBondLovelace: 1_000_000n, windowMs: 480_000, maxOutputTokens: 0, depositLovelace: 2_500_000n,
           supplierKey: 'order-medium-supplier', origin: ORDERS_MEDIUM_ORIGIN, runtimeEnvFile: ORDER_MEDIUM_ENV, runtimeContainer: 'orders-medium-runtime',
         },
         {
-          model: 'lot-large', priceLovelace: 10_000_000n, supplierBondLovelace: 1_000_000n, buyerBondLovelace: 1_000_000n, windowMs: 480_000, maxOutputTokens: 0, depositLovelace: 2_000_000n,
+          model: 'lot-large', priceLovelace: 10_000_000n, supplierBondLovelace: 1_000_000n, buyerBondLovelace: 1_000_000n, windowMs: 480_000, maxOutputTokens: 0, depositLovelace: 2_500_000n,
           supplierKey: 'order-large-supplier', origin: ORDERS_LARGE_ORIGIN, runtimeEnvFile: ORDER_LARGE_ENV, runtimeContainer: 'orders-large-runtime',
         },
       ],
@@ -175,7 +175,7 @@ const USE_CASE: UseCase = {
     {
       wallet: 'reorder-supplier', collateralLovelace: COLLATERAL, floatLovelace: 10_000_000n,
       items: [
-        { what: 'Deposit of the advert', lovelace: 2_100_000n },
+        { what: 'Deposit of the advert', lovelace: 2_500_000n },
         { what: 'Fee of the advert', lovelace: 350_000n },
         { what: 'Supplier bond', lovelace: 1_000_000n },
         { what: 'Fees of about 20 jobs, less the prices that the wallet earns', lovelace: 6_000_000n },
