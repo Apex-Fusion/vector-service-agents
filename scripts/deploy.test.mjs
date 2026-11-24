@@ -6034,10 +6034,10 @@ test('agents host: the proof script fills the real snippet and the real main Cad
 test('agents host: the README gives the counts, the memory and the plan of the ports, and the snippet shape of the README is the one that the proof validates', () => {
   const readme = srvRead('README.md');
   for (const part of ['The plan for the host is 19 containers: 8 services, 10 runtimes and 1 mock service.', '| Memory | 8 GiB |', '| Agent host names | 10 | A, DNS only |', '| Mock host names | 2 | A, DNS only |', '| Organisation checks | 9 | TXT |']) assert.ok(readme.includes(part), part);
-  // The plan of the ports: the counts in the rows are the sizes of the ranges, and together they are the 19 containers. The rows of the two packs of use case 1 and of the two packs of use case 2 are the ports of their compose files,
-  // and the rows of the later agents keep the ports that come after them.
+  // The plan of the ports: the counts in the rows are the sizes of the ranges, and together they are the 19 containers. The rows of the two packs of use case 1, of the two packs of use case 2 and of the packs of use case 3
+  // are the ports of their compose files, and no row is left for a later agent.
   const rows = [...section(readme, 'Folders and ports').matchAll(/^\| ([A-Za-z][^|]*?) \((\d+)\) \| (\d+)(?: to (\d+))? \|$/gm)].map((m) => ({ label: m[1], count: Number(m[2]), from: Number(m[3]), to: Number(m[4] ?? m[3]) }));
-  assert.deepEqual(rows.map((row) => row.label), ['Reorder Agent runtime', 'Order Desk runtimes', 'Prior Authorization Agent runtime', 'Insurer Intake Agent runtime', 'Runtimes of later agents', 'Reorder Agent service', 'Order Desk service', 'Prior Authorization Agent service', 'Insurer Intake Agent service', 'Services of later agents', 'Mock service']);
+  assert.deepEqual(rows.map((row) => row.label), ['Reorder Agent runtime', 'Order Desk runtimes', 'Prior Authorization Agent runtime', 'Insurer Intake Agent runtime', 'Sourcing Agent runtime', 'Bid Desk runtimes', 'Reorder Agent service', 'Order Desk service', 'Prior Authorization Agent service', 'Insurer Intake Agent service', 'Sourcing Agent service', 'Bid Desk services', 'Mock service']);
   const plan = Object.fromEntries(rows.map((row) => [row.label, row]));
   for (const row of rows) assert.equal(row.to - row.from + 1, row.count, `${row.label}: the range has as many ports as the count`);
   const runtimeRows = rows.filter((row) => /runtime/i.test(row.label));
@@ -6045,9 +6045,13 @@ test('agents host: the README gives the counts, the memory and the plan of the p
   assert.equal(runtimeRows.reduce((sum, row) => sum + row.count, 0), 10, 'ten runtimes');
   assert.equal(serviceRows.reduce((sum, row) => sum + row.count, 0), 8, 'eight services');
   assert.equal(rows.reduce((sum, row) => sum + row.count, 0), 19);
-  // The opening and the memory text say the same of the 19 containers: the memory holds the mock service and the six of use case 1, the four of use case 2 do not all pass the gate, and the later agents have the other 8.
-  assert.equal(plan['Runtimes of later agents'].count + plan['Services of later agents'].count, 19 - 1 - 6 - 4, 'the later agents have the 8 containers that are not the mock service, the six of use case 1 and the four of use case 2');
-  assert.ok(readme.includes(`The memory of the host holds the mock service and the six containers of use case 1 at the planning sizes. The four containers of use case 2 do not all pass the gate at the planning sizes. The other ${19 - 1 - 6 - 4} containers wait for a new count (section "The host").`), 'the opening says how many containers the memory holds');
+  // The opening and the memory text say the same of the 19 containers: the memory holds the mock service and the six of use case 1, and the four of use case 2 and the eight of use case 3 do not all pass the gate. No container is left over.
+  const count = (...labels) => labels.reduce((sum, label) => sum + plan[label].count, 0);
+  const useCase1 = count('Reorder Agent runtime', 'Order Desk runtimes', 'Reorder Agent service', 'Order Desk service');
+  const useCase2 = count('Prior Authorization Agent runtime', 'Insurer Intake Agent runtime', 'Prior Authorization Agent service', 'Insurer Intake Agent service');
+  const useCase3 = count('Sourcing Agent runtime', 'Bid Desk runtimes', 'Sourcing Agent service', 'Bid Desk services');
+  assert.deepEqual([plan['Mock service'].count, useCase1, useCase2, useCase3], [1, 6, 4, 8], 'the mock service, six containers of use case 1, four of use case 2 and eight of use case 3: the 19 containers, and none is left over');
+  assert.ok(readme.includes(`The memory of the host holds the mock service and the ${IMAGE_WORDS[useCase1]} containers of use case 1 at the planning sizes. The ${IMAGE_WORDS[useCase2]} containers of use case 2 do not all pass the gate at the planning sizes. The ${IMAGE_WORDS[useCase3]} containers of use case 3 do not all pass it either (section "The host").`), 'the opening says how many containers the memory holds');
   for (const group of [runtimeRows, serviceRows]) group.slice(1).forEach((row, i) => assert.equal(row.from, group[i].to + 1, `${row.label} follows ${group[i].label} with no gap`));
   const [runtimeFrom, runtimeTo, serviceFrom, serviceTo] = [runtimeRows[0].from, runtimeRows.at(-1).to, serviceRows[0].from, serviceRows.at(-1).to];
   assert.ok(runtimeTo < serviceFrom && serviceTo < plan['Mock service'].from, 'the ranges do not overlap');
@@ -6062,8 +6066,12 @@ test('agents host: the README gives the counts, the memory and the plan of the p
   const intakePorts = PACK_PORTS[serverCompose('insurer-intake-agent')];
   assert.deepEqual([plan['Prior Authorization Agent runtime'].from, plan['Prior Authorization Agent runtime'].to, plan['Insurer Intake Agent runtime'].from, plan['Insurer Intake Agent runtime'].to], [priorPorts.runtime[0], priorPorts.runtime[0], intakePorts.runtime[0], intakePorts.runtime[0]], 'the two runtimes of use case 2');
   assert.deepEqual([plan['Prior Authorization Agent service'].from, plan['Insurer Intake Agent service'].from], [priorPorts.service[0], intakePorts.service[0]], 'the two services of use case 2');
-  assert.deepEqual([plan['Runtimes of later agents'].from, plan['Runtimes of later agents'].to], [8107, 8110], 'the later runtimes keep 8107 to 8110');
-  assert.deepEqual([plan['Services of later agents'].from, plan['Services of later agents'].to], [9105, 9108], 'the later services keep 9105 to 9108');
+  const sourcingPorts = PACK_PORTS[serverCompose('sourcing-agent')];
+  const deskPorts = ['alfa', 'bravo', 'charlie'].map((name) => PACK_PORTS[serverCompose(`bid-desk-${name}`)]);
+  const [deskRuntimes, deskServices] = [deskPorts.map((ports) => ports.runtime[0]), deskPorts.map((ports) => ports.service[0])];
+  assert.deepEqual([plan['Sourcing Agent runtime'].from, plan['Sourcing Agent runtime'].to, plan['Sourcing Agent service'].from, plan['Sourcing Agent service'].to], [sourcingPorts.runtime[0], sourcingPorts.runtime[0], sourcingPorts.service[0], sourcingPorts.service[0]], 'the runtime and the service of the Sourcing Agent');
+  assert.deepEqual([plan['Bid Desk runtimes'].from, plan['Bid Desk runtimes'].to], [Math.min(...deskRuntimes), Math.max(...deskRuntimes)], 'the three runtimes of the Bid Desks');
+  assert.deepEqual([plan['Bid Desk services'].from, plan['Bid Desk services'].to], [Math.min(...deskServices), Math.max(...deskServices)], 'the three services of the Bid Desks');
   const runbook = srvRead('RUNBOOK.md');
   assert.ok(runbook.includes(`seq ${runtimeFrom} ${runtimeTo}`), 'the runbook checks each runtime port of the plan');
   assert.ok(runbook.includes(`range ${runtimeFrom} to ${runtimeTo}`) && runbook.includes(`range ${serviceFrom} to ${serviceTo}`));
@@ -7563,7 +7571,7 @@ test('use case 1 README: the memory arithmetic of the six containers adds up, an
   const text = section(srvRead('README.md'), 'The host');
   const number = (value) => Number(value.replaceAll(',', ''));
   const sizes = Object.fromEntries([...text.matchAll(/^\| ([A-Za-z][^|]*?) \| ([\d,]+) \|$/gm)].map((m) => [m[1], number(m[2])]));
-  assert.deepEqual(Object.keys(sizes), ['Reorder Agent runtime', 'Reorder Agent service', 'Order Desk runtimes (3)', 'Order Desk service', 'The six containers', 'Prior Authorization Agent runtime', 'Prior Authorization Agent service', 'Insurer Intake Agent runtime', 'Insurer Intake Agent service', 'The four containers']);
+  assert.deepEqual(Object.keys(sizes), ['Reorder Agent runtime', 'Reorder Agent service', 'Order Desk runtimes (3)', 'Order Desk service', 'The six containers', 'Prior Authorization Agent runtime', 'Prior Authorization Agent service', 'Insurer Intake Agent runtime', 'Insurer Intake Agent service', 'The four containers', 'Sourcing Agent runtime', 'Sourcing Agent service', 'Bid Desk runtimes (3)', 'Bid Desk services (3)', 'The eight containers']);
   assert.equal(sizes['Order Desk runtimes (3)'], 3 * sizes['Reorder Agent runtime'], 'three runtimes of one size');
   assert.equal(sizes['Reorder Agent service'], sizes['Order Desk service'], 'the two services have the planning size of a new service');
   const total = sizes['Reorder Agent runtime'] + sizes['Reorder Agent service'] + sizes['Order Desk runtimes (3)'] + sizes['Order Desk service'];
@@ -7584,7 +7592,8 @@ test('use case 1 README: the memory arithmetic of the six containers adds up, an
   // The figures come from a host that also runs the agents of deploy/host, so a new host needs its own measurement, and the text does not deny the build of those agents.
   assert.ok(text.includes('The figures in this section were measured on a host that also runs the agents of `deploy/host`. A new host needs its own measurement.'), 'where the figures come from');
   assert.doesNotMatch(text, /no build counts here/, 'the text does not deny every build');
-  assert.ok(text.includes(`So the other ${19 - 1 - 6 - 4} containers need more memory, or a real size below the planning size, before they start.`), 'the memory text says what the opening says of the other containers');
+  // The plan holds the mock service, the six containers of use case 1, the four of use case 2 and the eight of use case 3, and no container after them (the test of the plan of the ports counts the 19).
+  assert.ok(text.includes('The plan holds no container after these eighteen, and the mock service with them makes the 19. So the containers of use case 2 and of use case 3 need more memory, or a real size below the planning size, before all of them start. Measure the real size of each container at its first start.'), 'the memory text says what the opening says: no container comes after the eighteen');
   assert.doesNotMatch(text, /3\.3 GiB/, 'the old total of the 19 containers is gone');
 });
 
@@ -8442,3 +8451,152 @@ test('use case 3 addresses: no file of the packs of use case 1, of use case 2 an
   for (const text of ['127.0.0.1', '0.0.0.0', '1.1.1.1', 'listen 127.0.0.1:8108 and 0.0.0.0:9106', 'version 1.2.3', 'on 2026.11.24', '0.0.0.0/0']) assert.deepEqual(addressProblems(['x'], () => text), [], text);
 });
 
+
+// ---- The README and the RUNBOOK of the agents host, for the packs of use case 3 ----
+test('use case 3 README: the table of the files has a row for each of the ten files of the packs of the Sourcing Agent and of the three Bid Desks, and each file is there, and the rows say what the compose files do', () => {
+  const readme = srvRead('README.md');
+  for (const file of USE_CASE_3_FILES) {
+    const name = file.slice(`${SRV}/`.length);
+    assert.ok(readme.includes(`| \`${name}\` | `), `${name} has a row`);
+    assert.ok(existsSync(join(root, file)), `${name} is there`);
+  }
+  const rows = section(readme, 'The files').split('\n').filter((line) => /^\| `[^`]*(?:sourcing-agent|bid-desk)[^`]*` \|/.test(line));
+  assert.equal(rows.length, 10, 'ten rows for the four packs');
+  // The row of the compose file of the Sourcing Agent says how many keys the runtime does not get: the compose file blanks each key of the service in the environment of the runtime.
+  const keys = (file, kind) => Object.entries(parseYaml(read(file)).services[kind].environment).filter(([name]) => name.endsWith('_PRIV_KEY_HEX'));
+  const blanked = keys(SOURCING_PACK[0], 'runtime').filter(([, value]) => value === '');
+  assert.equal(blanked.length, 9, 'the runtime of the Sourcing Agent gets none of the nine keys of the service');
+  assert.ok(rows.some((row) => row.startsWith('| `docker-compose.sourcing-agent.yml` |') && row.includes(`The runtime gets none of the ${IMAGE_WORDS[blanked.length]} keys of the service.`)), 'the row of the Sourcing Agent says nine keys');
+  for (const file of BID_DESK_PACK.slice(0, 3)) {
+    const blankedKey = keys(file, 'runtime').filter(([, value]) => value === '').map(([name]) => name);
+    assert.deepEqual(blankedKey, ['BID_DESK_SERVICE_PRIV_KEY_HEX'], `${file}: the runtime of a Bid Desk does not get the key of its service`);
+  }
+  assert.ok(rows.some((row) => row.startsWith('| `docker-compose.bid-desk-alfa.yml` |') && row.includes('The runtime does not get the key of the service.')), 'the row of Bid Desk alfa says that the runtime does not get the key of the service');
+  for (const name of ['bravo', 'charlie']) {
+    assert.ok(rows.some((row) => row.startsWith(`| \`docker-compose.bid-desk-${name}.yml\` |`) && row.includes('It is the file of alfa with the name of the instance, the two host ports, the host name and the organisation changed.')), `the row of Bid Desk ${name} says how it differs from alfa`);
+  }
+});
+
+test('use case 3 README: the plan of the ports has a row for the runtime and the service of the Sourcing Agent and for the runtimes and the services of the Bid Desks, and each row holds the ports of its compose files; the guard refuses each copy that breaks one rule', () => {
+  const texts = composeTextsOf(['deploy/host', 'deploy/server']);
+  const readme = srvRead('README.md');
+  const rows = Object.fromEntries(labelledRows(readme).map((row) => [row.label, row]));
+  const expected = [['Sourcing Agent runtime', 1, 8107, 8107], ['Bid Desk runtimes', 3, 8108, 8110], ['Sourcing Agent service', 1, 9105, 9105], ['Bid Desk services', 3, 9106, 9108]];
+  for (const [label, count, from, to] of expected) assert.deepEqual(rows[label], { label, count, from, to }, `${label}: the row of the plan in the README`);
+  assert.deepEqual(portProblems(texts, PACK_PORTS, readme), [], 'the real files pass');
+  const rowLine = (label) => section(readme, 'Folders and ports').split('\n').find((line) => line.startsWith(`| ${label} (`));
+  const alfa = serverCompose('bid-desk-alfa');
+  const faults = [
+    ['a README plan that leaves out the row of the Bid Desk runtimes', srvReplace(readme, `${rowLine('Bid Desk runtimes')}\n`, ''), /bid-desk-alfa\.yml#runtime publishes 8108, and no row of the plan/],
+    ['a README plan that leaves out the row of the Bid Desk services', srvReplace(readme, `${rowLine('Bid Desk services')}\n`, ''), /bid-desk-alfa\.yml#service publishes 9106, and no row of the plan/],
+    ['a README plan that leaves out the row of the Sourcing Agent service', srvReplace(readme, `${rowLine('Sourcing Agent service')}\n`, ''), /sourcing-agent\.yml#service publishes 9105, and no row of the plan/],
+    ['a row of the Bid Desk runtimes with a wrong count', srvReplace(readme, rowLine('Bid Desk runtimes'), rowLine('Bid Desk runtimes').replace(/\((\d+)\)/, '(99)')), /a row of the plan in the README gives 99 ports/],
+    ['two rows of the README plan that overlap', srvReplace(readme, `${rowLine('Sourcing Agent runtime')}\n`, `${rowLine('Sourcing Agent runtime')}\n| Overlap (1) | 8108 |\n`), /two rows of the plan in the README overlap: 8108 to 8108 and 8108 to 8110/],
+    ['a row of the Bid Desk services that stops one port short', srvReplace(readme, rowLine('Bid Desk services'), '| Bid Desk services (2) | 9106 to 9107 |'), /bid-desk-charlie\.yml#service publishes 9108, and no row of the plan/],
+  ];
+  for (const [name, text, expectedProblem] of faults) {
+    const problems = portProblems(texts, PACK_PORTS, text);
+    assert.ok(problems.some((p) => expectedProblem.test(p)), `${name}: found ${JSON.stringify(problems)}`);
+  }
+  // The twin: the compose files of the two hosts in another order, and a Bid Desk on the long form of its ports.
+  const long = srvReplace(texts[alfa], '["127.0.0.1:9106:9106"]', '[{ target: 9106, published: 9106, host_ip: 127.0.0.1 }]');
+  assert.deepEqual(portProblems({ ...texts, [alfa]: long }, PACK_PORTS, readme), [], 'the long form');
+  assert.deepEqual(portProblems(Object.fromEntries(Object.entries(texts).reverse()), PACK_PORTS, readme), [], 'the files in another order');
+});
+
+test('use case 3 README: the memory arithmetic of the eight containers adds up: the sizes, the memory that they need, the gate, the starts that pass it at the planning sizes, and the rule that a start that the gate refuses is not made', () => {
+  const text = section(srvRead('README.md'), 'The host');
+  const number = (value) => Number(value.replaceAll(',', ''));
+  const fmt = (value) => value.toLocaleString('en-US');
+  const sizes = Object.fromEntries([...text.matchAll(/^\| ([A-Za-z][^|]*?) \| ([\d,]+) \|$/gm)].map((m) => [m[1], number(m[2])]));
+  const [runtime, service] = [sizes['Reorder Agent runtime'], sizes['Reorder Agent service']];
+  assert.equal(sizes['Sourcing Agent runtime'], runtime, 'the planning size of a runtime');
+  assert.equal(sizes['Sourcing Agent service'], service, 'the planning size of a service');
+  assert.equal(sizes['Bid Desk runtimes (3)'], 3 * runtime, 'three runtimes of one size');
+  assert.equal(sizes['Bid Desk services (3)'], 3 * service, 'three services of one size');
+  const total = sizes['Sourcing Agent runtime'] + sizes['Sourcing Agent service'] + sizes['Bid Desk runtimes (3)'] + sizes['Bid Desk services (3)'];
+  assert.equal(sizes['The eight containers'], total, 'the eight containers are the sum of the rows');
+  assert.equal(total, 4 * runtime + 4 * service, 'four runtimes and four services');
+  // The memory before the first start is the memory after the six containers of use case 1 run, with no container of use case 2.
+  const six = /^\| The six containers run \| ([\d,]+) \| ([\d,]+) \|/m.exec(text);
+  assert.ok(six, 'the table of use case 1 gives the memory after the six containers run');
+  const [typical, lowest] = [number(six[1]), number(six[2])];
+  const GATE = 1024;
+  // The order of the starts: the service first, then the runtime, for the Sourcing Agent and then for each Bid Desk. A start that the gate refuses is not made, so the memory stays, and every start after it is refused too.
+  const order = [service, runtime, ...BID_DESKS.flatMap(() => [service, runtime])];
+  assert.equal(order.reduce((sum, size) => sum + size, 0), total, 'the eight starts are the eight containers');
+  const starts = (first) => {
+    let memory = first;
+    let started = 0;
+    let refused = null;
+    order.forEach((size, at) => {
+      if (memory >= GATE) {
+        memory -= size;
+        started += 1;
+      } else refused ??= { at, before: memory };
+    });
+    return { started, refused };
+  };
+  const [inTypical, inLowest] = [starts(typical), starts(lowest)];
+  assert.deepEqual([inTypical.started, inTypical.refused?.at, inTypical.refused?.before], [3, 3, 814], 'three starts pass in the typical case, and the fourth start has 814 MiB before it');
+  assert.deepEqual([inLowest.started, inLowest.refused?.at, inLowest.refused?.before], [1, 1, 817], 'one start passes in the lowest case, and the second start has 817 MiB before it');
+  const ordinal = ['first', 'second', 'third', 'fourth', 'fifth', 'sixth', 'seventh', 'eighth'];
+  assert.ok(text.includes('The eight containers of use case 3 (supplier bid evaluation) have these planning sizes. They are estimates until the first start of a service is measured.'), 'the sizes are estimates');
+  const paragraph = text.split('\n\n').find((part) => part.startsWith('The eight containers need '));
+  assert.ok(paragraph, 'the paragraph of the memory arithmetic of use case 3 is there');
+  for (const part of [
+    `The eight containers need ${fmt(total)} MiB, and a start needs ${fmt(GATE)} MiB of \`MemAvailable\` before it.`,
+    `With the six containers of use case 1 running, and none of use case 2, \`MemAvailable\` is about ${fmt(typical)} MiB in the typical case and ${fmt(lowest)} MiB in the lowest case.`,
+    `So the eight containers need ${fmt(total - typical)} MiB more than the typical case holds, and ${fmt(total - lowest)} MiB more than the lowest case holds.`,
+    'The service starts first, then the runtime, for the Sourcing Agent and then for each Bid Desk.',
+    `At the planning sizes, the ${ordinal[inTypical.refused.at]} start fails the gate in the typical case (${fmt(inTypical.refused.before)} MiB before it), and the ${ordinal[inLowest.refused.at]} start fails it in the lowest case (${fmt(inLowest.refused.before)} MiB before it).`,
+    `So ${IMAGE_WORDS[inTypical.started]} of the eight containers start in the typical case, and ${IMAGE_WORDS[inLowest.started]} in the lowest case.`,
+  ]) assert.ok(paragraph.includes(part), part);
+  assert.ok(paragraph.endsWith('A start that the gate refuses is not made.'), 'the paragraph ends with the rule that a refused start is not made');
+  // The block follows the block of use case 2 and comes before the closing paragraph of the section.
+  const at = (part) => text.indexOf(part);
+  assert.ok(at('The four containers of use case 2') > 0 && at('The four containers of use case 2') < at('The eight containers of use case 3') && at('The eight containers of use case 3') < at('The plan holds no container after these eighteen'), 'the three blocks are in the order of the use cases');
+});
+
+test('use case 3 README: the section of a host whose proxy runs in a container names the packs of use case 3 and their runbooks; the markers, the joins and the container names in the upstreams are those of the Sourcing Agent and of the three Bid Desks', () => {
+  const text = section(srvRead('README.md'), 'A host whose proxy runs in a container');
+  assert.ok(text.length > 0, 'the section is there');
+  const markersOf = (snippet) => [...snippet.matchAll(/^# (\S+) vhosts \(BEGIN\)$/gm)].map((hit) => hit[1]);
+  const [sourcingSnippet, deskSnippet] = [srvRead('Caddyfile.sourcing-agent.snippet'), srvRead('Caddyfile.bid-desk.snippet')];
+  // The Sourcing Agent has one project and one block. The three Bid Desks are three projects, and their snippet file has one pair of markers for each.
+  assert.deepEqual(markersOf(sourcingSnippet), ['sourcing-agent']);
+  assert.deepEqual(markersOf(deskSnippet), BID_DESKS.map((name) => `bid-desk-${name}`));
+  const projects = [['sourcing-agent', 'docker-compose.sourcing-agent.yml', sourcingSnippet], ...BID_DESKS.map((name) => [`bid-desk-${name}`, `docker-compose.bid-desk-${name}.yml`, deskSnippet])];
+  const names = new Set();
+  for (const [agent, composeFile, snippet] of projects) {
+    const compose = parseYaml(srvRead(composeFile));
+    assert.ok(snippet.includes(`\n# ${agent} vhosts (END)\n`), `${agent} has its END marker`);
+    assert.equal(compose.name, agent, `the project of ${composeFile} is the name in the markers`);
+    assert.ok(snippet.includes(`docker network connect ${agent}_default <caddy container>`), `${agent}: the snippet gives the join`);
+    for (const service of Object.values(compose.services)) names.add(service.container_name);
+  }
+  for (const [snippetFile, snippet] of [['Caddyfile.sourcing-agent.snippet', sourcingSnippet], ['Caddyfile.bid-desk.snippet', deskSnippet]]) {
+    const upstreams = snippet.split('\n').filter((line) => /^\s*reverse_proxy /.test(line)).map((line) => line.trim().split(/\s+/)[1].split(':')[0]);
+    assert.ok(upstreams.length > 0 && upstreams.every((name) => names.has(name)), `${snippetFile}: each upstream is the container name of a service of the pack`);
+  }
+  assert.ok(text.includes('The packs of use case 3 (the Sourcing Agent and the three Bid Desks) are written for such a host in the same way.'), 'the packs of use case 3 are written for such a host');
+  assert.ok(text.includes('The runbooks of the packs of use case 3 give them in the same way: `RUNBOOK-sourcing-agent.md` and `RUNBOOK-bid-desk.md`. The second one has one block and one join for each of the three Bid Desks.'), 'the runbooks of the packs of use case 3');
+  for (const file of ['RUNBOOK-sourcing-agent.md', 'RUNBOOK-bid-desk.md']) assert.ok(existsSync(join(root, SRV, file)), `${file} is there`);
+  // The join: the three Bid Desks are three projects, so the Caddy container joins one network for each of them.
+  const joinRow = text.split('\n').find((line) => line.startsWith('| The join |'));
+  assert.ok(joinRow, 'the table has the row of the join');
+  assert.ok(joinRow.includes('The three Bid Desks are three projects, so the Caddy container joins one network for each of them: `bid-desk-alfa_default`, `bid-desk-bravo_default` and `bid-desk-charlie_default`.'), 'the join names the networks of the three Bid Desks');
+  for (const name of BID_DESKS) assert.ok(joinRow.includes(`\`bid-desk-${name}_default\``) && parseYaml(srvRead(`docker-compose.bid-desk-${name}.yml`)).name === `bid-desk-${name}`, `the network of the project of Bid Desk ${name}`);
+});
+
+test('use case 3 RUNBOOK: step 7 points to the runbooks of the packs of use case 3, and says that they fit the marker block only, as the packs of use case 1 and of use case 2 do', () => {
+  const step = section(srvRead('RUNBOOK.md'), '7. Add an agent');
+  for (const file of ['RUNBOOK-sourcing-agent.md', 'RUNBOOK-bid-desk.md']) assert.ok(step.includes(`\`${file}\``) && existsSync(join(root, SRV, file)), file);
+  const [paragraph, ways] = step.split('\n1. ');
+  assert.ok(paragraph.includes('The packs of use case 3 (supplier bid evaluation) are the Sourcing Agent, with `RUNBOOK-sourcing-agent.md`, and the three Bid Desks, with `RUNBOOK-bid-desk.md`.'), 'the paragraph names the packs');
+  const at = (part) => paragraph.indexOf(part);
+  assert.ok(at('The packs of use case 2') > 0 && at('The packs of use case 2') < at('The packs of use case 3') && at('The packs of use case 3') < at('They fit the marker block only:'), 'the sentence about the marker block follows the lists of all the packs');
+  const [snippetFolder, markerBlock] = ways.split('   - Marker block.');
+  assert.ok(snippetFolder.includes('The packs of use case 3 do not fit this way either.'), 'the snippet folder is not for the packs of use case 3');
+  assert.ok(markerBlock.includes('The packs of use case 3 use this way only.'), 'the marker block is for the packs of use case 3');
+});
