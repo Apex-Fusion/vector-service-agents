@@ -346,7 +346,14 @@ async function runScorer(run: Run, index: number): Promise<ScorerOutcome> {
     note(run, `${head}: stopped in its own code: an error of the kind ${kindOf(error)}`);
     return failed('internal');
   } finally {
-    if (sent.id !== null) deps.inFlight.delete(sent.id);
+    if (sent.id !== null) {
+      try {
+        deps.inFlight.delete(sent.id);
+      } catch (error) {
+        // A set that cannot take the id back changes no result: the decision of this scorer was paid for, and the entry of its id stays in the list for the janitor.
+        note(run, `${head}: the sub-delegation ${sent.id} could not leave the set of the runs in use: an error of the kind ${kindOf(error)}`);
+      }
+    }
   }
 }
 

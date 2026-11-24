@@ -85,6 +85,21 @@ describe('the records of a run that sends its Delegates', () => {
     expect(w.chain.submitted).toStrictEqual([]);
   });
 
+  it('keeps the scores when the set of the runs in use cannot take an id back, writes one line for each scorer, and never the message of the error', async () => {
+    const w = world();
+    const inFlight = {
+      add: (id: string) => w.deps.inFlight.add(id),
+      delete: () => {
+        throw new Error('the set broke');
+      },
+    };
+    expect(await w.run({ deps: { inFlight } })).toStrictEqual({ ok: true, scores: GOLDEN_SCORES });
+    expect(w.logs).toHaveLength(3);
+    expect(w.logs[0]).toContain('Error');
+    expect(w.logs.join('\n')).not.toContain('the set broke');
+    expect(w.sink.entries.size).toBe(0);
+  });
+
   it('gives each of two scorings at one time the ids, the entries and the ends of its own, and the twelve turns of the one queue never overlap', async () => {
     const w = world();
     const [first, second] = await w.clock.run(Promise.all([runScoring(w.deps, w.input), runScoring(w.deps, w.input)]));
