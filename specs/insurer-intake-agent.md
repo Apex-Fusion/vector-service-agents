@@ -440,3 +440,20 @@ The manifest states these ten, in this order, word for word. A test keeps them e
 - A source that cannot be read is reported as unreadable and never as absent.
 - The controller key, the Accountable key and the guardian keys of this deployment are on one host of one operator, so a party is independent of the controller by key only.
 - What this does not show: no run covers the refund of the escrow of a revoked agent, a relying party that refuses a live token after its authority ended, or the challenge of the Prior Authorization Agent against this agent (this agent has no fault value). Tests alone cover the last two.
+
+## How to hire it
+
+No advert exists yet, so no buyer can hire the Insurer Intake Agent today.
+
+The Prior Authorization Agent of a care provider hires the Insurer Intake Agent. It hires it from the vault of a delegation, with a request that the provider's reviewer signed off. A hire without a delegation of the sender, without a payment from its vault, or without a valid sign-off of this exact request is refused by the hook before the Claim. To see the Insurer Intake Agent work, hire the [Prior Authorization Agent](prior-authorization-agent.md). It drafts an authorization request for a clinical order. When its hirer signs off the request, it pays the advert of the Insurer Intake Agent from the vault and sends the handoff to this agent. The steps to hire the Prior Authorization Agent are on its page. Its `execute` job hires this agent.
+
+## Changelog
+
+- 0.1.0, 2026-11-24: built
+
+## Links
+
+- Manifest: `GET /agent.json` on the public URL of the runtime, once the agent is deployed. The service renders it from its environment when it starts. The template is [agents/insurer-intake-agent/agent.json.template](../agents/insurer-intake-agent/agent.json.template).
+- Source: [agents/insurer-intake-agent](../agents/insurer-intake-agent)
+- Deploy pack: [deploy/server/RUNBOOK-insurer-intake-agent.md](../deploy/server/RUNBOOK-insurer-intake-agent.md)
+- Buyer-side agent: [Prior Authorization Agent](prior-authorization-agent.md)

@@ -3,7 +3,7 @@
 // table, so that they cannot part: the opening line, the status line and the changelog; the identity rows; the terms, the times and the limits; the 15 checks of the hook with their refusal codes; the steps of the job;
 // the report of the attestations; the intake record; the errors; the claim; the gaps word for word; what the model receives; and the links. No test here uses the network.
 import { createHash } from 'node:crypto';
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, test } from 'vitest';
 import { parse as parseYaml } from 'yaml';
@@ -11,7 +11,7 @@ import { ACCEPT_WINDOW_MS, ATT_TYPES } from '@vsa/buyer-core';
 import { STRANDED_FILE } from '@vsa/hire-kit';
 import { BUSY_TEXT, CONTEXT_HEADERS, HEARTBEAT_MS, JobSlot, MAX_BODY, RESERVATION_MS, STOPPING_TEXT, operatorsText, parseWire } from '@vsa/service-kit';
 import { systemClock } from '@vsa/usecase-kit/access';
-import { CheckUnavailableError, SHARED_CHECK_NAMES } from '@vsa/usecase-kit/checks';
+import { CheckUnavailableError, SHARED_CHECK_NAMES, checkApproval } from '@vsa/usecase-kit/checks';
 import { INPUT_OPEN, buildPrompt } from '@vsa/usecase-kit/decision';
 import { EVIDENCE_STATEMENTS, evidenceDocument } from '@vsa/usecase-kit/dispute';
 import { faultGap } from '@vsa/usecase-kit/manifest';
@@ -447,6 +447,13 @@ describe('specs/insurer-intake-agent.md: what the hook checks before the Claim',
     await expect(unread(async () => 'yes' as unknown as boolean)).rejects.toBeInstanceOf(CheckUnavailableError);
   });
 
+  test('a request with no approval is refused with approval_not_found before any read', async () => {
+    // The check of the approval reads nothing for a null approval: the ports are never touched.
+    const refusal = await checkApproval({} as never, { approval: null, sender_did: SENDER_DID, delegation: DELEGATION_ID, document: handoffOf().document, salt: SALT, now_ms: 1_790_000_000_000 });
+    expect(refusal).toMatchObject({ ok: false, code: 'approval_not_found' });
+    expect(ERROR_STATUS.approval_not_found).toBe(403);
+  });
+
   test('a go keeps the record for 300 s and reserves the job slot for 120 s, the hook answers 503 for a source that it cannot read, and the runtime waits 10000 ms', () => {
     expect(hook).toContain(`When every check passes, the hook answers 200 \`{"go":true,"reserved_ms":${RESERVATION_MS}}\`.`);
     expect(hook).toContain(`The service keeps the record of the checks for ${PASSED_CHECKS_TTL_MS / 1000} s, and it reserves the job slot for that escrow for ${RESERVATION_MS / 1000} s.`);
@@ -591,6 +598,13 @@ describe('specs/insurer-intake-agent.md: what the job does', () => {
     expect(await enough.run()).toMatchObject({ status: 'complete' });
     expect(enough.portal.filed.size).toBe(1);
     expect(readFileSync(new URL('../src/serve/wiring.ts', import.meta.url), 'utf8')).toContain('timeoutMs: CALL_TIMEOUT_MS');
+    // A caller that hangs up while the decision runs stops the job before the filing call: the filing check reads the signal, and no new JWT-SVID is asked for.
+    const mid = new AbortController();
+    const between = makeRig();
+    const decided = await refusalOf(() => between.run({ signal: mid.signal, deps: { decide: async (input, requirementIds) => { mid.abort(); return between.deps.decide(input, requirementIds); } } }));
+    expect(decided).toMatchObject({ code: 'deadline', status: 422 });
+    expect(between.events).toStrictEqual(['take', 'svid', 'requirements', 'report', 'decide']);
+    expect(between.portal.filed.size).toBe(0);
     // A caller that hangs up during the filing call, or after it, does not stop the job: it books the entry, and its log says that the caller hung up.
     const during = new AbortController();
     const hung = makeRig();
@@ -939,6 +953,10 @@ describe('specs/insurer-intake-agent.md: the operator, the data and the gaps', (
     expect(wiring).toContain("join(config.stateDir, 'dispute')");
     expect(wiring).toContain("join(config.stateDir, 'keys', service.pkh)");
     expect(operator).toContain(`(\`INTAKE_STATE_DIR\`, which is \`${STATE_DIR_DEFAULT}\` in the image)`);
+    // The service key goes to the chain for the model hire, it signs the transactions of the dispute code, and it is the key of the subject token of the request for the JWT-SVID.
+    expect(wiring).toContain('service.withKey((privateKeyHex) =>');
+    expect(wiring).toContain('config.service.signUnsigned(unsignedCborHex)');
+    expect(wiring).toContain('authenticationKey: service.keyObject');
     expect(state[0][1]).toContain(`every ${JANITOR_INTERVAL_MS / 1000} s`);
     expect(state[2][1]).toContain(`It holds at most ${INTAKE_BOOK_LIMIT} entries and never drops one`);
     // The one file that the start fetches, and the services that the service calls.
@@ -1069,5 +1087,42 @@ describe('specs/insurer-intake-agent.md: the operator, the data and the gaps', (
     // The seventh says what the report does not check, and the sixth says that every request is synthetic.
     expect(lines[6]).toBe(`- ${BINDING_GAP}`);
     expect(lines[5]).toBe('- Every request is synthetic.');
+  });
+});
+
+describe('specs/insurer-intake-agent.md: the hire, the headings, the changelog and the links', () => {
+  test('How to hire it sends the reader to the Prior Authorization Agent, and says what the hook refuses', () => {
+    const how = section('How to hire it');
+    expect(how).toContain('No advert exists yet, so no buyer can hire the Insurer Intake Agent today.');
+    expect(how).toContain("The Prior Authorization Agent of a care provider hires the Insurer Intake Agent. It hires it from the vault of a delegation, with a request that the provider's reviewer signed off.");
+    expect(how).toContain('A hire without a delegation of the sender, without a payment from its vault, or without a valid sign-off of this exact request is refused by the hook before the Claim.');
+    // Each of the three refusals is a code of the hook, and the check of the vault and the check of the approval come after the checks of the delegation.
+    const codes: string[] = [...COUNTERPARTY_REFUSALS['insurer-intake-agent']];
+    expect(['delegation_invalid', 'not_vault_paid', 'approval_not_found'].map((code) => codes.indexOf(code))).toStrictEqual([3, 5, 6]);
+    expect(how).toContain('To see the Insurer Intake Agent work, hire the [Prior Authorization Agent](prior-authorization-agent.md).');
+    expect(how).toContain('It drafts an authorization request for a clinical order. When its hirer signs off the request, it pays the advert of the Insurer Intake Agent from the vault and sends the handoff to this agent.');
+    expect(how).toContain('The steps to hire the Prior Authorization Agent are on its page. Its `execute` job hires this agent.');
+  });
+
+  test('the page has the thirteen headings of its profile in order, and Interface has the six sub-headings that the tests above read', () => {
+    expect([...page.matchAll(/^## (.+)$/gm)].map((hit) => hit[1])).toStrictEqual([
+      'Status', 'Identity', 'Capability id', 'Terms', 'Interface', 'What the receipt commits to', 'Claim statements', 'Fault switch', 'Operator and data handling', 'Known gaps', 'How to hire it', 'Changelog', 'Links',
+    ]);
+    expect([...page.matchAll(/^### (.+)$/gm)].map((hit) => hit[1])).toStrictEqual(['Request', 'What it checks before the Claim', 'What it does', 'The report of the attestations', 'Response', 'Errors']);
+  });
+
+  test('the Changelog is the version of the manifest, and the Links name files that exist, and the page of the Prior Authorization Agent', () => {
+    expect(manifest.version).toBe('0.1.0');
+    expect(section('Changelog').trim()).toBe(`- ${manifest.version}, ${PAGE_DATE}: built`);
+    const links = section('Links');
+    const targets = [...links.matchAll(/\]\(\.\.\/([^)]+)\)/g)].map((hit) => hit[1]);
+    for (const target of targets) expect(existsSync(root + target), target).toBe(true);
+    for (const [, label, target] of links.matchAll(/\[([^\]]+)\]\(\.\.\/([^)]+)\)/g)) expect(label, target).toBe(target);
+    expect(targets).toStrictEqual(['agents/insurer-intake-agent/agent.json.template', 'agents/insurer-intake-agent', 'deploy/server/RUNBOOK-insurer-intake-agent.md']);
+    expect(links).toContain('Manifest: `GET /agent.json` on the public URL of the runtime, once the agent is deployed. The service renders it from its environment when it starts.');
+    // The page of the counterparty lands in the same pull request as this page. Its link names the page of the agent whose folder is in the repository, and its label is the name in the manifest of that agent.
+    expect(links).toContain('- Buyer-side agent: [Prior Authorization Agent](prior-authorization-agent.md)');
+    expect(existsSync(`${root}agents/prior-authorization-agent`)).toBe(true);
+    expect(readFileSync(`${root}agents/prior-authorization-agent/src/serve/manifest.ts`, 'utf8')).toContain("name: 'Prior Authorization Agent',");
   });
 });
