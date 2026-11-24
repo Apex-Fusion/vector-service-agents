@@ -12,9 +12,11 @@
 // Each call is one line of JSON for the log, and a call to a system of a tenant is also in the log of the tenant. The line has the verified identity (`sub`, the `act` chain, the
 // delegation), the route, the tenant and the decision with the rule that refused. It never has a token, a proof or the bytes of a certificate. The line goes to the log of the tenant that
 // the call began with, and only while that tenant still has the name: a call that ran while its tenant was made again is on stdout only, and the new tenant has no line of it.
+// The operator log can also show a digest of a ranking request. The public log and stdout never show that field.
 import { createHash, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { errorText, flatText } from '@vsa/service-kit';
+import type { Digest } from '@vsa/usecase-kit/protocol';
 import { APPROVAL_TIMEOUT_MS } from './approval.ts';
 import type { ApprovalCheck } from './approval.ts';
 import type { ServiceConfig } from './config.ts';
@@ -33,6 +35,7 @@ import { ID, Invalid, TENANT, domain, fields, oneOf, text } from './validate.ts'
 export const MAX_BODY_BYTES = 1_048_576;
 const HEADER_FORM = /^:([A-Za-z0-9+/]+={0,2}):$/;
 const BEARER = /^bearer +(\S+)$/i;
+const ADMIN_LOG_PATH = /^\/admin\/tenants\/([^/]+)\/log$/;
 const JWT_FORM = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
 
 export type AppConfig = Pick<ServiceConfig, 'publicBase' | 'publicHost' | 'mtlsHost' | 'operatorToken'>;
@@ -66,6 +69,7 @@ interface Draft {
   route: string | null;
   credential: LogLine['credential'];
   trace: CallTrace;
+  proposalDigest?: Digest;
   /** The methods that the path takes, for the answer 405. */
   allow: string | null;
   /** `system`: a call to a system of a tenant, which goes to the log of the tenant. `record`: a read of the state or the log. `health`: no log line at all. */
@@ -174,13 +178,17 @@ export function createApp(deps: AppDeps): App {
     return same(config.mtlsHost) ? 'mtls' : 'other';
   }
 
-  /** `POST /admin/tenants`: makes or resets a tenant if the requested write permits it. It requires the operator token. */
-  async function adminTenants(req: IncomingMessage, draft: Draft): Promise<Outcome<Ok>> {
+  function authorizeOperator(req: IncomingMessage, draft: Draft): Outcome<null> {
     draft.credential = 'operator';
     draft.kind = 'operator';
     const authorization = authorizationOf(req);
     if (!authorization.ok) return authorization;
     if (!operatorTokenMatches(authorization.value, config.operatorToken)) return refuse('operator_token_invalid', 'operator.token', 'the operator token is missing or wrong');
+    return pass(null);
+  }
+
+  /** `POST /admin/tenants`: makes or resets a tenant if the requested write permits it. */
+  async function adminTenants(req: IncomingMessage, draft: Draft): Promise<Outcome<Ok>> {
     const body = await readJson(req);
     if (!body.ok) return body;
     const o = fields('body', body.value, ['tenant', 'organisations'], ['seed', 'operation', 'owner']);
@@ -292,7 +300,9 @@ export function createApp(deps: AppDeps): App {
     if (store.get(named) !== tenant) return refuse('tenant_changed', 'tenant.changed', `the tenant ${named} was made again while the call ran: send the call again`);
     const call: Call = { tenant, current: () => store.get(named), params, body, actor: caller.value.actor, sender: caller.value.sender, now, approvalCheck: deps.approvalCheck, approvalTimeoutMs, identity, trace: draft.trace };
     try {
-      return await route.handle(call);
+      const answer = await route.handle(call);
+      if (call.proposalDigest !== undefined) draft.proposalDigest = call.proposalDigest;
+      return answer;
     } catch (error) {
       if (error instanceof Invalid) return refuse('bad_request', 'body.shape', error.message);
       throw error;
@@ -312,14 +322,22 @@ export function createApp(deps: AppDeps): App {
     draft.host = host;
     if (host === 'other') return refuse('wrong_host', 'host.unknown', 'the Host header names none of the two hosts of this service');
     if (host === 'token' && headerCount(req, 'client-cert') > 0) return refuse('client_certificate_unexpected', 'client_certificate.host', 'the Client-Cert header is valid on the client-certificate host only');
-    if (path === '/admin/tenants') {
-      if (req.method !== 'POST') {
-        draft.allow = 'POST';
-        return refuse('method_not_allowed', 'route.method', 'this path takes POST');
+    const logTenant = ADMIN_LOG_PATH.exec(path)?.[1];
+    if (path === '/admin/tenants' || (logTenant !== undefined && TENANT.test(logTenant))) {
+      const method = logTenant === undefined ? 'POST' : 'GET';
+      if (req.method !== method) {
+        draft.allow = method;
+        return refuse('method_not_allowed', 'route.method', `this path takes ${method}`);
       }
-      draft.route = 'POST /admin/tenants';
+      draft.route = logTenant === undefined ? 'POST /admin/tenants' : 'GET /admin/tenants/{tenant}/log';
       if (host !== 'token') return refuse('wrong_host', 'host.token_only', 'this route is served on the host of tokens, not on the client-certificate host');
-      return adminTenants(req, draft);
+      const authorized = authorizeOperator(req, draft);
+      if (!authorized.ok) return authorized;
+      if (logTenant === undefined) return adminTenants(req, draft);
+      draft.tenant = logTenant;
+      const tenant = store.get(logTenant);
+      if (tenant === undefined) return refuse('tenant_not_found', 'tenant.missing', `there is no tenant ${logTenant}: make it with POST /admin/tenants`);
+      return pass({ status: 200, body: tenant.operatorLogView() });
     }
     return tenantCall(req, draft, path, host);
   }
@@ -363,7 +381,7 @@ export function createApp(deps: AppDeps): App {
     if (draft.kind !== 'health') {
       const line = lineOf(draft, outcome);
       deps.writeLog(JSON.stringify(line));
-      if (draft.kind === 'system' && draft.owner !== null && store.get(draft.owner.id) === draft.owner) draft.owner.log(line);
+      if (draft.kind === 'system' && draft.owner !== null && store.get(draft.owner.id) === draft.owner) draft.owner.log(line, draft.proposalDigest);
     }
     try {
       respond(res, draft, outcome);

@@ -2,10 +2,11 @@
 // the fixtures (a record with an Accountable party that has the suspend right, and a Module-1 party), so that the transaction passes the real identity script and the world moves on when it lands. The
 // keys are the registry of use case 1 (made at run time). Each refusal has an accepted twin. The tool answers are built before the run, from the world as it is then, because a handler is not async.
 import { join } from 'node:path';
-import { rmSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
+import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { describe, expect, it, vi } from 'vitest';
 import { iso } from '../../checks/lib/format.ts';
 import { HostedError } from '../../checks/lib/hosted.ts';
+import { StateFile } from '../../checks/lib/state.ts';
 import { factsOf } from '../../checks/lib/txfacts.ts';
 import { DAY, DEPLOYMENT } from '../../checks/test/support/world.ts';
 import { buildSuspend, buildUnsuspend } from '../../../packages/buyer-core/src/vendored/mcp/identity-build.ts';
@@ -21,6 +22,8 @@ import type { KeySpec, Registry } from '../lib/registry.ts';
 import { runTask } from '../lib/runner.ts';
 import hold from '../tasks/hold.ts';
 import USE from '../usecases/inventory-reorder.ts';
+import UC2 from '../usecases/prior-authorization.ts';
+import UC3 from '../usecases/bid-evaluation.ts';
 import { PackHosted, liveBuildAnswer } from './support/pack-hosted.ts';
 import type { HandlerAnswer } from './support/pack-hosted.ts';
 import { NOW, USE_CASE, hashOf, taskWorld } from './support/task-world.ts';
@@ -602,11 +605,76 @@ describe('the verification', () => {
 });
 
 describe('the status', () => {
+  it.each([USE, UC2, UC3])('reports no saved hold on $name without a key directory, state files or a node call', async (use) => {
+    const w = await taskWorld({ keys: [], use, env: { OPERATOR_USE_CASE: USE.name, OPERATOR_KEYS_DIR: undefined } });
+    const noKeys = vi.fn(() => { throw new Error('read-only status must not load keys'); });
+    const node = vi.spyOn(w.node, 'networkFacts').mockRejectedValue(new Error('read-only status must not read this node'));
+    expect(await runTask(hold, ['status', '--run', 'r1', '--use-case', use.name], w.deps({ readRegistry: noKeys }))).toBe(0);
+    expect(w.screen.lines.join('\n')).toContain('no hold of this pack is recorded in the facts for the run r1; the ledger was not checked for other holds');
+    expect(w.machine()).toMatchObject({ task: 'hold', command: 'status', mode: 'dry', outcome: 'done', exit: 0, step: null, result: {} });
+    expect(noKeys).not.toHaveBeenCalled();
+    expect(node).not.toHaveBeenCalled();
+    expect(existsSync(w.stateDir)).toBe(false);
+  });
+
+  it.each(['matched', 'wrong transaction', 'wrong DID', 'standalone fact'] as const)('reads only an attributed saved subject: %s', async (kind) => {
+    const w = await taskWorld({ keys: [], use: UC2, env: { OPERATOR_USE_CASE: USE.name, OPERATOR_KEYS_DIR: undefined } });
+    mkdirSync(w.stateDir, { mode: 0o700 });
+    const subject = UC2.agents[1]!;
+    const other = UC2.agents[0]!;
+    const id = hashOf('saved hold subject');
+    const otherId = hashOf('other record');
+    const did = `did:vector:${id}`;
+    const tx = hashOf('saved suspend');
+    const pending = hashOf('saved pending lift');
+    const statePath = join(w.stateDir, 'hold.r1.state.json');
+    const state = StateFile.open(statePath, { check: 'hold', network: 'vector-mainnet', record: `${UC2.name}:r1` });
+    const facts = FactsFile.open(join(w.stateDir, 'facts.json'), { useCase: UC2.name, network: 'vector-mainnet' });
+    for (const [name, who] of [[subject.id, id], [other.id, otherId]] as const) {
+      facts.put('records', [name], { did: `did:vector:${who}`, id: who, tx: hashOf(name), recordRef: `${hashOf(name)}#0`, depositLovelace: '10000000', registeredAt: iso(NOW) });
+    }
+    facts.put('holds', ['r1'], { suspendTx: tx, liftTx: null });
+    const accountable = UC2.organisations.find((org) => org.id === subject.organisation)!.accountableKey;
+    const author = 'fa'.repeat(28);
+    if (kind !== 'standalone fact') state.recordStep('suspend', { confirmed_at: iso(NOW), tx_hash: kind === 'wrong transaction' ? hashOf('different suspend') : tx,
+      refs: {}, facts: { agent: subject.id, did: kind === 'wrong DID' ? `did:vector:${otherId}` : did, by: accountable, author }, verified_at: iso(NOW) });
+    const signed = 'synthetic sealed transaction body';
+    state.setInFlight({ step: 'lift', tx_hash: pending, signed_cbor: signed, valid_to: NOW + 60_000, signed_at: NOW, refs: {}, facts: {} });
+    const before = readFileSync(statePath, 'utf8');
+    w.world.chain.held.push(recordUtxo(id, rootRecord({ parties: [keyParty(author, 'Accountable', 3)], status: suspended(alfaHold(author)) })),
+      recordUtxo(otherId, rootRecord()));
+    const noKeys = vi.fn(() => { throw new Error('status must not load signing keys'); });
+    const status = vi.spyOn(w.node, 'txStatus').mockRejectedValue(new Error('status must not settle a transaction'));
+    const node = vi.spyOn(w.node, 'networkFacts');
+    const unit = vi.spyOn(w.chain.provider, 'getUtxoByUnit');
+    expect(await runTask(hold, ['status', '--run', 'r1'], w.deps({ readRegistry: noKeys }))).toBe(0);
+    const text = w.screen.lines.join('\n');
+    expect(text).toContain(`hold of the run r1: suspend ${tx}, lift not done`);
+    expect(text).toContain(`in flight: the step lift, transaction ${pending}`);
+    expect(text).not.toContain(signed);
+    expect(text).not.toContain(otherId);
+    expect(noKeys).not.toHaveBeenCalled();
+    expect(status).not.toHaveBeenCalled();
+    expect(w.node.submitted).toEqual([]);
+    expect(readFileSync(statePath, 'utf8')).toBe(before);
+    expect(existsSync(join(w.stateDir, 'hold.r1.evidence.json'))).toBe(false);
+    if (kind === 'matched') {
+      expect(node).toHaveBeenCalledOnce();
+      expect(unit.mock.calls).toEqual([[`${DEPLOYMENT.identity.hash}${id}`]]);
+      expect(text).toContain(`the record of the agent ${subject.id} (${did}): effective status Suspended; a hold by the key ${accountable}`);
+      expect(text).toContain(`confirmed ${iso(NOW)}, transaction ${tx}, verified`);
+    } else {
+      expect(node).not.toHaveBeenCalled();
+      expect(unit).not.toHaveBeenCalled();
+      expect(text).toContain('the saved suspend and run facts do not identify the same record');
+    }
+  });
+
   it('shows the facts of the hold of the run and the record as the node shows it, with the name of the Accountable key', async () => {
     const h = await world();
     expect(await h.run('status', '--run', 'r2')).toBe(0);
-    expect(h.text()).toContain('no hold of this pack is on for the run r2');
-    expect(h.text()).toContain(`the record of the agent order-desk (${OD_DID}): effective status Active; no hold`);
+    expect(h.text()).toContain('no hold of this pack is recorded in the facts for the run r2');
+    expect(h.text()).not.toContain(`the record of the agent order-desk (${OD_DID})`);
     h.w.screen.lines.length = 0;
     h.go();
     await h.suspendAnswer();

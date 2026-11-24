@@ -332,6 +332,21 @@ describe('requestToken: what the client makes of each answer of the gateway', ()
     expect(await ask(client, agent)).toMatchObject({ ok: false, rule: 'gateway.bad_response', status: 200 });
   });
 
+  it.each([
+    { error: 'invalid_request' },
+    { error_description: 'untrusted diagnostic' },
+    { error_uri: 'https://errors.example/token' },
+    { error: null },
+  ])('rejects OAuth error fields in a 200 answer with token fields', async (errorFields) => {
+    const { gateway, client } = world();
+    const agent = gateway.createAgent({ label: 'mixed answer' });
+    const grant = { access_token: 'a.b.c', token_type: 'DPoP', issued_token_type: 'x', expires_in: 300 };
+    gateway.fault('/token', { status: 200, body: JSON.stringify({ ...grant, ...errorFields }) });
+    expect(await ask(client, agent)).toStrictEqual({
+      ok: false, rule: 'gateway.bad_response', status: 200, error: null, detail: 'the HTTP 200 token response contains OAuth error fields', retryAfterSeconds: null,
+    });
+  });
+
   it('the twin of the bad answers: a good answer in the same form is accepted', async () => {
     const { gateway, client } = world();
     const agent = gateway.createAgent({ label: 'good answer' });

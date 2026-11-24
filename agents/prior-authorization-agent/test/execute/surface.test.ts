@@ -17,10 +17,9 @@ afterEach(() => {
 const OTHER_HASH = '00'.repeat(32);
 
 describe('the surface of the folder', () => {
-  it('exports the job, its refusal, its deadline, its reasons and the change of the justification, and no other value', () => {
-    expect(Object.keys(execute).sort()).toStrictEqual(['EXECUTE_REASONS', 'ExecuteRefusal', 'JOB_DEADLINE_MS', 'alterJustification', 'runExecute']);
+  it('exports only the job, its refusal, its deadline and its reasons', () => {
+    expect(Object.keys(execute).sort()).toStrictEqual(['EXECUTE_REASONS', 'ExecuteRefusal', 'JOB_DEADLINE_MS', 'runExecute']);
     expect(typeof execute.runExecute).toBe('function');
-    expect(typeof execute.alterJustification).toBe('function');
   });
 
   it('has the deadline of 27 minutes', () => {

@@ -2,7 +2,7 @@
 import { CHALLENGE_RESERVE_LOVELACE, CLAIM_STAKE_LOVELACE, CLAIM_WINDOW_MS } from '../lib/claim-constants.ts';
 import type { KeyUse, UseCase } from '../lib/contract.ts';
 import { PRIORAUTH_CAPABILITIES } from '../lib/platform.ts';
-import { ALFA, COLLATERAL, CORE_KEYS, DELTA, DEMONSTRATION_SENTENCE, ECHO, MODULE_MANIFEST_PATH, RUNTIME_COMMIT, line, organisationKeys, partiesOf } from './shared.ts';
+import { ALFA, COLLATERAL, CORE_KEYS, DELTA, DEMONSTRATION_SENTENCE, ECHO, MODULE_MANIFEST_PATH, RESULT_REFS, RESULT_WORDING, RUNTIME_COMMIT, line, organisationKeys, partiesOf } from './shared.ts';
 
 const PRIORAUTH_ENV = '.env.prior-authorization-agent';
 const INTAKE_ENV = '.env.insurer-intake-agent';
@@ -175,60 +175,129 @@ const USE_CASE: UseCase = {
       id: 'r1-01', run: 'clean',
       what: 'The hirer delegates to the Prior Authorization Agent. The agent co-signs. The hirer submits. The hirer issues a principal-binding attestation that names the agent and opens a vault under the delegation.',
       primitive: 'Delegation with a co-signature, attestation: principal binding, vault', actor: 'hirer',
+      proof: { refs: { delegation: 1, attestation: 1, vault: 1, transaction: 3 } },
     },
     {
       id: 'r1-02', run: 'clean',
       what: 'The hirer hires `propose`. The agent sub-delegates the record read and the guideline read to its two subagents, one after the other. Each subagent reads its system with its own token. A model writes the justification. The agent returns the request, the record set hash, the salt and the digest.',
       primitive: 'Escrow, two sub-delegations, token exchange with the delegation chain, model call from the marketplace', actor: 'agent',
+      proof: { refs: { escrow: 2, delegation: 2, transaction: 4 }, projectedRoutes: [
+        ['GET /records/orders/{order_id}', 'token', 'allowed', 2, 1, 200], ['GET /guidelines/{code}', 'token', 'allowed', 2, 1, 200],
+      ] },
     },
-    { id: 'r1-03', run: 'clean', what: 'The hirer approves the digest.', primitive: 'Attestation: approval', actor: 'hirer' },
+    { id: 'r1-03', run: 'clean', what: 'The hirer approves the digest.', primitive: 'Attestation: approval', actor: 'hirer', proof: { refs: RESULT_REFS.approval } },
     {
       id: 'r1-04', run: 'clean', what: 'The hirer hires `execute`. The agent pays the advert of the Insurer Intake Agent from the vault and sends the handoff.',
       primitive: 'Escrow, vault payment, agent hires agent', actor: 'agent',
+      proof: { refs: { escrow: 2, transaction: 3, vault: 1 } },
     },
     {
       id: 'r1-05', run: 'clean',
       what: 'The Insurer Intake Agent checks the handoff before it claims the escrow. It reads and reports the attestations of the sender. A model decides if the request is complete. The agent files the request at the insurer portal with its JWT identity and submits.',
       primitive: 'Pre-claim check, attestation reads, JWT-SVID, model call', actor: 'counterparty',
+      proof: { refs: { escrow: 2, transaction: 1 }, projectedRoutes: [['POST /insurer/requests', 'jwt-svid', 'allowed', 0, 1, 201]] },
     },
     {
       id: 'r1-06', run: 'clean', what: 'The agent checks the receipt and accepts it. It writes the submission reference to the records system with a token and returns.',
       primitive: 'Receipt checks, accept, token for a route', actor: 'agent',
+      proof: {
+        refs: { escrow: 1, transaction: 1 }, projectedRoutes: [['POST /records/orders/{order_id}/submission', 'token', 'allowed', 1, 1, 201]],
+        settlement: { type: 'intake-handoff', executeRole: 'execute', intakeRole: 'intake' },
+      },
     },
-    { id: 'r1-07', run: 'clean', what: 'The hirer closes the vault and ends the delegation.', primitive: 'Vault close, undelegate', actor: 'hirer' },
+    {
+      id: 'r1-07', run: 'clean', what: 'The hirer closes the vault and ends the delegation.',
+      primitive: 'Vault close, undelegate', actor: 'hirer', proof: { refs: RESULT_REFS.close },
+    },
     {
       id: 'r2-d', run: 'failure',
       what: 'The hirer approves a proposal and revokes the approval. The Insurer Intake Agent refuses the handoff from `execute` before it claims the escrow. The escrow returns to the vault. The hirer approves again with a link to the first approval. `execute` goes through.',
       primitive: 'Attestation: revoke and approve again, refusal before the claim, reclaim to a vault', actor: 'hirer',
+      proof: { refs: { attestation: 2, escrow: 3, transaction: 6 } },
     },
     {
       id: 'r2-e', run: 'failure',
       what: 'The hirer approves a second proposal with a short validity period. The hirer lets the approval expire. The Insurer Intake Agent refuses the handoff before it claims the escrow. The escrow returns to the vault.',
       primitive: 'Attestation: approval that ends, refusal before the claim', actor: 'counterparty',
+      proof: { refs: { attestation: 1, escrow: 1, transaction: 2 } },
     },
     {
       id: 'r2-a', run: 'failure',
       what: 'The agent runs with the fault `alter_after_approval`. `execute` changes the request after approval. The Insurer Intake Agent finds that the digest differs. It does not claim the escrow or file a request at the insurer portal.',
       primitive: 'Digest check of an approval, refusal before the claim', actor: 'counterparty',
+      proof: { refs: { escrow: 2, transaction: 2 } },
     },
     {
       id: 'r2-b', run: 'failure', what: 'The Insurer Intake Agent publishes the evidence and challenges the claim of the Prior Authorization Agent.',
       primitive: 'Module-1 challenge', actor: 'counterparty',
+      proof: { refs: { claim: 1, challenge: 1 } },
     },
     {
       id: 'r2-b-hold', run: 'failure', what: 'The jury decides. The Prior Authorization Agent gets a hold of 7 days, reason 64.',
       primitive: 'Module-1 verdict and hold', actor: 'relay',
+      proof: { refs: RESULT_REFS.verdict },
     },
     {
       id: 'r2-c', run: 'failure', what: 'The hirer tries to hire `propose` during the hold. The hosted tool refuses the hire because the agent has no listed advert.',
       primitive: 'Hold removes the agent from the listing', actor: 'hirer',
+      proof: { refs: { hold: 1, transaction: 1 }, refusals: ['projected-tool'], recordFromTransaction: 'hold' },
     },
     {
       id: 'r2-f', run: 'failure',
       what: 'The controller ends the subagents of the agent. Both subagents resolve as revoked. The gateway refuses a token request from a subagent with no delegation.',
       primitive: 'End of the subagents, token refusal', actor: 'operator',
+      proof: { refs: { transaction: 1, did: 2, probe: 2 } },
     },
   ],
+  results: {
+    runPrefix: 'use-case-2',
+    wording: {
+      'Delegation with a co-signature, attestation: principal binding, vault': {
+        shows: 'The delegation, binding attestation and vault link the hirer to the agent.',
+        doesNotShow: 'The private document or salt behind the binding digest.',
+      },
+      'Escrow, two sub-delegations, token exchange with the delegation chain, model call from the marketplace': {
+        shows: 'The evidence links the proposal hire to two delegated reads and the model call for the justification.',
+        doesNotShow: 'That the records or guideline came from real systems, or that the justification is correct.',
+      },
+      'Attestation: approval': RESULT_WORDING.approval,
+      'Escrow, vault payment, agent hires agent': {
+        shows: 'The execute hire led to a vault payment for a separate intake hire.',
+        doesNotShow: 'That the insurer decided to cover the request.',
+      },
+      'Pre-claim check, attestation reads, JWT-SVID, model call': {
+        shows: 'The intake evidence records the checks, the model decision and an allowed filing with a JWT identity.',
+        doesNotShow: 'That the attestations were mandatory or that the request reached a real insurer.',
+      },
+      'Receipt checks, accept, token for a route': {
+        shows: 'The evidence records a completed hire, acceptance of the intake work and an allowed write to the route with a token.',
+        doesNotShow: 'That the write reached a real system. The route is part of a mock service.',
+      },
+      'Vault close, undelegate': RESULT_WORDING.close,
+      'Attestation: revoke and approve again, refusal before the claim, reclaim to a vault': {
+        shows: 'The evidence links the revoked approval to a refusal and reclaim, and the linked approval to the later hire.',
+        doesNotShow: 'That a new approval can change the old one or make it valid again.',
+      },
+      'Attestation: approval that ends, refusal before the claim': {
+        shows: 'The approval had expired when the handoff was refused before the claim.',
+        doesNotShow: 'That an expired approval was the cause of any other refusal.',
+      },
+      'Digest check of an approval, refusal before the claim': {
+        shows: 'Intake refused the changed request before the claim. The mock system records no filing for it.',
+        doesNotShow: 'That the check decides whether the request is medically correct.',
+      },
+      'Module-1 challenge': RESULT_WORDING.challenge,
+      'Module-1 verdict and hold': RESULT_WORDING.verdict,
+      'Hold removes the agent from the listing': {
+        shows: 'The marketplace listing during the hold did not show the held agent.',
+        doesNotShow: 'That the listing will show the advert again after the hold.',
+      },
+      'End of the subagents, token refusal': {
+        shows: 'The evidence ties the end transaction to revoked subagent resolutions and a refused token request.',
+        doesNotShow: 'That a relying party stops accepting a token that it already holds.',
+      },
+    },
+  },
   moduleManifestPath: MODULE_MANIFEST_PATH,
   runtimeCommit: RUNTIME_COMMIT,
   records: [],

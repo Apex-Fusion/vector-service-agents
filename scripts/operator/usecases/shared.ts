@@ -50,3 +50,31 @@ export function partiesOf(organisation: OrganisationSpec): readonly PartySpec[] 
     { role: 'Guardian', signer: { kind: 'key', key: 'controller' }, organisation: null, rights: null },
   ];
 }
+
+/** Reference counts and wording which several cases use without change. */
+export const RESULT_REFS = {
+  hire: { transaction: 2, escrow: 1 },
+  close: { transaction: 2 },
+  approval: { attestation: 1, transaction: 1 },
+  verdict: { case: 1, transaction: 1, hold: 1 },
+  record: { transaction: 1, record: 1 },
+} as const;
+
+export const RESULT_WORDING = {
+  approval: {
+    shows: 'An approval attestation of the hirer is on the ledger. It names the digest of the proposal.',
+    doesNotShow: 'That the hirer read the proposal. The attestation covers the digest only.',
+  },
+  close: {
+    shows: 'The ledger holds the close of the vault and the end of the delegation.',
+    doesNotShow: 'That a system refuses a live token after the end. Tests alone cover that case.',
+  },
+  challenge: {
+    shows: 'The ledger records a challenge and its evidence.',
+    doesNotShow: 'That the challenge is right. The jury decides that.',
+  },
+  verdict: {
+    shows: 'The recorded verdict puts a time-limited hold on the challenged agent.',
+    doesNotShow: 'That another jury decides the same way. The jury result is a sample.',
+  },
+} as const;

@@ -4,8 +4,8 @@
 //   status                                              lists the evidence files and says whether the page exists
 //
 // The page has one table for each run: a row for each step of the data of the use case for the kind of the run, with the primitive that the step used, the reference that the evidence file holds
-// for it, and what the step shows and does not show. The two sentences come from one table of this file, for each primitive of the data. A step counts as shown only when the evidence file holds a
-// reference for it: a step with no reference and a step that did not run say so, and give no reference. The page starts with the text of the header file of the operator, verbatim. That text names
+// for it, and what the step shows and does not show. The use case gives the sentences and the proof for each step. A step counts as shown only when the evidence file satisfies that proof.
+// A step with no reference and a step that did not run say so, and give no reference. The page starts with the text of the header file of the operator, verbatim. That text names
 // the group that the results go to, and the name is in no file of the repository. The page ends with the section "Not covered".
 // A label is the name of an evidence file without `.json`: the file `<state>/evidence/private/<label>.json`, or the file `<state>/evidence/<label>.json` (a public file has the date and the number
 // of the run in its name). Without `--runs` the page takes the public labels only: a private file goes into the page when `--runs` names its label. The header file must lie outside the key folder,
@@ -17,8 +17,10 @@ import type { Dirent, Stats } from 'node:fs';
 import { isAbsolute, join, relative, sep } from 'node:path';
 import { writeFileAtomically } from '../../checks/lib/files.ts';
 import { PreconditionError } from '../../checks/lib/session.ts';
-import type { StepOutcome, TaskDefinition, TaskSession, UseCase } from '../lib/contract.ts';
+import type { ProjectedResultRoute, ResultProof, ResultRefusal, ResultsSpec, StepOutcome, TaskDefinition, TaskSession, UseCase } from '../lib/contract.ts';
 import { codeOf } from '../lib/registry.ts';
+import { MOST_RESULT_REFS, RESULT_STEP_ID, indexResultPolicy, resultRefShape } from '../lib/result-policy.ts';
+import type { ResultStepIndex } from '../lib/result-policy.ts';
 import { FlagError, runSteps } from '../lib/runner.ts';
 import { holdsSecret } from '../lib/secrets.ts';
 
@@ -29,101 +31,19 @@ export const HEADER_LIMIT_BYTES = 8192;
 
 const EVIDENCE_LIMIT_BYTES = 4 * 1024 * 1024;
 const MOST_RUNS = 16;
-const MOST_REFS = 32;
 const MOST_NOTE_CHARS = 2000;
 const LABEL = /^[a-z0-9][a-z0-9-]{0,31}$/;
-const STEP_ID = /^[a-z0-9][a-z0-9-]{0,31}$/;
+const PUBLIC_LABEL = /^(\d{4}-\d{2}-\d{2})-([a-z][a-z0-9-]{0,62})-run-[1-9][0-9]?$/;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const HASH = /^[0-9a-f]{64}$/;
+const OUTPUT_REF = /^[0-9a-f]{64}#(?:0|[1-9]\d{0,5})$/;
+const DID = /^did:vector:[0-9a-f]{64}$/;
 const REF_VALUE = /^[A-Za-z0-9._:#/-]{1,200}$/;
 const REF_KIND = /^[a-z][a-z0-9_-]{0,31}$/;
 /** A line of an env file: a name and an equals sign at the start of a line. A header names a group in plain words, so it holds no such line. */
 const ENV_LINE = /^[A-Za-z_][A-Za-z0-9_]*=/m;
 
-// ---- what each primitive shows and does not show ----
-
-export interface Sentences { readonly shows: string; readonly doesNotShow: string }
-
-/**
- * One entry for each primitive that the data of the use case names (a test holds the keys to the data). `shows` says what a step with a reference proves. `doesNotShow` says what it leaves open. The
- * sentences are short, and they say no more than the reference can prove.
- */
-export const SHOWS: Readonly<Record<string, Sentences>> = {
-  'Delegation with a co-signature': {
-    shows: 'The ledger holds a delegation from the hirer to the agent. The agent co-signed it.',
-    doesNotShow: 'That the agent keeps to the limits of the delegation. The steps with a value limit test that.',
-  },
-  'Vault': {
-    shows: 'The ledger holds a vault under the delegation. The vault holds funds of the hirer.',
-    doesNotShow: 'That the vault refuses a payment above the limit. The steps with a value limit test that.',
-  },
-  'Escrow: post, claim, submit, accept': {
-    shows: 'The hire settled through the escrow. The ledger holds the post, the claim, the submit and the accept.',
-    doesNotShow: 'That the answer of the agent is right. The hirer checks the signed work record.',
-  },
-  'Sub-delegation, token exchange with the delegation chain': {
-    shows: 'The agent gave its subagent one narrow right. The gateway issued a token for a chain of two delegations.',
-    doesNotShow: 'That a token stops working after a delegation ends. Tests alone cover that case.',
-  },
-  'Model call from the marketplace, signed work record': {
-    shows: 'A model from the marketplace made the decision. Its signed work record is on the ledger.',
-    doesNotShow: 'That the decision is right. The model result is a sample, and another run can differ.',
-  },
-  'Attestation: approval': {
-    shows: 'An approval attestation of the hirer is on the ledger. It names the digest of the proposal.',
-    doesNotShow: 'That the hirer read the proposal. The attestation covers the digest only.',
-  },
-  'Escrow': {
-    shows: 'The hire settled through the escrow. The ledger holds each transaction of the escrow.',
-    doesNotShow: 'That the order is right. The steps of the Order Desk show the order.',
-  },
-  'Vault payment, agent hires agent': {
-    shows: 'The agent paid the advert of the Order Desk from the vault of the hirer. The payment is inside the limit.',
-    doesNotShow: 'That a payment above the limit fails. The failure run tests that.',
-  },
-  'Pre-claim check, X.509 SVID, model call': {
-    shows: 'The Order Desk checked the handoff before it claimed the escrow. It proved its identity with an X.509 certificate. A model decided the availability.',
-    doesNotShow: 'That the supplier portal is a real system. The portal is a mock service.',
-  },
-  'Receipt checks, accept, token for a route': {
-    shows: 'The agent ran the receipt checks and accepted the work. It wrote the purchase order with a token for that route.',
-    doesNotShow: 'That the store of purchase orders is a real system. It is a mock service.',
-  },
-  'Vault close, undelegate': {
-    shows: 'The ledger holds the close of the vault and the end of the delegation.',
-    doesNotShow: 'That a system refuses a live token after the end. Tests alone cover that case.',
-  },
-  'Value limit of a vault': {
-    shows: 'The vault script refused a payment above the limit when the node evaluated the transaction.',
-    doesNotShow: 'That the limit suits the hirer. It shows only that the script holds the limit.',
-  },
-  'Module-1 challenge': {
-    shows: 'The agent challenged the claim of the Order Desk. The evidence is on the ledger.',
-    doesNotShow: 'That the challenge is right. The jury decides that.',
-  },
-  'Module-1 verdict and hold': {
-    shows: 'The jury decided. The Order Desk got a hold of 7 days with the reason 64.',
-    doesNotShow: 'That another jury decides the same way. The jury result is a sample.',
-  },
-  'Escrow: release': {
-    shows: 'The release watcher released the escrow after the wait. The supplier got paid.',
-    doesNotShow: 'That a verdict moves escrow funds. A verdict never moves them.',
-  },
-  'Hold removes the agent from the listing': {
-    shows: 'During the hold the marketplace listed no advert of the Order Desk. A new proposal found none.',
-    doesNotShow: 'That the listing returns after the hold. The end-state check reads that.',
-  },
-  'Hold and lift by a party': {
-    shows: 'The Accountable key of the organisation put a hold on the Order Desk and lifted it.',
-    doesNotShow: 'That another party can hold. It shows the Accountable party only.',
-  },
-  'End of a delegation, token refusal': {
-    shows: 'After the hirer ended the delegation, the payment failed. The gateway refused a token request under that delegation.',
-    doesNotShow: 'That a system that holds a live token refuses it after the end. Tests alone cover that case.',
-  },
-};
-
-/** The fixed texts of the page. A test strips these, the table above, the data and the evidence from a page, and finds nothing left. */
+/** The fixed texts of the page. A test strips these, the use case data and the evidence from a page, and finds nothing left. */
 export const PAGE_TEXT = {
   results: 'results',
   intro: 'This page lists the steps of each run. A row names the primitive that the step used and the reference that the evidence file holds for it. A step counts as shown only when the evidence file holds a reference for it. A step that did not run says so and gives its reason.',
@@ -134,14 +54,9 @@ export const PAGE_TEXT = {
   noReason: 'The evidence file gives no reason.',
   noEntry: 'The evidence file has no entry for this step.',
   noReference: 'Not shown. The evidence file holds no reference for this step.',
+  partialReference: 'Not shown in full. The evidence file does not support every part of this step.',
   wholeStep: 'The whole step.',
   notCovered: 'Not covered',
-  notCoveredLead: 'No run covers these three items:',
-  notCoveredItems: [
-    'The refund of the escrow of a revoked agent.',
-    'The reclaim of an escrow by its buyer.',
-    'A relying party that refuses a live token after its authority ended. Tests alone cover this item.',
-  ],
   limitsLead: 'The runs have these limits:',
   limitsItems: [
     'The model decisions are a sample. Another run can decide another way.',
@@ -153,9 +68,20 @@ export const PAGE_TEXT = {
 // ---- the evidence of a run, as the page reads it ----
 
 /** A reference of a step: a plain text (a transaction hash when it is 64 hex characters) or a labelled value (`kind` and `value`). */
-export interface Ref { readonly kind: string | null; readonly value: string }
-export interface EvidenceStep { readonly id: string; readonly status: 'shown' | 'not_run'; readonly refs: readonly Ref[]; readonly note: string }
-export interface PageRun { readonly label: string; readonly kind: string; readonly date: string; readonly steps: ReadonlyMap<string, EvidenceStep> }
+interface Ref { readonly kind: string | null; readonly value: string }
+interface EvidenceStep { readonly id: string; readonly status: 'shown' | 'not_run'; readonly refs: readonly Ref[]; readonly note: string; readonly complete: boolean }
+interface PageRun { readonly label: string; readonly kind: string; readonly date: string; readonly steps: ReadonlyMap<string, EvidenceStep> }
+
+type ResultPolicyData = Pick<UseCase, 'results' | 'runs' | 'evidenceSteps'>;
+type EvidenceCase = ResultPolicyData & Pick<UseCase, 'name' | 'agents'>;
+type ResultsCase = EvidenceCase & Pick<UseCase, 'title' | 'notCovered'>;
+type EvidenceIndex = ResultStepIndex<UseCase['evidenceSteps'][number]>;
+
+function requireResultPolicy(use: ResultPolicyData): EvidenceIndex {
+  const policy = indexResultPolicy(use.results, use.runs, use.evidenceSteps);
+  if (typeof policy === 'string') throw new PreconditionError(`the results policy is not usable: ${policy}`);
+  return policy;
+}
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 
@@ -168,31 +94,198 @@ function refOf(raw: unknown): Ref | null {
   return kind === 'transaction' && !HASH.test(value) ? null : { kind, value };
 }
 
+/** The run record accepts a role followed by one short alphanumeric suffix. */
+function hasHireRole(step: unknown, role: string): boolean {
+  return typeof step === 'string' && (step === role || (step.startsWith(role) && /^-[a-z0-9]{1,8}$/.test(step.slice(role.length))));
+}
+
+/** An escrow must identify one hire. Two entries for one escrow cannot confirm the same action. */
+function hireFor(hires: readonly unknown[], escrow: string): Record<string, unknown> | null {
+  let found: Record<string, unknown> | null = null;
+  for (const hire of hires) {
+    if (!isObject(hire) || hire.escrow_ref !== escrow) continue;
+    if (found !== null) return null;
+    found = hire;
+  }
+  return found;
+}
+
+/** A publishable spend needs the assembler's terminal proof, not an empty Accept or Reclaim field. */
+function releaseOf(refs: readonly Ref[], hires: readonly unknown[], proof: unknown, hireRole: string): boolean {
+  if (!isObject(proof) || Object.keys(proof).length !== 5 || proof.action !== 'Release') return false;
+  const { escrow_ref: escrow, tx, spent_output: spent, at } = proof;
+  if (typeof escrow !== 'string' || !OUTPUT_REF.test(escrow) || typeof tx !== 'string' || !HASH.test(tx)
+      || typeof spent !== 'string' || !OUTPUT_REF.test(spent) || spent === escrow || spent.startsWith(`${tx}#`)
+      || typeof at !== 'number' || !Number.isSafeInteger(at) || at <= 0) return false;
+  if (refs.length !== 2 || !refs.some(({ kind, value }) => kind === 'escrow' && value === escrow)
+      || !refs.some(({ kind, value }) => kind === 'transaction' && value === tx)) return false;
+  const hire = hireFor(hires, escrow);
+  return hire !== null && hasHireRole(hire.step, hireRole) && hire.post_tx === escrow.slice(0, 64)
+    && hire.verdict === 'VERIFIED' && hire.accept_tx === null && hire.reclaim_tx === null;
+}
+
+/** The public assembler proof binds the signed handoff to the independently confirmed Accept without publishing the signed contents. */
+function intakeHandoffOf(refs: readonly Ref[], hires: readonly unknown[], doc: Record<string, unknown>, executeRole: string, intakeRole: string): boolean {
+  const proof = doc.handoff_evidence;
+  if (!isObject(proof) || Object.keys(proof).length !== 7) return false;
+  const { execute_step: executeStep, execute_escrow: executeEscrow, execute_result_sha256: digest,
+    intake_step: intakeStep, intake_escrow: intakeEscrow, signed_acceptance: signed, confirmed_accept_tx: accept } = proof;
+  if (!hasHireRole(executeStep, executeRole) || !hasHireRole(intakeStep, intakeRole) || typeof executeEscrow !== 'string' || !OUTPUT_REF.test(executeEscrow)
+      || typeof intakeEscrow !== 'string' || !OUTPUT_REF.test(intakeEscrow) || intakeEscrow === executeEscrow
+      || typeof digest !== 'string' || !HASH.test(digest) || typeof accept !== 'string' || !HASH.test(accept)
+      || (signed !== 'confirmed' && signed !== 'pending')) return false;
+  if (doc.escrow_ref !== executeEscrow || doc.result_sha256 !== digest || doc.verdict !== 'VERIFIED' || !isObject(doc.result_projection)
+      || doc.result_projection.operation !== executeRole || doc.result_projection.outcome !== 'completed' || doc.result_projection.exit_state !== 'Completed') return false;
+  const execute = hireFor(hires, executeEscrow);
+  const intake = hireFor(hires, intakeEscrow);
+  return execute !== null && execute.step === executeStep && execute.result_sha256 === digest && execute.verdict === 'VERIFIED'
+    && intake !== null && intake.step === intakeStep && intake.verdict === 'VERIFIED' && intake.reclaim_tx === null
+    && typeof intake.result_sha256 === 'string' && HASH.test(intake.result_sha256) && intake.accept_tx === accept
+    && refs.some(({ kind, value }) => kind === 'transaction' && value === accept);
+}
+
+/** The assembler's public links, receipt and check results must agree before a row claims an accepted, completed hire. */
+function settlementOf(settlement: NonNullable<ResultProof['settlement']>, refs: readonly Ref[], doc: Record<string, unknown>): boolean {
+  const hires: unknown[] = Array.isArray(doc.hires) ? doc.hires : [];
+  if (settlement.type === 'release') return releaseOf(refs, hires, doc.release, settlement.hireRole);
+  if (settlement.type === 'intake-handoff') return intakeHandoffOf(refs, hires, doc, settlement.executeRole, settlement.intakeRole);
+  if (settlement.type === 'none-recorded') {
+    const matching = hires.filter((hire) => isObject(hire) && refs.some(({ kind, value }) => kind === 'escrow' && value === hire.escrow_ref));
+    return matching.length === 1 && isObject(matching[0]) && matching[0].accept_tx === null && matching[0].reclaim_tx === null;
+  }
+  if (settlement.type !== 'receipt') return false;
+  const { accept_tx: accept, escrow_ref: escrow, result_sha256: digest, result, receipt, receipt_signature: signature, checks } = doc;
+  if (typeof accept !== 'string' || !HASH.test(accept) || typeof escrow !== 'string' || !OUTPUT_REF.test(escrow)
+      || typeof digest !== 'string' || typeof result !== 'string' || createHash('sha256').update(result).digest('hex') !== digest
+      || !isObject(receipt) || receipt.escrow_ref !== escrow || receipt.response_hash !== digest
+      || typeof signature !== 'string' || !/^[0-9a-f]{128}$/.test(signature) || !isObject(checks)
+      || checks.signature_valid !== 'pass' || checks.response_hash_matches !== 'pass' || checks.escrow_ref_matches !== 'pass' || checks.supplier_key_matches !== 'pass') return false;
+  let body: unknown;
+  try { body = JSON.parse(result); } catch { return false; }
+  if (!isObject(body) || body.outcome !== 'completed' || !isObject(body.handoff)) return false;
+  const { accepted, escrow_ref: handoff } = body.handoff;
+  if (accepted !== 'confirmed' && accepted !== 'pending') return false;
+  if (typeof handoff !== 'string' || !OUTPUT_REF.test(handoff) || handoff === escrow) return false;
+  const carried = hireFor(hires, escrow);
+  const received = hireFor(hires, handoff);
+  if (carried === null || received === null || carried.accept_tx !== accept || carried.reclaim_tx !== null || carried.result_sha256 !== digest) return false;
+  const { step, accept_tx: intakeAccept, reclaim_tx: intakeReclaim, result_sha256: intakeDigest, verdict } = received;
+  if (!hasHireRole(step, settlement.handoffRole)) return false;
+  // The assembler confirms the Accept for this escrow independently of when the result was signed.
+  return verdict === 'VERIFIED' && intakeReclaim === null && typeof intakeDigest === 'string' && HASH.test(intakeDigest)
+    && typeof intakeAccept === 'string' && HASH.test(intakeAccept) && refs.some(({ kind, value }) => kind === 'transaction' && value === intakeAccept);
+}
+
+/** Attribution stays in the assembler. The reader checks its exact step proof against the sanitized events. */
+function projectedRoutesOf(id: string, required: readonly ProjectedResultRoute[], doc: Record<string, unknown>): boolean {
+  if (!Array.isArray(doc.route_evidence) || !isObject(doc.mock) || !Array.isArray(doc.mock.log)) return false;
+  const proofs = (doc.route_evidence as unknown[]).filter((row): row is Record<string, unknown> => isObject(row) && row.step === id);
+  if (proofs.length !== required.length) return false;
+  const log: unknown[] = doc.mock.log;
+  for (const [route, credential, decision, links, count, status] of required) {
+    if (proofs.filter((row) => Object.keys(row).length === 6 && row.route === route && row.credential === credential
+        && row.decision === decision && row.act_links === links && row.count === count).length !== 1) return false;
+    let matched = 0;
+    for (const row of log) {
+      if (isObject(row) && Object.keys(row).length === 5 && row.route === route && row.credential === credential
+          && row.decision === decision && row.status === status && typeof row.at === 'string'
+          && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(row.at) && Number.isFinite(Date.parse(row.at))) matched += 1;
+    }
+    // Distinct verified calls can have identical public timestamps.
+    if (matched < count) return false;
+  }
+  return true;
+}
+
+function refusalMatches(value: unknown, id: string, rule: ResultRefusal, privateSource: boolean): boolean {
+  if (!isObject(value) || value.step !== id) return false;
+  if (rule === 'ledger') {
+    return value.kind === 'ledger' && typeof value.evaluation_error === 'string' && value.evaluation_error.trim() !== ''
+      && typeof value.transaction_body === 'string' && value.transaction_body !== '';
+  }
+  if (value.kind !== 'tool') return false;
+  if (rule === 'tool') return typeof value.message === 'string' && value.message.trim() !== '';
+  const projected = typeof value.message_sha256 === 'string' && HASH.test(value.message_sha256);
+  if (rule === 'projected-tool') return projected;
+  return Object.keys(value).length === 3 && (projected
+    || (privateSource && typeof value.message === 'string' && value.message.trim() !== ''));
+}
+
+function proofOf(proof: ResultProof, id: string, refs: readonly Ref[], doc: Record<string, unknown>, privateSource: boolean): boolean {
+  for (const [kind, count] of Object.entries(proof.refs)) {
+    const shape = resultRefShape(kind);
+    if (shape === undefined) return false;
+    const values = new Set<string>();
+    for (const ref of refs) {
+      if (ref.kind !== kind) continue;
+      const valid = (shape === 'hash' ? HASH : shape === 'did' ? DID : shape === 'text' ? REF_VALUE : OUTPUT_REF).test(ref.value);
+      if (valid) values.add(ref.value);
+    }
+    if (values.size < count) return false;
+  }
+  if (proof.settlement !== undefined && !settlementOf(proof.settlement, refs, doc)) return false;
+  if (proof.projectedRoutes !== undefined && !projectedRoutesOf(id, proof.projectedRoutes, doc)) return false;
+  if (proof.recordFromTransaction && !refs.some(({ kind, value }) => kind === proof.recordFromTransaction && OUTPUT_REF.test(value)
+      && refs.some((one) => one.kind === 'transaction' && one.value === value.slice(0, 64)))) return false;
+  if (proof.refusals !== undefined) {
+    const refusals: unknown[] = Array.isArray(doc.refusals) ? doc.refusals : [];
+    for (const rule of proof.refusals) {
+      if (!refusals.some((value) => refusalMatches(value, id, rule, privateSource))) return false;
+    }
+  }
+  if (proof.routes !== undefined) {
+    const log: unknown[] = isObject(doc.mock) && Array.isArray(doc.mock.log) ? doc.mock.log : [];
+    for (const [route, credential, links, count = 1, decision = 'allowed'] of proof.routes) {
+      const rows = new Set<string>();
+      for (const row of log) {
+        if (!isObject(row) || row.route !== route || row.credential !== credential || row.decision !== decision
+            || (links !== null && (!Array.isArray(row.act) || row.act.length !== links))) continue;
+        rows.add(JSON.stringify([row.at, row.sub, row.delegation, row.act]));
+      }
+      if (rows.size < count) return false;
+    }
+  }
+  return true;
+}
+
 /** The run of an evidence file. A file that is not the evidence of a run of this use case is a PreconditionError that names the file by its label and the rule that it breaks, never a value. */
-export function parseEvidence(value: unknown, label: string, use: Pick<UseCase, 'runs' | 'evidenceSteps'>): PageRun {
+export function parseEvidence(value: unknown, label: string, use: EvidenceCase): PageRun {
+  return parseRun(value, label, use, requireResultPolicy(use), false);
+}
+
+function parseRun(value: unknown, label: string, use: EvidenceCase, policy: EvidenceIndex, privateSource: boolean): PageRun {
   const bad = (rule: string): Error => new PreconditionError(`the evidence file ${label} is not usable: ${rule}`);
   if (!isObject(value)) throw bad('it is not a JSON object');
   const { kind, date, steps } = value;
-  if (typeof kind !== 'string' || !use.runs.some((run) => run.id === kind)) throw bad('kind is not the id of a run of the use case');
+  const allowed = typeof kind === 'string' ? policy.get(kind) : undefined;
+  if (typeof kind !== 'string' || allowed === undefined) throw bad('kind is not the id of a run of the use case');
+  if (value.run !== `${use.results.runPrefix}-${kind}` || (value.use_case !== undefined && value.use_case !== use.name)) {
+    throw bad('run does not name this use case and run kind');
+  }
+  if (typeof value.capability_id !== 'string' || !use.agents.some(({ capability }) => capability === value.capability_id)) {
+    throw bad('its capability is not a capability of this use case');
+  }
   if (typeof date !== 'string' || !DATE.test(date) || Number.isNaN(Date.parse(date))) throw bad('date is not a date of the form YYYY-MM-DD');
   if (!Array.isArray(steps)) throw bad('steps is not a list');
-  const allowed = new Set(use.evidenceSteps.filter((step) => step.run === kind || step.run === 'both').map((step) => step.id));
   const parsed = new Map<string, EvidenceStep>();
   steps.forEach((raw: unknown, index) => {
     const where = `steps[${index}]`;
     if (!isObject(raw)) throw bad(`${where} is not an object`);
     const { id, status, refs, note } = raw;
-    if (typeof id !== 'string' || !STEP_ID.test(id)) throw bad(`${where}.id is not a step id`);
-    if (!allowed.has(id)) throw bad(`${where}.id is not a step of a run of this kind`);
+    if (typeof id !== 'string' || !RESULT_STEP_ID.test(id)) throw bad(`${where}.id is not a step id`);
+    const step = allowed.get(id);
+    if (step === undefined) throw bad(`${where}.id is not a step of a run of this kind`);
     if (parsed.has(id)) throw bad(`${where}.id repeats a step`);
     if (status !== 'shown' && status !== 'not_run') throw bad(`${where}.status is neither shown nor not_run`);
-    if (!Array.isArray(refs) || refs.length > MOST_REFS) throw bad(`${where}.refs is not a list of at most ${MOST_REFS} references`);
+    if (!Array.isArray(refs) || refs.length > MOST_RESULT_REFS) throw bad(`${where}.refs is not a list of at most ${MOST_RESULT_REFS} references`);
     const list = refs.map(refOf);
     if (list.some((ref) => ref === null)) throw bad(`${where}.refs holds a value that is no reference`);
     if (note !== undefined && note !== null && (typeof note !== 'string' || note.length > MOST_NOTE_CHARS)) throw bad(`${where}.note is not a text of at most ${MOST_NOTE_CHARS} characters`);
     const text = typeof note === 'string' ? note : '';
     if (holdsSecret(id) || holdsSecret(text) || list.some((ref) => ref !== null && (holdsSecret(ref.value) || holdsSecret(ref.kind)))) throw bad(`${where} holds a mark of a secret`);
-    parsed.set(id, { id, status, refs: list.filter((ref): ref is Ref => ref !== null), note: text });
+    const refs_ = list.filter((ref): ref is Ref => ref !== null);
+    const complete = status === 'shown' && proofOf(step.proof, id, refs_, value, privateSource);
+    parsed.set(id, { id, status, refs: refs_, note: text, complete });
   });
   if (holdsSecret(label) || holdsSecret(kind) || holdsSecret(date)) throw bad('it holds a mark of a secret');
   return { label, kind, date, steps: parsed };
@@ -208,29 +301,50 @@ function refText(ref: Ref): string {
   return ref.kind === 'transaction' ? link(ref.value) : `${ref.kind} \`${ref.value}\``;
 }
 
-/** The six cells of the row of a step. A step is shown only when the evidence file holds a reference for it. */
-function rowOf(step: UseCase['evidenceSteps'][number], found: EvidenceStep | undefined): string[] {
-  const text = SHOWS[step.primitive];
-  if (text === undefined) throw new PreconditionError(`the table of shows and does not show has no entry for the primitive of the step ${step.id}`);
+/** The six cells of the row of a step. Do not apply the step's full summary to partial evidence. */
+function rowOf(step: UseCase['evidenceSteps'][number], found: EvidenceStep | undefined, wording: ResultsSpec['wording']): string[] {
+  const text = wording[step.primitive]!;
   const head = [step.id, cell(step.what), cell(step.primitive)];
   if (found === undefined) return [...head, PAGE_TEXT.none, `${PAGE_TEXT.notRun} ${PAGE_TEXT.noEntry}`, PAGE_TEXT.wholeStep];
   if (found.status === 'not_run') {
     return [...head, PAGE_TEXT.none, `${PAGE_TEXT.notRun} ${found.note === '' ? PAGE_TEXT.noReason : cell(found.note)}`, PAGE_TEXT.wholeStep];
   }
   if (found.refs.length === 0) return [...head, PAGE_TEXT.none, PAGE_TEXT.noReference, PAGE_TEXT.wholeStep];
-  return [...head, found.refs.map(refText).join('; '), text.shows, text.doesNotShow];
+  const references = found.refs.map(refText).join('; ');
+  if (!found.complete) return [...head, references, PAGE_TEXT.partialReference, PAGE_TEXT.wholeStep];
+  return [...head, references, text.shows, text.doesNotShow];
 }
 
-/** The page: the header, the title, one table for each run, and the section "Not covered". The header comes first and verbatim. */
-export function renderPage(input: { header: string; use: Pick<UseCase, 'title' | 'evidenceSteps'>; runs: readonly PageRun[] }): string {
-  const body: string[] = [`# ${input.use.title}: ${PAGE_TEXT.results}`, '', PAGE_TEXT.intro, ''];
-  for (const run of input.runs) {
+interface ResultsPageInput {
+  readonly header: string;
+  readonly use: ResultsCase;
+  readonly sources: readonly { readonly label: string; readonly value: unknown }[];
+}
+
+/** Check public sources with the selected case policy, then render the page. The header comes first and verbatim. */
+export function renderPage(input: ResultsPageInput): string {
+  const { header, use, sources } = input;
+  const policy = requireResultPolicy(use);
+  if (!Array.isArray(sources)) throw new PreconditionError('the results page has no list of evidence sources');
+  const runs: PageRun[] = [];
+  for (const { label, value } of sources) runs.push(parseRun(value, label, use, policy, false));
+  return renderRuns(header, use, runs, policy);
+}
+
+function renderRuns(header: string, use: ResultsCase, runs: readonly PageRun[], policy: EvidenceIndex): string {
+  const { lead, items } = use.notCovered;
+  const body: string[] = [`# ${use.title}: ${PAGE_TEXT.results}`, '', PAGE_TEXT.intro, ''];
+  for (const run of runs) {
+    const rows = policy.get(run.kind);
+    if (rows === undefined) throw new PreconditionError('the results run has no declared policy');
     body.push(`## ${PAGE_TEXT.run} ${run.label}: ${run.kind}, ${run.date}`, '', `| ${PAGE_TEXT.columns.join(' | ')} |`, `|${PAGE_TEXT.columns.map(() => '---').join('|')}|`);
-    for (const step of input.use.evidenceSteps.filter((spec) => spec.run === run.kind || spec.run === 'both')) body.push(`| ${rowOf(step, run.steps.get(step.id)).join(' | ')} |`);
+    for (const step of rows.values()) {
+      body.push(`| ${rowOf(step, run.steps.get(step.id), use.results.wording).join(' | ')} |`);
+    }
     body.push('');
   }
-  body.push(`## ${PAGE_TEXT.notCovered}`, '', PAGE_TEXT.notCoveredLead, '', ...PAGE_TEXT.notCoveredItems.map((item) => `- ${item}`), '', PAGE_TEXT.limitsLead, '', ...PAGE_TEXT.limitsItems.map((item) => `- ${item}`));
-  return `${input.header}${input.header.endsWith('\n') ? '' : '\n'}\n${body.join('\n')}\n`;
+  body.push(`## ${PAGE_TEXT.notCovered}`, '', lead, '', ...items.map((item) => `- ${item}`), '', PAGE_TEXT.limitsLead, '', ...PAGE_TEXT.limitsItems.map((item) => `- ${item}`));
+  return `${header}${header.endsWith('\n') ? '' : '\n'}\n${body.join('\n')}\n`;
 }
 
 // ---- the files ----
@@ -273,21 +387,34 @@ function readHeader(path: string, keysDir: string): string {
 
 interface Found { readonly label: string; readonly path: string; readonly folder: 'public' | 'private' }
 
+/** The evidence writer uses longer names for public files of some agents. Private labels keep their own limit. */
+function publicLabel(label: string, use: Pick<UseCase, 'agents'>): boolean {
+  const match = PUBLIC_LABEL.exec(label);
+  if (match === null || !use.agents.some(({ id }) => id === match[2])) return false;
+  const day = Date.parse(match[1]!);
+  return Number.isFinite(day) && new Date(day).toISOString().slice(0, 10) === match[1];
+}
+
 /** The evidence files of the state folder by label: the public files of `evidence/` and the private files of `evidence/private/`. A name that is no label, a link and two files with one label are refused. */
-function listEvidence(stateDir: string): Map<string, Found> {
+function listEvidence(stateDir: string, use: Pick<UseCase, 'agents'>): Map<string, Found> {
   const found = new Map<string, Found>();
   for (const folder of ['public', 'private'] as const) {
     const dir = folder === 'public' ? join(stateDir, 'evidence') : join(stateDir, 'evidence', 'private');
-    let entries: Dirent[];
-    try { entries = readdirSync(dir, { withFileTypes: true }); } catch (err) {
+    let entries: Dirent[] | undefined;
+    try {
+      if (lstatSync(dir).isDirectory()) entries = readdirSync(dir, { withFileTypes: true });
+    } catch (err) {
       if (codeOf(err) === 'ENOENT') continue;
       throw new PreconditionError(`the ${folder} evidence folder cannot be read (${codeOf(err)})`);
     }
+    if (entries === undefined) throw new PreconditionError(`the ${folder} evidence folder is not a directory: a link is refused`);
     for (const entry of [...entries].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
       if (entry.name.startsWith('.') || !entry.name.endsWith('.json')) continue;
       if (!entry.isFile()) throw new PreconditionError(`a ${folder} evidence file is not a regular file: a link or a folder is refused`);
       const label = entry.name.slice(0, -'.json'.length);
-      if (!LABEL.test(label)) throw new PreconditionError(`the name of a ${folder} evidence file is no label: a label has 1 to 32 lower-case letters, digits and hyphens`);
+      if (!LABEL.test(label) && !(folder === 'public' && publicLabel(label, use))) {
+        throw new PreconditionError(`the name of a ${folder} evidence file is no label: use a short label or the standard public file name of an agent`);
+      }
       if (found.has(label)) throw new PreconditionError(`two evidence files have the label ${label}: keep one`);
       found.set(label, { label, path: join(dir, entry.name), folder });
     }
@@ -304,13 +431,13 @@ function readEvidence(file: Found): unknown {
   }
 }
 
-function loadRuns(files: ReadonlyMap<string, Found>, wanted: readonly string[] | null, use: UseCase): PageRun[] {
+function loadRuns(files: ReadonlyMap<string, Found>, wanted: readonly string[] | null, use: EvidenceCase, policy: EvidenceIndex): PageRun[] {
   const labels = wanted ?? [...files.values()].filter((file) => file.folder === 'public').map((file) => file.label);
   if (labels.length === 0) throw new PreconditionError('there is no public evidence file: run the task evidence first, or name a private label with --runs');
   const runs = labels.map((label) => {
     const file = files.get(label);
     if (file === undefined) throw new PreconditionError(`there is no evidence file for the label ${label}: the evidence folders hold ${[...files.keys()].join(', ') || 'no file'}`);
-    return parseEvidence(readEvidence(file), label, use);
+    return parseRun(readEvidence(file), label, use, policy, file.folder === 'private');
   });
   return wanted === null ? runs.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : a.label < b.label ? -1 : a.label > b.label ? 1 : 0)) : runs;
 }
@@ -331,9 +458,10 @@ const pageFile = (use: Pick<UseCase, 'name'>): string => join('results', `${use.
 async function produce(session: TaskSession<ResultsExtra>): Promise<StepOutcome> {
   const { extra, use } = session;
   if (extra.headerFile === null) throw new FlagError('--header-file is required: the page names the group that the results go to, and that name comes from a text file of the operator');
+  const policy = requireResultPolicy(use);
   const header = readHeader(extra.headerFile, session.settings.keysDir);
-  const runs = loadRuns(listEvidence(session.settings.stateDir), extra.runs, use);
-  const page = renderPage({ header, use, runs });
+  const runs = loadRuns(listEvidence(session.settings.stateDir, use), extra.runs, use, policy);
+  const page = renderRuns(header, use, runs, policy);
   if (holdsSecret(page)) throw new PreconditionError('the page holds a mark of a secret: it is not shown and not written');
   const bytes = Buffer.byteLength(page, 'utf8');
   const sha256 = createHash('sha256').update(page, 'utf8').digest('hex');
@@ -356,14 +484,16 @@ const results: TaskDefinition<ResultsExtra> = {
   valued: ['header-file', 'runs'],
   needs: { keys: () => [], chain: false, hosted: [], approval: 'never' },
   steps: () => ['run'],
-  parse(_env, _settings, _use, flags) {
+  parse(_env, _settings, use, flags) {
     const headerFile = flags.value('header-file');
     if (headerFile === '') throw new FlagError('--header-file needs the path of a text file');
     const list = flags.value('runs');
     let labels: string[] | null = null;
     if (list !== undefined) {
       labels = list.split(',');
-      if (labels.length > MOST_RUNS || labels.some((label) => !LABEL.test(label))) throw new FlagError(`--runs is a comma list of at most ${MOST_RUNS} labels: each has 1 to 32 lower-case letters, digits and hyphens`);
+      if (labels.length > MOST_RUNS || labels.some((label) => !LABEL.test(label) && !publicLabel(label, use))) {
+        throw new FlagError(`--runs needs at most ${MOST_RUNS} comma-separated labels: short labels or public file names of agents`);
+      }
       if (new Set(labels).size !== labels.length) throw new FlagError('--runs names a label twice');
     }
     return { headerFile: headerFile ?? null, runs: labels, page: null };
@@ -373,7 +503,7 @@ const results: TaskDefinition<ResultsExtra> = {
   async status(session) {
     const where = pageFile(session.use);
     let files: ReadonlyMap<string, Found>;
-    try { files = listEvidence(session.settings.stateDir); } catch (err) { return [`evidence files: cannot list them (${err instanceof Error ? err.message : 'an error'})`]; }
+    try { files = listEvidence(session.settings.stateDir, session.use); } catch (err) { return [`evidence files: cannot list them (${err instanceof Error ? err.message : 'an error'})`]; }
     const labels = [...files.values()].map((file) => `${file.label} (${file.folder})`);
     let page: string;
     try { page = `${where} exists, ${lstatSync(join(session.settings.stateDir, where)).size} bytes`; } catch { page = `${where} does not exist yet`; }

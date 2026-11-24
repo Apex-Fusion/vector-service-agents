@@ -1,12 +1,12 @@
-// agents/prior-authorization-agent/src/execute/fault.ts
+// packages/usecase-kit/src/priorauth/fault.ts
 // The fault `alter_after_approval` of the Prior Authorization Agent (use case 2, prior authorization). With the fault on, the job changes one sentence of the justification after the sign-off: the document that
 // goes to the Insurer Intake Agent is a valid request, and its digest is not the digest that the hirer approved. This file holds the change only. It takes a request and gives a request, and it never sees a job.
 //
 // The rule. A sentence ends at ".", "!" or "?" when white space or the end of the text follows. The LAST sentence of the justification becomes a fixed synthetic sentence. A justification of one sentence
 // becomes that sentence. The result is never equal to the input: a last sentence that is already the fixed sentence becomes the second fixed sentence. The result has at most `MAX_JUSTIFICATION_CHARS` code
 // points: when the new text is too long, the first sentences go until it fits. Every other member of the request stays as it is, so the request parser takes the result.
-import { MAX_JUSTIFICATION_CHARS } from '@vsa/usecase-kit/priorauth';
-import type { PriorAuthRequest } from '@vsa/usecase-kit/priorauth';
+import { MAX_JUSTIFICATION_CHARS } from './request.ts';
+import type { PriorAuthRequest } from './request.ts';
 
 /** The sentence that replaces the last sentence of the justification. */
 export const ALTERED_SENTENCE = 'The patient also reports a fall one week ago.';

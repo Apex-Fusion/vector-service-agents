@@ -879,7 +879,7 @@ const testModule: EvidenceModule = {
   }),
 };
 
-const testStep = { id: 'checked', run: 'both', what: 'check the source', primitive: 'test', actor: 'operator' } as const;
+const testStep = { id: 'checked', run: 'both', what: 'check the source', primitive: 'test', actor: 'operator', proof: { refs: { transaction: 1 } } } as const;
 const secondStep = { ...testStep, id: 'terminal' };
 
 describe('modules of the evidence task', () => {

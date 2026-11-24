@@ -4,9 +4,11 @@
 //   x509   an X.509-SVID as the client certificate, on the client-certificate host only, of an agent whose record names the supplier organisation of the tenant;
 //   jwt    a JWT-SVID, on the host of tokens, of an agent whose record names the insurer organisation of the tenant;
 //   open   none: the route only reads (the state and the log of the tenant);
-//   admin  the operator token (the one route that makes a tenant).
+//   admin  the operator token (the app handles the operator routes).
 // A handler runs after the need was met. It returns a typed decision: a reply with its status, or a refusal. The write rules are in `Tenant` (one order for each purchase order number,
 // one entry for each request number) and in `postRanking` (the approval checks, and the supplier of the top rank).
+import { proposalDigest } from '@vsa/usecase-kit/protocol';
+import type { Digest } from '@vsa/usecase-kit/protocol';
 import { decideApproval } from './approval.ts';
 import type { ApprovalCheck } from './approval.ts';
 import { parseIntake, parsePurchaseOrder, parseRanking, parseSubmission, parseSupplierOrder } from './documents.ts';
@@ -51,6 +53,8 @@ export interface Call {
   readonly approvalTimeoutMs: number;
   readonly identity: IdentityDeps;
   readonly trace: CallTrace;
+  /** Set only by the ranking handler for the operator log, never for the response or the public log. */
+  proposalDigest?: Digest;
 }
 
 export type Handler = (call: Call) => Promise<Outcome<Ok>> | Outcome<Ok>;
@@ -166,7 +170,12 @@ const rankingRoute: Route = {
   async handle(call) {
     const request = parseRanking(call.body, call.tenant.id);
     const by = writer(call);
-    if (request.approval === null) return refuse('approval_not_found', 'approval.missing', 'the ranking came with no approval, and the sourcing record takes only a ranking that its hirer approved');
+    const digest = proposalDigest(request.salt, request.ranking);
+    // A document that has no canonical digest provides no observation. It still follows the existing approval path.
+    if (request.approval === null) {
+      if (digest.ok) call.proposalDigest = digest.value;
+      return refuse('approval_not_found', 'approval.missing', 'the ranking came with no approval, and the sourcing record takes only a ranking that its hirer approved');
+    }
     if (call.sender === null || by.kind !== 'token') throw new Error('the ranking route ran with no verified token');
     const approved = await decideApproval(call.approvalCheck, {
       sender: call.sender, delegation: by.delegation, attestation: request.approval.attestation, issuerDid: request.approval.issuer_did, document: request.ranking, salt: request.salt, atMs: call.now(),
@@ -176,6 +185,7 @@ const rankingRoute: Route = {
     if (!supplier.ok) return supplier;
     if (call.current() !== call.tenant) return refuse('tenant_changed', 'tenant.changed', `the tenant ${call.tenant.id} was made again while the call ran: send the call again`);
     const record = call.tenant.recordRanking({ ...request, approval: request.approval }, by, iso(call));
+    if (digest.ok) call.proposalDigest = digest.value;
     return pass({ status: 201, body: { ranking_id: record.ranking_id, rfq_id: record.rfq_id, top: record.top, recorded_at: record.recorded_at } });
   },
 };
@@ -183,7 +193,7 @@ const rankingRoute: Route = {
 const stateRoute: Route = { id: 'GET /state', method: 'GET', segments: ['state'], need: { kind: 'open' }, handle: (call) => pass({ status: 200, body: call.tenant.state() }) };
 const logRoute: Route = { id: 'GET /log', method: 'GET', segments: ['log'], need: { kind: 'open' }, handle: (call) => pass({ status: 200, body: call.tenant.logView() }) };
 
-/** The routes of a tenant, in the order of the table of the README. `POST /admin/tenants` is not a route of a tenant: the app handles it. */
+/** The routes of a tenant, in the order of the table of the README. The app handles the routes under `/admin`. */
 export const ROUTES: readonly Route[] = [
   stockRoute, poRoute, catalogueRoute, supplierOrderRoute, recordRoute, guidelineRoute, submissionRoute, requirementsRoute, intakeRoute, vendorsRoute, rankingRoute, stateRoute, logRoute,
 ];
