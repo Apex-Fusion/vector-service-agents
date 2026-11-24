@@ -381,8 +381,9 @@ function settlementOf(settlement: NonNullable<StepProof['settlement']>, refs: re
       || checks.signature_valid !== 'pass' || checks.response_hash_matches !== 'pass' || checks.escrow_ref_matches !== 'pass' || checks.supplier_key_matches !== 'pass') return false;
   let body: unknown;
   try { body = JSON.parse(result); } catch { return false; }
-  if (!isObject(body) || body.outcome !== 'completed' || !isObject(body.handoff) || body.handoff.accepted !== 'confirmed') return false;
-  const handoff = body.handoff.escrow_ref;
+  if (!isObject(body) || body.outcome !== 'completed' || !isObject(body.handoff)) return false;
+  const { accepted, escrow_ref: handoff } = body.handoff;
+  if (accepted !== 'confirmed' && accepted !== 'pending') return false;
   if (typeof handoff !== 'string' || !OUTPUT_REF.test(handoff) || handoff === escrow) return false;
   const carried = hires.filter((hire) => isObject(hire) && hire.escrow_ref === escrow);
   const received = hires.filter((hire) => isObject(hire) && hire.escrow_ref === handoff);
@@ -392,6 +393,7 @@ function settlementOf(settlement: NonNullable<StepProof['settlement']>, refs: re
   const role = settlement.counterparty;
   // The run record permits a role followed by one short alphanumeric suffix.
   if (typeof step !== 'string' || (step !== role && !(step.startsWith(role) && /^-[a-z0-9]{1,8}$/.test(step.slice(role.length))))) return false;
+  // The assembler confirms the Accept for this escrow independently of when the result was signed.
   return verdict === 'VERIFIED' && intakeReclaim === null && typeof intakeDigest === 'string' && HASH.test(intakeDigest)
     && typeof intakeAccept === 'string' && HASH.test(intakeAccept) && refs.some(({ kind, value }) => kind === 'transaction' && value === intakeAccept);
 }

@@ -316,7 +316,7 @@ describe('the task results', () => {
       }
     });
 
-    it('requires distinct binding refs, a completed hire, linked receipt checks and an allowed write', () => {
+    it.each(['confirmed', 'pending'] as const)('requires a verified Accept for a signed %s handoff', (accepted) => {
       const refs = [
         { kind: 'delegation', value: tx('delegation id') }, transaction('delegation'), { kind: 'attestation', value: tx('binding id') }, transaction('binding'),
         output('vault', 'open'), transaction('open'),
@@ -326,7 +326,7 @@ describe('the task results', () => {
       const escrow = output('escrow', 'carried hire').value;
       const accept = tx('accept execute');
       const intakeEscrow = output('escrow', 'intake hire').value;
-      const result = JSON.stringify({ outcome: 'completed', handoff: { escrow_ref: intakeEscrow, accepted: 'confirmed' } });
+      const result = JSON.stringify({ outcome: 'completed', handoff: { escrow_ref: intakeEscrow, accepted } });
       const digest = createHash('sha256').update(result).digest('hex');
       const settlement = {
         escrow_ref: escrow, accept_tx: accept, result, result_sha256: digest,
@@ -350,6 +350,9 @@ describe('the task results', () => {
       expect(rowOf(render(refs, [], settlement), 'r1-06')[4]).toBe(PAGE_TEXT.partialReference);
       expect(rowOf(render(refs, write, { ...settlement, hires: settlement.hires.slice(0, 1) }), 'r1-06')[4]).toBe(PAGE_TEXT.partialReference);
       const [execute, intake] = settlement.hires;
+      expect(rowOf(render(refs, write, { ...settlement, hires: [execute, { ...intake, accept_tx: null }] }), 'r1-06')[4]).toBe(PAGE_TEXT.partialReference);
+      expect(rowOf(render(refs, write, { ...settlement, hires: [execute, { ...intake, accept_tx: tx('another accept') }] }), 'r1-06')[4]).toBe(PAGE_TEXT.partialReference);
+      expect(rowOf(render(refs, write, { ...settlement, hires: [execute, { ...intake, verdict: null }] }), 'r1-06')[4]).toBe(PAGE_TEXT.partialReference);
       const unrelated = { ...intake, step: 'intake', escrow_ref: output('escrow', 'other intake').value };
       expect(rowOf(render(refs, write, { ...settlement, hires: [execute, unrelated] }), 'r1-06')[4]).toBe(PAGE_TEXT.partialReference);
       expect(rowOf(render(refs, write, { ...settlement, hires: [execute, { ...intake, step: 'execute-2' }] }), 'r1-06')[4]).toBe(PAGE_TEXT.partialReference);
