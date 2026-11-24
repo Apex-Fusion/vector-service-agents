@@ -860,6 +860,20 @@ async function delegation(c: Ctx) {
   return { built, live, plan };
 }
 
+/**
+ * The same transaction without the member total_collateral (key 17) of its body, as a body that has no collateral return has it. The body is a CBOR map of fewer than 24 members behind the array
+ * of four items of a transaction, so its count is in the second byte. The member that goes is the key 17 with the number of 5 units.
+ */
+function withoutTotalCollateral(txCbor: string): string {
+  const member = '111a004c4b40';
+  const count = Number.parseInt(txCbor.slice(2, 4), 16) - 0xa0;
+  const at = txCbor.indexOf(member);
+  if (factsOf(txCbor).totalCollateral !== 5_000_000n || !txCbor.startsWith('84') || count < 1 || count > 23 || at < 0 || at % 2 !== 0 || txCbor.indexOf(member, at + 2) !== -1) {
+    throw new Error('the test cannot cut the total collateral out: the transaction is not an array of four items with a map of fewer than 24 members and a total collateral of 5 units');
+  }
+  return `84${(0xa0 + count - 1).toString(16)}${txCbor.slice(4, at)}${txCbor.slice(at + member.length)}`;
+}
+
 const REGISTER_ARGS = (): Record<string, unknown> => ({ changeAddress: walletOf('run'), controller: keyOf(CONTROLLER_N).publicKeyHex, name: 'a test agent', parties: [{ role: 'Accountable', signer: 'controller' }] });
 const OPEN_ARGS = (): Record<string, unknown> => ({ changeAddress: walletOf('run'), did: 'did:vector:test', capabilities: ['test.capability.v1'] });
 
@@ -947,6 +961,29 @@ describe('landHosted', () => {
     untouched(c);
     expect(c.screen.lines).toEqual([]);
   });
+  it('refuses a hosted list of required signers that is not the keys that the bytes need: no signer, one more key and one key less', async () => {
+    const lists: Array<[string, readonly string[]]> = [['no signer', []], ['one more key of the registry', [RUN_HASH, keyOf(KEY_N.service).keyHash]]];
+    for (const [label, signers] of lists) {
+      const c = await context({ throwing: true });
+      const err = await refusal(landHosted(c.host, (await opening(c, { signers })).spec));
+      expect(guardsOf(err), label).toEqual(['signers']);
+      expect((err as GuardRefusal).message, label).toContain('the tool lists the required signers');
+      untouched(c);
+      unreserved(c);
+    }
+    // The bytes of a delegation need the run key and the service key, and this answer lists the run key only.
+    const less = await context({ throwing: true });
+    const { live, plan } = await delegation(less);
+    less.hosted.handlers.vector_build_identity_register = () => liveBuildAnswer('Delegation', { ...live, requiredSigners: live.requiredSigners.filter((signer) => signer.keyHash === RUN_HASH) });
+    const err = await refusal(landHosted(less.host, { step: 'delegate', tool: 'vector_build_identity_register', args: REGISTER_ARGS(), expectSigners: ['run', 'service'], plan }));
+    expect(guardsOf(err)).toEqual(['signers']);
+    expect((err as GuardRefusal).message).toContain('missing service');
+    untouched(less);
+    unreserved(less);
+    // The twin: the list that is the keys that the bytes need lands.
+    const ok = await context();
+    expect((await landHosted(ok.host, (await opening(ok, { signers: [RUN_HASH] })).spec)).kind).toBe('landed');
+  });
   it('refuses a required signer that the answer lists and that the registry does not hold, and lands the same answer without it', async () => {
     const outsider = 'dd'.repeat(28);
     const c = await context({ throwing: true });
@@ -1008,23 +1045,31 @@ describe('landHosted', () => {
     const collateral = bytes.totalCollateral ?? 5_000_000n - (bytes.collateralReturn?.lovelace ?? 0n);
     expect(c.exposure.total()).toBe(collateral > net ? collateral : net);
   });
-  it('refuses a script transaction whose collateral input the node does not return, before any signature, and lands it when the node returns every input', async () => {
-    // The undelegation spends the delegation output only, so its collateral input is an output of the run wallet that it does not spend.
-    const c = await context();
+  /**
+   * A delegation that landed, and its undelegation as a spec for `landBuilt`. The undelegation spends the delegation output only, so its collateral input is an output of the run wallet that it does
+   * not spend. `edit` may change the bytes of the undelegation.
+   */
+  async function undelegation(c: Ctx, edit: (txCbor: string) => string = (txCbor) => txCbor) {
     const delegated = await delegation(c);
     await landBuilt(c.host, { step: 'delegate', built: builtDelegation(delegated), expectSigners: ['run', 'service'], plan: delegated.plan });
     const run = keyOf(KEY_N.run);
-    const undelegated = await buildUndelegate({ lucid: await lucidForAddress(c.world.chain, run.address), provider: c.world.chain, deployment: DEPLOYMENT }, {
+    const built = await buildUndelegate({ lucid: await lucidForAddress(c.world.chain, run.address), provider: c.world.chain, deployment: DEPLOYMENT }, {
       changeAddress: run.address, nowMs: NOW, id: delegated.built.id, signer: run.keyHash,
     });
-    const bytes = factsOf(undelegated.txCbor);
+    const txCbor = edit(built.txCbor);
+    const bytes = factsOf(txCbor);
     expect(bytes.runsScripts).toBe(true);
     expect(bytes.collateralInputs.length).toBeGreaterThan(0);
     expect(bytes.collateralInputs.some((ref) => bytes.inputs.includes(ref))).toBe(false);
     const spec: BuiltLandSpec = {
-      step: 'undelegate', built: builtDelegation({ built: undelegated }), expectSigners: ['run'],
+      step: 'undelegate', built: { unsignedCbor: txCbor, txHash: bytes.txHash, feeLovelace: bytes.feeLovelace, validTo: built.validTo }, expectSigners: ['run'],
       plan: () => planOf(c.host, { outflow: { run: FEE_LIMIT }, explained: [`${delegated.built.txHash}#${delegated.built.outputIndex}`], mint: { [`${DEPLOYMENT.delegation.hash}${delegated.built.id}`]: -1n } }),
     };
+    return { bytes, spec };
+  }
+  it('refuses a script transaction whose collateral input the node does not return, before any signature, and lands it when the node returns every input', async () => {
+    const c = await context();
+    const { bytes, spec } = await undelegation(c);
     const read = c.node.resolveInputs.bind(c.node);
     c.node.resolveInputs = async (refs) => read(refs.filter((ref) => !bytes.collateralInputs.includes(ref)));
     const signed = c.events.filter((event) => event === 'sign').length;
@@ -1042,6 +1087,23 @@ describe('landHosted', () => {
     // The undelegation spends nothing of the registry, and a failure of its scripts takes the collateral: that is what the cap counts.
     expect(bytes.totalCollateral).not.toBeNull();
     expect(c.exposure.total()).toBe(reserved + (bytes.totalCollateral ?? 0n));
+  });
+  it('counts the collateral of a script transaction that names no total collateral from the collateral inputs that the node gave, and refuses it when the node does not give them', async () => {
+    const c = await context();
+    const { bytes, spec } = await undelegation(c, withoutTotalCollateral);
+    expect(bytes.totalCollateral).toBeNull();
+    const pledged = bytes.collateralInputs.reduce((sum, ref) => sum + (c.world.chain.find(ref)?.assets.lovelace ?? 0n), 0n);
+    const taken = pledged - (bytes.collateralReturn?.lovelace ?? 0n);
+    expect(taken).toBeGreaterThan(0n);
+    const reserved = c.exposure.total();
+    const read = c.node.resolveInputs.bind(c.node);
+    c.node.resolveInputs = async (refs) => read(refs.filter((ref) => !bytes.collateralInputs.includes(ref)));
+    const err = await refusal(landBuilt(c.host, spec));
+    expect(guardsOf(err)).toEqual(['inputs']);
+    expect(c.exposure.total()).toBe(reserved);
+    c.node.resolveInputs = read;
+    expect((await landBuilt(c.host, spec)).kind).toBe('landed');
+    expect(c.exposure.total()).toBe(reserved + taken);
   });
   it('calls beforeSign with the build in a submit run, and a throw stops the run before any signature', async () => {
     const c = await context({ throwing: true });

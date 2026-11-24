@@ -148,22 +148,26 @@ async function requireValidityEnd(host: LandHost, step: string, facts: TxFacts, 
 }
 
 /**
- * The keys that sign must be exactly the keys that the step names. The keys that sign are the required signers that a hosted answer lists and the keys that the bytes need (the required
- * signers of the body and the owner of each input). A key more or a key less refuses the step, and so does a key that the registry does not hold. The message names both sets.
+ * The keys that sign are the keys that the bytes need: the required signers of the body and the owner of each input. They must be exactly the keys that the step names. A hosted answer lists its
+ * required signers too, and that list must be exactly the keys that the bytes need: a tool that lists more keys or fewer keys than the bytes need is wrong about its own build. A key more or a key
+ * less refuses the step, and so does a key that the registry does not hold. The message names both sets.
  */
 function requireSigners(host: LandHost, core: Core, facts: TxFacts, utxos: readonly Utxo[]): void {
   const read = new Set(utxos.map(refOf));
   const unread = [...facts.inputs.map((ref) => ({ ref, kind: 'input' })), ...facts.collateralInputs.map((ref) => ({ ref, kind: 'collateral input' }))].find(({ ref }) => !read.has(ref));
   if (unread !== undefined) throw refuse(core.step, 'inputs', `the ${unread.kind} ${unread.ref} could not be read from the node, so the keys that sign and the net outflow cannot be told`);
-  const signing = new Set([...neededSigners(facts, utxos), ...core.listed]);
-  const expected = new Set(core.expectSigners.map((name) => host.registry.hashOf(name)));
-  const extra = [...signing].filter((hash) => !expected.has(hash));
-  const missing = [...expected].filter((hash) => !signing.has(hash));
-  if (extra.length === 0 && missing.length === 0) return;
   const named = (hash: string): string => host.registry.nameOfHash(hash) ?? `a key that is not in the registry (${hash})`;
   const list = (hashes: Iterable<string>): string => [...hashes].map(named).sort().join(', ') || 'none';
-  const problems = [extra.length > 0 ? `extra ${list(extra)}` : '', missing.length > 0 ? `missing ${list(missing)}` : ''].filter((part) => part !== '');
-  throw refuse(core.step, 'signers', `the keys that sign are ${list(signing)}, and the step expects ${list(expected)}: ${problems.join('; ')}`);
+  const compare = (have: ReadonlySet<string>, haveText: string, want: ReadonlySet<string>, wantText: string): void => {
+    const extra = [...have].filter((hash) => !want.has(hash));
+    const missing = [...want].filter((hash) => !have.has(hash));
+    if (extra.length === 0 && missing.length === 0) return;
+    const problems = [extra.length > 0 ? `extra ${list(extra)}` : '', missing.length > 0 ? `missing ${list(missing)}` : ''].filter((part) => part !== '');
+    throw refuse(core.step, 'signers', `${haveText} ${list(have)}, and ${wantText} ${list(want)}: ${problems.join('; ')}`);
+  };
+  const needed = new Set(neededSigners(facts, utxos));
+  if (core.listed !== null) compare(new Set(core.listed), 'the tool lists the required signers', needed, 'the bytes need the signatures of');
+  compare(needed, 'the keys that sign are', new Set(core.expectSigners.map((name) => host.registry.hashOf(name))), 'the step expects');
 }
 
 /**
@@ -222,8 +226,8 @@ interface Core {
   readonly step: string;
   readonly built: BuiltLandSpec['built'];
   readonly expectSigners: readonly string[];
-  /** The key hashes that a hosted answer lists as required signers. */
-  readonly listed: readonly string[];
+  /** The key hashes that a hosted answer lists as required signers, or null for a transaction that was built in process. */
+  readonly listed: readonly string[] | null;
   readonly plan: (facts: TxFacts) => StepPlan | Promise<StepPlan>;
   readonly beforeSign: ((facts: TxFacts) => Promise<void>) | undefined;
   readonly refs: ((facts: TxFacts) => Record<string, string>) | undefined;
@@ -269,7 +273,7 @@ async function landCore(host: LandHost, core: Core): Promise<Landed> {
  */
 export async function landBuilt(host: LandHost, spec: BuiltLandSpec): Promise<Landed> {
   return landCore(host, {
-    step: spec.step, built: spec.built, expectSigners: spec.expectSigners, listed: [], plan: spec.plan, beforeSign: spec.beforeSign, refs: spec.refs, record: spec.facts, notes: spec.notes,
+    step: spec.step, built: spec.built, expectSigners: spec.expectSigners, listed: null, plan: spec.plan, beforeSign: spec.beforeSign, refs: spec.refs, record: spec.facts, notes: spec.notes,
     irreversible: spec.irreversible, build: null,
   });
 }
