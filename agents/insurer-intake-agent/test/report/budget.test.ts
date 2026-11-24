@@ -91,7 +91,7 @@ describe('a Provider read that never answers', () => {
     const r = rig({ ports: replacing('providerKeyHashOf', FAILURES['never answers']) });
     expect(await go(r)).toEqual({ provenance: 'unreadable', software: 'unreadable', principal_binding: 'valid' });
     expect(spent(r)).toBe(READ_BUDGET_MS);
-    expect(r.calls.provider).toEqual([SENDER]);
+    expect(r.calls.provider).toEqual([{ sender: SENDER, atMs: INPUT.atMs }]);
   });
 });
 

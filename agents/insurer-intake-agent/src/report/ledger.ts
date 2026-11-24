@@ -5,8 +5,8 @@
 //   list               the attestations about the sender of one type, as rows. The page is the largest page of the reader. A list that is cut short throws, because the rows that are left out could be the
 //                      rows of the expected issuer: a list that is not whole is a source that was read in part, and the report never reads it as `absent`.
 //   check              the rule of the registry at the time, and the expectation of the report: the type, the subject and the issuer.
-//   providerKeyHashOf  the key hash of the signer of the first Provider party of the record of the sender. A record that cannot be found throws. Null is only a record with no Provider party that names a key
-//                      (a script or the controller set signs for no attestation).
+//   providerKeyHashOf  the key hash of the signer of the first Provider party of the record of the sender that is in force at the time and that a key signs for. A record that cannot be found throws. Null is
+//                      only a record with no such party: a party that has ended or has not started, and a party that a script or the controller set signs for, do not count (they sign for no attestation).
 //   rootDelegatorOf    the delegator of the last link of the chain of the delegation. A chain that is empty, or that does not end at a root (a parent was ended), has no root delegator: null.
 //
 // A read that fails throws. The report reads a throw as a source that cannot be read, and never as an empty list, a record with no Provider, a delegation with no root or an attestation that is not valid.
@@ -49,11 +49,15 @@ export function ledgerReportDeps(env: LedgerEnv, options: { readonly clock: Cloc
       return checked.valid;
     },
 
-    async providerKeyHashOf(sender) {
+    async providerKeyHashOf(sender, atMs) {
+      if (!Number.isSafeInteger(atMs) || atMs < 0) throw new TypeError('the time of the check must be a whole number of milliseconds since 1970');
       const found = await withinBudget(env, (inside) => findRecord(inside.provider, inside.deployment, agentIdOf(sender)));
       if (found === null) throw new Error('the registry holds no record of the sender');
-      const provider = found.record.parties.find((party) => party.role === 'Provider');
-      return provider !== undefined && provider.signer.type === 'KeyHash' ? provider.signer.hash : null;
+      // The Provider is the first party that a key signs for and that is in force at the time: its start is not after the time, and it has no end or its end is not before the time.
+      for (const party of found.record.parties) {
+        if (party.role === 'Provider' && party.signer.type === 'KeyHash' && party.notBefore <= atMs && (party.notAfter === null || atMs <= party.notAfter)) return party.signer.hash;
+      }
+      return null;
     },
 
     async rootDelegatorOf(delegation): Promise<ReportRoot | null> {

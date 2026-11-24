@@ -5,14 +5,15 @@
 import { describe, expect, it } from 'vitest';
 import { systemClock } from '@vsa/usecase-kit/access';
 import { didOfAgentId } from '@vsa/usecase-kit/protocol';
+import type { Party } from '@vsa/vector-read/identity-codec';
 import { CAPTURE_MS, DAY, callsTo, delegation, delegationUtxo } from '../../../../packages/buyer-core/test/fixtures/ledger-read-world.ts';
 import type { LedgerWorld } from '../../../../packages/buyer-core/test/fixtures/ledger-read-world.ts';
 import { ledgerReportDeps, reportAttestations } from '../../src/report/index.ts';
 import type { AttestationReport, ReportDeps, ReportExpectation, ReportInput, ReportRow } from '../../src/report/index.ts';
 import { ALL_VALID, DELEGATION, MEMBER_ID, OTHER_ID, SENDER, idOf } from './support.ts';
 import {
-  DownProvider, HOUR, MEMBER_KEY, MIDDLE_ID, NOW, PARENT_LINK, PROVIDER_KEY, ROOT_KEY, SENDER_ID, STRANGER_KEY, SilentProvider, agentRootLink, attestationAbout, goodWorld, keyRootLink, link,
-  memberRecord, providerParty, senderRecord, withNode, worldOf,
+  DownProvider, EX_PROVIDER_KEY, HOUR, MEMBER_KEY, MIDDLE_ID, NOW, PARENT_LINK, PROVIDER_KEY, ROOT_KEY, SENDER_ID, STRANGER_KEY, SilentProvider, agentRootLink, attestationAbout, goodWorld, keyRootLink,
+  link, memberRecord, providerParty, senderRecord, withNode, worldOf,
 } from './world.ts';
 import type { Output } from './world.ts';
 
@@ -66,35 +67,79 @@ describe('rootDelegatorOf', () => {
 });
 
 describe('providerKeyHashOf', () => {
+  /** The key hash that the port gives for a record of the sender with `parties`, at the time `atMs`. */
+  const providerAt = (parties: readonly Party[], atMs = NOW): Promise<string | null> => depsOf(worldOf([senderRecord(parties)])).providerKeyHashOf(SENDER, atMs);
+
   it('gives the key hash of the signer of the Provider party of the record of the sender', async () => {
-    expect(await depsOf(worldOf([senderRecord([providerParty()])])).providerKeyHashOf(SENDER)).toBe(PROVIDER_KEY.keyHash);
+    expect(await providerAt([providerParty()])).toBe(PROVIDER_KEY.keyHash);
   });
 
-  it('gives the first Provider party when the record has two, and finds it after the parties of other roles', async () => {
+  it('gives the first Provider party in force when the record has two, and finds it after the parties of other roles', async () => {
     const other = providerParty({ type: 'KeyHash', hash: STRANGER_KEY.keyHash });
-    expect(await depsOf(worldOf([senderRecord([providerParty(), other])])).providerKeyHashOf(SENDER)).toBe(PROVIDER_KEY.keyHash);
-    expect(await depsOf(worldOf([senderRecord([{ ...other, role: 'Responsible' }, { ...other, role: 'Guardian' }, providerParty()])])).providerKeyHashOf(SENDER)).toBe(PROVIDER_KEY.keyHash);
+    expect(await providerAt([providerParty(), other])).toBe(PROVIDER_KEY.keyHash);
+    expect(await providerAt([{ ...other, role: 'Responsible' }, { ...other, role: 'Guardian' }, providerParty()])).toBe(PROVIDER_KEY.keyHash);
   });
 
   it('gives null for a record with no Provider party', async () => {
-    expect(await depsOf(worldOf([senderRecord([])])).providerKeyHashOf(SENDER)).toBeNull();
-    expect(await depsOf(worldOf([senderRecord([{ ...providerParty(), role: 'Responsible' }])])).providerKeyHashOf(SENDER)).toBeNull();
+    expect(await providerAt([])).toBeNull();
+    expect(await providerAt([{ ...providerParty(), role: 'Responsible' }])).toBeNull();
   });
 
   it.each([
     ['a script', { type: 'Script', hash: PROVIDER_KEY.keyHash }],
     ['the controller set', { type: 'ControllerSet' }],
   ] as const)('gives null for a Provider party whose signer is %s: it names no key, so no attestation can be of it', async (_name, signer) => {
-    expect(await depsOf(worldOf([senderRecord([providerParty(signer)])])).providerKeyHashOf(SENDER)).toBeNull();
+    expect(await providerAt([providerParty(signer)])).toBeNull();
   });
 
-  it('throws for a record that cannot be found: null is only a record with no Provider party', async () => {
-    await expect(depsOf(worldOf([])).providerKeyHashOf(SENDER)).rejects.toThrow();
-    await expect(depsOf(worldOf([senderRecord([providerParty()])])).providerKeyHashOf(didOfAgentId(idOf(0xbeef)))).rejects.toThrow();
+  it.each([
+    ['a script', { type: 'Script', hash: PROVIDER_KEY.keyHash }],
+    ['the controller set', { type: 'ControllerSet' }],
+  ] as const)('is not hidden by a Provider party that %s signs for: the party that a key signs for counts, whatever its place in the list', async (_name, signer) => {
+    expect(await providerAt([providerParty(signer), providerParty()])).toBe(PROVIDER_KEY.keyHash);
+    expect(await providerAt([providerParty(), providerParty(signer)])).toBe(PROVIDER_KEY.keyHash);
+  });
+
+  it('gives the Provider party that is in force at the time: a Provider whose term ended does not count, and the Provider that follows it does', async () => {
+    const parties = [
+      providerParty({ type: 'KeyHash', hash: EX_PROVIDER_KEY.keyHash }, { notAfter: CAPTURE_MS - 10 * DAY }),
+      providerParty(undefined, { notBefore: CAPTURE_MS - 9 * DAY }),
+    ];
+    expect(await providerAt(parties, NOW)).toBe(PROVIDER_KEY.keyHash);
+    expect(await providerAt(parties, CAPTURE_MS - 20 * DAY)).toBe(EX_PROVIDER_KEY.keyHash);
+    expect(await providerAt(parties, CAPTURE_MS - 9 * DAY - 12 * HOUR)).toBeNull();
+  });
+
+  it('does not count a Provider whose term has not started, and counts the Provider in force next to it', async () => {
+    const future = providerParty({ type: 'KeyHash', hash: EX_PROVIDER_KEY.keyHash }, { notBefore: NOW + DAY });
+    expect(await providerAt([future])).toBeNull();
+    expect(await providerAt([future, providerParty()])).toBe(PROVIDER_KEY.keyHash);
+    expect(await providerAt([future], NOW + DAY)).toBe(EX_PROVIDER_KEY.keyHash);
+  });
+
+  it('takes the bounds of a term as inclusive: the Provider is in force at the first and at the last instant of its term, and not a millisecond before or after', async () => {
+    const term = [providerParty(undefined, { notBefore: NOW, notAfter: NOW + HOUR })];
+    expect(await providerAt(term, NOW - 1)).toBeNull();
+    expect(await providerAt(term, NOW)).toBe(PROVIDER_KEY.keyHash);
+    expect(await providerAt(term, NOW + HOUR)).toBe(PROVIDER_KEY.keyHash);
+    expect(await providerAt(term, NOW + HOUR + 1)).toBeNull();
+  });
+
+  it('throws for a time that is no whole number, with no read of the node: such a time would read as a time with no Provider in force', async () => {
+    const world = worldOf([senderRecord([providerParty()])]);
+    for (const atMs of [Number.NaN, Number.POSITIVE_INFINITY, -1, 1.5, '5', null, undefined]) {
+      await expect(depsOf(world).providerKeyHashOf(SENDER, atMs as never)).rejects.toThrow(TypeError);
+    }
+    expect(world.provider.scans).toEqual([]);
+  });
+
+  it('throws for a record that cannot be found: null is only a record with no Provider party in force', async () => {
+    await expect(depsOf(worldOf([])).providerKeyHashOf(SENDER, NOW)).rejects.toThrow();
+    await expect(depsOf(worldOf([senderRecord([providerParty()])])).providerKeyHashOf(didOfAgentId(idOf(0xbeef)), NOW)).rejects.toThrow();
   });
 
   it('throws when the node cannot be read', async () => {
-    await expect(depsOf(withNode(worldOf([senderRecord([providerParty()])]), { provider: new DownProvider([]) })).providerKeyHashOf(SENDER)).rejects.toThrow();
+    await expect(depsOf(withNode(worldOf([senderRecord([providerParty()])]), { provider: new DownProvider([]) })).providerKeyHashOf(SENDER, NOW)).rejects.toThrow();
   });
 });
 
@@ -262,8 +307,12 @@ describe('the report over the real readers', () => {
     });
   });
 
-  describe('a sender with no Provider party, or with no record', () => {
-    it('is absent for the provenance and the software attestation, with no list for them', async () => {
+  describe('the Provider of the sender', () => {
+    // The first Provider ended its term ten days before the capture. The second began its term nine days before it.
+    const ended = providerParty({ type: 'KeyHash', hash: EX_PROVIDER_KEY.keyHash }, { notAfter: CAPTURE_MS - 10 * DAY });
+    const current = providerParty(undefined, { notBefore: CAPTURE_MS - 9 * DAY });
+
+    it('is absent for the provenance and the software attestation when the record has no Provider party, with no list for them', async () => {
       const world = worldOf(goodWorld({ record: senderRecord([]) }));
       expect(await reportIn(world)).toEqual({ provenance: 'absent', software: 'absent', principal_binding: 'valid' });
       expect(callsTo(world.koios, 'credential_utxos').length).toBe(1);
@@ -272,6 +321,41 @@ describe('the report over the real readers', () => {
     it('is absent for a Provider party that names a script', async () => {
       const record = senderRecord([providerParty({ type: 'Script', hash: PROVIDER_KEY.keyHash })]);
       expect(await reportOn(goodWorld({ record }))).toEqual({ ...ALL_VALID, provenance: 'absent', software: 'absent' });
+    });
+
+    it.each([
+      ['a script', { type: 'Script', hash: PROVIDER_KEY.keyHash }],
+      ['the controller set', { type: 'ControllerSet' }],
+    ] as const)('is read for the key Provider that follows a Provider that %s signs for: the first party does not hide it', async (_name, signer) => {
+      expect(await reportOn(goodWorld({ record: senderRecord([providerParty(signer), providerParty()]) }))).toEqual(ALL_VALID);
+    });
+
+    it('counts the Provider in force and not a Provider whose term ended: an attestation of the ended Provider is absent, and the same record is valid with an attestation of the current one', async () => {
+      const record = senderRecord([ended, current]);
+      const byEnded = { provenance: attestationAbout(1, EX_PROVIDER_KEY).utxo, software: attestationAbout(2, EX_PROVIDER_KEY).utxo };
+      expect(await reportOn(goodWorld({ record, ...byEnded }))).toEqual({ ...ALL_VALID, provenance: 'absent', software: 'absent' });
+      expect(await reportOn(goodWorld({ record }))).toEqual(ALL_VALID);
+    });
+
+    it('counts the first Provider at a time inside its term, and not the Provider that follows it', async () => {
+      const atMs = CAPTURE_MS - 20 * DAY;
+      const issuedAt = CAPTURE_MS - 25 * DAY;
+      const record = senderRecord([ended, current]);
+      const byEnded = { provenance: attestationAbout(1, EX_PROVIDER_KEY, { issuedAt }).utxo, software: attestationAbout(2, EX_PROVIDER_KEY, { issuedAt }).utxo };
+      const report = await reportIn(worldOf(goodWorld({ record, ...byEnded })), [], { ...INPUT, atMs });
+      expect(report.provenance).toBe('valid');
+      expect(report.software).toBe('valid');
+      const byCurrent = { provenance: attestationAbout(1, PROVIDER_KEY, { issuedAt }).utxo, software: attestationAbout(2, PROVIDER_KEY, { issuedAt }).utxo };
+      const other = await reportIn(worldOf(goodWorld({ record, ...byCurrent })), [], { ...INPUT, atMs });
+      expect([other.provenance, other.software]).toEqual(['absent', 'absent']);
+    });
+
+    it('does not count a Provider whose term has not started: absent with no list for the Provider kinds, and valid once the term has started', async () => {
+      const record = senderRecord([providerParty(undefined, { notBefore: NOW + DAY })]);
+      const world = worldOf(goodWorld({ record }));
+      expect(await reportIn(world)).toEqual({ ...ALL_VALID, provenance: 'absent', software: 'absent' });
+      expect(callsTo(world.koios, 'credential_utxos').length).toBe(1);
+      expect(await reportIn(worldOf(goodWorld({ record })), [], { ...INPUT, atMs: NOW + 2 * DAY })).toEqual(ALL_VALID);
     });
 
     it('is unreadable for the Provider kinds when the registry has no record of the sender: a record that is not found is never "no Provider"', async () => {

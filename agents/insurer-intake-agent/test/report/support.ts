@@ -119,7 +119,7 @@ export interface Script {
 export interface Calls {
   readonly list: Array<{ subject: Did; attType: number }>;
   readonly check: Array<{ id: string; atMs: number; expect: ReportExpectation }>;
-  readonly provider: Did[];
+  readonly provider: Array<{ sender: Did; atMs: number }>;
   readonly root: DelegationId[];
   /** The log lines of the report. */
   readonly lines: string[];
@@ -168,9 +168,9 @@ export function rig(script: Script = {}): Rig {
       calls.check.push({ id, atMs, expect });
       return script.ports?.check === undefined ? answer('check', valid.includes(id)) : script.ports.check(id, atMs, expect);
     },
-    providerKeyHashOf(sender) {
-      calls.provider.push(sender);
-      return script.ports?.providerKeyHashOf === undefined ? answer('provider', provider) : script.ports.providerKeyHashOf(sender);
+    providerKeyHashOf(sender, atMs) {
+      calls.provider.push({ sender, atMs });
+      return script.ports?.providerKeyHashOf === undefined ? answer('provider', provider) : script.ports.providerKeyHashOf(sender, atMs);
     },
     rootDelegatorOf(delegation) {
       calls.root.push(delegation);

@@ -48,10 +48,10 @@ export interface ReportDeps {
   /** Does the attestation `id` pass the rule of the registry at the time `atMs`, and does it have the type, the subject and the issuer that `expect` names? */
   check(id: string, atMs: number, expect: ReportExpectation): Promise<boolean>;
   /**
-   * The hash of the key of the Provider party in the record of `sender`, or null when the record has no Provider party that names a key. A record that cannot be found throws: null is never "no
-   * record".
+   * The hash of the key of the Provider party in the record of `sender` that is in force at the time `atMs`: its start is not after that time, and it has no end or its end is not before that time. It is null
+   * when no such party names a key. A record that cannot be found throws: null is never "no record".
    */
-  providerKeyHashOf(sender: Did): Promise<string | null>;
+  providerKeyHashOf(sender: Did, atMs: number): Promise<string | null>;
   /** The root delegator of `delegation`, or null when the delegation has no live chain that ends at a root. A read that fails throws. */
   rootDelegatorOf(delegation: DelegationId): Promise<ReportRoot | null>;
   /** The clock of the report. It bounds each read and the whole report. */

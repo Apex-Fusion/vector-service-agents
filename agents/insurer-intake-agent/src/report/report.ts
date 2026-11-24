@@ -2,12 +2,14 @@
 // The report of the attestations of the sender. The Insurer Intake Agent reads three attestations about the sender and reports what it found. It never refuses a job for one of them, never changes the decision of
 // the model and never puts one in a prompt. The result goes into `attestations` of the intake record, and the log says only the word and the number of rows of each kind.
 //
-//   provenance         type 1, issued by the Provider of the sender (the Provider party of the record of the sender, by the hash of its key)
+//   provenance         type 1, issued by the Provider of the sender (the Provider party of the record of the sender that is in force at the time of the check, by the hash of its key)
 //   software           type 2, issued by the Provider of the sender
 //   principal_binding  type 4, issued by the ROOT DELEGATOR of the delegation of the request, and by nobody else: a key principal by the hash of its key, an agent root by the id of its record, never both
 //
 // The kinds are read one after the other, in this order. For each kind:
-//   1. The expected issuer. For the two Provider kinds it is the Provider key of the sender, read once for both. A record with no Provider party that names a key gives `absent` for both, and no list is read.
+//   1. The expected issuer. For the two Provider kinds it is the key of the Provider party of the sender that is in force at the time of the check, read once for both. A record with no such party that
+//      names a key gives `absent` for both, and no list is read. A Provider that has ended or has not started does not count, and a Provider that a script or the controller set signs for does not hide
+//      a Provider that a key signs for.
 //      For the binding it is the root delegator of the delegation. A delegation with no live chain gives `unreadable`: the hook found a live chain, so the ledger changed or cannot be read.
 //   2. The list of the attestations about the sender of the type of the kind. Only the rows of the expected issuer count, and none gives `absent`. A row of another issuer never counts: a stranger cannot make
 //      a kind `valid` or `invalid`. A key principal matches a row by the key hash only, and an agent root matches by the id of its record only. A row that another key of the record of a member issued is
@@ -185,7 +187,7 @@ async function judge(run: Run, attType: number, expected: Expected): Promise<Ver
 }
 
 async function readProvider(run: Run): Promise<Found<Expected | null>> {
-  const answer = await read(run, () => run.deps.providerKeyHashOf(run.input.sender));
+  const answer = await read(run, () => run.deps.providerKeyHashOf(run.input.sender, run.input.atMs));
   if (!answer.ok) return answer;
   if (answer.value === null) return { ok: true, value: null };
   return isKeyHash(answer.value) ? { ok: true, value: { by: 'key_hash', hash: answer.value } } : { ok: false, why: 'bad_answer' };

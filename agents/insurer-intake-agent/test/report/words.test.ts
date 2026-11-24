@@ -124,7 +124,15 @@ describe('a sender with no Provider party', () => {
   it('reads the record of the sender once for the two kinds', async () => {
     const r = rig();
     await go(r);
-    expect(r.calls.provider).toEqual([SENDER]);
+    expect(r.calls.provider).toEqual([{ sender: SENDER, atMs: INPUT.atMs }]);
+  });
+
+  it('gives the time of the check to the read of the Provider, so that the Provider in force at that time is the one that counts', async () => {
+    for (const atMs of [0, 1_234_567, 1_900_000_000_000]) {
+      const r = rig();
+      await go(r, { ...INPUT, atMs });
+      expect(r.calls.provider).toEqual([{ sender: SENDER, atMs }]);
+    }
   });
 });
 

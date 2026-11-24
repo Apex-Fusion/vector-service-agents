@@ -20,15 +20,16 @@ export const SENDER_ID = SENDER.slice('did:vector:'.length);
 export const MIDDLE_ID = idOf(0xc4);
 export const PARENT_LINK = idOf(0xd2);
 
-/** The key of a key principal that is the root delegator, the Provider key of the sender, a stranger, and a second key of the record of a member. */
+/** The key of a key principal that is the root delegator, the Provider key of the sender, a stranger, a second key of the record of a member, and the key of a Provider whose term ended. */
 export const ROOT_KEY = testKey(40);
 export const PROVIDER_KEY = testKey(41);
 export const STRANGER_KEY = testKey(42);
 export const MEMBER_KEY = testKey(43);
+export const EX_PROVIDER_KEY = testKey(44);
 
-/** A Provider party. With no argument its signer is the Provider key. */
-export function providerParty(signer: Party['signer'] = { type: 'KeyHash', hash: PROVIDER_KEY.keyHash }): Party {
-  return { role: 'Provider', signer, organisation: null, notBefore: CAPTURE_MS - 60 * DAY, notAfter: null, rights: 0, removalAfter: null };
+/** A Provider party. With no argument its signer is the Provider key and its term started long before the capture and has no end. `over` changes the party, for example its term. */
+export function providerParty(signer: Party['signer'] = { type: 'KeyHash', hash: PROVIDER_KEY.keyHash }, over: Partial<Party> = {}): Party {
+  return { role: 'Provider', signer, organisation: null, notBefore: CAPTURE_MS - 60 * DAY, notAfter: null, rights: 0, removalAfter: null, ...over };
 }
 
 /** The record of the sender: an Accountable Party and then `parties`. */
