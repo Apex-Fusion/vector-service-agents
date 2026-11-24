@@ -9,7 +9,7 @@ import type { PrecheckAnswer } from '@vsa/service-kit';
 import { canonicalSha256 } from '@vsa/usecase-kit/protocol';
 import { createPrecheck } from '../../src/checks/index.ts';
 import type { BookReader, PassedSink } from '../../src/checks/index.ts';
-import { FileIntakeBook, MemoryIntakeBook, PassedChecks } from '../../src/store/index.ts';
+import { FileIntakeBook, INTAKE_BOOK_LIMIT, MemoryIntakeBook, PassedChecks } from '../../src/store/index.ts';
 import { SELF } from './samples.ts';
 import { T, makeWorld } from './support.ts';
 import type { World } from './support.ts';
@@ -81,6 +81,35 @@ describe('the classes of the stores as the shapes of the hook', () => {
       expect(await hookOver(world, book, passed)()).toEqual({ go: false, status: 503, error: 'check_unavailable', message: 'the intake book could not be read' });
       expect(world.faults.map(([source]) => source)).toEqual(['intake book']);
       expect(passed.take(world.context.escrowRef, T)).toBeNull();
+    });
+  });
+
+  it('answer 503 check_unavailable when the real book holds its limit of entries and has none for the number, in memory and in a file, and the escrow stays open', async () => {
+    await inFolder(async (file) => {
+      // The entries of a full book. With `holding`, the first entry has the request number of the world. Without it, no entry has that number.
+      const entries = (holding: boolean): Array<{ tenant: string; request_number: string; intake_id: string }> =>
+        Array.from({ length: INTAKE_BOOK_LIMIT }, (_, n) => ({ tenant: 'run1', request_number: holding && n === 0 ? 'RUN1-1' : `run1-x${n}`, intake_id: `INT-${n}` }));
+      const forms: Array<[string, (holding: boolean) => Promise<BookReader>]> = [
+        ['memory, filled through record', async (holding) => {
+          const book = new MemoryIntakeBook();
+          for (const entry of entries(holding)) await book.record(entry.tenant, entry.request_number, entry.intake_id);
+          return book;
+        }],
+        // One write for each entry is too slow, so the file is written whole.
+        ['file, written whole', async (holding) => {
+          writeFileSync(file, JSON.stringify({ schema: 'insurer-intake-agent.requests.v1', requests: entries(holding) }));
+          return new FileIntakeBook(file);
+        }],
+      ];
+      for (const [form, make] of forms) {
+        // The twin: a full book that holds the number refuses it with 403, and not with 503.
+        expect(await hookOver(makeWorld(), await make(true), new PassedChecks())(), form).toMatchObject({ go: false, status: 403, error: 'duplicate_request' });
+        const world = makeWorld();
+        const passed = new PassedChecks();
+        expect(await hookOver(world, await make(false), passed)(), form).toEqual({ go: false, status: 503, error: 'check_unavailable', message: 'the intake book could not be read' });
+        expect(world.faults, form).toEqual([['intake book', expect.any(RangeError)]]);
+        expect(passed.take(world.context.escrowRef, T), form).toBeNull();
+      }
     });
   });
 
