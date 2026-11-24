@@ -10,25 +10,30 @@ import { parse as parseYaml } from 'yaml';
 import { ACCEPT_WINDOW_MS } from '@vsa/buyer-core';
 import { STRANDED_FILE } from '@vsa/hire-kit';
 import { BUSY_TEXT, CONTEXT_HEADERS, HEARTBEAT_MS, JobSlot, MAX_BODY, RESERVATION_MS, STOPPING_TEXT, operatorsText, parseWire } from '@vsa/service-kit';
-import { BID_CAPABILITIES, BID_DESK_MODEL, MAX_RFQ_ITEMS, QUOTE_CHECKS, checkQuoteFromList, parseQuote, parseRfqDocument, priceFor, quoteTotals, rfqSha256 } from '@vsa/usecase-kit/bids';
+import {
+  BID_CAPABILITIES, BID_DESK_CLAIM, BID_DESK_MODEL, MAX_RFQ_ITEMS, QUOTE_CHECKS, checkQuoteFromList, lineChecks, parseQuote, parseRfqDocument, priceFor, quotePriceFacts, quoteTotals, rfqSha256,
+} from '@vsa/usecase-kit/bids';
 import type { PriceList, Quote } from '@vsa/usecase-kit/bids';
 import { CheckUnavailableError, SHARED_CHECK_NAMES } from '@vsa/usecase-kit/checks';
-import { HIRE_MIN_MS } from '@vsa/usecase-kit/decision';
-import { COUNTERPARTY_REFUSALS, ERROR_STATUS, MAX_REQUEST_BYTES, RFQ_SCHEMA, RUNTIME_BODY_LIMIT_BYTES, accepted, isPlainObject } from '@vsa/usecase-kit/protocol';
+import { HIRE_MIN_MS, INPUT_OPEN, buildPrompt } from '@vsa/usecase-kit/decision';
+import { EVIDENCE_STATEMENTS } from '@vsa/usecase-kit/dispute';
+import { faultGap } from '@vsa/usecase-kit/manifest';
+import { COUNTERPARTY_REFUSALS, ERROR_STATUS, FAULT_MODES, MAX_REQUEST_BYTES, RFQ_SCHEMA, RUNTIME_BODY_LIMIT_BYTES, accepted, isPlainObject } from '@vsa/usecase-kit/protocol';
 import type { FaultSetting, ProtocolResult } from '@vsa/usecase-kit/protocol';
 import { blake2b224Hex } from '@vsa/vector-read';
 import { CLAIM_STAKE_LOVELACE, CLAIM_WINDOW_MS } from '../../../scripts/operator/lib/claim-constants.ts';
 import { MemoryRfqBook, PASSED_CHECKS_TTL_MS, PassedChecks, createPrecheck, loadPriceList, rfqChecks } from '../src/checks/index.ts';
-import { QUOTE_DECISION, QUOTE_REFUSAL_STATUS, RUNTIME_MARGIN_MS, runQuote } from '../src/job/index.ts';
+import { QUOTE_DECISION, QUOTE_REFUSAL_STATUS, RUNTIME_MARGIN_MS, faultyPriceOf, runQuote } from '../src/job/index.ts';
 import type { QuoteChoice } from '../src/job/index.ts';
 import { QUOTE_TEXT } from '../src/job/refusal.ts';
+import { CONTROLLER_GAP, GAPS, NOT_SHOWN_GAP, PAGE_GAPS } from '../src/serve/gaps.ts';
 import { keyClashOf } from '../src/serve/keys.ts';
 import { TEMPLATE_ENV, TEMPLATE_PRICE_LIST, manifestFromEnv } from '../src/serve/manifest.ts';
 import type { BidDeskManifest } from '../src/serve/manifest.ts';
 import { RequestRefusal, parseRfqRequest } from '../src/serve/server.ts';
 import {
   BOND_LOVELACE, CALL_TIMEOUT_MS, CHECKS_READ_BUDGET_DEFAULT_MS, CHECKS_READ_BUDGET_MAX_MS, CHECKS_READ_BUDGET_MIN_MS, HOOK_READS, HOOK_READS_LIMIT_MS, INSTANCES, INSTANCE_NAMES, JOB_DEADLINE_MS,
-  MIN_PROCESSING_WINDOW_MS, PRICE_LIST_ROUTE, PRICE_LOVELACE, RUNTIME_PRECHECK_WAIT_MS, organisationOf, priceListFileOf, publicOriginOf, supplierKeyOf,
+  MIN_PROCESSING_WINDOW_MS, PRICE_LIST_ROUTE, PRICE_LOVELACE, RUNTIME_PRECHECK_WAIT_MS, STATE_DIR_DEFAULT, faultOf, organisationOf, priceListFileOf, publicOriginOf, supplierKeyOf,
 } from '../src/serve/settings.ts';
 import type { Instance } from '../src/serve/settings.ts';
 import { SETTINGS } from '../src/serve/start.ts';
@@ -78,10 +83,11 @@ const runtimeEnv = (instance: Instance): Readonly<Record<string, string>> => com
 const serviceEnv = (instance: Instance): Readonly<Record<string, string>> => composes[instance].services.service.environment ?? {};
 const envExample = readFileSync(`${root}deploy/server/.env.bid-desk.example`, 'utf8');
 
-/** The manifest of each Bid Desk as the settings of its deployment give it: the organisation and the public origin of its compose file, its own price list file and its own key hash. */
-const manifests = Object.fromEntries(
-  INSTANCES.map((instance) => [instance, manifestFromEnv(envOf(instance, { BID_DESK_SERVICE_PKH: SERVICE.pkh, BID_DESK_ORGANISATION: serviceEnv(instance).BID_DESK_ORGANISATION, BID_DESK_PUBLIC_ORIGIN: serviceEnv(instance).BID_DESK_PUBLIC_ORIGIN }), priceListOf(instance))]),
-) as Record<Instance, BidDeskManifest>;
+/** The settings of the service of a Bid Desk: the organisation and the public origin of its compose file, its own key hash, and the other settings of the test world. */
+const settingsOf = (instance: Instance): NodeJS.ProcessEnv =>
+  envOf(instance, { BID_DESK_SERVICE_PKH: SERVICE.pkh, BID_DESK_ORGANISATION: serviceEnv(instance).BID_DESK_ORGANISATION, BID_DESK_PUBLIC_ORIGIN: serviceEnv(instance).BID_DESK_PUBLIC_ORIGIN });
+/** The manifest of each Bid Desk as its settings give it, with its own price list file. */
+const manifests = Object.fromEntries(INSTANCES.map((instance) => [instance, manifestFromEnv(settingsOf(instance), priceListOf(instance))])) as Record<Instance, BidDeskManifest>;
 /** The status that the protocol gives a code, or undefined for a code that it does not list. */
 const statusOf = (code: string): number | undefined => (Object.hasOwn(ERROR_STATUS, code) ? Reflect.get(ERROR_STATUS, code) : undefined);
 /** The members of an object that a test reads by name, or a failure of the test for any other value. */
@@ -886,5 +892,168 @@ describe('specs/bid-desk.md: the errors', () => {
     expect(errors).toContain('- While a job runs, the service writes an interim `102 Processing` line every 60 s, ahead of the answer, because the fetch of the runtime gives up after 300 s of silence.');
     expect(errors).toContain('- A Bid Desk is the hired side. The service answers 200 only when it made a quote, and the 200 answer is the quote. Every code of the table is a refusal or a failure of the job or of the request, and the runtime turns it into the answer that the buyer reads.');
     expect(readme).toContain('The reason is that the runtime\'s fetch gives up after 300 s of silence.');
+  });
+});
+
+describe('specs/bid-desk.md: the receipt, the claim and the fault switch', () => {
+  test('the receipt: the runtime signs it, its model is the model of each advert, the quote is the committed output, and a challenge on S1 names the hash of the quote', async () => {
+    const receipt = section('What the receipt commits to');
+    expect(receipt).toContain('The service signs no receipt. The runtime builds and signs the receipt, and submits its hash in the Submit transaction.');
+    expect(row(receipt, '`escrow_ref`')).toBe('| `escrow_ref` | the escrow UTxO, `<txid>#<index>` |');
+    expect(row(receipt, '`supplier_pkh`')).toBe('| `supplier_pkh` | the key hash of the supplier key of the runtime of the Bid Desk that took the job |');
+    expect(row(receipt, '`prompt_hash`')).toBe('| `prompt_hash` | sha256 of the UTF-8 bytes of the wire payload, as the buyer committed it in the escrow datum |');
+    expect(row(receipt, '`response_hash`')).toBe('| `response_hash` | sha256 of the UTF-8 bytes of the quote exactly as the service returned them |');
+    // The model of a receipt is the model of its advert, and the model of each of the three adverts is bid-desk-v1.
+    expect(row(receipt, '`model`')).toBe(`| \`model\` | \`${BID_DESK_MODEL}\` |`);
+    const runbook = readFileSync(`${root}deploy/server/RUNBOOK-bid-desk.md`, 'utf8').split('\n');
+    for (const instance of INSTANCES) expect(runbook, instance).toContain(`| \`${instance}\` | \`${BID_DESK_MODEL}\` | 1 | 1 and 1 | 3 |`);
+    expect(row(receipt, '`prompt_tokens`, `completion_tokens`')).toBe('| `prompt_tokens`, `completion_tokens` | 0 and 0, the runtime counts none. The token counts of the model hire are in the sub-receipt under `decisions[0].inference.sub_job` |');
+    expect(row(receipt, '`wallclock_ms`')).toBe('| `wallclock_ms` | how long the service call took |');
+    expect(receipt).toContain(`who sent the request, the ${QUOTE_CHECKS.length} checks, and the pricing decision with its reasoning and the sub-receipt of the model supplier.`);
+    expect(receipt).toContain('The signed receipt of the job is the signed quote, and the quote is the committed output.');
+    expect(receipt).toContain('It does not hold the Bid Desk to the quote: a quote is not a binding offer (see Known gaps).');
+    expect(receipt).toContain('The signature is Ed25519 over the canonical JSON of the receipt. The sha256 of the canonical JSON of `{ receipt, signature }` is the `result_receipt_hash` in the Submitted escrow datum.');
+    // A challenge on S1 uses the hash of the quote text: the facts of the evidence name it next to the hash of the list and the line that differs from the list.
+    const quote = await alfaQuote('quote_off_price_list');
+    const [first] = lineChecks(quote, loadPriceList(priceListFileOf('alfa')).list);
+    const facts = must(quotePriceFacts({ line: first, price_list_sha256: quote.price_list_sha256, quote_sha256: sha256(JSON.stringify(quote)) }));
+    expect(Object.keys(facts)).toStrictEqual(['kind', 'sku', 'quantity', 'quoted_unit_price', 'listed_unit_price', 'price_list_sha256', 'quote_sha256']);
+    expect(facts).toMatchObject({ kind: 'quote_price', sku: 'GLV-NIT-M', quantity: 100, quoted_unit_price: 100, listed_unit_price: 125 });
+    expect(EVIDENCE_STATEMENTS.quote_price).toBe('S1');
+    expect(receipt).toContain('The sha256 of the quote text is what a challenge uses. The evidence of a challenge on S1 names that hash as `quote_sha256`, with the hash of the price list (`price_list_sha256`), the SKU and the quantity of the line, the unit price that the quote gives and the unit price that the list gives.');
+  });
+
+  test('the claim statements are the constants of the kit, the three manifests hold the same three texts, and no source of the service stakes a claim', () => {
+    const claim = section('Claim statements');
+    const table = claim.split('\n').filter((line) => /^\| S[123] \|/.test(line));
+    expect(table).toStrictEqual(BID_DESK_CLAIM.statements.map((statement) => `| ${statement.id} | ${statement.text} |`));
+    for (const instance of INSTANCES) expect(manifests[instance].behaviour.claim.statements, instance).toStrictEqual(BID_DESK_CLAIM.statements);
+    expect(BID_DESK_CLAIM.statements.map((statement) => statement.id)).toStrictEqual(['S1', 'S2', 'S3']);
+    expect(claim).toContain(`The service stakes no claim: no code of the service calls the staking. Before a run, an operator command stakes a Module-1 claim for each Bid Desk with its service key: ${CLAIM_STAKE_LOVELACE / 1_000_000n} units, which is ${CLAIM_STAKE_LOVELACE} lovelace, with a challenge window of ${CLAIM_WINDOW_MS / 3_600_000} hours. After the window, the same command withdraws the claim when nobody challenged it.`);
+    expect(claim).toContain('The claim has three statements, and the three Bid Desks have the same three. The manifest of each holds the same three texts in `behaviour.claim`, with no reference to a claim. A challenge names the text of a statement.');
+    expect(sources.filter(([, text]) => text.includes('stakeRunClaim')).map(([file]) => file)).toStrictEqual([]);
+    expect(envExample.split('\n').filter((line) => line.startsWith('DISPUTE_'))).toStrictEqual([]);
+    // S1 is the statement of the evidence of a quote challenge, and the Sourcing Agent challenges the first statement of this claim.
+    expect(EVIDENCE_STATEMENTS.quote_price).toBe('S1');
+    expect(readFileSync(new URL('../../sourcing-agent/src/quotes/evidence.ts', import.meta.url), 'utf8')).toContain('statement_text: BID_DESK_CLAIM.statements[0].text,');
+    expect(claim).toContain('S1 is the statement that the fault `quote_off_price_list` breaks. A buyer\'s agent that finds a unit price that differs from the published list declines the quote and challenges the claim of the Bid Desk on S1. The Sourcing Agent does this. S2 is held by the member `rfq_sha256` of the quote, and S3 by the book of the Bid Desk (see What it checks before the Claim).');
+  });
+
+  test('the Fault switch names the one value of the kit, a unit price a fifth below the list on the first line that the list prices, and the field that every quote carries', async () => {
+    const fault = section('Fault switch');
+    expect(FAULT_MODES['bid-desk']).toStrictEqual(['quote_off_price_list']);
+    for (const instance of INSTANCES) expect(manifests[instance].behaviour.fault_modes, instance).toStrictEqual(['quote_off_price_list']);
+    expect(fault).toContain('`FAULT_MODE=quote_off_price_list`: the unit price of the first line that the price list prices is lowered by a fifth of the listed price, rounded up, and every check of the hook still passes. The new price is `listed - ceil(listed / 5)`, where `listed` is the price of the list for the SKU and the quantity of that line. The totals follow the changed line.');
+    // The new price: the listed price less a fifth of it, rounded up. No price of the three files is below 10, so the new price is at least 1 and below the listed price.
+    expect([faultyPriceOf(125), faultyPriceOf(140), faultyPriceOf(11), faultyPriceOf(2)]).toStrictEqual([100, 112, 8, 1]);
+    const prices = INSTANCES.flatMap((instance) => loadPriceList(priceListFileOf(instance)).list.items.flatMap((entry) => entry.breaks.map((step) => step.unit_price)));
+    expect(Math.min(...prices)).toBeGreaterThanOrEqual(10);
+    expect(fault).toContain('The new price is below the listed price and at least 1, because no price of the three files is below 10.');
+    // The fault run of the example: the first line has the price 100 and not the listed 125, the totals follow, and the decision on record stays what the model said.
+    const clean = await alfaQuote('');
+    const faulty = await alfaQuote('quote_off_price_list');
+    expect(clean.lines[0].unit_price).toBe(125);
+    expect(faulty.lines[0]).toMatchObject({ sku: 'GLV-NIT-M', unit_price: 100, line_total: 10_000 });
+    expect([faulty.total, faulty.fault_mode, clean.fault_mode]).toStrictEqual([19_400, 'quote_off_price_list', '']);
+    expect(faulty.lines.slice(1)).toStrictEqual(clean.lines.slice(1));
+    expect(faulty.decisions).toStrictEqual(clean.decisions);
+    expect(faulty.checks).toStrictEqual(clean.checks);
+    expect(fault).toContain('For the request of the example under Request and the price list of Bid Desk Alfa, the quote of a fault run has the unit price 100 on its first line (the listed price is 125), the line total 10000 and the total 19400, and its `fault_mode` is `quote_off_price_list`. The decision on record stays what the model said.');
+    // The first line that the list prices: a first line that the list does not carry keeps its price, and the second line gets the new one.
+    const second = makeRig({ mode: 'quote_off_price_list', rfq: { items: [{ sku: 'NO-SUCH-SKU', quantity: 3 }, { sku: 'GLV-NIT-M', quantity: 100 }] } });
+    second.decision = accepted(decisionOf(choiceOf({ lines: [{ sku: 'NO-SUCH-SKU', quantity: 3, unit_price: 50, lead_time_days: 3 }, { sku: 'GLV-NIT-M', quantity: 100, unit_price: 125, lead_time_days: 14 }] })));
+    expect((await second.run()).lines.map((line) => line.unit_price)).toStrictEqual([50, 100]);
+    // When no line can take the new price, the job ends internal: a run never says that a fault was on when it changed nothing.
+    const none = makeRig({ mode: 'quote_off_price_list', rfq: { items: [{ sku: 'NO-SUCH-SKU', quantity: 3 }] } });
+    none.decision = accepted(decisionOf(choiceOf({ lines: [{ sku: 'NO-SUCH-SKU', quantity: 3, unit_price: 50, lead_time_days: 3 }] })));
+    expect(await refusalOf(none.run())).toMatchObject({ code: 'internal', status: 500 });
+    expect(none.booked).toHaveLength(0);
+    expect(fault).toContain('When no line can take the new price, the job ends with `internal` (500): a run never says that a fault was on when it changed nothing.');
+    expect(fault).toContain('The failure run sets the switch on one Bid Desk only, Bid Desk Charlie, to show that the Sourcing Agent catches a quote that is below the published price list. The switch of one Bid Desk never changes another: each Bid Desk reads an env file of its own.');
+  });
+
+  test('the switch is empty in a clean run, any other value stops the start, the hook does not know the switch, and the manifest is the same for every value', () => {
+    const fault = section('Fault switch');
+    expect(faultOf({ FAULT_MODE: '' }).mode).toBe('');
+    expect(faultOf({ FAULT_MODE: 'quote_off_price_list' }).mode).toBe('quote_off_price_list');
+    expect(() => faultOf({ FAULT_MODE: 'alter_after_approval' })).toThrow(/FAULT_MODE/);
+    expect(envExample.split('\n')).toContain('FAULT_MODE=');
+    expect(sources.filter(([file, text]) => file.startsWith('checks/') && /FAULT_MODE|readFault|quote_off_price_list|FaultSwitch/.test(text)).map(([file]) => file)).toStrictEqual([]);
+    for (const instance of INSTANCES) {
+      expect(JSON.stringify(manifestFromEnv({ ...settingsOf(instance), FAULT_MODE: 'quote_off_price_list' }, priceListOf(instance))), instance).toBe(JSON.stringify(manifests[instance]));
+      expect(JSON.stringify(manifests[instance]).includes('"fault_mode"')).toBe(false);
+    }
+    expect(fault).toContain('The switch is empty in a clean run. Any other value stops the start of the service. The switch changes what the job writes and never a check: the hook does not know that it exists.');
+    expect(fault).toContain('It is declared in the manifest, in `behaviour.fault_modes`, and the manifest is the same for every value. Each quote returns the active value as `fault_mode`, its last member.');
+    expect(faultGap('bid-desk')).toBe(GAPS.at(-1));
+  });
+
+  test('Operator and data handling: the operator, the data sentence of the manifest, the three third parties, the two files of the state, and what the decision receives', async () => {
+    const operator = section('Operator and data handling');
+    for (const instance of INSTANCES) expect(manifests[instance].operator.name, instance).toBe('Apex Fusion Foundation');
+    expect(operator).toContain('Operator: Apex Fusion Foundation. The contact is `operator.contact` in the manifest of each Bid Desk.');
+    const parties = tableRows(operator, '| Party | What it receives |');
+    expect(parties).toHaveLength(3);
+    for (const instance of INSTANCES) {
+      expect(parties.map(([name]) => name), instance).toStrictEqual(manifests[instance].behaviour.third_parties);
+      expect(operator).toContain(manifests[instance].behaviour.data_handling);
+      expect(manifests[instance].behaviour.relying_on.mock_systems).toStrictEqual([]);
+    }
+    expect(operator).toContain('The Bid Desk calls no mock system and no dispute service. What leaves to third parties:');
+    // The state of the service: the two entries of the README, in its words.
+    expect(STATE_DIR_DEFAULT).toBe('/data');
+    expect(SETTINGS).toContain('BID_DESK_STATE_DIR');
+    expect(STRANDED_FILE).toBe('stranded.json');
+    expect(operator).toContain('The service keeps these files and folders in its state directory (`BID_DESK_STATE_DIR`, which is `/data` in the image):');
+    const files = tableRows(operator, '| Path | What it holds |');
+    expect(files.map(([path]) => path)).toStrictEqual(['`rfq-book.json`', '`keys/<key hash>/stranded.json`']);
+    expect(files).toStrictEqual(tableRows(readme, '| Path | What it holds |'));
+    // What the decision receives: the members of the input, in their order, and nothing of the request that names a party.
+    expect(QUOTE_DECISION.name).toBe('quote');
+    expect(row(operator, '`quote`')).toBe(
+      '| `quote` | `today`, `request` (`items` and `needed_by`) and `price_list` (the entries for the SKUs of the items, each with `sku`, `lead_time_days` and `breaks`) | the identifier of the request (`rfq_id`), the sender, the delegation and every other member of the message, and the entries of the price list for other SKUs |',
+    );
+    const rig = makeRig();
+    await rig.run();
+    const input = membersOf(rig.decideInputs[0]);
+    expect(Object.keys(input)).toStrictEqual(['today', 'request', 'price_list']);
+    expect(Array.isArray(input.price_list) ? input.price_list.map((entry) => Object.keys(membersOf(entry))) : []).toStrictEqual([['sku', 'lead_time_days', 'breaks'], ['sku', 'lead_time_days', 'breaks'], ['sku', 'lead_time_days', 'breaks']]);
+    const one = makeRig({ rfq: { items: [{ sku: 'MSK-N95', quantity: 5 }] } });
+    await refusalOf(one.run());
+    expect(membersOf(one.decideInputs[0]).price_list).toHaveLength(1);
+    // The text of the request and of the list reaches the model inside the marked data block only, and the fixed instruction holds none of it.
+    const prompt = must(buildPrompt(QUOTE_DECISION, rig.decideInputs[0]));
+    const open = prompt.indexOf(INPUT_OPEN);
+    expect(open).toBeGreaterThan(0);
+    for (const text of ['GLV-NIT-M', 'SYR-10ML', 'MSK-N95', '2026-12-20']) {
+      expect(prompt.slice(0, open), text).not.toContain(text);
+      expect(prompt.slice(open), text).toContain(text);
+    }
+    expect(operator).toContain('The text of the request and of the price list reaches the model only inside the marked data block, and never inside an instruction.');
+    // The service reads the ledger and posts its escrows through four settings, and its start makes no call to a third party.
+    for (const name of ['VECTOR_OGMIOS_URL', 'VECTOR_KOIOS_URL', 'VECTOR_SUBMIT_URL', 'VECTOR_MARKETPLACE_INDEXER_URL']) expect(SETTINGS, name).toContain(name);
+    expect(readme).toContain('The start makes no call of its own to a third party.');
+    expect(operator).toContain('To post and settle its escrows for the model hire, the service reads the ledger through the node (Ogmios) and the Koios indexer, submits its transactions through the submit API, and finds the model suppliers on the marketplace indexer. At start the service makes no call to a third party.');
+  });
+
+  test('Known gaps: the eight sentences of the manifest, word for word and in order, with the sentence about the keys, the run-in lead of what no run shows, and the sentence of the kit about the fault switch', () => {
+    const known = section('Known gaps');
+    const lines = known.split('\n').filter((line) => line.startsWith('- '));
+    expect(lines).toStrictEqual(GAPS.map((gap) => `- ${gap}`));
+    for (const instance of INSTANCES) expect(manifests[instance].gaps, instance).toStrictEqual([...GAPS]);
+    expect(lines).toHaveLength(8);
+    // The five gaps of the page, the keys of the parties, what no run shows, and the one sentence of the kit about the fault switch.
+    expect(lines.slice(0, 5)).toStrictEqual(PAGE_GAPS.map((gap) => `- ${gap}`));
+    expect(lines[5]).toBe(`- ${CONTROLLER_GAP}`);
+    expect(lines[6]).toBe(`- ${NOT_SHOWN_GAP}`);
+    expect(lines[7]).toBe(`- ${faultGap('bid-desk')}`);
+    // The keys: the controller key, the Accountable key and the guardian keys are on one host of one operator.
+    expect(lines[5]).toBe('- The controller key of this deployment, the Accountable key and the guardian keys are on one host of one operator, so a party is independent of the controller by key only.');
+    // What no run shows: one run-in lead, and the three items, among them the reclaim of an escrow in use case 3.
+    expect(page.split('What this does not show:').length - 1).toBe(1);
+    expect(lines[6].startsWith('- What this does not show: ')).toBe(true);
+    for (const item of ['the refund of the escrow of a revoked agent', 'the reclaim of an escrow in use case 3', 'a relying party that refuses a live token after its authority ends']) expect(lines[6], item).toContain(item);
+    expect(known).toContain('The manifest states these eight, in this order, word for word. A test keeps them equal to `GAPS` in `agents/bid-desk/src/serve/gaps.ts`.');
+    expect(known).toContain('The first five are the gaps of the agent. The sixth says whose keys the parties are. The seventh starts with a run-in lead and names three things that no run of use case 3 (supplier bid evaluation) covers. The eighth is the sentence of the kit about the fault switch.');
   });
 });
