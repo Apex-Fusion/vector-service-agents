@@ -576,18 +576,30 @@ describe('claim run: a run that stops after the claim landed', () => {
     expect(rig.ledger.accepted).toHaveLength(8);
   }, SLOW);
 
-  it('records the claim from the chain when the runner let the flight of the claim go as lost: the state file holds only the part of the claim document, and no second claim is staked', async () => {
+  it('keeps the flight of a claim that landed, lets it go at the word of the operator when its validity is over, and then records the claim from the chain: the state file holds only the part of the claim document, and no second claim is staked', async () => {
     const rig = await makeRig();
     approve(rig);
     const lock = lockFacts(rig);
     expect(await rig.run('run', '--run', RUN, '--kind', 'clean', '--submit')).toBe(1);
     rmSync(lock);
     expect(rig.ledger.accepted).toHaveLength(2);
-    expect(stateOf(rig).in_flight).toMatchObject({ step: 'claim:reorder-agent:claim', tx_hash: rig.ledger.accepted[1] });
-    // The indexer does not know the claim, and its validity ended more than a minute ago: the runner lets the flight go as lost. The claim is on the chain all the same.
+    const hash = rig.ledger.accepted[1]!;
+    expect(stateOf(rig).in_flight).toMatchObject({ step: 'claim:reorder-agent:claim', tx_hash: hash });
+    // The indexer does not know the claim, and its validity ended more than a minute ago. The claim landed, so every input of its transaction is spent: the runner keeps the flight and builds nothing.
     later(rig, 1);
+    expect(await rig.run('run', '--run', RUN, '--kind', 'clean', '--submit')).toBe(2);
+    expect(rig.errors()).toContain('but all 1 of its inputs are spent, and a transaction that landed spends all of them. It may have landed.');
+    expect(rig.errors()).toContain(`--release=${hash} and --submit`);
+    expect(stateOf(rig).in_flight).toMatchObject({ step: 'claim:reorder-agent:claim', tx_hash: hash });
+    expect(rig.ledger.accepted).toHaveLength(2);
+    expect(rig.world.facts().claims).toEqual({});
+    // The operator checks the chain and lets the flight go. The validity is over, so the runner allows it.
+    expect(await rig.run('cleanup', '--run', RUN, `--release=${hash}`, '--submit')).toBe(0);
+    expect(rig.text()).toContain(`the operator says that the chain was checked and that the transaction ${hash} of the step claim:reorder-agent:claim is not there: it is let go.`);
+    expect(stateOf(rig).in_flight).toBeNull();
+    expect(rig.ledger.accepted).toHaveLength(2);
+    // The state file holds the part of the claim document and no part of the claim: the next run reads the claim from the chain, records it, and stakes no second claim.
     expect(await rig.run('run', '--run', RUN, '--kind', 'clean', '--submit')).toBe(0);
-    expect(rig.text()).toMatch(/it cannot land any more/);
     const state = stateOf(rig);
     expect(state.notes['part.claim:reorder-agent:claim']).toBeUndefined();
     expect(state.notes['part.claim:reorder-agent:document']).toMatchObject({ tx_hash: rig.ledger.accepted[0] });
