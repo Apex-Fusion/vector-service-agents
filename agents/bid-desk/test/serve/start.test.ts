@@ -134,6 +134,7 @@ const REFUSALS: readonly Row[] = [
   ['BID_DESK_SERVICE_PKH', BAD_HASH, /^environment variable BID_DESK_SERVICE_PKH \(56 characters\) is not the key hash of the key in BID_DESK_SERVICE_PRIV_KEY_HEX/, SERVICE.pkh],
   ['LLM_MODEL_ALLOWLIST', undefined, /^environment variable LLM_MODEL_ALLOWLIST is required/, 'deepseek/deepseek-v4-flash'],
   ['LLM_MAX_PRICE_LOVELACE', 'free', /^environment variable LLM_MAX_PRICE_LOVELACE /, '1000000'],
+  ['LLM_MAX_PRICE_LOVELACE', '0', /^environment variable LLM_MAX_PRICE_LOVELACE /, '1'],
   ['LLM_MAX_SUPPLIER_BOND_LOVELACE', undefined, /^environment variable LLM_MAX_SUPPLIER_BOND_LOVELACE is required/, '2000000'],
   ['LLM_MAX_BUYER_BOND_LOVELACE', '2.5', /^environment variable LLM_MAX_BUYER_BOND_LOVELACE must be a whole number of lovelace/, '2000000'],
   ['IDENTITY_GATEWAY_URL', 'http://gateway.example.test', /^environment variable IDENTITY_GATEWAY_URL must be an https origin/, 'https://gateway.example.test'],

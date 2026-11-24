@@ -259,6 +259,7 @@ export function limitsOf(env: NodeJS.ProcessEnv): ModelLimits {
   if (!allowlist.ok) throw new Error(`environment variable ${allowlist.detail}`);
   const price = parseMaxPrice(requiredEnv('LLM_MAX_PRICE_LOVELACE', env.LLM_MAX_PRICE_LOVELACE, 'the most that a model hire may be priced at, in lovelace'));
   if (!price.ok) throw new Error(`environment variable ${price.detail}`);
+  if (price.value < 1n) throw new Error('environment variable LLM_MAX_PRICE_LOVELACE must be a whole number of lovelace of more than 0');
   const supplierBond = lovelaceOf('LLM_MAX_SUPPLIER_BOND_LOVELACE', requiredEnv('LLM_MAX_SUPPLIER_BOND_LOVELACE', env.LLM_MAX_SUPPLIER_BOND_LOVELACE, 'the most that the supplier bond of a model advert may be, in lovelace'));
   const buyerBond = lovelaceOf('LLM_MAX_BUYER_BOND_LOVELACE', requiredEnv('LLM_MAX_BUYER_BOND_LOVELACE', env.LLM_MAX_BUYER_BOND_LOVELACE, 'the most that the buyer bond of a model advert may be, in lovelace'));
   const checked = checkLimits({ allowlist: allowlist.value, maxPriceLovelace: price.value, maxSupplierBondLovelace: supplierBond, maxBuyerBondLovelace: buyerBond });

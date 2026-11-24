@@ -170,6 +170,7 @@ const REFUSALS: readonly Row[] = [
   ['LLM_MODEL_ALLOWLIST', ' , ', 'environment variable LLM_MODEL_ALLOWLIST must name at least one model, as a comma-separated list', 'a/one'],
   ['LLM_MAX_PRICE_LOVELACE', undefined, /^environment variable LLM_MAX_PRICE_LOVELACE is required/, '250000'],
   ['LLM_MAX_PRICE_LOVELACE', '1.5', 'environment variable LLM_MAX_PRICE_LOVELACE must be a whole number of lovelace of at least 0, written in digits', '250000'],
+  ['LLM_MAX_PRICE_LOVELACE', '0', 'environment variable LLM_MAX_PRICE_LOVELACE must be a whole number of lovelace of more than 0', '1'],
   ['LLM_MAX_SUPPLIER_BOND_LOVELACE', undefined, /^environment variable LLM_MAX_SUPPLIER_BOND_LOVELACE is required/, '1000000'],
   ['LLM_MAX_SUPPLIER_BOND_LOVELACE', '0', 'environment variable LLM_MAX_SUPPLIER_BOND_LOVELACE must be a whole number of lovelace of more than 0, written in digits, and it has 1 characters', '1000000'],
   ['LLM_MAX_BUYER_BOND_LOVELACE', undefined, /^environment variable LLM_MAX_BUYER_BOND_LOVELACE is required/, '1000000'],
