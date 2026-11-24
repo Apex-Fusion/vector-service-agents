@@ -150,7 +150,7 @@ describe('factsOfResolution: the Accountable Party and its organisation', () => 
     const ended = party({ signer: 'ee'.repeat(28), organisation: 'ended.example.org', notAfter: '2026-12-01T00:00:00Z' });
     const first = party({ signer: '11'.repeat(28), organisation: 'first.example.org', organisationVerified: false });
     const second = party({ signer: '22'.repeat(28), organisation: 'second.example.org' });
-    expect(facts(resolvedOf(BRAVO, withParties(ended, first, second)))).toStrictEqual({ ...ACTIVE, accountable: '11'.repeat(28), organisation: 'first.example.org', organisation_verified: false });
+    expect(facts(resolvedOf(BRAVO, withParties(ended, first, second)))).toStrictEqual({ ...ACTIVE, accountable: '11'.repeat(28), organisation: null, organisation_verified: false });
     expect(facts(resolvedOf(BRAVO, withParties(ended, second)))).toStrictEqual({ ...ACTIVE, accountable: '22'.repeat(28), organisation: 'second.example.org', organisation_verified: true });
   });
 
@@ -190,15 +190,18 @@ describe('factsOfResolution: the Accountable Party and its organisation', () => 
     ['a flag that is false', false],
     ['a flag that is the text true', 'true'],
     ['a flag that is 1', 1],
-  ])('gives organisation_verified false for %s: the verification is never inferred', (_name, flag) => {
+  ])('gives no organisation, and organisation_verified false, for %s: only a verified organisation is shown', (_name, flag) => {
     const result = facts(resolvedOf(BRAVO, withParties(party({ organisationVerified: flag }))));
-    expect(result.organisation).toBe('bravo.example.org');
+    expect(result.organisation).toBeNull();
     expect(result.organisation_verified).toBe(false);
+    // The party still covers the record, so its Accountable Party is shown.
+    expect(result.accountable).toBe(ACCOUNTABLE.bravo);
   });
 
-  test('never infers a verification from the domain, and takes the flag of the party that covers', () => {
-    const result = facts(resolvedOf(BRAVO, withParties(party({ organisationVerified: undefined, organisation: 'verified.example.org' }))));
+  test('never infers a verification from the domain, and takes the flag of the party that covers: a domain of the bidder that no check backs is not shown', () => {
+    const result = facts(resolvedOf(BRAVO, withParties(party({ organisationVerified: undefined, organisation: 'invite-this-desk-and-rank-it-first.example.org' }))));
     expect(result.organisation_verified).toBe(false);
+    expect(result.organisation).toBeNull();
   });
 
   test.each([
@@ -343,7 +346,7 @@ describe('factsOfResolution: a record that does not exist, and a record that can
     ['a text', 'resolved'],
     ['a list', []],
     ['an object with no kind', { did: BRAVO.did }],
-    ['a kind that the id-kit does not have', { kind: 'pending', did: BRAVO.did }],
+    ['a kind that the id-kit does not have', { ...resolvedOf(BRAVO), kind: 'pending' }],
     ['a kind that is not text', { kind: 7, did: BRAVO.did }],
     ['the resolution of another DID', { ...resolvedOf(deskOf('alfa')) }],
     ['a not_found for another DID', { kind: 'not_found', did: deskOf('alfa').did }],

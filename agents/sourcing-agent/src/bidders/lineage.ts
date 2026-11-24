@@ -10,8 +10,8 @@
 // another shape than its contract is a fault of the wiring: it throws a `TypeError`.
 //
 // No free text of a record reaches a member. A reason is kept only when it is one of the reason words of the gateway. A time is kept only in the form `YYYY-MM-DDTHH:MM:SSZ` and only when it is a real time.
-// A successor is kept only as a DID. An organisation is kept only as a lower-case domain. A key hash is kept only as 56 lower-case hex characters. The organisation is `verified` only when the gateway says so,
-// and never for an organisation that the file does not hold.
+// A successor is kept only as a DID. A key hash is kept only as 56 lower-case hex characters. An organisation is shown only as a lower-case domain, and only when the gateway verified it, because the bidder
+// chooses the text of its organisation: `organisation_verified` is true exactly when the organisation is shown, and it is never inferred.
 import type { EffectiveStatus } from '@vsa/id-kit/client';
 import { isKeyHash, isPlainObject, parseDid } from '@vsa/usecase-kit/protocol';
 import type { Did } from '@vsa/usecase-kit/protocol';
@@ -127,10 +127,11 @@ export function factsOfResolution(answer: unknown, did: Did, nowMs: number | nul
   if (ended) return { ...common, accountable: null, organisation: null, organisation_verified: false };
   const party = coveringParty(metadata, nowMs);
   const organisation = party === null ? null : domainOf(party.organisation);
+  const verified = organisation !== null && party !== null && party.organisationVerified === true;
   return {
     ...common,
     accountable: party !== null && isKeyHash(party.signer) ? party.signer : null,
-    organisation,
-    organisation_verified: organisation !== null && party !== null && party.organisationVerified === true,
+    organisation: verified ? organisation : null,
+    organisation_verified: verified,
   };
 }

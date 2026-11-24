@@ -75,7 +75,7 @@ describe('the file of a bidder whose record the stub gateway serves', () => {
     expect(file.accountable).toBeNull();
   });
 
-  test('gives an organisation that the gateway did not verify as not verified', async () => {
+  test('gives no organisation, and not verified, for an organisation that the gateway did not verify', async () => {
     const gateway = createStubGateway();
     const agent = gateway.createAgent({ label: 'bid-desk-bravo', organisation: { domain: 'bravo.example.org' } });
     const client = createGatewayClient({ baseUrl: gateway.baseUrl, fetch: gateway.fetch, now: gateway.now });
@@ -89,7 +89,7 @@ describe('the file of a bidder whose record the stub gateway serves', () => {
       return answer.value;
     };
     const file = must(await readBidders({ ...stub.deps, resolve, clock: () => gateway.now() })).bidders[0]!.file;
-    expect(file.organisation).toBe('bravo.example.org');
+    expect(file.organisation).toBeNull();
     expect(file.organisation_verified).toBe(false);
   });
 

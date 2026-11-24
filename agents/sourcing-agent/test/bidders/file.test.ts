@@ -358,7 +358,7 @@ describe('readBidders: a port that gives a value of the wrong shape', () => {
   const SHAPES: [FactPort, string, unknown][] = [
     ['resolve', 'null', null],
     ['resolve', 'a text', 'resolved'],
-    ['resolve', 'a kind that the id-kit does not have', { kind: 'pending', did: BRAVO.did }],
+    ['resolve', 'a kind that the id-kit does not have', { ...resolvedOf(BRAVO), kind: 'pending' }],
     ['resolve', 'the resolution of another DID', resolvedOf(ALFA)],
     ['resolve', 'a resolved with no metadata', { ...resolvedOf(BRAVO), metadata: undefined }],
     ['resolve', 'a status that the id-kit does not have', { ...resolvedOf(BRAVO), effectiveStatus: 'pending' }],

@@ -68,7 +68,7 @@ export interface BidderFile {
   readonly lineage: BidderLineage;
   /** The key hash of the Accountable Party that covers the record now. */
   readonly accountable: string | null;
-  /** A lower-case domain of at least two labels, or null. */
+  /** The organisation of that party, as a lower-case domain of at least two labels. It is shown only when the gateway verified it, because the bidder chooses its text. Null otherwise. */
   readonly organisation: string | null;
   /** True only when the gateway says that it verified the organisation. It is never inferred. */
   readonly organisation_verified: boolean;
