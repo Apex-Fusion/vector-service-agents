@@ -32,7 +32,7 @@ export interface TerminalSpend {
   readonly tx: string;
   readonly spent_output: string;
   readonly at: number;
-  /** All outputs that match the committed Returned datum and refund address, in transaction order. */
+  /** Matching outputs in transaction order. A verified net return excludes any separately funded top-up. */
   readonly refund_outputs: readonly string[];
 }
 export type VaultPayment =

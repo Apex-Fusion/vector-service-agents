@@ -1025,17 +1025,27 @@ describe('escrowPaidFromVault', () => {
     }
     assert.equal((await ask(withRunFlag(PAY.tx, true))).paid, true);
   });
-  test('only a Pay run of the vault script needs the flag: a Close, a run that is not a spend and a run of another script are not the Pay of the vault', async () => {
+  test('a script that is not a Pay can never prove a payment and an explicit false is a failure', async () => {
     const asClose = (flag: unknown) => withRunFlag(withVaultRedeemer(PAY.tx, 1), flag);
     const asMint = (flag: unknown) => mapRuns(PAY.tx, (run) => flagged({ ...run, input: { redeemer: { ...run.input.redeemer, purpose: 'mint' } } }, flag));
     const ofOther = (flag: unknown) => mapRuns(PAY.tx, (run) => flagged({ ...run, script_hash: 'ab'.repeat(28) }, flag));
     for (const flag of [undefined, false, 'x', null]) {
       for (const [what, tx] of [['a Close', asClose(flag)], ['a mint', asMint(flag)], ['another script', ofOther(flag)]] as const) {
         const r = await ask(tx);
-        assert.deepEqual([r.paid, r.paid ? null : r.reason], [false, 'not_a_payment'], `${what} with the flag ${String(flag)}`);
+        const reason = flag === false ? 'contract_failed' : 'not_a_payment';
+        assert.deepEqual([r.paid, r.paid ? null : r.reason], [false, reason], `${what} with the flag ${String(flag)}`);
       }
     }
     await assert.rejects(() => ask(withRunFlag(PAY.tx, undefined)), /no valid_contract/, 'the twin: a Pay run with the same flag');
+  });
+  test('a successful Pay does not override a failed non-Pay run', async () => {
+    const [pay] = PAY.tx.plutus_contracts;
+    const other = { ...pay, script_hash: 'ab'.repeat(28), input: { redeemer: { ...pay.input.redeemer, purpose: 'mint' } } };
+    for (const top of [{}, { valid_contract: true }]) {
+      const failed = await ask(txOf(PAY.tx, { ...top, plutus_contracts: [pay, flagged(other, false)] }));
+      assert.deepEqual([failed.paid, failed.paid ? null : failed.reason], [false, 'contract_failed']);
+      assert.equal((await ask(txOf(PAY.tx, { ...top, plutus_contracts: [pay, flagged(other, true)] }))).paid, true);
+    }
   });
   test('every Pay run of the vault script must have passed: with true and false it is contract_failed, with true and no flag an error, with true and true paid', async () => {
     const D_OTHER = 'e2'.repeat(32);

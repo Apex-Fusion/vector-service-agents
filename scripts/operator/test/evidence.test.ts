@@ -46,6 +46,7 @@ const JURY = 'ab'.repeat(28);
 const VERDICT_POLICY = 'da'.repeat(28);
 const APPROVAL_ISSUER = 'cd'.repeat(32);
 const addressOf = (hash: string): string => plutusAddressToBech32({ paymentCredential: { type: 'Script', hash }, stakeCredential: null }, 1);
+const keyAddressOf = (hash: string): string => plutusAddressToBech32({ paymentCredential: { type: 'VerificationKey', hash }, stakeCredential: null }, 1);
 const cbor = (index: number, fields: PlutusData[]): PlutusData => ({ kind: 'constr', index: BigInt(index), fields });
 const bytes = (hex: string): PlutusData => ({ kind: 'bytes', hex });
 const int = (value: number): PlutusData => ({ kind: 'int', value: BigInt(value) });
@@ -68,9 +69,20 @@ function setAt(root: unknown, path: readonly (string | number)[], value: unknown
 interface Hire { step: string; role: 'propose' | 'execute' | 'order-desk'; minute: number; result: Obj; accepted: boolean; reportOver: Obj; receiptOver: Obj; entryOver: Obj; datumOver?: Obj;
   request?: { committed: string; saved?: string; mode?: number; link?: boolean };
   submittedReceipt?: 'different' | 'different_redeemer';
+  liveSubmitted?: 'match' | 'different' | 'spent';
 }
 
 interface RefundPart { value: bigint; token?: bigint; wrongOwner?: boolean; otherToken?: boolean }
+
+interface ReclaimFlow {
+  readonly fee?: string | null;
+  readonly wallet?: 'owner' | 'vault';
+  readonly inputToken?: bigint;
+  readonly changeValue?: bigint;
+  readonly changeToken?: bigint;
+  readonly changeElsewhere?: boolean;
+  readonly missingInput?: boolean;
+}
 
 interface Scenario {
   kind: 'clean' | 'failure'; label: string; tenant: string; hires: Hire[]; record: Obj;
@@ -87,6 +99,7 @@ interface Scenario {
   reclaimShort?: boolean;
   reclaimWrongOwner?: boolean;
   reclaimParts?: RefundPart[];
+  reclaimFlow?: ReclaimFlow;
   receiptDiscovery?: 'missing' | 'wrong_escrow';
   release?: 'missing' | 'false_label' | 'early' | 'failed';
   historicalHold?: { badChallenge?: boolean; badCase?: boolean; badRecord?: boolean; badDocument?: boolean };
@@ -230,6 +243,7 @@ async function go(s: Scenario, argv: string[] = ['run', '--run', s.label, '--num
   const rows: TxRow[] = [...s.extraRows];
   const posted: Row[] = [];
   const historic: Row[] = [];
+  const liveEscrows: Utxo[] = [];
   const entries: Obj[] = [];
   const metadata = new Map<string, unknown>();
   const row = (hash: string, minute: number, inputs: TxIo[], more: Partial<TxRow> = {}): void => {
@@ -311,7 +325,13 @@ async function go(s: Scenario, argv: string[] = ['run', '--run', s.label, '--num
       row(claim, one.minute + 1, [postInput], { outputs: [claimInput], plutus_contracts: [spend(ESCROW_CREDENTIAL, postInput, 0)] });
       row(submit, one.minute + 2, [claimInput], { outputs: [input(`${submit}#0`, ESCROW_CREDENTIAL)],
         plutus_contracts: [spend(ESCROW_CREDENTIAL, claimInput, 1, [{ bytes: redeemerHash }])] });
-      historic.push(escrow(submit, { ...datum, state: 'Submitted', submitted_at: submitAt, result_receipt_hash: hash }));
+      const submitted = { ...datum, state: 'Submitted' as const, submitted_at: submitAt, result_receipt_hash: hash };
+      if (one.liveSubmitted === undefined) historic.push(escrow(submit, submitted));
+      else {
+        const nodeDatum = one.liveSubmitted === 'different' ? { ...submitted, result_receipt_hash: h('another live receipt') } : submitted;
+        liveEscrows.push(escrowUtxo(submit, nodeDatum, { address: MAINNET.escrow.address }));
+        historic.push({ ...escrow(submit, submitted), is_spent: one.liveSubmitted === 'spent' });
+      }
       confirmed.add(submit);
     }
     if (end !== null) {
@@ -328,18 +348,37 @@ async function go(s: Scenario, argv: string[] = ['run', '--run', s.label, '--num
     for (const hash of [post, end]) if (hash !== null) confirmed.add(hash);
     const reclaim = one.entryOver.reclaim_tx;
     if (typeof reclaim === 'string') {
-      const credential = s.reclaimToWallet === true ? WALLET_CREDENTIAL : VAULT_CREDENTIAL;
-      const source = input(`${post}#0`, ESCROW_CREDENTIAL);
+      const flow = s.reclaimFlow;
+      const fee = flow?.fee === undefined ? '250000' : flow.fee;
+      const walletCred = flow?.wallet === 'owner' ? owner.hash : flow?.wallet === 'vault' ? VAULT_CREDENTIAL : WALLET_CREDENTIAL;
+      const wallet = flow?.wallet === 'vault' ? MAINNET.vault.address : keyAddressOf(walletCred);
+      const funding = h('refund funding input');
+      const fundingUtxo: Utxo = {
+        txHash: funding, outputIndex: 0, address: wallet,
+        assets: { lovelace: 5_000_000n, ...(flow?.inputToken === undefined ? {} : { [REFUND_TOKEN]: flow.inputToken }) },
+        ...(flow?.wallet === 'vault' ? { datum: returned } : {}),
+      };
+      const ioOf = (utxo: Utxo): TxIo => {
+        const row = koiosRow(utxo);
+        return { ...input(`${row.tx_hash}#${row.tx_index}`, row.payment_cred!), value: row.value,
+          payment_addr: { bech32: utxo.address, cred: row.payment_cred! }, asset_list: row.asset_list };
+      };
+      if (flow?.missingInput !== true) historic.push(koiosRow(fundingUtxo, { is_spent: true }));
+      const source = { ...input(`${post}#0`, ESCROW_CREDENTIAL), payment_addr: { cred: ESCROW_CREDENTIAL, bech32: MAINNET.escrow.address } };
       const parts: RefundPart[] = s.reclaimParts ?? [{ value: s.reclaimShort ? 4_599_999n : 4_600_000n, wrongOwner: s.reclaimWrongOwner }];
-      const refundOutputs = parts.map((_part, i) => input(`${reclaim}#${i}`, credential));
-      row(reclaim, one.minute + 8, [source], { outputs: refundOutputs, plutus_contracts: [spend(ESCROW_CREDENTIAL, source, 3)] });
-      if (!s.reclaimToWallet) {
-        for (const [i, { value, token, wrongOwner, otherToken }] of parts.entries()) {
-          const datum = { type: 'Returned' as const, owner: wrongOwner ? { ...owner, hash: 'bb'.repeat(28) } : owner };
-          const assets = { lovelace: value, ...(token === undefined ? {} : { [otherToken ? `${'ed'.repeat(28)}02` : REFUND_TOKEN]: token }) };
-          historic.push(koiosRow(vaultUtxo(datum, value, { txHash: reclaim, outputIndex: i, assets })));
-        }
-      }
+      const refunds = parts.map(({ value, token, wrongOwner, otherToken }, i) => {
+        const datum = { type: 'Returned' as const, owner: wrongOwner ? { ...owner, hash: 'bb'.repeat(28) } : owner };
+        const assets = { lovelace: value, ...(token === undefined ? {} : { [otherToken ? `${'ed'.repeat(28)}02` : REFUND_TOKEN]: token }) };
+        return s.reclaimToWallet
+          ? { txHash: reclaim, outputIndex: i, address: keyAddressOf(WALLET_CREDENTIAL), assets }
+          : vaultUtxo(datum, value, { txHash: reclaim, outputIndex: i, assets });
+      });
+      const change: Utxo = { txHash: reclaim, outputIndex: parts.length,
+        address: flow?.changeElsewhere ? keyAddressOf('bc'.repeat(28)) : wallet,
+        assets: { lovelace: flow?.changeValue ?? 4_750_000n, ...(flow?.changeToken === undefined ? {} : { [REFUND_TOKEN]: flow.changeToken }) } };
+      const outputs = [...refunds, change];
+      row(reclaim, one.minute + 8, [source, ioOf(fundingUtxo)], { fee, outputs: outputs.map(ioOf), plutus_contracts: [spend(ESCROW_CREDENTIAL, source, 3)] });
+      for (const output of outputs) historic.push(koiosRow(output));
       confirmed.add(reclaim);
     }
     for (const decided of (one.result.decisions as Obj[])) confirmed.add(((decided.inference as Obj).sub_job as Obj).escrow_ref!.toString().slice(0, 64));
@@ -355,7 +394,7 @@ async function go(s: Scenario, argv: string[] = ['run', '--run', s.label, '--num
     if (v.utxo === null) row(h(`vault close ${i}`), 0, [vaultInput(vaultHead[i]!)]);
   });
   // -- the ledger: delegations, vaults, the approval, the record of the Order Desk
-  const utxos = [];
+  const utxos = liveEscrows;
   s.delegations.forEach((d, i) => { if (d.live) utxos.push(delegationUtxo(d.id, delegation(), { txHash: h(`delegation tx ${i}`) })); });
   const vaults: Obj[] = [];
   s.vaults.forEach((v) => { if (v.utxo !== null) { utxos.push(v.utxo); vaults.push({ ref: `${v.utxo.txHash}#${v.utxo.outputIndex}` }); } });
@@ -890,14 +929,14 @@ describe('modules of the evidence task', () => {
     s.reclaimToWallet = true;
     const refused = await go(s, undefined, opts);
     expect(refused.exit).toBe(2);
-    expect(refused.err).toContain('does not return the full escrow value to the correct vault owner');
+    expect(refused.err).toContain('the matching vault outputs do not show the full escrow value');
     expect(refused.read(publicFile())).toBeNull();
     s.reclaimToWallet = false;
     s.reclaimShort = true;
-    expect((await go(s, undefined, opts)).err).toContain('does not return the full escrow value');
+    expect((await go(s, undefined, opts)).err).toContain('the matching vault outputs do not show the full escrow value');
     s.reclaimShort = false;
     s.reclaimWrongOwner = true;
-    expect((await go(s, undefined, opts)).err).toContain('does not return the full escrow value');
+    expect((await go(s, undefined, opts)).err).toContain('the matching vault outputs do not show the full escrow value');
     s.reclaimWrongOwner = false;
     s.reclaimParts = [{ value: 2_400_000n }, { value: 2_200_000n, token: 3n }];
     const split = await go(s, undefined, opts);
@@ -906,18 +945,38 @@ describe('modules of the evidence task', () => {
     expect(JSON.parse(split.read(publicFile())!)).toMatchObject({ steps: [{ id: 'checked', status: 'shown', refs: [
       evidenceRef('transaction', reclaim), evidenceRef('vault', `${reclaim}#0`), evidenceRef('vault', `${reclaim}#1`),
     ] }] });
-    s.reclaimParts = [{ value: 2_400_000n, token: 1n }, { value: 2_200_000n, token: 2n }, { value: 1_000_000n, token: 5n, wrongOwner: true }];
+    s.reclaimParts = [{ value: 2_400_000n, token: 1n }, { value: 2_250_000n, token: 2n }];
+    s.reclaimFlow = { wallet: 'owner', inputToken: 1n, changeToken: 1n, changeValue: 4_700_000n };
     const splitToken = await go(s, undefined, opts);
     expect(splitToken.exit).toBe(0);
     expect(JSON.parse(splitToken.read(publicFile())!)).toMatchObject({ steps: [{ id: 'checked', status: 'shown', refs: [
       evidenceRef('transaction', reclaim), evidenceRef('vault', `${reclaim}#0`), evidenceRef('vault', `${reclaim}#1`),
     ] }] });
+    // The gross refund is complete, but the ledger does not show whose outflow funded it.
+    for (const [funding, refund, message] of [
+      [{ changeElsewhere: true }, s.reclaimParts, 'neither a matching refund nor change'],
+      [{ wallet: 'owner', inputToken: 1n }, [{ value: 4_600_000n, token: 4n }], 'does not match its change'],
+      [{ wallet: 'vault' }, [{ value: 4_600_000n, token: 3n }], 'another regular input is a script output'],
+      [{ fee: null }, [{ value: 4_600_000n, token: 3n }], 'the fee or mint is not accounted for'],
+      [{ fee: '250001' }, [{ value: 4_600_000n, token: 3n }], 'the other inputs do not fund the actual fee'],
+      [{ missingInput: true }, [{ value: 4_600_000n, token: 3n }], 'the exact regular inputs and outputs cannot be read'],
+      [{ changeValue: 4_749_999n }, [{ value: 4_600_000n, token: 3n }], 'the net vault return does not equal the escrow input'],
+    ] satisfies Array<[ReclaimFlow, RefundPart[], string]>) {
+      s.reclaimFlow = funding;
+      s.reclaimParts = refund;
+      const unclear = await go(s, undefined, opts);
+      expect(unclear.exit).toBe(2);
+      expect(unclear.err).toContain('the full escrow return is unproven:');
+      expect(unclear.err).toContain(message);
+      expect(unclear.read(publicFile())).toBeNull();
+    }
+    delete s.reclaimFlow;
     s.reclaimParts = [{ value: 2_400_000n }, { value: 2_200_000n, token: 3n }];
     for (const partial of [{ token: 2n }, { otherToken: true }, { wrongOwner: true }, { value: 2_199_999n }]) {
       s.reclaimParts[1] = { value: 2_200_000n, token: 3n, ...partial };
       const bad = await go(s, undefined, opts);
       expect(bad.exit).toBe(2);
-      expect(bad.err).toContain('does not return the full escrow value');
+      expect(bad.err).toContain('the matching vault outputs do not show the full escrow value');
       expect(bad.read(publicFile())).toBeNull();
     }
   });
@@ -1427,6 +1486,19 @@ describe('check 3: the receipt of a hire is read against the escrow and the key 
     await refuses(s, ['hires[8].report_file: the actual Submitted escrow receipt commitment is unproven']);
     s.receiptDiscovery = 'wrong_escrow';
     await refuses(s, ['no input of the transaction descends from escrow_ref by the verified spend chain']);
+  });
+  it('requires the same receipt commitment and unspent state for the node and Koios views of a live Submitted output', async () => {
+    const s = scenario('clean');
+    const execute = s.hires.find((one) => one.step === 'execute')!;
+    execute.accepted = false;
+    execute.liveSubmitted = 'match';
+    const good = await go(s);
+    expect(good.err).toBe('');
+    expect(good.exit).toBe(0);
+    for (const mode of ['different', 'spent'] as const) {
+      execute.liveSubmitted = mode;
+      await refuses(s, ['hires[1].report_file', 'live Submitted receipt commitment differs on the node and in Koios']);
+    }
   });
   it('takes receipts that each agent signed with the key that its record lists', async () => {
     const r = await go(scenario('clean'));
