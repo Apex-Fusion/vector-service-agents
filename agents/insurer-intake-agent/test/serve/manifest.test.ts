@@ -323,6 +323,18 @@ describe('the behaviour', () => {
   test('the models and the ceiling come from the settings: a list of models and a ceiling of 250,000 lovelace reach the manifest', () => {
     expect(manifestOf({ LLM_MODEL_ALLOWLIST: 'a/one, b/two', LLM_MAX_PRICE_LOVELACE: '250000' }).behaviour.model).toStrictEqual({ allowlist: ['a/one', 'b/two'], max_price_lovelace: 250_000 });
   });
+
+  test('the line about the model supplier names the six members of the request that its prompt holds, and no other member of the request', () => {
+    const sent = ['ordering_clinician_ref', 'diagnosis_codes', 'justification', 'guideline_refs', 'record_refs', 'record_set_sha256'];
+    const members: readonly string[] = REQUEST_SCHEMA.properties.document.required;
+    const line = manifestOf().behaviour.third_parties.find((party) => party.startsWith('a model supplier')) ?? '';
+    expect(line).not.toBe('');
+    for (const member of sent) expect(members, member).toContain(member);
+    for (const member of members) {
+      if (sent.includes(member)) expect(line, member).toContain(member);
+      else expect(line, member).not.toContain(member);
+    }
+  });
 });
 
 describe('the gaps', () => {
@@ -355,7 +367,7 @@ describe('the gaps', () => {
     expect(gapsFor().at(-1)).toBe(NOT_SHOWN_GAP);
     expect(NOT_SHOWN_GAP.startsWith('What this does not show:')).toBe(true);
     for (const item of [
-      'the refund of the escrow of a revoked agent', 'a relying party that refuses a live token after its authority ended', 'the challenge of the Prior Authorization Agent against this agent, because this agent has no fault value',
+      'the refund of the escrow of a revoked agent', 'a relying party that refuses a live token after its authority ended', 'the challenge of the Prior Authorization Agent against this agent (this agent has no fault value)',
     ]) expect(NOT_SHOWN_GAP).toContain(item);
   });
 
@@ -486,7 +498,11 @@ describe('the schema of the handoff', () => {
     return parsed.ok && parsed.value.use_case === 'prior-authorization' && parsePriorAuthRequest(parsed.value.document).ok;
   }
 
-  const CASES: readonly (readonly [what: string, value: unknown, expected: boolean])[] = [
+  /**
+   * What each case says: the value, whether the service takes it, and, when the keywords of the schema decide otherwise, what they decide. A rule that the description of a member states and no keyword checks (a
+   * control character, a format character, a length counted in UTF-16 code units) gives a case that the service refuses and the keywords accept.
+   */
+  const CASES: readonly (readonly [what: string, value: unknown, expected: boolean, keywords?: boolean])[] = [
     ['the sample', HANDOFF, true],
     ['no approval (null)', handoff({ approval: null }), true],
     ['an approval with a member too many', handoff({ approval: { ...APPROVAL, extra: 'x' } }), false],
@@ -538,6 +554,9 @@ describe('the schema of the handoff', () => {
     ['an advert reference with an index of 10 digits', document({ advert_ref: `${'1b'.repeat(32)}#${'1'.repeat(10)}` }), true],
     ['an advert reference with an index of 11 digits', document({ advert_ref: `${'1b'.repeat(32)}#${'1'.repeat(11)}` }), false],
     ['an advert reference with no index', document({ advert_ref: '1b'.repeat(32) }), false],
+    ['a diagnosis code with a tab', document({ diagnosis_codes: ['Z\t0'] }), false, true],
+    ['a diagnosis code with a zero-width space', document({ diagnosis_codes: ['Z\u200b0'] }), false, true],
+    ['a diagnosis code of 16 characters outside the basic plane', document({ diagnosis_codes: ['\u{1f600}'.repeat(16)] }), false, true],
   ];
 
   test('is a JSON Schema of the handoff, with the authorization request as its document, and it names the members of the sample and no other', () => {
@@ -554,8 +573,15 @@ describe('the schema of the handoff', () => {
     expect(documentSchema.properties.justification.maxLength).toBe(MAX_JUSTIFICATION_CHARS);
   });
 
-  test.each(CASES)('holds the same rule as the parsers of the kit for %s', (_what, value, expected) => {
+  test('a rule that no keyword of the schema checks is stated in the description of the member: the diagnosis codes have no hidden character and are counted in UTF-16 code units', () => {
+    const { description } = REQUEST_SCHEMA.properties.document.properties.diagnosis_codes;
+    expect(description).toContain('no control, format or separator character');
+    expect(description).toContain('UTF-16 code units');
+    expect(CASES.filter(([, , expected, keywords]) => keywords !== undefined && keywords !== expected)).toHaveLength(3);
+  });
+
+  test.each(CASES)('holds the same rule as the parsers of the kit for %s', (_what, value, expected, keywords) => {
     expect(serviceAccepts(value), 'the parsers of the kit').toBe(expected);
-    expect(accepts(REQUEST_SCHEMA as Schema, value), 'the schema of the manifest').toBe(expected);
+    expect(accepts(REQUEST_SCHEMA as Schema, value), 'the keywords of the schema of the manifest').toBe(keywords ?? expected);
   });
 });

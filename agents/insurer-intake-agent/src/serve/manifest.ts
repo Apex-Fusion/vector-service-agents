@@ -56,7 +56,10 @@ const AUTHORIZATION_REQUEST_SCHEMA = {
     patient_ref: idOf('A synthetic reference. No patient exists behind it'),
     ordering_clinician_ref: idOf('The reference of the ordering clinician, from the order'),
     service_code: idOf('The code of the service that the order asks for'),
-    diagnosis_codes: { type: 'array', minItems: 1, maxItems: 8, items: { type: 'string', minLength: 1, maxLength: 16 }, description: 'The diagnosis codes of the order: 1 to 8 codes of 1 to 16 characters' },
+    diagnosis_codes: {
+      type: 'array', minItems: 1, maxItems: 8, items: { type: 'string', minLength: 1, maxLength: 16 },
+      description: 'The diagnosis codes of the order: 1 to 8 codes of 1 to 16 UTF-16 code units each, with no control, format or separator character',
+    },
     justification: {
       type: 'string', minLength: 1, maxLength: MAX_JUSTIFICATION_CHARS,
       description: `The reasons for the service: 1 to ${MAX_JUSTIFICATION_CHARS} characters, with no control or hidden character but the line feed`,
@@ -107,7 +110,8 @@ const THIRD_PARTIES = [
   'the identity gateway (the resolution of the DID of the sender, and the request for the JWT-SVID)',
   'the ledger, read only (the delegation, the escrow paid from a vault, the sign-off and the other attestations of the sender)',
   'the insurer portal of the mock service (the read of the requirements and the filing of the request, with the JWT-SVID)',
-  'a model supplier on the Vector marketplace, hired through a bonded escrow, and the model provider behind it (the prompt of the decision: the request and the requirements)',
+  'a model supplier on the Vector marketplace, hired through a bonded escrow, and the model provider behind it (the prompt of the decision: the members ordering_clinician_ref, diagnosis_codes, justification, '
+  + 'guideline_refs, record_refs and record_set_sha256 of the request, and the requirements, and no other member of the request)',
   'the ledger, written only after a digest mismatch (the evidence document and the challenge)',
 ];
 

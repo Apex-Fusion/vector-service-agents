@@ -17,7 +17,7 @@ export const KEYS_GAP =
   'The controller key, the Accountable key and the guardian keys of this deployment are on one host of one operator, so a party is independent of the controller by key only.';
 export const NOT_SHOWN_GAP =
   'What this does not show: no run covers the refund of the escrow of a revoked agent, a relying party that refuses a live token after its authority ended, '
-  + 'or the challenge of the Prior Authorization Agent against this agent, because this agent has no fault value. Tests alone cover the last two.';
+  + 'or the challenge of the Prior Authorization Agent against this agent (this agent has no fault value). Tests alone cover the last two.';
 
 /** In the order the manifest states them. */
 export function gapsFor(): readonly string[] {

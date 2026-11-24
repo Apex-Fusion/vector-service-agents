@@ -110,7 +110,7 @@
                 "minLength": 1,
                 "maxLength": 16
               },
-              "description": "The diagnosis codes of the order: 1 to 8 codes of 1 to 16 characters"
+              "description": "The diagnosis codes of the order: 1 to 8 codes of 1 to 16 UTF-16 code units each, with no control, format or separator character"
             },
             "justification": {
               "type": "string",
@@ -221,7 +221,7 @@
       "the identity gateway (the resolution of the DID of the sender, and the request for the JWT-SVID)",
       "the ledger, read only (the delegation, the escrow paid from a vault, the sign-off and the other attestations of the sender)",
       "the insurer portal of the mock service (the read of the requirements and the filing of the request, with the JWT-SVID)",
-      "a model supplier on the Vector marketplace, hired through a bonded escrow, and the model provider behind it (the prompt of the decision: the request and the requirements)",
+      "a model supplier on the Vector marketplace, hired through a bonded escrow, and the model provider behind it (the prompt of the decision: the members ordering_clinician_ref, diagnosis_codes, justification, guideline_refs, record_refs and record_set_sha256 of the request, and the requirements, and no other member of the request)",
       "the ledger, written only after a digest mismatch (the evidence document and the challenge)"
     ],
     "claim": {
@@ -272,7 +272,7 @@
     "The report does not check the digest of the principal-binding attestation, because the salt and the document stay with the hirer.",
     "A source that cannot be read is reported as unreadable and never as absent.",
     "The controller key, the Accountable key and the guardian keys of this deployment are on one host of one operator, so a party is independent of the controller by key only.",
-    "What this does not show: no run covers the refund of the escrow of a revoked agent, a relying party that refuses a live token after its authority ended, or the challenge of the Prior Authorization Agent against this agent, because this agent has no fault value. Tests alone cover the last two."
+    "What this does not show: no run covers the refund of the escrow of a revoked agent, a relying party that refuses a live token after its authority ended, or the challenge of the Prior Authorization Agent against this agent (this agent has no fault value). Tests alone cover the last two."
   ],
   "links": {
     "spec": "https://github.com/Apex-Fusion/vector-service-agents/blob/main/specs/insurer-intake-agent.md",
