@@ -382,7 +382,7 @@ The service stakes no claim: no code of the service calls the staking. No comman
 | S2 | An intake record names the hash of the request this agent received. |
 | S3 | This agent files one entry per request number. |
 
-S2 is the statement that a wrong intake record breaks. When the intake record names another hash than the hash of the request that the Prior Authorization Agent sent, and the model of that agent says no, that agent declines the delivery and challenges the claim of this agent on S2. A challenge needs two things: an open claim of this agent, and two hashes that differ. A no of the model for two equal hashes gives `no_contradiction`, and an accept of the model for two hashes that differ gives `decision_failed`. Neither files a challenge. Until a command stakes a claim for this agent, a challenge ends with `no_open_claim`. No run covers that challenge, because this agent has no fault value (see Known gaps).
+S2 is the statement that a wrong intake record breaks. When the intake record names another hash than the hash of the request that the Prior Authorization Agent sent, and the model of that agent says no, that agent declines the delivery and challenges the claim of this agent on S2. A challenge needs two things: an open claim of this agent, and two hashes that differ. With an open claim, a no of the model for two equal hashes gives `no_contradiction`, and an accept of the model for two hashes that differ gives `decision_failed`. Neither files a challenge. Until a command stakes a claim for this agent, a challenge ends with `no_open_claim`. No run covers that challenge, because this agent has no fault value (see Known gaps).
 
 ## Fault switch
 
