@@ -466,3 +466,93 @@ The route signs only for a principal key on the allowlist that the operator sets
 | 500 | `internal` |
 
 The code `key_in_use` means that the delegation key is in use: the agent signed another body for it whose window is open, or a live delegation on the ledger names it.
+
+## What the receipt commits to
+
+The service signs no receipt. The runtime builds the receipt, signs it with the supplier key and submits its hash in the Submit transaction.
+
+| Receipt field | Value for this agent |
+|---|---|
+| `escrow_ref` | the escrow UTxO, `<txid>#<index>`: 64 lower-case hex characters, a hash sign, and an output index with no leading zero |
+| `supplier_pkh` | the key hash of the supplier key |
+| `prompt_hash` | sha256 of the UTF-8 bytes of the wire payload, as the buyer committed it in the escrow datum |
+| `response_hash` | sha256 of the UTF-8 bytes of the result exactly as the service returned them |
+| `model` | `prior-authorization-agent-v1` |
+
+The runtime writes the other fields of the receipt. The result is the committed output. The receipt of a `propose` job commits the authorization request, the hash of the record set, the salt, the digest of the proposal, and the decision of the model with its reasoning and the sub-job that bought it. The receipt of an `execute` job commits the outcome, the intake record that the Insurer Intake Agent returned with its receipt, the decision on the delivery, the write to the records system and, on `disputed`, the references of the challenge. The sub-receipt of a model is signed by the model supplier under its own key, and accountability for the result stays on the key of this agent.
+
+It does not commit to the justification being clinically right, or to the record set being complete beyond what the records system returned.
+
+The signature is Ed25519 over the canonical JSON of the receipt. The sha256 of the canonical JSON of `{ receipt, signature }` is the `result_receipt_hash` in the Submitted escrow datum.
+
+## Claim statements
+
+The service stakes no claim, and no code of the service calls the staking of one. Before a run, an operator command stakes one claim with the service key of the agent: 50 units, with a challenge window of 24 hours. The operator withdraws the claim after the window. A claim has these three statements. The manifest holds them in `behaviour.claim`, with no reference to a claim. A challenge names the text of a statement.
+
+| Id | Statement |
+|---|---|
+| S1 | A request this agent submits is byte-identical to the document whose digest its hirer approved. |
+| S2 | The record set hash in a request is the hash of the set its drafter was given. |
+| S3 | This agent reads records and guidelines only through its subagents, each with its own token under its own sub-delegation. |
+
+## Fault switch
+
+`FAULT_MODE=alter_after_approval`. It is for a failure run only.
+
+With this value, `execute` changes the last sentence of the justification after the approval, and before it sends the handoff to the Insurer Intake Agent. The last sentence becomes a fixed synthetic sentence. A justification of one sentence becomes that sentence. The changed request is still a valid request, and its digest is not the digest that the hirer approved. The Insurer Intake Agent finds that and refuses the request before its Claim.
+
+The manifest lists the value in `behaviour.fault_modes`, and it never says which value is active: the bytes of the manifest are the same for every value. Every result has the member `fault_mode`. It is the empty text in a clean run, and it is `alter_after_approval` in a failure run. The service stops at start when `FAULT_MODE` has any other value.
+
+## Operator and data handling
+
+Operator: Apex Fusion Foundation. The contact is `operator.contact` in the manifest.
+
+The order, the record set, the guideline, the authorization request and the intake record are synthetic data, and they are held in memory while a job runs. On disk the service keeps the bookkeeping of the escrows that it posts, the list of sub-delegations that it has to end, the record of the challenges that it files, the register of the transactions that it co-signed, and the counter of request numbers. The log carries job outcomes, counts and codes, never a record, a justification, a request or a key.
+
+Every record is synthetic, and no patient exists behind any of it. Do not send a record of a real person to this agent while it is a demonstration.
+
+The service keeps these files and folders in its state volume (`PRIORAUTH_STATE_DIR`, which is `/data` in the image):
+
+| Path | What it holds |
+|---|---|
+| `keys/<key hash>/stranded.json` | the escrows that a paying key posted and did not settle: one file for each of the service key and the two delegation keys. The janitor of the key reclaims them after their `deliver_by`, every 60 s |
+| `dispute/` | the journal of the challenges |
+| `left/` | the sub-delegations that a job left behind. Their janitor ends them, every 60 s |
+| `cosign-register.json` | the register of the delegation keys that a co-signed transaction uses, so a restart still answers `key_in_use` |
+| `request-numbers.json` | the counter of request numbers, one for each tenant. A number is stored before a job uses it |
+
+What leaves the service to third parties:
+
+| Party | What it receives |
+|---|---|
+| the identity gateway (the token requests of the agent and of its two subagents, record-reader and drafter) | the token request of the agent for the action `priorauth.submit`, with the subject token that the service key signs and the proof that the delegation key signs, and the token request of each subagent for its own action (`record.read` for `record-reader`, `guideline.read` for `drafter`), signed with its two keys. Each request names one action, one resource and one delegation |
+| the mock records system and guidelines store (the three calls that behaviour.relying_on lists, with their tokens) | a read of one order and its records, a read of one guideline, and a write of one submission. Each call carries a token for one action and one resource. The write holds the request number, the intake id and the status of the intake record |
+| a model supplier on the Vector marketplace, hired through a bonded escrow, and the model provider behind it (the prompt of the decision justification: the order without its patient reference and its clinician reference, the whole record set and the guideline; the prompt of the decision accept_delivery: the request number and the hash of the request that was sent, and the request number and the hash that the intake record names) | one job for each decision: the fixed prompt of the decision, its data and the reference of the escrow. The next table lists the data of the two decisions |
+| the Insurer Intake Agent (the request, the salt, the approval reference, the DID of this agent and the delegation) | the handoff. The handoff holds the authorization request, the salt, the approval reference, the DID of this agent and the identifier of the delegation. |
+| the Vector ledger (the two sub-delegations, the escrows, which carry only hashes, and, on a dispute, the evidence document and the challenge) | the Delegate and the Undelegate transactions of the two sub-delegations, the Post and the Accept transactions of the escrows, and, on a dispute, the evidence document and the challenge. Each stays in the history of the ledger |
+
+What each decision receives:
+
+| Decision | Data block | Left out |
+|---|---|---|
+| `justification` | `order` (`order_id`, `service_code`, `service_description`, `diagnosis_codes`, `ordered_at`), `records` (each record: `record_id`, `type`, `recorded_at`, `summary`) and `guideline` (`code`, `title`, `version`, `criteria` (each criterion: `id`, `text`) and `documentation`) | the `patient_ref` and the `ordering_clinician_ref` of the order. The agent copies them from the order into the request, and the model never writes them |
+| `accept_delivery` | `sent` and `record` (each one: `request_number` and `request_sha256`) | everything else of the request and of the intake record |
+
+The text of the records and of the guideline reaches the model only inside the marked data block, and never inside an instruction. The intake record reaches the model as one request number and one hash, and no text of it reaches the model. The agent checks the number and the sender of the intake record in code before it asks the model.
+
+To post and settle its escrows, the service reads the ledger through the node (Ogmios) and the Koios indexer, submits its transactions through the submit API, and finds the Insurer Intake Agent and the model suppliers on the marketplace indexer. They see the references and the transactions of those escrows, and nothing of a request. On the ledger an escrow carries only the sha256 of its wire payload. At start the service fetches one file: the Module-1 deployment manifest, at an https address that a commit pins. It sends no data of a job there.
+
+## Known gaps
+
+The manifest states these ten, in this order, word for word. A test keeps them equal to `gapsFor` in `agents/prior-authorization-agent/src/serve/gaps.ts`. The first seven are the gaps of the agent. The eighth says whose keys the parties are. The ninth starts with the lead `What this does not show:` and names three things that no run of use case 2 (prior authorization) covers. The tenth is the sentence of the kit about the fault switch.
+
+- Every record is synthetic. Nothing here has been run against a real records system or a real insurer.
+- The model writes the justification. Nothing in this agent checks it against the guideline.
+- This agent does not check the sign-off of the hirer. The Insurer Intake Agent does.
+- The subagent drafter is given the whole record set, but nothing forces the model to use all of it. The request carries the hash of the set so that a reviewer can compare.
+- A challenge puts a hold on the identity of the Insurer Intake Agent if the jury finds for this agent. It does not return what the escrow locked: a delivery that this agent refuses can still be released to the Insurer Intake Agent 600 s after its Submit.
+- A model call that fails ends the job. There is no second provider.
+- The insurer side is operated by the same foundation as this agent.
+- The controller key, the Accountable key and the guardian keys of this deployment are held on one host by one operator, so a party is independent of the controller by key only.
+- What this does not show: no run covers the refund of the escrow of a revoked agent, a relying party that refuses a live token after its authority ended, or a challenge of this agent against the Insurer Intake Agent, because that agent has no fault value. Tests alone cover the last two.
+- This service has a fault switch for failure runs with these possible values: alter_after_approval (in execute, one sentence of the justification changes before the handoff, so its digest differs from the approved digest); this manifest is the same for every value, so only the field fault_mode of each result shows which value is active.
