@@ -19,7 +19,7 @@ import { EnvReader } from '../../checks/lib/settings.ts';
 import { RUN_APPROVAL_VALIDITY_MS } from '../lib/claim-constants.ts';
 import type { AgentSpec, ClaimFact, Facts, StepOutcome, TaskDefinition, TaskSession, UseCase } from '../lib/contract.ts';
 import { MOCK_PUBLIC_BASE } from '../lib/mock-hosts.ts';
-import { checkAttestation, findRecord, isFaultSetting, readDelegation, readVaults, resolveEscrowLineage } from '../lib/platform.ts';
+import { checkAttestation, escrowPaidFromVault, findRecord, isFaultSetting, readDelegation, readVaults, resolveEscrowLineage } from '../lib/platform.ts';
 import type { LedgerEnv } from '../lib/platform.ts';
 import { FlagError } from '../lib/runner.ts';
 import { hireRoleOf, parseReport, parseRunRecord, readJsonFile, txInfoOf, txTimeOf } from '../lib/run-record.ts';
@@ -694,6 +694,7 @@ type Shown = readonly Ref[] | string;
 
 interface Assembly {
   readonly use: UseCase; readonly loaded: Loaded; readonly facts: Readonly<Facts>; readonly reads: Reads; readonly mock: MockRead | null; readonly lineages: ReadonlyMap<string, LineageView>; readonly caseRead: CaseRead | null;
+  readonly paid: PaidRead;
 }
 
 const hireRefs = (hire: HireView): Ref[] => [
@@ -714,9 +715,32 @@ function logHas(a: Assembly, route: string, credential: string, act: number | nu
 const refusalOf = (a: Assembly, step: string, kind: 'ledger' | 'tool'): boolean => a.loaded.record.refusals.some((one) => one.step === step && one.kind === kind);
 
 /** The Order Desk hire that the carried hire of execute made, found by the escrow reference of its handoff. */
-function deskOf(a: Assembly): HireView | undefined {
-  const target = handoffRef(a.loaded);
-  return a.loaded.hires.find((hire) => hire.role === 'order-desk' && hire.entry.escrow_ref === target);
+function deskIn(loaded: Loaded): HireView | undefined {
+  const target = handoffRef(loaded);
+  return loaded.hires.find((hire) => hire.role === 'order-desk' && hire.entry.escrow_ref === target);
+}
+
+const deskOf = (a: Assembly): HireView | undefined => deskIn(a.loaded);
+
+/** What a read of the chain says of the payment of the Order Desk hire: it was made from the vault of a delegation of the run (`paid`), or the reason why the chain does not show it. */
+interface PaidRead { readonly paid: boolean; readonly why: string }
+
+/**
+ * Reads the transaction that made the escrow of the Order Desk hire (`escrowPaidFromVault` of buyer-core): it wants a vault input that the vault script spent with the Pay redeemer, and whose datum is Live under a
+ * delegation of the run. The result of the agent says `paid_from_vault` too, and that is its own word: the step rests on this read only.
+ */
+async function readPaidFromVault(session: TaskSession<Extra>, loaded: Loaded): Promise<PaidRead> {
+  const desk = deskIn(loaded);
+  if (desk === undefined) return { paid: false, why: 'the record has no hire of the Order Desk for the carried hire of execute' };
+  let why = 'the record lists no delegation';
+  for (const entry of loaded.record.delegations) {
+    try {
+      const read = await escrowPaidFromVault(envOf(session), desk.entry.escrow_ref, entry.id);
+      if (read.paid) return { paid: true, why: '' };
+      why = shown(read.detail);
+    } catch (err) { why = `the payment cannot be read (${shown(err)})`; }
+  }
+  return { paid: false, why };
 }
 
 const named = (a: Assembly, step: string): HireView | undefined => a.loaded.hires.find((hire) => hire.entry.step === step);
@@ -738,8 +762,9 @@ const RULES: Readonly<Record<string, (a: Assembly) => Shown>> = {
   'r1-06': (a) => (a.reads.approval === null ? 'the approval is not confirmed by a read' : [ref('attestation', a.loaded.record.approval.attestation), ref('transaction', a.loaded.record.approval.tx)]),
   'r1-07': (a) => (a.loaded.carried === null ? 'no hire of execute carried an order' : hireRefs(a.loaded.carried)),
   'r1-08': (a) => {
-    const d = deskOf(a); const handoff = a.loaded.carried?.result.handoff;
-    return d === undefined || !isObject(handoff) || handoff.paid_from_vault !== true ? 'no hire of the Order Desk was paid from the vault by the carried hire of execute' : [ref('transaction', d.entry.post_tx), ref('escrow', d.entry.escrow_ref)];
+    const d = deskOf(a);
+    if (d === undefined) return 'the record has no hire of the Order Desk for the carried hire of execute';
+    return a.paid.paid ? [ref('transaction', d.entry.post_tx), ref('escrow', d.entry.escrow_ref)] : `the chain does not show the Order Desk hire as paid from the vault: ${a.paid.why}`;
   },
   'r1-09': (a) => {
     const d = deskOf(a); const e = d === undefined ? null : decisionEscrow(d, 'availability');
@@ -896,7 +921,9 @@ async function assemble(session: TaskSession<Extra>): Promise<{ kind: 'wait'; me
   if (caseRead !== null && caseRead.verdict !== null && caseRead.indexed !== null) await confirmAll(session, caseTransactions(caseRead.indexed), problems);
   const last = [...loaded.hires].reverse().find((hire) => hire.role === 'execute');
   if (last === undefined || typeof last.result.exit_state !== 'string' || !EXIT_STATES.includes(last.result.exit_state)) problems.add('exit_state', `the result of the last hire of execute has no exit_state of ${EXIT_STATES.join(', ')}`);
-  const assembly: Assembly = { use: session.use, loaded, facts, reads, mock, lineages, caseRead };
+  const needsPayment = session.use.evidenceSteps.some((step) => step.id === 'r1-08' && (step.run === record.kind || step.run === 'both'));
+  const paid: PaidRead = needsPayment ? await readPaidFromVault(session, loaded) : { paid: false, why: 'the steps of this kind of run need no payment from the vault' };
+  const assembly: Assembly = { use: session.use, loaded, facts, reads, mock, lineages, caseRead, paid };
   const steps = stepsOf(assembly, problems);
   problems.stop();
   if (caseRead !== null && caseRead.verdict === null) return { kind: 'wait', message: caseRead.waiting!, untilMs: null };

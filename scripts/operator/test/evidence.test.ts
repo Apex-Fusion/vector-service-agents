@@ -56,7 +56,7 @@ interface Scenario {
   digest: string; approval: Obj; approvalVisible: boolean; delegations: Array<{ id: string; live: boolean }>; vaults: Array<{ utxo: Utxo | null }>;
   log: Obj[]; dropped: number; poOrders: number; supplierOrders: number; mockStatus: number;
   faultEntries: Obj[] | null; cases: Obj[]; deskHold: 'held' | 'none'; juryFailed: boolean; unconfirmed: Set<string>; extraRows: TxRow[]; skipKoiosTx: Set<string>; eventualDeskFault: string;
-  challengeKnown: boolean; spendOverride: Map<string, string>; indexed: Obj[]; indexerStatus: number; indexerBody: unknown; holdSince?: number;
+  challengeKnown: boolean; spendOverride: Map<string, string>; indexed: Obj[]; indexerStatus: number; indexerBody: unknown; holdSince?: number; payFromWallet: boolean;
 }
 
 const txOf = (step: string, what: 'post' | 'claim' | 'submit' | 'accept' | 'reclaim'): string => h(`${what} of ${step}`);
@@ -137,7 +137,7 @@ function scenario(kind: 'clean' | 'failure'): Scenario {
     vaults: kind === 'clean' ? [{ utxo: null }] : [{ utxo: live }, { utxo: null }],
     log: [logLine('GET /erp/stock/{sku}', 'token', ['did:vector:one', 'did:vector:two']), logLine('POST /supplier/orders', 'x509-svid', []), logLine('POST /po', 'token', ['did:vector:one'])],
     dropped: 0, poOrders: 1, supplierOrders: 1, mockStatus: 200, faultEntries: null, cases: [], deskHold: 'none', juryFailed: false, unconfirmed: new Set(), extraRows: [], skipKoiosTx: new Set(),
-    eventualDeskFault: '', challengeKnown: true, spendOverride: new Map(), indexed: [], indexerStatus: 200, indexerBody: undefined,
+    eventualDeskFault: '', challengeKnown: true, spendOverride: new Map(), indexed: [], indexerStatus: 200, indexerBody: undefined, payFromWallet: false,
   };
 }
 
@@ -205,7 +205,7 @@ async function go(s: Scenario, argv: string[] = ['run', '--run', s.label, '--num
     };
     writeFileSync(join(dir, s.label, `${one.step}.report.json`), JSON.stringify(report));
     const claim = txOf(one.step, 'claim'); const submit = txOf(one.step, 'submit');
-    if (one.role === 'order-desk') {
+    if (one.role === 'order-desk' && !s.payFromWallet) {
       const spent = vaultHead[0]!;
       const out = (index: number, credential: string): TxIo => ({ tx_hash: post, tx_index: index, value: '5200000', payment_addr: { cred: credential, bech32: 'addr1test' }, inline_datum: null });
       const pay: Contract = {
@@ -214,7 +214,10 @@ async function go(s: Scenario, argv: string[] = ['run', '--run', s.label, '--num
       };
       row(post, one.minute, [input(ref('wallet', 1), WALLET_CREDENTIAL), vaultInput(spent)], { outputs: [out(0, ESCROW_CREDENTIAL), out(1, VAULT_CREDENTIAL)], plutus_contracts: [pay] });
       vaultHead[0] = `${post}#1`;
-    } else row(post, one.minute, [input(ref('wallet', 1), WALLET_CREDENTIAL)]);
+    } else {
+      const escrowOutput: TxIo = { tx_hash: post, tx_index: 0, value: '5200000', payment_addr: { cred: ESCROW_CREDENTIAL, bech32: 'addr1test' }, inline_datum: null };
+      row(post, one.minute, [input(ref('wallet', 1), WALLET_CREDENTIAL)], one.role === 'order-desk' ? { outputs: [escrowOutput] } : {});
+    }
     row(claim, one.minute + 1, [input(`${post}#0`, ESCROW_CREDENTIAL)]);
     row(submit, one.minute + 2, [input(`${claim}#0`, ESCROW_CREDENTIAL)]);
     if (end !== null) row(end, one.minute + 3, [input(s.spendOverride.get(end) ?? `${submit}#0`, ESCROW_CREDENTIAL)]);
@@ -707,6 +710,35 @@ describe('check 4: each ended or closed entry is tied to its id by a read of its
     const s = scenario('clean');
     s.skipKoiosTx.add(h('delegation tx 0'));
     await refuses(s, ['delegations[0].tx: does not mint', 'Koios does not know the transaction']);
+  });
+});
+
+describe('check 10: the step of the payment from the vault rests on a read of the transaction that made the escrow', () => {
+  const stepOf = (doc: Obj, id: string): Obj => (doc.steps as Obj[]).find((one) => one.id === id)!;
+  it('refuses a clean run whose Order Desk post spends only a wallet input, although the result says that the vault paid', async () => {
+    const s = scenario('clean');
+    s.payFromWallet = true;
+    expect((s.hires[1]!.result.handoff as Obj).paid_from_vault).toBe(true);
+    const r = await refuses(s, ['steps.r1-08', 'the chain does not show the Order Desk hire as paid from the vault', 'is at the vault script']);
+    expect(r.err).not.toContain('steps.r1-07');
+  });
+  it('shows the step from the read of the chain, whatever the result says of its own payment', async () => {
+    const s = scenario('clean');
+    (s.hires[1]!.result.handoff as Obj).paid_from_vault = false;
+    const r = await go(s);
+    expect(r.exit).toBe(0);
+    const step = stepOf(JSON.parse(r.read(publicFile())!) as Obj, 'r1-08');
+    expect(step).toMatchObject({ status: 'shown' });
+    expect((step.refs as Array<{ kind: string; value: string }>).map((one) => one.value)).toEqual([txOf('order-desk', 'post'), `${txOf('order-desk', 'post')}#0`]);
+  });
+  it('reads no payment of the failure run, which has no step that needs it', async () => {
+    const s = decided();
+    s.payFromWallet = true;
+    s.vaults = [
+      { utxo: vaultUtxo({ type: 'Live', owner: { type: 'PrincipalKey', hash: 'cc'.repeat(28), organisation: null }, delegation: h('delegation c'), spent: 0n, periodStart: CAPTURE_MS }, 8_300_000n, { txHash: h('vault open 0'), outputIndex: 0 }) },
+      { utxo: null },
+    ];
+    expect((await go(s)).exit).toBe(0);
   });
 });
 
