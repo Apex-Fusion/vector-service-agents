@@ -844,3 +844,221 @@ The ranking is the `document` of the proposal. The hirer reads it, approves its 
 The model gives the order and nothing else. No code sorts by score: an order that does not follow the scores is an order that the model chose. The job accepts the order only when it is a list of DIDs that holds each scored bidder once (`ranking_invalid` otherwise). The score is not worked out again from the components and the weights: the model decides the numbers, and the job holds only that each number is from 0 to 100.
 
 The model never writes the `quote` member. The job builds it from the quote that the agent holds and accepted: the escrow of its record, the hash of its signed receipt, and the total and the lead time of the parsed quote. So a score cites the signed quote that it was computed from, and the ranking holds only bidders whose signed quote the agent holds and accepted. To check a score, find the record of the quote under `quotes` by its `escrow_ref`, hash `{ receipt, signature }`, and compare the hash with `receipt_sha256`.
+
+### Outcomes
+
+The outcome and the exit state of an `execute` result follow one rule. The exit state is `Completed`, `Rejected`, `Expired`, `Cancelled`, `Escalated` or `Failed`.
+
+| Outcome | Exit state | When |
+|---|---|---|
+| `completed` | `Completed` | the sourcing record wrote the ranking |
+| `refused_by_system` | `Rejected`, but `Expired` for `approval_expired` and `Cancelled` for `delegation_ended` | the sourcing record refused the ranking. The `reason` is its code |
+| `failed` | `Failed` | any other end. The `reason` is a code |
+
+`execute` writes these three outcomes and no other. It hires nobody, so it has no `vault_refused` and no `refused_by_counterparty`. It files no challenge, so it has no `disputed`. A delegation that the hirer ended gives no token, and the job ends `failed` with `token_failed`: the exit state `Cancelled` comes only when the sourcing record itself refuses with `delegation_ended`. A `propose` job ends with `proposed` or with `failed`, and a proposal has no exit state.
+
+### Errors
+
+A call that the service refuses has the body `{ "error": "<code>", "message": "<words>" }`, with the status of the first table. Four answers carry the code only, with no `message`: the 401, the 404, the 409 of a job, and a 500 for an error that the service does not name. The 409 of `POST /precheck` has a `message`. A refusal with a status of 500 or more gets fixed words, and the whole message is in the log. A job that the service runs and that does not end well is no HTTP error: it is a 200 result with the outcome `failed` and a `reason` code.
+
+| Status | Codes |
+|---|---|
+| 400 | `bad_wire` (not the one-element message array), `request_too_large` (over a limit of Terms), `bad_shape` (a request that breaks a rule of Request, a tenant outside the form of the schema among them), `bad_context` (a context header that is missing or bad), `delegation_not_mine` (the delegation names another agent as its delegate) |
+| 401 | `unauthorized` (no authorization header, or one that is not the token of the service) |
+| 404 | `not_found` (any other path, and any method that a route does not take) |
+| 409 | `busy` (a job runs, or the slot is reserved for another escrow) |
+| 500 | `internal` |
+| 503 | `shutting_down` (the service is stopping) |
+
+The next table lists each code that a job writes as the `reason` of a `failed` result. The column Job says which job writes it: `propose`, `execute` or both. The same list holds the code of a bidder that the job leaves out (`excluded` of the ranking) and the code that stops the quote hires. The other outcomes have their own reasons: see Outcomes. The reason of a `refused_by_system` result is a code of the sourcing record, and the record chooses it. Two rows stand for a class of codes and not for one code: `sub_delegation_<code>`, and the code of the protocol that a Bid Desk answers with.
+
+| Reason | Job | What it says |
+|---|---|---|
+| `delegation_key_unknown` | both | the delegation names a delegate key that the agent does not hold |
+| `delegation_not_found` | both | the ledger shows no delegation with that identifier |
+| `ledger_unavailable` | both | a read of the ledger gave no answer in time, or an answer that the job cannot read. In `propose` it can also come from a quote hire |
+| `bad_document` | both | in `propose`, the kit refuses the ranking as the document of a proposal. In `execute`, the document is no ranking |
+| `aborted`, `deadline` | both | the caller hung up, or the job ran out of its time. In `propose`, `aborted` and `deadline` also stand for a bidder that is not paid (step 4) and for a scoring or a ranking decision that has less time than its reserve |
+| `bidders_unavailable`, `no_bidders` | `propose` | `propose` cannot read the bidders (step 2 of `propose`): the listing cannot be read or the chain gave no usable answer, or every read worked and no Bid Desk is a candidate |
+| `shortlist_unknown_bidder`, `nobody_invited` | `propose` | the model invites a DID that is not a candidate, or invites nobody (step 3) |
+| `no_quotes` | `propose` | no bidder has an accepted quote |
+| `ranking_invalid` | `propose` | the ranking cannot be built: a score or a component is not a number that the kit takes, or the order of the model is not a list that holds each scored bidder once |
+| `decision_mismatch` | `propose` | the choice that the job built is not the choice that the decision records: in the shortlist, in a score or in the ranking decision |
+| `internal` | `propose` | the job threw, a port gave an answer of a wrong form, or a code that the job read is not in the form of a code |
+| `ranking_not_for_tenant` | `execute` | the ranking is for another tenant than the request |
+| `token_failed` | `execute` | the identity gateway gave no token for the write to the sourcing record. A delegation that the hirer ended gives none |
+| `mock_system_failed` | `execute` | the call to the sourcing record neither wrote the ranking nor refused it. The ranking can be written: read the sourcing record before you send `execute` again |
+| `vendors_refused`, `vendors_failed`, `vendors_invalid` | `propose` | the read of the vendor master by a scorer was refused, failed, or gave an answer that is no vendor list |
+| `scorer_token_failed` | `propose` | the identity gateway gave a scorer no token |
+| `scorer_threw`, `scorer_timed_out` | `propose` | a scorer threw, or it did not end within its time |
+| `score_invalid` | `propose` | the answer of a scorer is no score: a number is not from 0 to 100 |
+| `sub_delegation_<code>` | `propose` | the sub-delegation of a scorer failed. The `<code>` is one of `bad_request`, `parent_unreadable`, `parent_not_live`, `parent_exhausted`, `parent_expiring`, `build_refused`, `build_mismatch`, `missing_signer`, `sign_failed`, `submit_failed`, `confirmation_timeout`, `ledger_unreadable`, `sub_delegation_unusable`, `journal_failed`, `step_timeout` and `internal` |
+| `llm_supplier_unavailable` | `propose` | no model on the allowlist is within the three limits, so no hire starts |
+| `llm_out_of_time`, `hire_threw` | `propose` | the deadline came during the hire of the model, or less than 60 s were left when the decision began, so no hire started (`llm_out_of_time`); or a port threw, or the result of the hire cannot be read (`hire_threw`) |
+| `llm_post_failed`, `llm_busy`, `llm_refused`, `llm_send_lost`, `llm_failed`, `llm_timeout`, `llm_bad_result`, `llm_receipt_failed`, `llm_receipt_unavailable`, `llm_accept_failed` | `propose` | the hire of the model failed with a code of the hire kit, and the code follows the prefix. The ten codes of the hire kit are in the row of the hire of a Bid Desk |
+| `model_output_invalid` | `propose` | the hire of the model ended, and its answer is not usable as a choice |
+| `choice_changed`, `bad_decision` | `propose` | the parser of the decision is wrong: it returned a value that is not the choice that the model gave (`choice_changed`), or the definition of the decision or its parser is wrong (`bad_decision`) |
+| `bad_limit`, `bad_input`, `bad_deps` | `propose` | a limit, the input or the clock of the decision is wrong, and nothing was hired |
+| `store_write_failed` | `propose` | a record of a hire could not be written on the volume |
+| `not_active`, `disputed` | `propose` | two of the four words of `reason` in an entry of `excluded` (see The ranking). The other two, `refused` and `failed`, stand in the row of the hire kit. The four are the reasons of a bidder and not the reason of a failed job |
+| `suspended`, `revoked`, `retired`, `not_found` | `propose` | the code of a `not_active` bidder: the status of its record when the agent read it again |
+| `no_price_list`, `status_unreadable` | `propose` | the bidder has no price list that the agent can check, or the status of its record could not be read again. Nothing is paid |
+| `not_attempted` | `propose` | a bidder after one whose decision failed: no bidder after a failed decision is paid |
+| `delegation_not_mine`, `request_too_large`, `bad_shape` | `propose` | the hire flow refused the request for quotation before the Pay, and nothing was paid |
+| `advert_not_counterparty`, `advert_unavailable` | `propose` | the advert of the bidder is not an advert of that Bid Desk, or no agent can be hired for it, and nothing was paid |
+| `no_live_vault`, `several_live_vaults` | `propose` | the delegation has no Live vault, or has more than one, so the quote cannot be paid |
+| `vault_refused` | `propose` | the ledger refused the Pay from the vault, or the builder could not make it, and nothing was paid |
+| `earlier_pay_may_land`, `pay_unconfirmed` | `propose` | an earlier Pay of the same key, or this Pay, was sent and not seen confirmed, and it may still land |
+| `hire_error` | `propose` | an error that no other code names ended the hire before any Pay |
+| `post_failed`, `busy`, `refused`, `send_lost`, `failed`, `timeout`, `bad_result`, `receipt_failed`, `receipt_unavailable`, `accept_failed` | `propose` | the hire of a Bid Desk failed, and the hire kit gave the code. The flow turns any other code into `inconsistent_outcome`. `refused` and `failed` are also two of the four words of `reason` in an entry of `excluded` |
+| `decision_error`, `hire_interrupted` | `propose` | an error ended the hire after the Pay was confirmed. `decision_error` stands when the error came from the decision `accept_quote` |
+| `counterparty_refused` | `propose` | a Bid Desk refused before its Claim with no rule of the protocol, and the protocol does not list the code of its answer |
+| `sender_not_active`, `sender_unaccountable`, `sender_key_mismatch`, `delegation_invalid`, `delegation_ended`, `not_vault_paid`, `duplicate_rfq` | `propose` | the Bid Desk refused the request before its Claim with one of its seven refusal codes, and the bidder is left out as `refused`. The escrow stays Open until the janitor of the key reclaims it |
+| `quote_invalid`, `quote_not_from_bidder`, `quote_not_for_rfq`, `quote_not_from_list` | `propose` | a check in code failed before the model was asked (step 4 of `propose`). The agent files no challenge |
+| `delivery_not_recordable`, `decision_timeout` | `propose` | the receipt of the Bid Desk names no supplier key hash, so the delivery cannot be recorded, or the decision on the quote did not end in time |
+| `decision_failed` | `propose` | the decision `accept_quote` could not be made or read. The quote hires stop |
+| `answer_missing`, `answer_invalid`, `choice_invalid`, `choice_not_recorded`, `decision_threw`, `invalid_code` | `propose` | the answer of the decision `accept_quote` is not a decision that the agent can act on, so nothing is accepted. These codes stop the quote hires and end the job |
+| `inconsistent_outcome` | `propose` | the hire kit gave an outcome that does not hold together, so the job trusts none of it. The quote is not held |
+| `no_open_claim`, `no_evidence`, `no_contradiction`, `same_agent`, `job_already_disputed`, `claim_window_closing`, `journal_unavailable`, `chain_unavailable`, `document_too_large`, `evidence_not_built`, `evidence_not_confirmed`, `claim_changed`, `challenge_not_built`, `challenge_not_confirmed`, `challenge_wrong_claim`, `port_error` | `propose` | the code of a `disputed` bidder: the model did not accept the quote, and the agent did not file or finish the challenge. `no_open_claim` says that the Bid Desk has no open claim, and `no_evidence` says that the model named no line whose quoted unit price differs from its listed price. `port_error` says that a transaction may have landed |
+| a code of the protocol | `propose` | a Bid Desk answered an error before its Claim with a code that `ERROR_STATUS` of the kit lists, and that no other row names, such as `bad_wire` (400). The reason is that code |
+
+### The co-sign route
+
+`POST /cosign/delegate` is an open route of the service: it needs no token, and it takes no job slot. The route takes `POST` only. Any other method gets the 404 `not_found` of the service, as an unknown path does. The body is `{ "transaction": "<hex CBOR>" }`. The answer is 200 `{ "transaction": "<hex CBOR>" }`: the same transaction with one more witness, of the delegation key that its datum names. A refusal is `{ "error": "<code>", "message": "<words>" }`.
+
+The route signs only for a principal key on the allowlist that the operator sets with `COSIGN_ALLOWLIST`. The empty allowlist holds nobody, and a service with no such setting does not start. The rule of the route is the rule that the manifest states in `behaviour.cosign`:
+
+> The agent signs one kind of transaction: a Delegate transaction of the delegation contract that names this agent as the delegate and one of its own delegation keys as the delegate key. The delegator must have signed the transaction first, and the delegator must be a principal key on the allowlist of the operator. The delegation key must have no live delegation and no other signed transaction whose window is open. The transaction must spend nothing of the agent, and it must have no certificate, no withdrawal and no other mint. Its validity window must end in the future, and not too far ahead, and the period of the delegation must not be over. The agent adds one witness of the delegation key and changes nothing else.
+
+| Status | Codes |
+|---|---|
+| 400 | `not_a_delegation`, `not_for_this_agent`, `expired`, `bad_shape`, `request_too_large` |
+| 403 | `principal_not_allowed`, `spends_agent_funds` |
+| 409 | `key_in_use`, `busy` |
+| 415 | `unsupported_media_type` |
+| 500 | `internal` |
+| 503 | `check_unavailable` |
+
+The code `key_in_use` means that the delegation key is in use: the agent signed another body for it whose window is open, or a live delegation on the ledger names it.
+
+## What the receipt commits to
+
+The service signs no receipt. The runtime builds the receipt, signs it with the supplier key and submits its hash in the Submit transaction.
+
+| Receipt field | Value for this agent |
+|---|---|
+| `escrow_ref` | the escrow UTxO, `<txid>#<index>`: 64 lower-case hex characters, a hash sign, and an output index with no leading zero |
+| `supplier_pkh` | the key hash of the supplier key |
+| `prompt_hash` | sha256 of the UTF-8 bytes of the wire payload, as the buyer committed it in the escrow datum |
+| `response_hash` | sha256 of the UTF-8 bytes of the result exactly as the service returned them |
+| `model` | `sourcing-agent-v1` |
+
+The runtime writes the other fields of the receipt. The result is the committed output. The receipt of a `propose` job commits the ranking, its salt and its digest, the file of every candidate as the agent read it, every quote with the signed receipt of its Bid Desk, every model decision with its reasoning and the sub-job that bought it, and any challenge that the agent filed. The receipt of an `execute` job commits the outcome and the one write to the sourcing record, with its reference when it has one. The sub-receipt of a model supplier and the receipt of a Bid Desk are signed by those parties under their own keys, and accountability for the result stays on the key of this agent.
+
+It does not commit to the ranking being right, to the prices of the Bid Desks being fair, or to any order being placed. The use case ends at the approved ranking.
+
+The signature is Ed25519 over the canonical JSON of the receipt. The sha256 of the canonical JSON of `{ receipt, signature }` is the `result_receipt_hash` in the Submitted escrow datum.
+
+## Claim statements
+
+The service stakes no claim, and no code of the service calls the staking of one. No command of this repository stakes a claim for this agent yet. Until one does, a challenge against it ends with `no_open_claim`. The design is that, before each run, the operator stakes one claim with the service key of the agent: 50 units, which is 50000000 lovelace, with a challenge window of 24 hours. After the window, the operator withdraws the claim when nobody challenged it. A claim has these three statements. The manifest holds them in `behaviour.claim`, with no reference to a claim. A challenge names the text of a statement.
+
+| Id | Statement |
+|---|---|
+| S1 | Every score in a ranking cites the signed quote it was computed from. |
+| S2 | This agent ranks only bidders whose signed quote it holds and accepted. |
+| S3 | A ranking this agent writes to a sourcing record is the document whose digest its hirer approved. |
+
+The job builds the `quote` member of each ranked entry from the quote that it holds and accepted, and the model never writes it: that holds S1 and S2. `execute` writes the document as the hirer holds it: that holds S3 together with the approval check of the sourcing record. The agent challenges the claim of a Bid Desk and never its own claim. It uses the first statement of the claim of the Bid Desk: "The unit price of every line in a quote is the price its published price list gives for that SKU and quantity."
+
+## Fault switch
+
+`FAULT_MODE=invert_scores`: the scorer of the first accepted quote returns each of its four component scores and its score as 100 minus the value. The subtraction is made on the decimal text of the number, so 80.2 gives 19.8. The other scorers are not changed. The decision that the model made stays on record as the model gave it: the reversal is made on the answer of the scorer, after the job checked that answer. The ranking holds the reversed numbers, and its `quote` members still cite the right quotes, so an approver who opens the quote behind a score can see that the score does not fit it.
+
+The planned failure run sets the switch on this agent to show that an approver can find a wrong score from the quote that it cites. No command of this repository runs use case 3 yet. The switch changes what the job writes and never a check.
+
+The switch is empty in a clean run. Any other value than `invert_scores` stops the start of the service. The service reads the switch one time, at start. It is declared in the manifest, in `behaviour.fault_modes`, and the manifest is the same for every value. Each result returns the active value as `fault_mode`, its last member.
+
+## Operator and data handling
+
+Operator: Apex Fusion Foundation. The contact is `operator.contact` in the manifest.
+
+The request for quotation, the weights, the quotes, the files of the bidders and the entries of the vendor master are synthetic data, and they are held in memory while a job runs. On disk the service keeps the bookkeeping of the escrows it posts, the list of sub-delegations that it has to end, the record of the challenges it files and the register of the transactions it co-signed. The log carries job outcomes, counts and codes, never a request, a quote, a price list, a vendor entry or a key. What leaves to third parties:
+
+| Party | What it receives |
+|---|---|
+| the identity gateway (the token requests of the agent and of its scorers, the DID resolutions, the catalog and the credentials of the bidders) | the token request of the agent for the action `sourcing.award.write`, with the subject token that the service key signs and the proof that the delegation key signs, and the token request of each scorer for the action `vendor.read`, signed with its two keys. Each request names one action, one resource and one delegation. It also receives the DID of each bidder, for the resolution of its record and the read of its credential, and a read of the catalog |
+| the marketplace indexer (the list of the adverts of the bidders) | the capability of the Bid Desks, and the listing of their adverts |
+| the mock vendor master and the sourcing record (the calls above, with their tokens) | a read of the vendor list of the tenant by each scorer, and a write of one approved ranking. Each call carries a token for one action and one resource. The write holds the ranking |
+| each invited Bid Desk (the request for quotation, the DID of this agent and the delegation, and not the weights) | the request for quotation: the identifier, the items and the date. It also receives the DID of this agent and the identifier of the delegation. It receives no weight, no score and nothing of another bidder |
+| a model supplier on the Vector marketplace, hired through a bonded escrow, and the model provider behind it (the prompt of each decision: the files of the bidders, a quote with its price list, a quote with its vendor entry and the weights, and the scores) | one job for each decision: the fixed prompt of the decision, its data and the reference of the escrow. The data of each decision is in the table below |
+| the Vector ledger (reads of stakes, cases and attestations, the sub-delegations and, on a refused quote, the evidence document and the challenge) | the reads of the stake, the open cases and the compliance attestations of the bidders, the Delegate and the Undelegate transactions of each sub-delegation, the Pay and the Accept of each quote hire, and, on a refused quote, the evidence document and the challenge. Each transaction stays in the history of the ledger |
+
+What each decision receives:
+
+| Decision | Data block | Left out |
+|---|---|---|
+| `shortlist` | `request` (`items` and `needed_by`) and `bidders` (the facts of each file) | the identifier of the request, the weights, and the members of a file that the model does not read (see The bidder file) |
+| `accept_quote` | `request` (`items`), `quote` (`lines`, each with `sku`, `quantity`, `unit_price` and `lead_time_days`) and `price_list` (the entries for the SKUs of the lines) | the notes, the credential, the organisation, the sender, the checks and the decisions of the quote, and the line totals |
+| `score` | `today`, `weights`, `request`, `quote` (`lines`, `total`, `lead_time_days` and `valid_until`), `lines_quoted`, `items_requested`, `bidder` (the facts of the file) and `vendor` (the entry of the vendor master, or `null`) | the notes, the credential, the organisation, the sender, the checks and the decisions of the quote |
+| `ranking` | `weights` and, for each scored bidder, `desk_did`, `score`, `components`, `total` and `lead_time_days` | every text of a bidder or of a vendor |
+
+No free text of a bidder reaches a decision: a file holds closed lists, numbers, booleans, hashes, a domain, DIDs and times, and a quote reaches the decisions as lines, prices and dates. The one free text that a decision reads is in the entry of the vendor master, which holds a name and a list of certifications. Those two reach the model inside the data block of `score`, and never inside an instruction. The data of every decision reaches the model only inside one marked data block.
+
+To post and settle its escrows, the service reads the ledger through the node (Ogmios) and the Koios indexer, submits its transactions through the submit API, and finds the Bid Desks and the model suppliers on the marketplace indexer. They see the references and the transactions of those escrows, and nothing of a request. On the ledger an escrow carries only the sha256 of its wire payload. At start the service fetches one file: the Module-1 deployment manifest, at an https address that a commit pins. It sends no data of a job there.
+
+The service keeps these files and folders in its state directory (`SOURCING_STATE_DIR`, which is `/data` in the image):
+
+| Path | What it holds |
+|---|---|
+| `keys/<key hash>/stranded.json` | the bookkeeping of the escrows that a paying key posted and did not settle: references, times and transaction hashes, never a request or a quote. There is one folder for each of the three paying keys |
+| `dispute/` | the journal of the challenges that the service files |
+| `left/` | the sub-delegations that a job left behind, which their janitor ends |
+| `cosign-register.json` | the register of the delegation keys that a co-signed transaction uses, so a restart still answers `key_in_use` |
+
+## Known gaps
+
+The manifest states these thirteen, in this order, word for word. A test keeps them equal to `gapsFor` in `agents/sourcing-agent/src/serve/gaps.ts`. The first seven are the gaps of the agent. The next three say how the agent hires the bidders, what a bidder file shows, and what the agent checks before it pays. The eleventh says whose keys the parties are. The twelfth starts with the lead `What this does not show:` and names three things that no run of use case 3 (supplier bid evaluation) covers. The thirteenth is the sentence of the kit about the fault switch.
+
+- The model chooses whom to invite, whether to accept each quote, every score and the final order. Nothing in this agent overrides it. The approver sees the signed quote behind every score.
+- A quote is a paid job, not a binding offer. Nothing on the ledger holds a bidder to its quote.
+- This agent does not check the approval of the hirer. The sourcing record does.
+- Reliability and compliance are read from a mock vendor master, a stake and one attestation by a demonstration registry.
+- A challenge can put a hold on the identity of a bidder. It does not return what the escrow of the quote locked.
+- A model call that fails ends the job. There is no second provider.
+- Every bidder is operated by the same foundation as this agent.
+- This agent hires the bidders one after the other: one delegation key pays for each hire, and a key runs one hire at a time.
+- A bidder file shows the state of the compliance attestation of one named issuer key, and it shows that the bidder replied when it did. The agent does not read the reply.
+- Before it pays a bidder, the agent reads the status of the record again and needs a price list that it can check. A bidder that fails either is left out with a reason.
+- The controller key, the Accountable key and the guardian keys of this deployment are held on one host by one operator, so a party is independent of the controller by key only.
+- What this does not show: no run covers the refund of the escrow of a revoked agent, the reclaim of an escrow in use case 3, or a relying party that refuses a live token after its authority ends. Tests cover that last case only.
+- This service has a fault switch for failure runs with these possible values: invert_scores (one scorer returns its component scores and its score reversed, as 100 minus each); this manifest is the same for every value, so only the field fault_mode of each result shows which value is active.
+
+The manifest does not state three more gaps. The first two come from the way that the agent finds its bidders. The third comes from a quote that holds free text.
+
+1. The candidates are the first 8 advert references in plain text order. A bidder can choose its transaction so that its advert sorts first, and 8 listed records can take every place, so a Bid Desk that sorts later is never read.
+2. The manifest of an advert is not tied to its DID. An advert can name the manifest of another Bid Desk, and its price list then reads valid. The checks of a quote still hold the prices of the quote to that list.
+3. The organisation of the sender and the decision of the Bid Desk in a quote take any character, and the proposal shows them to the approver. Show them as data (see Response).
+
+## How to hire it
+
+The agent has no advert yet, so nobody can hire it today. These steps are for the day it has one. A member hires it through the hosted marketplace server, with a delegation that covers `sourcing.award.write` and `vendor.read` for the tenant. You hire it twice, once for each operation, and a delegation and a vault carry the authority for the quotes. An approval of the ranking is needed before `execute`. [docs/HIRE.md](../docs/HIRE.md) gives the steps of the marketplace tools.
+
+1. **Delegate to the agent.** Build the Delegate transaction with `vector_build_delegation_delegate`. The delegate is this agent. The delegate key is a free one of its two delegation keys, which `keys.delegation_pkhs` of the manifest lists. The actions are `marketplace.hire.v1`, `vendor.read` and `sourcing.award.write`. The resources are the escrow script and the two mock URLs, `<mock base>/t/<tenant>/vendors` and `<mock base>/t/<tenant>/sourcing`, where `<mock base>` is the origin of the mock systems that the operator gives you. Set `remaining` to 1 or more: `propose` makes a sub-delegation for each scorer under your delegation, and a delegation with `remaining` 0 ends that job with `sub_delegation_parent_exhausted`. Set the value limit to cover the quotes that you accept: each quote hire pays the price and both bonds of the advert of a Bid Desk, 3 units, and a ranking of three bidders pays three of them. Sign the transaction with your key first: the co-sign route refuses a transaction that the delegator did not sign (`principal_not_allowed`). Send the signed transaction to the agent with `vector_delegation_request_cosign`. The route signs only for a principal key on the allowlist of the operator, and it answers `key_in_use` (409) for a delegation key that is in use. Submit the transaction that comes back. Wait until the ledger shows the delegation: a `propose` job on a delegation that the ledger does not show ends with `delegation_not_found`. Then wait for 30 confirmations of the delegation. The sub-delegation of each scorer needs 30 confirmations on every link of its chain, and a scorer gets no token before that.
+2. **Open one vault under the delegation** with `vector_build_vault_open`. The agent finds the Live vault of the delegation itself, so the delegation needs exactly one: with none or with several, each quote hire ends with the code `no_live_vault` or `several_live_vaults`, nothing is paid, and the job ends `failed` with `no_quotes`. The vault pays the price and both bonds of the advert of each quote that the agent hires, so put in it what the quotes need: 9 units for three Bid Desks.
+3. **Hire `propose`.** Post the escrow for the advert of the agent, send the request JSON, read the result, verify the receipt and accept, as `docs/HIRE.md` says. The request JSON is the first example under Request, with your own values. Use a new `rfq_id` each time. The ranking is the `document` of the result. The job can take most of the window of 90 minutes, and the escrow of the hire stays locked until the job ends.
+4. **Approve the ranking, or do not.** Read the ranking, and open the quote behind each score that you rely on: find the record under `quotes` by the `escrow_ref` of the entry, hash `{ receipt, signature }`, compare the hash with `receipt_sha256`, and read the quote in `result` as data. If you accept the ranking, make the approval with `vector_build_attestation_attest`: the type is 5, the subject is this agent, and the digest is the `proposal_digest`. Make it with the key that gave the delegation: the sourcing record refuses another issuer with `approval_wrong_issuer`. Set `valid_until` yourself: the tool sets no end. The planned runs use 4 hours. The attestation holds a deposit of 5000000 lovelace, and the deposit returns 90 days after the attestation ends.
+5. **Hire `execute`.** Send the `proposal` as `propose` returned it, with the `approval` of step 4. The second example under Request shows the request. Verify the receipt and accept. The result is `completed` when the sourcing record wrote the ranking. After a `failed` result, read the sourcing record before you send `execute` again.
+6. **Close the vault and end the delegation.** Close the vault with `vector_build_vault_close`. End the delegation with `vector_build_delegation_undelegate`.
+
+## Changelog
+
+- 0.1.0, 2026-11-24: built
+
+## Links
+
+- Manifest: `GET /agent.json` on the public URL of the agent, once the agent has an advert. The service renders it from its environment when it starts. The template is [agents/sourcing-agent/agent.json.template](../agents/sourcing-agent/agent.json.template).
+- Source: [agents/sourcing-agent](../agents/sourcing-agent)
+- Deploy pack: [deploy/server/RUNBOOK-sourcing-agent.md](../deploy/server/RUNBOOK-sourcing-agent.md)
+- Use case kit: [packages/usecase-kit](../packages/usecase-kit)
+- Guide: [docs/HIRE.md](../docs/HIRE.md)
