@@ -1,6 +1,7 @@
-// agents/sourcing-agent/test/facts/cases.test.ts: the Module-1 cases against a bidder, as a fact for the file of a bidder. A case is a live challenge whose claim token is the token of a live claim of the bidder.
-// A resolved case leaves no output, because each resolution burns the claim, so only open challenges count. The question: is a source that cannot be read ever a count? Does a challenge count against the
-// wrong claimer, or by the wrong key? Each refusal has its accepted twin.
+// agents/sourcing-agent/test/facts/cases.test.ts: the Module-1 cases against a bidder, as a fact for the file of a bidder. A case is a live challenge whose claim token is the token of a live claim of the bidder in the
+// state Challenged, the join that the dispute code of the kit uses to find its own challenge. A challenge output that names a claim in another state is no case, because anybody can make a challenge output. A resolved
+// case leaves no output, because each resolution burns the claim, so only open challenges count. The question: is a source that cannot be read ever a count? Does a challenge count against the wrong claimer, or by the
+// wrong key? Each refusal has its accepted twin.
 import { describe, expect, it } from 'vitest';
 import type { ChallengeView, ClaimView } from '@vsa/usecase-kit/dispute';
 import { FACT_READ_TIMEOUT_MS, casesAgainst, casesAgainstAll } from '../../src/facts/index.ts';
@@ -87,9 +88,18 @@ describe('the cases against a bidder', () => {
     expect(await casesAgainst(lists([mine, stranger], [wrong]).deps, OTHER)).toStrictEqual(cases(1));
   });
 
-  it.each(['Open', 'Challenged', 'Validated', 'Invalidated'] as const)('counts a challenge against a claim in the state %s: the count joins by claim token and claimer, and reads no state', async (state) => {
-    const mine = claimView(1, BIDDER, { state });
-    expect(await casesAgainst(lists([mine], [challengeView(1, mine)]).deps, BIDDER)).toStrictEqual(cases(1));
+  it.each(['Open', 'Validated', 'Invalidated'] as const)('does not count a challenge output that names a claim in the state %s, and counts it when the claim is Challenged', async (state) => {
+    const challenged = claimView(1, BIDDER, { state: 'Challenged' });
+    expect(await casesAgainst(lists([challenged], [challengeView(1, challenged)]).deps, BIDDER)).toStrictEqual(cases(1));
+    const named = claimView(1, BIDDER, { state });
+    expect(await casesAgainst(lists([named], [challengeView(1, named)]).deps, BIDDER)).toStrictEqual(cases(0));
+  });
+
+  it('counts only the challenge of the claim in the state Challenged when a challenge output also names an Open claim of the same bidder', async () => {
+    const open = claimView(1, BIDDER, { state: 'Open' });
+    const challenged = claimView(2);
+    expect(await casesAgainst(lists([open, challenged], [challengeView(1, open), challengeView(2, challenged)]).deps, BIDDER)).toStrictEqual(cases(1));
+    expect(await casesAgainst(lists([open], [challengeView(1, open)]).deps, BIDDER)).toStrictEqual(cases(0));
   });
 
   it('asks each port one time, and gives each call the time of the fact reads', async () => {
@@ -119,6 +129,7 @@ describe('a source that cannot be read is no count', () => {
     ['a claim that is null', () => Promise.resolve([mine, null]), () => healthy()[1]!],
     ['a claim with no token', () => Promise.resolve([mine, { ...claimView(2), token: undefined }]), () => healthy()[1]!],
     ['a claim with no claimer', () => Promise.resolve([mine, { ...claimView(2), claimer: undefined }]), () => healthy()[1]!],
+    ['a claim with no state', () => Promise.resolve([mine, { ...claimView(2), state: undefined }]), () => healthy()[1]!],
     ['a challenge that is a text', () => healthy()[0]!, () => Promise.resolve([challengeView(1, mine), 'challenge'])],
     ['a challenge with no claim token', () => healthy()[0]!, () => Promise.resolve([challengeView(1, mine), { ...challengeView(2, mine), claim_token: undefined }])],
   ];

@@ -1,6 +1,7 @@
 // agents/sourcing-agent/src/facts/cases.ts
-// The Module-1 cases against a bidder, as a fact for the file of a bidder. The count is the number of live challenges whose claim token is the token of a live claim whose claimer is the bidder. The join is
-// by the claim token. It is not by the output of the claim: a challenge spends the claim output and the claim moves to a new output, so the output that a challenge names is not the live output of its claim.
+// The Module-1 cases against a bidder, as a fact for the file of a bidder. The count is the number of live challenges whose claim token is the token of a live claim in the state Challenged whose claimer is the bidder.
+// This is the join that the dispute code of the kit uses to find its own challenge. A challenge output that names a claim in another state is no case, because anybody can make a challenge output. The join is by the
+// claim token. It is not by the output of the claim: a challenge spends the claim output and the claim moves to a new output, so the output that a challenge names is not the live output of its claim.
 // A challenge whose claim token no claim holds is not counted.
 //
 // A resolved case leaves no output, because each resolution burns the claim. So the claim of a resolved case is in no list, and only open challenges count. The effect of a verdict shows in the status of the
@@ -30,6 +31,9 @@ function textOf(value: unknown, member: string): string | null {
   return typeof text === 'string' ? text : null;
 }
 
+/** The state of a claim that a challenge started on. Only a claim in this state has a case. */
+const CHALLENGED: ClaimView['state'] = 'Challenged';
+
 /**
  * The number of challenges against the claims of each wanted claimer, or null when a list is of a wrong shape. A claim or a challenge that has no text where the join needs one cannot be placed, so the
  * lists are not read: that is not a count of 0.
@@ -40,8 +44,9 @@ function countAgainst(claims: unknown, challenges: unknown, wanted: ReadonlySet<
   for (const claim of claims as readonly unknown[]) {
     const token = textOf(claim, 'token');
     const claimer = textOf(claim, 'claimer');
-    if (token === null || claimer === null) return null;
-    if (!wanted.has(claimer)) continue;
+    const state = textOf(claim, 'state');
+    if (token === null || claimer === null || state === null) return null;
+    if (state !== CHALLENGED || !wanted.has(claimer)) continue;
     const known = claimersOf.get(token);
     if (known === undefined) claimersOf.set(token, new Set([claimer]));
     else known.add(claimer);
