@@ -11,6 +11,8 @@ import { INTAKE_REFUSAL_STATUS, IntakeRefusal, refuse } from '../../src/job/refu
 import type { IntakeRefusalCode } from '../../src/job/refusal.ts';
 import { takeJob } from '../../src/job/take.ts';
 import type { TakenJob } from '../../src/job/take.ts';
+import type { BookPort, IntakeDeps } from '../../src/job/ports.ts';
+import { MemoryIntakeBook, PASSED_CHECKS_TTL_MS, PassedChecks } from '../../src/store/index.ts';
 import { makeRig, refusalOf } from './rig.ts';
 import type { Rig } from './rig.ts';
 import {
@@ -348,6 +350,49 @@ describe('the log of a refusal', () => {
     const refusal = await refusalOf(() => take(rig, request === undefined ? {} : { request }));
     expect(rig.logs).toHaveLength(1);
     for (const text of [...rig.logs, refusal.message]) for (const value of values) expect(text).not.toContain(value);
+  });
+});
+
+describe('the stores of the package fit the ports', () => {
+  /** The deps of the rig, with the record of the hook taken from a real store at the time `at`. */
+  function storeDeps(rig: Rig, passed: PassedChecks, at: number): IntakeDeps {
+    return { ...rig.deps, takeChecks: (escrowRef) => passed.take(escrowRef, at) };
+  }
+
+  it('gives the record that the hook put, one time: a second job for the same escrow finds none', async () => {
+    const rig = makeRig();
+    const passed = new PassedChecks();
+    passed.put(ESCROW_REF, recordFor(rig.request), 1_000);
+    const deps = storeDeps(rig, passed, 2_000);
+    expect(takeJob(deps, rig.request, rig.context).request_sha256).toBe(PRIOR_REQUEST_SHA256);
+    expect(await refusalOf(() => takeJob(deps, rig.request, rig.context))).toMatchObject({ code: 'precheck_missing', status: 500 });
+  });
+
+  it('gives the record of an escrow to a job for that escrow only, and the record stays for its own job', async () => {
+    const rig = makeRig();
+    const passed = new PassedChecks();
+    passed.put(ESCROW_REF, recordFor(rig.request), 1_000);
+    const deps = storeDeps(rig, passed, 2_000);
+    const other = { ...rig.context, escrowRef: `${'e8'.repeat(32)}#0` };
+    expect(await refusalOf(() => takeJob(deps, rig.request, other))).toMatchObject({ code: 'precheck_missing' });
+    expect(takeJob(deps, rig.request, rig.context).request_sha256).toBe(PRIOR_REQUEST_SHA256);
+  });
+
+  it('gives no record that has ended: the job finds none after the time to live, and the twin one millisecond before it ends finds the record', async () => {
+    const rig = makeRig();
+    const ended = new PassedChecks();
+    ended.put(ESCROW_REF, recordFor(rig.request), 1_000);
+    expect(await refusalOf(() => takeJob(storeDeps(rig, ended, 1_000 + PASSED_CHECKS_TTL_MS), rig.request, rig.context))).toMatchObject({ code: 'precheck_missing' });
+    const alive = new PassedChecks();
+    alive.put(ESCROW_REF, recordFor(rig.request), 1_000);
+    expect(takeJob(storeDeps(rig, alive, 1_000 + PASSED_CHECKS_TTL_MS - 1), rig.request, rig.context).request_sha256).toBe(PRIOR_REQUEST_SHA256);
+  });
+
+  it('takes the intake book of the package as its book port: it records the entry that the portal gave', async () => {
+    const book = new MemoryIntakeBook();
+    const port: BookPort = book;
+    await port.record('run1', 'run1-1', 'IN-run1-0001');
+    expect(await book.has('run1', 'RUN1-1')).toBe(true);
   });
 });
 

@@ -46,6 +46,10 @@ export interface AttestationReport {
   readonly principal_binding: AttestationState;
 }
 
+/**
+ * Everything that one job of the Insurer Intake Agent needs from the service. The agent has no fault switch, so there is no port for one: the intake record always says `fault_mode: ''`, and the service stamps
+ * the same value on the result.
+ */
 export interface IntakeDeps {
   /** The service key: the DID of the Insurer Intake Agent and its authentication key. The key signs the request for the JWT-SVID, and nothing else. */
   readonly agent: { readonly did: Did; readonly authenticationKey: KeyInput };
@@ -68,9 +72,6 @@ export interface IntakeDeps {
   readonly decide: (input: JsonValue, requirementIds: readonly string[]) => Promise<DecideResult<CompletenessChoice>>;
   /** The time now, in milliseconds: the clock that gave `arrivedAt`. The job uses it for the time of a log line, and for the time that is left until `deliver_by`. */
   readonly clock: () => number;
-  /**
-   * Writes one line to the log of the service. A line has codes and references, and no key, no token and no part of a request. A function that throws changes nothing. The agent has no fault switch: the
-   * intake record always says `fault_mode: ''`, and the service stamps the same value.
-   */
+  /** Writes one line to the log of the service. A line has codes and references, and no key, no token and no part of a request. A function that throws changes nothing. */
   readonly log: (line: string) => void;
 }
