@@ -8,8 +8,8 @@ import { BIDDER_FETCH_TIMEOUT_MS, BIDDER_FILE_MAX_BYTES, BIDDER_READ_BUDGET_MS, 
 import { discoverCandidates, readPriceList, startBudget, timeOf, viaPort } from '../../src/bidders/discover.ts';
 import type { Candidate } from '../../src/bidders/discover.ts';
 import {
-  DESKS, LIMITS, MARKER, STRANGER_ID, addDesk, advertOf, budgetOf, bytesOf, changeManifest, deskOf, expectNames, goldenWorld, manifestText, must, ok, paddedList, paddedManifest, priceListText, refusal, rowOf,
-  serveList, serveManifest, sha256, stubOf,
+  DESKS, LIMITS, MARKER, STRANGER_ID, addDesk, advertOf, budgetOf, bytesOf, changeManifest, deskOf, emptyWorld, expectNames, extraDesk, goldenWorld, manifestText, must, ok, paddedList, paddedManifest,
+  priceListText, refusal, rowOf, serveList, serveManifest, sha256, stubOf,
 } from './support.ts';
 import type { Desk, DiscoveryPorts, World } from './support.ts';
 
@@ -43,12 +43,6 @@ const never = (): Promise<never> => new Promise<never>(() => undefined);
 const boom = (): never => {
   throw new Error('LEAK the host https://evil.example.org/zq9 says no');
 };
-
-/** A desk with the index `index`: an agent, a reference and a host of its own, ordered by the index. */
-function extraDesk(index: number): Desk {
-  const byte = index.toString(16).padStart(2, '0');
-  return { ...deskOf('alfa'), name: 'alfa', agent: byte.repeat(32), did: `did:vector:${byte.repeat(32)}`, ref: `${byte.repeat(32)}#0`, pkh: byte.repeat(28), manifestUrl: `https://desk-${index}.example.org/agent.json`, listUrl: `https://desk-${index}.example.org/price-list.json` };
-}
 
 describe('discoverCandidates: the golden marketplace', () => {
   test('gives the three Bid Desks as candidates, in the order of their advert references', async () => {
@@ -187,7 +181,7 @@ describe('discoverCandidates: the listing of the indexer', () => {
   });
 
   test('gives the first eight candidates by reference when nine Bid Desks are listed, and never reads the ninth', async () => {
-    const world: World = { rows: [], reads: {}, files: {} };
+    const world: World = emptyWorld();
     const desks = Array.from({ length: MAX_CANDIDATES + 1 }, (_unused, index) => extraDesk(index + 1));
     for (const desk of [...desks].reverse()) addDesk(world, desk);
     const { result, calls } = await discover(world);
@@ -196,7 +190,7 @@ describe('discoverCandidates: the listing of the indexer', () => {
   });
 
   test('takes eight Bid Desks as eight, and fills the places with the next desks when one of the first is not listed on the chain', async () => {
-    const world: World = { rows: [], reads: {}, files: {} };
+    const world: World = emptyWorld();
     const desks = Array.from({ length: MAX_CANDIDATES + 1 }, (_unused, index) => extraDesk(index + 1));
     for (const desk of desks) addDesk(world, desk);
     expect(must((await discover({ ...world, rows: world.rows.slice(0, MAX_CANDIDATES) })).result)).toHaveLength(MAX_CANDIDATES);
@@ -532,6 +526,8 @@ describe('readPriceList: the manifest', () => {
     ['JSON that is a list', bytesOf('[]')],
     ['JSON that is a text', bytesOf('"manifest"')],
     ['JSON that is null', bytesOf('null')],
+    ['a manifest with the key __proto__', bytesOf(manifestText(BRAVO).replace('{', '{"__proto__":{"capability_id":"x"},'))],
+    ['a manifest with a member nested deeper than the protocol takes', bytesOf(JSON.stringify({ ...JSON.parse(manifestText(BRAVO)), links: { deep: JSON.parse(`${'['.repeat(40)}${']'.repeat(40)}`) } }))],
     ['a byte order mark before the JSON', new Uint8Array([0xef, 0xbb, 0xbf, ...bytesOf(manifestText(BRAVO))])],
     ['an empty body', new Uint8Array(0)],
   ])('is `invalid` for a body with the right hash that is %s', async (_name, body) => {
@@ -734,6 +730,7 @@ describe('readPriceList: the price list', () => {
     ['JSON that is a list', bytesOf('[]')],
     ['an empty body', new Uint8Array(0)],
     ['a byte order mark before the JSON', new Uint8Array([0xef, 0xbb, 0xbf, ...bytesOf(priceListText('bravo'))])],
+    ['a list with the key __proto__', bytesOf(priceListText('bravo').replace('{', '{"__proto__":{"schema":"x"},'))],
     ['a list with another schema', bytesOf(listWith((list) => { list.schema = 'vector.usecase.price-list.v2'; }))],
     ['a list with no item', bytesOf(listWith((list) => { list.items = []; }))],
     ['a list with a SKU two times', bytesOf(listWith((list) => { list.items.push({ ...list.items[0]! }); }))],
