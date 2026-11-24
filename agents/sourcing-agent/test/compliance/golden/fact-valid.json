@@ -1,0 +1,10 @@
+{
+  "state": "valid",
+  "attestation": "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1",
+  "attestation_state": "active",
+  "issued_at": "2026-11-14T12:00:00Z",
+  "valid_until": "2027-02-12T12:00:00Z",
+  "revoked_at": null,
+  "revoke_reason": null,
+  "contested": null
+}
