@@ -14,7 +14,7 @@ After the Claim, the runtime posts the job. The job takes the record of the hook
 
 The desk prices from its price list file only. The only price data that the service gives the model is the entries of that file for the SKUs of the request. The service does not check the unit prices of the model against the list. A buyer's agent can, because the list and its hash are public. The fault switch makes the desk quote below its own list on purpose: see The fault switch.
 
-The Bid Desk takes no approval and calls no mock system. It files no claim and no challenge: it has no dispute code and no dispute setting. The claim of the desk is the three statements in `behaviour.claim` of its manifest. An operator command stakes that claim, and this service never does.
+The Bid Desk takes no approval and calls no mock system. It files no claim and no challenge: it has no dispute code and no dispute setting. The claim of the desk is the three statements in `behaviour.claim` of its manifest. No command in this repository stakes that claim yet.
 
 `agent.json.template` is the manifest with placeholders. The service renders the real manifest from its settings when it starts, and serves those bytes at `GET /agent.json`. It never serves the template itself. Each instance has its own manifest and its own advert, so the three manifests have three hashes. Change the template by changing `manifestFromEnv`, and write it again with `pnpm --filter @vsa/bid-desk template`.
 
@@ -205,7 +205,7 @@ A Bid Desk is the hired side. A job that fails answers with its HTTP status, and
 | 502, a third party | `credential_failed` (the identity gateway gave no credential that a quote can hold), `inference_failed` (the model hire failed, or it did not start because less than 60 s were left for it), `model_output_invalid` (the answer of the model cannot be used: it breaks the shape of the decision, or a line is not an item of the request, or there is no line) |
 | 503, the service cannot answer now | `check_unavailable` (the hook could not read a source), `shutting_down` (the service is stopping) |
 
-A refusal of the hook leaves the escrow open, and nothing is paid. A job that fails after the Claim leaves the escrow claimed. The buyer reclaims it after the deadline, and nothing is paid for work that was not done. The Bid Desk calls no mock system, so a failed job can leave behind a model hire and nothing else. A job that fails after it accepted the model hire has paid the model supplier from the service key. A hire that stays unfinished is in the stranded file, and the janitor settles it.
+A refusal of the hook leaves the funded escrow Open. A failure after the Claim leaves it Claimed. A Reclaim after `deliver_by` returns its full lock as a separate `Returned` vault output. The Bid Desk calls no mock system. A job that fails after it accepted the model hire has paid the model supplier from the service key. A hire that stays unfinished is in the stranded file, and the janitor settles it.
 
 ## Times
 

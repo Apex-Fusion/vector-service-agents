@@ -131,7 +131,7 @@ describe('agents/bid-desk/README.md: what it is', () => {
     // The claim is in the manifest. This service files no claim and no challenge, takes no approval and calls no mock system: it has no code for any of them.
     const manifest = served(config.manifest.text);
     expect(manifest.behaviour.claim.statements.map((statement) => statement.text)).toStrictEqual(BID_DESK_CLAIM.statements.map((statement) => statement.text));
-    expect(intro).toContain('The claim of the desk is the three statements in `behaviour.claim` of its manifest. An operator command stakes that claim, and this service never does.');
+    expect(intro).toContain('The claim of the desk is the three statements in `behaviour.claim` of its manifest. No command in this repository stakes that claim yet.');
     expect(intro).toContain('It files no claim and no challenge: it has no dispute code and no dispute setting.');
     expect(SETTINGS.filter((name) => /^DISPUTE_|MODULE1/.test(name))).toStrictEqual([]);
     expect(sources.filter(({ text }) => /usecase-kit\/(?:dispute|cosign)/.test(text)).map(({ file }) => file)).toStrictEqual([]);

@@ -22,9 +22,9 @@ The service sits behind the template runtime. The runtime holds the supplier key
 
 The call to the sourcing record is made one time. The service never repeats it, also after a failure, because a failed call can have written the ranking. The sourcing record has no rule of one ranking for each request. A hirer who sends `execute` again after a `failed` result can write a second ranking. Read the sourcing record before you send `execute` again.
 
-The claim of the agent is the three statements in `behaviour.claim` of its manifest. An operator command stakes that claim, and this service never does. The service files a challenge against a bidder only after a decision of the model that did not accept a quote, and only for a unit price: the evidence is the first line that the model named whose quoted unit price differs from the listed price of the bidder.
+The claim of the agent is the three statements in `behaviour.claim` of its manifest. The service never stakes the claim. No command in this repository stakes it yet. The service files a challenge against a bidder only after a decision of the model that did not accept a quote, and only for a unit price: the evidence is the first line that the model named whose quoted unit price differs from the listed price of the bidder.
 
-The escrow and the vault payment of a hirer stay locked up to the window of the advert, 5400000 ms (90 minutes) by default, when a job runs to its end. The jobs are in memory, so a restart ends the job that runs. A restart waits until the runtime says `free` at its `/status` route.
+The processing window of the advert is 5400000 ms (90 minutes) by default. The hire and any quote escrows can remain locked after the job ends. Their funds move only when a settlement transaction lands. The jobs are in memory, so a restart ends the job that runs. A restart waits until the runtime says `free` at its `/status` route.
 
 `agent.json.template` is the manifest with placeholders. The service renders the real manifest from its settings when it starts, and it serves those bytes at `GET /agent.json`. It never serves the template. The placeholders `<OPERATOR_CONTACT>`, `<AGENT_DID>`, `<SUPPLIER_PKH>`, `<SUPPLIER_PUB_KEY_HEX>`, `<SOURCING_SERVICE_PKH>`, `<SOURCING_DELEGATION_1_PKH>`, `<SOURCING_DELEGATION_2_PKH>` and `<COMPLIANCE_ISSUER_PKH>` stand for the settings of the same name. Change the template by changing `manifestFromEnv`, and write it again with `pnpm --filter @vsa/sourcing-agent template`.
 
@@ -339,7 +339,7 @@ The log carries job outcomes, counts and codes, never a request, a quote, a pric
 
 On SIGTERM (`docker stop` sends it) or SIGINT the service takes no new job and no new connection, stops its janitors, and waits up to 300 s for the job that is running to end. A pass of a janitor that is still in flight after 30 s is abandoned, with a log line. A job that ends in time is answered, if its caller is still there, and the service exits 0. A job still running after 300 s is abandoned: its connection is closed, the log names the escrows that the state directory holds for the janitors of the next start, and the service exits 1. The container is killed when its grace period ends, so the grace period (`stop_grace_period` in a compose file) must be 330 s: the 300 s of the wait and 30 s more, for the log line and the exit code of a job that the service abandons.
 
-A job is in memory only. A restart ends the job that runs, and the escrow and the vault payment of its hirer stay locked up to the window of the advert. Wait until the runtime says `free` before a restart.
+A job is in memory only. A restart ends the job that runs. It does not settle the escrow of the hire or of any quote. Wait until the runtime says `free` before a restart.
 
 ## Run it
 
