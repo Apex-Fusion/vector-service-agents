@@ -14,14 +14,13 @@ import { collateralAdvice, isCollateralOutput } from '../../checks/lib/collatera
 import { duration, iso, units } from '../../checks/lib/format.ts';
 import type { AgentSpec, Facts, StepOutcome, TaskDefinition, TaskSession } from '../lib/contract.ts';
 import { readRunning, runtimesOf } from '../lib/free.ts';
-import { Dispute, createModule1Port, effectiveStatus, findRecord, liveDelegations, module1FromManifest, readManifest, withdrawableFrom } from '../lib/platform.ts';
+import { createModule1Port, effectiveStatus, findRecord, liveDelegations, module1FromManifest, readManifest, withdrawableFrom } from '../lib/platform.ts';
 import type { RecordUtxo } from '../lib/platform.ts';
 import { codeOf } from '../lib/registry.ts';
 import { holdsSecret } from '../lib/secrets.ts';
-// `lib/platform.ts` does not give these names, and this task is their only caller in the pack: the queue of a wallet, the provider type of the chain port, and the Module-1 deployment type.
+// `lib/platform.ts` does not give these names, and this task is their only caller in the pack: the types of the chain port of the kit and the Module-1 deployment type.
 import type { Module1Deployment } from '../../../packages/buyer-core/src/index.ts';
-import { createSerialQueue } from '../../../packages/usecase-kit/src/access/index.ts';
-import type { Module1Provider } from '../../../packages/usecase-kit/src/dispute/index.ts';
+import type { ClaimView, Module1Port, Module1Provider } from '../../../packages/usecase-kit/src/dispute/index.ts';
 
 type Result = 'ok' | 'wait' | 'fail';
 
@@ -50,7 +49,6 @@ const DEPOSIT_DELAY_MS = 90 * 86_400_000;
 const JURY_HOLD_REASON = 64;
 const STATUS_LIMIT_MS = 10_000;
 const STATUS_BODY_BYTES = 65_536;
-const MIN_WINDOW_LEFT_MS = 600_000;
 const READ_TIMEOUT_MS = 20_000;
 const MOST_ADVERTS = 50;
 
@@ -254,8 +252,8 @@ function refuseSigning(): never {
   throw new Error('the end-state check signs nothing');
 }
 
-/** The dispute code of the kit over the chain port of the service wallet of an agent. The port has a signature that throws: the task reads claims only. */
-function disputeOf(ctx: Context, agent: AgentSpec, id: string, module1: Module1Deployment): Dispute {
+/** The chain port of the kit for the service wallet of an agent. Its signature throws: the task reads claims only. */
+function portOf(ctx: Context, agent: AgentSpec, id: string, module1: Module1Deployment): Module1Port {
   const address = ctx.addresses().get(agent.serviceKey);
   if (address === undefined) throw new Error(`the public key file lists no wallet for the key ${agent.serviceKey}`);
   // The real provider is an OgmiosProvider and gives the start time of the chain. A provider that does not is no node of Vector.
@@ -263,48 +261,58 @@ function disputeOf(ctx: Context, agent: AgentSpec, id: string, module1: Module1D
   if (typeof candidate.getSystemStartMs !== 'function') throw new Error('the provider of the chain gives no start time of the chain, and the chain port needs it');
   const provider = ctx.session.chain.provider as Module1Provider;
   const clock = (): number => ctx.session.clock.now();
-  const port = createModule1Port({
+  return createModule1Port({
     provider, module1, address, agent_id: id, sign: refuseSigning, clock, sleep: boundedSleep, koios_url: ctx.session.chain.koiosUrl, fetch: ctx.session.chain.fetchImpl,
     identity_deployment: null, valid_minutes: 30,
   });
-  return new Dispute({
-    port, queue: createSerialQueue(), clock, sleep: boundedSleep,
-    settings: { challenge_stake_lovelace: agent.claim.stakeLovelace, min_window_left_ms: MIN_WINDOW_LEFT_MS, read_timeout_ms: READ_TIMEOUT_MS },
-  });
+}
+
+/** Every live claim output of Module-1, in every state, read within the time of one read. A read that fails or takes too long is an error, and never a list that leaves a claim out. */
+async function readClaims(port: Module1Port): Promise<readonly ClaimView[]> {
+  const late = boundedSleep(READ_TIMEOUT_MS).then((): never => { throw new Error(`the claims were not read within ${READ_TIMEOUT_MS / 1000} s`); });
+  return Promise.race([port.readClaims(), late]);
 }
 
 async function claims(ctx: Context, agent: AgentSpec): Promise<Check> {
   const name = `claims:${agent.id}`;
   const fact = ctx.facts.records[agent.id];
   if (fact === undefined) return failed(name, `the facts hold no record of the agent ${agent.id}: run the task register first`);
-  const listed = await disputeOf(ctx, agent, fact.id, await ctx.module1()).listOpenClaims(fact.did);
-  if (!listed.ok) return failed(name, `the open claims cannot be read (${listed.code}): ${shown(listed.detail)}`);
+  const views = await readClaims(portOf(ctx, agent, fact.id, await ctx.module1()));
   const known = Object.entries(ctx.facts.claims).flatMap(([run, byAgent]) => {
     const claim = byAgent[agent.id];
     return claim === undefined ? [] : [{ run, claim }];
   });
+  // The claims of the agent in every state, and each output that holds the token of a claim of the facts: a claim that is challenged keeps its token in a new output.
+  const tokens = new Set(known.map((entry) => entry.claim.claimToken));
+  const live = views.filter((view) => view.claimer === fact.did || tokens.has(view.token));
   const problems: string[] = [];
   const waits: string[] = [];
   const dates: number[] = [];
-  for (const view of listed.value) {
+  for (const view of live) {
     const run = known.find((entry) => entry.claim.claimToken === view.token)?.run;
-    const from = withdrawableFrom(view);
     const where = `the claim ${view.ref}${run === undefined ? ' (the facts do not hold it)' : ` of the run ${run}`}`;
+    const cleanup = `the task claim, cleanup${run === undefined ? '' : ` --run ${run}`}`;
+    if (view.state !== 'Open') {
+      waits.push(`${where} is ${view.state}, so it is not closed: wait for the verdict of the jury and for the end of the claim output, then run ${cleanup} --submit`);
+      continue;
+    }
+    const from = withdrawableFrom(view);
     if (from > ctx.now) {
-      waits.push(`${where} is open, and its window ends in ${duration(from - ctx.now)} (at ${iso(from)}): withdraw it after that with the task claim, cleanup${run === undefined ? '' : ` --run ${run}`}`);
+      waits.push(`${where} is open, and its window ends in ${duration(from - ctx.now)} (at ${iso(from)}): withdraw it after that with ${cleanup}`);
       dates.push(from);
     } else {
-      problems.push(`${where} is open and its window has ended: withdraw it with the task claim, cleanup${run === undefined ? '' : ` --run ${run}`} --submit`);
+      problems.push(`${where} is open and its window has ended: withdraw it with ${cleanup} --submit`);
     }
   }
-  const open = new Set(listed.value.map((view) => view.token));
+  // A claim of the facts is closed when no live output holds its token. The facts may say `not open` only then: a challenged claim keeps its token.
+  const held = new Set(live.map((view) => view.token));
   for (const { run, claim } of known) {
-    if (open.has(claim.claimToken) || claim.withdrawTx !== null) continue;
+    if (held.has(claim.claimToken) || claim.withdrawTx !== null) continue;
     waits.push(`the claim of the run ${run} is not open, and the facts do not say so: run the task claim, cleanup --run ${run} --submit to record it`);
   }
   if (problems.length > 0) return failed(name, [...problems, ...waits].join('; '));
   if (waits.length > 0) return waiting(name, waits.join('; '), dates.length === waits.length ? Math.max(...dates) : null);
-  return passed(name, `the agent ${agent.id} has no open claim${known.length === 0 ? '' : `; the ${known.length} claim(s) of the facts are withdrawn or not open`}`);
+  return passed(name, `the agent ${agent.id} has no live claim in any state${known.length === 0 ? '' : `; the ${known.length} claim(s) of the facts are withdrawn or not open`}`);
 }
 
 // ---- 5. the delegations ----
@@ -394,8 +402,14 @@ function provenanceIds(metadata: Record<string, unknown>): ReadonlySet<string> {
 
 async function attestations(ctx: Context): Promise<Check> {
   const name = 'attestations';
-  const lines: string[] = [];
   const problems: string[] = [];
+  const lines: string[] = [];
+  // The data names the attestations that each agent holds: a fact that is missing is an attestation that the task attest did not make.
+  for (const spec of ctx.session.use.attestations) {
+    for (const type of spec.types) {
+      if (ctx.facts.attestations[spec.agent]?.[type] === undefined) problems.push(`the facts hold no attestation of the type ${type} for the agent ${spec.agent}: run the task attest first`);
+    }
+  }
   for (const agent of ctx.session.use.agents) {
     const byType = ctx.facts.attestations[agent.id];
     if (byType === undefined) continue;

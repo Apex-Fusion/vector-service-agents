@@ -86,7 +86,7 @@ interface Rig {
   errors(): string;
 }
 
-async function makeRig(options: { env?: Record<string, string | undefined> } = {}): Promise<Rig> {
+async function makeRig(options: { env?: Record<string, string | undefined>; skipAttestation?: string } = {}): Promise<Rig> {
   const names = data.funding.map((line) => line.wallet);
   const world = await taskWorld({
     keys: names, shared: ['fee'], env: { OPERATOR_MODULE1_COMMIT: COMMIT, ...options.env },
@@ -152,6 +152,7 @@ async function makeRig(options: { env?: Record<string, string | undefined> } = {
       listing.push({ advert_ref: ref(`advert ${advert.model}`), capability_id: agent.capability, model: advert.model, agent_id: id, did: did(id), status: 'free' });
     }
     for (const type of ['provenance', 'software']) {
+      if (options.skipAttestation === 'all' || options.skipAttestation === `${agent.id}/${type}`) continue;
       const attestation = hash(`attestation ${agent.id} ${type}`);
       listed.push(attestation);
       facts.put('attestations', [agent.id, type], { id: attestation, tx: hash(`attest tx ${agent.id} ${type}`), digest: hash('digest'), locator: 'https://example.test/doc', validUntil: iso(NOW + 300 * DAY), issuedAt: iso(NOW - 65 * DAY), envelope: false });
@@ -192,8 +193,8 @@ function expectChecks(rig: Rig, expected: Record<string, Result> = {}): void {
   for (const [name, check] of found) expect(check.result, `${name}: ${check.text}`).toBe(expected[name] ?? 'ok');
 }
 
-const openClaim = (over: { claimer?: string; ageMs?: number; windowMs?: number; token?: string; tx?: string } = {}) => ({
-  ...claimUtxo(over.token ?? CLAIM_TOKEN, { claimerDid: over.claimer ?? REORDER_ID, challengeWindow: over.windowMs ?? 4 * HOUR }, over.ageMs ?? HOUR), txHash: over.tx ?? 'cc'.repeat(32),
+const openClaim = (over: { claimer?: string; ageMs?: number; windowMs?: number; token?: string; tx?: string; state?: 'Open' | 'Challenged' | 'Validated' | 'Invalidated' } = {}) => ({
+  ...claimUtxo(over.token ?? CLAIM_TOKEN, { claimerDid: over.claimer ?? REORDER_ID, challengeWindow: over.windowMs ?? 4 * HOUR, state: over.state ?? 'Open' }, over.ageMs ?? HOUR), txHash: over.tx ?? 'cc'.repeat(32),
 });
 
 const claimFact = (over: Record<string, unknown> = {}) => ({
@@ -400,6 +401,66 @@ describe('the task end-state', () => {
       rig.facts.put('claims', ['r1', 'reorder-agent'], claimFact({ withdrawTx: hash('withdraw') }));
       expect(await rig.run()).toBe(1);
       expectChecks(rig, { 'claims:reorder-agent': 'fail' });
+    }, SLOW);
+
+    it('a claim that is Challenged is a wait, whatever the facts say, and a claim in any other state that is not Open is a wait too (EP1)', async () => {
+      const output = (state: 'Challenged' | 'Validated' | 'Invalidated' = 'Challenged') => openClaim({ claimer: ORDER_ID, ageMs: 2 * HOUR, state });
+      // EP1b: the facts hold the claim and do not say that it is closed.
+      const silent = await makeRig();
+      silent.ledger.live.push(output());
+      silent.facts.put('claims', ['r1', 'order-desk'], claimFact());
+      expect(await silent.run()).toBe(4);
+      expectChecks(silent, { 'claims:order-desk': 'wait' });
+      expect(silent.checks().get('claims:order-desk')!.text).toContain('of the run r1 is Challenged, so it is not closed');
+      // EP1: the facts say `not open`, and a live output still holds the token of the claim: the check is not done.
+      const said = await makeRig();
+      said.ledger.live.push(output());
+      said.facts.put('claims', ['r1', 'order-desk'], claimFact());
+      said.facts.put('claims', ['r1', 'order-desk', 'withdrawTx'], 'not open');
+      expect(await said.run()).toBe(4);
+      expectChecks(said, { 'claims:order-desk': 'wait' });
+      expect(said.world.machine()).toMatchObject({ outcome: 'wait', exit: 4, result: { verdict: 'wait' } });
+      expect(await said.run('status')).toBe(1);
+      expect(said.world.screen.text).not.toContain('end state: DONE');
+      // The facts hold a withdraw transaction, and the token is still held by a live output.
+      const withdrawn = await makeRig();
+      withdrawn.ledger.live.push(output());
+      withdrawn.facts.put('claims', ['r1', 'order-desk'], claimFact({ withdrawTx: hash('withdraw') }));
+      expect(await withdrawn.run()).toBe(4);
+      expectChecks(withdrawn, { 'claims:order-desk': 'wait' });
+      // A challenged claim of the agent that the facts do not hold.
+      const unknown = await makeRig();
+      unknown.ledger.live.push(output());
+      expect(await unknown.run()).toBe(4);
+      expectChecks(unknown, { 'claims:order-desk': 'wait' });
+      expect(unknown.checks().get('claims:order-desk')!.text).toContain('(the facts do not hold it) is Challenged, so it is not closed');
+      // The other states that are not Open.
+      for (const state of ['Validated', 'Invalidated'] as const) {
+        const rig = await makeRig();
+        rig.ledger.live.push(output(state));
+        expect(await rig.run()).toBe(4);
+        expectChecks(rig, { 'claims:order-desk': 'wait' });
+        expect(rig.checks().get('claims:order-desk')!.text).toContain(`is ${state}, so it is not closed`);
+      }
+      // The twin: the facts say `not open`, and no live output holds the token.
+      const closed = await makeRig();
+      closed.facts.put('claims', ['r1', 'order-desk'], claimFact());
+      closed.facts.put('claims', ['r1', 'order-desk', 'withdrawTx'], 'not open');
+      expect(await closed.run()).toBe(0);
+      expectChecks(closed);
+    }, SLOW);
+
+    it('an attestation that the data names and the facts lack is a fail, for one type and for all four', async () => {
+      const one = await makeRig({ skipAttestation: 'order-desk/software' });
+      expect(await one.run()).toBe(1);
+      expectChecks(one, { attestations: 'fail' });
+      const text = one.checks().get('attestations')!.text;
+      expect(text).toContain('the facts hold no attestation of the type software for the agent order-desk: run the task attest first');
+      expect(text).toContain(`reorder-agent/provenance ${hash('attestation reorder-agent provenance')} is listed in vectorProvenance`);
+      const none = await makeRig({ skipAttestation: 'all' });
+      expect(await none.run()).toBe(1);
+      expectChecks(none, { attestations: 'fail' });
+      expect(none.checks().get('attestations')!.text.match(/the facts hold no attestation of the type/g)).toHaveLength(4);
     }, SLOW);
 
     it('cannot tell is a fail: no Module-1 commit, a manifest of another registry, and a chain that cannot be read', async () => {
