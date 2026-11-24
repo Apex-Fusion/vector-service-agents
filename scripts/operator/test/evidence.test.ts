@@ -329,7 +329,7 @@ async function go(s: Scenario, argv: string[] = ['run', '--run', s.label, '--num
     calls.push({ url, headers: Object.fromEntries(Object.entries((init?.headers ?? {}) as Record<string, string>)) });
     if (url.startsWith(MOCK_PUBLIC_BASE)) return mock(url);
     if (url.includes('/jury/cases')) return indexer(url);
-    if (url.startsWith(KOIOS)) return ledger.koios.f(url, init);
+    if (new URL(url).origin === KOIOS) return ledger.koios.f(url, init);
     throw new Error('an unexpected request');
   }) as typeof fetch;
   const node = new ScriptedNode(w.world);
