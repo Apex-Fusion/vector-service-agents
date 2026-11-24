@@ -392,10 +392,10 @@ function isVaultPay(c: TxContract | null | undefined, vaultHash: string): boolea
  * spent the earlier one, and the answer says so.
  *
  * `paid` needs Pay runs whose scripts passed. Each script run of a Koios row (`plutus_contracts`) has a `valid_contract`, and the top
- * level of a row of the Vector Koios has none (checked on 2026-11-18: a Koios that gives one, and says false, is believed too). A Pay
- * run of the vault script with `valid_contract` false is `contract_failed`: a transaction that failed script validation took its
- * collateral and made no output. A Pay run with no `valid_contract`, or with a value that is not true or false, is an incomplete
- * answer: it is an error, never `paid` and never `not_a_payment`. Only a Pay run with `valid_contract` true counts. A transaction with
+ * level of a row of the Vector Koios has none. An explicit false on the row or any script run is `contract_failed`: a transaction
+ * that failed script validation took its collateral and made no output. A Pay run with no `valid_contract`, or with a value
+ * that is not true or false, is an incomplete answer: it is an error, never `paid` and never `not_a_payment`.
+ * Only a Pay run with `valid_contract` true counts. A transaction with
  * a vault input that lists no script run is an incomplete answer too (Koios gives an empty list when the scripts were not asked for).
  * The answer says nothing about how deep the transaction is: a caller waits for confirmations before it trusts `paid`, because a
  * transaction that is not deep can still be rolled back.
@@ -413,9 +413,10 @@ export async function escrowPaidFromVault(env: Pick<LedgerEnv, 'deployment' | 'k
   if (tx === undefined) return not('transaction_not_found', `Koios does not know the transaction ${txHash}: it does not exist, or it is not indexed yet`);
   if (tx.valid_contract === false) return not('contract_failed', `the transaction ${txHash} failed script validation: it took the collateral and made no output, so ${ref} does not exist`);
   // Only a Pay makes an escrow under the limits of a delegation: a Close of the same vault output can sit in a transaction that makes an escrow output too.
-  // The flag of each Pay run is read before anything else: a failed transaction made no output, and a run with no flag cannot be believed.
-  const payRuns = (Array.isArray(tx.plutus_contracts) ? tx.plutus_contracts as TxContract[] : []).filter((c) => isVaultPay(c, vault.hash));
+  const runs = Array.isArray(tx.plutus_contracts) ? tx.plutus_contracts as TxContract[] : [];
+  const payRuns = runs.filter((c) => isVaultPay(c, vault.hash));
   if (payRuns.some((c) => c.valid_contract === false)) return not('contract_failed', `the transaction ${txHash} failed script validation (its Pay run of the vault script has valid_contract false): it took the collateral and made no output, so ${ref} does not exist`);
+  if (runs.some((c) => c?.valid_contract === false)) return not('contract_failed', `the transaction ${txHash} failed script validation (a script run has valid_contract false): it took the collateral and made no output, so ${ref} does not exist`);
   if (payRuns.some((c) => c.valid_contract !== true)) throw new Error('Koios tx_info: a Pay run of the vault script has no valid_contract that is true or false: the answer is incomplete');
   // A ledger transaction always has an input, so a missing or empty list means that Koios did not honour `_inputs`: an error, never an answer.
   if (!Array.isArray(tx.inputs) || tx.inputs.length === 0) throw new Error('Koios tx_info: response has no inputs');

@@ -44,7 +44,7 @@ The fleet is not published to a registry either. The Pipeline commits to the req
 | `src/vendored/mcp/delegation-build.ts` | `mcp-server:packages/builder/src/vector/delegation-build.ts` | `ebce68a` | `1bee4f0c811c83e4249a4276ee6c9d8ee6c968e5679a461b66a042ecd51ad72d` |
 | `src/vendored/mcp/delegation-read.ts` | `mcp-server:packages/builder/src/vector/delegation-read.ts` | `2d95483` | `49b508b96949e964252baebd03cd70b28f22bb2e587e8b58f535b32919af46fe` |
 | `src/vendored/mcp/vault-build.ts` | `mcp-server:packages/builder/src/vector/vault-build.ts` | `ebce68a` | `a292b7c7698b9e2ea3c3d19852898be011ed5c40a7b457175a73698f54e4d1dd` |
-| `src/vendored/mcp/vault-read.ts` | `mcp-server:packages/builder/src/vector/vault-read.ts` | `ebce68a` | `2cc024b1f2ef2fad2486f2c724e119b2707eebd4a0c71b03331261bf6499802b` |
+| `src/vendored/mcp/vault-read.ts` | `mcp-server:packages/builder/src/vector/vault-read.ts` | `ebce68a` | `5b8b3741bd1d84a6a08c44bb8163fbb4de90ddbafc0cd0d903797c577469ba27` |
 | `src/vendored/mcp/jury-codec.ts` | `mcp-server:packages/builder/src/vector/jury-codec.ts` | `2d95483` | `0d544af427d8368632d79d6f19b578ec6218bc64f6e3a1af1ab5053103d38485` |
 | `src/vendored/mcp/jury-deployment.ts` | `mcp-server:packages/builder/src/vector/jury-deployment.ts` | `2d95483` | `00c780beaabe1deccbd64743e007171c3c92cbf1252606aaac38c454ef5f48f6` |
 | `src/vendored/mcp/jury-document.ts` | `mcp-server:packages/builder/src/vector/jury-document.ts` | `2d95483` | `bcb6986bac413bf0defa40ccd9c0931a57a0138ac2557c33b44c09c48d122dec` |
@@ -521,7 +521,7 @@ Five copies moved to `2d95483` with these files. `marketplace-indexer.ts` gets t
 - `attestation-read.ts`: imports 7 (checked decoders), 11, 12 (identity codec).
 - `delegation-build.ts` (at `ebce68a`): imports 10 (the end of the import that starts on line 8), 11; the unit name on lines 15 (the name `unitsText`), 116, 120, 125, 193, 195, 196, 321, 327, 328, 476 and 486.
 - `vault-build.ts` (at `ebce68a`): imports 11 (checked decoders), 13 (`provider`), 14, 15 (identity codec), 30, 31 (datum codecs); the unit name on lines 3, 19 (the name `unitsText`), 76, 89, 397, 442, 482, 486, 490 and 520.
-- `vault-read.ts` (at `ebce68a`): imports 11, 12 (identity codec), 22, 23 (datum codecs); the unit name on lines 6, 93, 96, 173, 220, 221 and 310.
+- `vault-read.ts` (at `ebce68a`): imports 11, 12 (identity codec), 22, 23 (datum codecs); the unit name on lines 6, 93, 96, 173, 220, 221 and 310. The local payment check refuses an explicit failed validation flag on any script run.
 - `jury-codec.ts`: imports 11 (`tx`), 15 (the end of the import that starts on line 12), 16 (identity codec), 17 (checked decoders).
 - `jury-deployment.ts`: imports 19 (`safeFetch`), 20 (identity codec).
 - `jury-document.ts`: imports 9, 10 (`safeFetch`), 11 (checked decoders).
@@ -529,7 +529,7 @@ Five copies moved to `2d95483` with these files. `marketplace-indexer.ts` gets t
 - `jury-build.ts`: import 8 (`tx`); the unit name on lines 36 (the `ada` function) and 84.
 - `module1-build.ts`: imports 16 (`tx`), 23 (checked decoders); the unit name on line 38 (the `ada` function).
 
-Four of these copies show a text to a caller with `units` where the source names the unit: the refusals of `identity-build.ts`, `attestation-build.ts`, `delegation-build.ts` and `vault-build.ts` (lines 198, 424, 523 and 796 of the first; line 323 of the second; lines 125, 193, 195 and 196 of the third; lines 442, 482, 486 and 490 of the fourth), the refusal of `vault-read.ts` (line 310), and the amounts that `identity-build.ts`, `jury-build.ts` and `module1-build.ts` show through `ada`. No amount and no logic changes.
+The copies use `units` in the listed refusals and in formatted amounts. These wording changes do not change amounts or logic.
 
 **Fixtures.** The fixtures that the tests need are copies at `2d95483`, and their rows are in Files. The imports of the TypeScript fixtures are rewritten by the rules of Rewritten lines: `ledger-read-world.ts` lines 11 to 17, `capture-neutral.ts` lines 10 to 12, `jury-world.ts` lines 13 to 19, `legacy-datum.ts` line 4. The JSON fixtures are byte-identical. `ledger-read-world.ts` (line 113) and `jury-world.ts` (line 36) name the ledger unit in a comment: the unit-name check does not read `test/fixtures/`, as for `identity-world.ts` (see Verbatim exceptions).
 

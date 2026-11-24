@@ -24,12 +24,12 @@ import { COSIGN_SETTINGS, COSIGN_STATUS, parseAllowlist, parseCosignSettings } f
 import { HIRE_MIN_MS } from '@vsa/usecase-kit/decision';
 import { readFaultSwitch, withFaultMode } from '@vsa/usecase-kit/fault';
 import {
-  APPROVAL_ATT_TYPE, APPROVAL_DEPOSIT_LOVELACE, COSIGN_ROUTE, COSIGN_RULE, COUNTERPARTY_REFUSALS, ERROR_STATUS, EXECUTE_OUTCOMES, EXIT_STATES, FAULT_MODES, MAX_REQUEST_BYTES, PROPOSE_OUTCOMES, RECEIPT_CHECKS,
+  APPROVAL_ATT_TYPE, APPROVAL_DEPOSIT_LOVELACE, COSIGN_ROUTE, COSIGN_RULE, COUNTERPARTY_REFUSALS, ERROR_STATUS, EXECUTE_OUTCOMES, EXIT_STATES, FAULT_MODES, MAX_REQUEST_BYTES, NO_OPEN_CLAIM, PROPOSE_OUTCOMES, RECEIPT_CHECKS,
   RUNTIME_BODY_LIMIT_BYTES, agentIdOf, canonicalJson, exitStateOf, parseProposal, parseRequest, proposalDigest,
 } from '@vsa/usecase-kit/protocol';
 import type { Decision, Did, ExecuteOutcome, JsonObject, JsonValue, ProtocolResult, ReceiptVerification, SubJob } from '@vsa/usecase-kit/protocol';
 import { wirePayloadFor } from '@vsa/vector-read';
-import { CLAIM_STAKE_LOVELACE, CLAIM_WINDOW_MS, RUN_APPROVAL_VALIDITY_MS } from '../../../scripts/operator/lib/claim-constants.ts';
+import { RUN_APPROVAL_VALIDITY_MS } from '../../../scripts/operator/lib/claim-constants.ts';
 import { USE_CASE_NAMES } from '../../../scripts/operator/usecases/names.ts';
 import { MAX_CANDIDATES, readBidders } from '../src/bidders/index.ts';
 import type { BidderFile, BidderView } from '../src/bidders/index.ts';
@@ -76,6 +76,15 @@ const sub = (heading: string): string => (page.split(`\n### ${heading}\n`)[1] ??
 const row = (table: string, label: string): string => table.split('\n').find((line) => line.startsWith(`| ${label} |`)) ?? '';
 const envLine = (name: string): string | undefined => envExample.split('\n').find((line) => line.startsWith(`${name}=`))?.substring(name.length + 1);
 const manifest = manifestFromEnv({ ...TEMPLATE_ENV });
+
+const CLAIM_SUPPORT = [
+  '`claim` task of the operator pack supports one Module-1 claim for the Sourcing Agent per clean or failure run',
+  'The operator CLI does not enable use case 3 yet.',
+  "stakes the claim before the run and signs with the agent's service key",
+  'After the window, the operator can withdraw an unchallenged claim with `claim cleanup`.',
+  'The service stakes no claim.',
+  `If the challenge lookup finds no eligible open claim, it returns \`${NO_OPEN_CLAIM}\`.`,
+];
 
 /** The day of the page. The status line of the page and of its entry in the list of pages hold it, and it is the default status date of the manifest. */
 const PAGE_DATE = '2026-11-24';
@@ -171,11 +180,9 @@ describe('specs/sourcing-agent.md', () => {
     expect(row(identity, 'Reputation stake')).toBe('| Reputation stake | a Module-3 self-stake on the capability, owned by the service key |');
   });
 
-  test('the Claim row describes the service and the operator still enables only inventory reorder', () => {
-    expect([CLAIM_STAKE_LOVELACE, CLAIM_WINDOW_MS]).toStrictEqual([50_000_000n, 86_400_000]);
-    expect(row(section('Identity'), 'Claim')).toBe(
-      `| Claim | a Module-1 claim for each run. The service stakes none. No command of this repository stakes a claim for this agent yet. Until one does, a challenge against it ends with \`no_open_claim\`. The design is that the operator stakes the claim with the service key before each run, once such a command exists: ${CLAIM_STAKE_LOVELACE / 1_000_000n} units, which is ${CLAIM_STAKE_LOVELACE} lovelace, with a challenge window of ${CLAIM_WINDOW_MS / 3_600_000} hours. The operator then withdraws it after the window, when nobody challenged it. See Claim statements |`,
-    );
+  test('the Claim row separates task support from CLI activation', () => {
+    const claim = row(section('Identity'), 'Claim');
+    for (const part of CLAIM_SUPPORT) expect(claim).toContain(part);
     // No code of the service calls the staking of a claim: the kit has the call, and the sources of the agent do not.
     expect(text('packages/usecase-kit/src/dispute/dispute.ts')).toContain('async stakeRunClaim(input: RunClaimInput)');
     const sourceDir = new URL('agents/sourcing-agent/src/', root);
@@ -1523,9 +1530,9 @@ describe('specs/sourcing-agent.md, the receipt, the claim and the fault switch',
     expect(SOURCING_CLAIM.statements.map((statement) => statement.id)).toStrictEqual(['S1', 'S2', 'S3']);
     expect(manifest.behaviour.claim).toStrictEqual(SOURCING_CLAIM);
     expect(Object.keys(manifest.behaviour.claim)).toStrictEqual(['statements']);
-    expect(claim).toContain(
-      `The service stakes no claim, and no code of the service calls the staking of one. No command of this repository stakes a claim for this agent yet. Until one does, a challenge against it ends with \`no_open_claim\`. The design is that, before each run, the operator stakes one claim with the service key of the agent: ${CLAIM_STAKE_LOVELACE / 1_000_000n} units, which is ${CLAIM_STAKE_LOVELACE} lovelace, with a challenge window of ${CLAIM_WINDOW_MS / 3_600_000} hours. After the window, the operator withdraws the claim when nobody challenged it. A claim has these three statements. The manifest holds them in \`behaviour.claim\`, with no reference to a claim. A challenge names the text of a statement.`,
-    );
+    const opening = claim.trimStart().split('\n\n', 1)[0];
+    for (const part of CLAIM_SUPPORT) expect(opening).toContain(part);
+    expect(claim).toContain('A claim has these three statements. The manifest holds them in `behaviour.claim`, with no reference to a claim. A challenge names the text of a statement.');
     // The `quote` member of an entry is built from the held quote (S1 and S2), and `execute` writes the document as the hirer holds it (S3).
     expect(text('agents/sourcing-agent/src/propose/ranking.ts')).toContain('The model writes the order and nothing more. A word of the model never reaches the `quote` member of an entry');
     expect(text('agents/sourcing-agent/src/execute/execute.ts')).toContain('ranking: request.proposal.document, salt: request.proposal.salt');
@@ -1559,7 +1566,7 @@ describe('specs/sourcing-agent.md, the receipt, the claim and the fault switch',
       'The planned failure run sets the switch on this agent to show that an approver can find a wrong score from the quote that it cites. No command of this repository runs use case 3 yet. The switch changes what the job writes and never a check.',
       'The switch is empty in a clean run. Any other value than `invert_scores` stops the start of the service. The service reads the switch one time, at start. It is declared in the manifest, in `behaviour.fault_modes`, and the manifest is the same for every value. Each result returns the active value as `fault_mode`, its last member.',
     ]) expect(fault, part).toContain(part);
-    // No command of this repository runs use case 3: the operator pack names no use case 3 data.
+    // The CLI enables only inventory reorder, even when the pack has data for another use case.
     expect(USE_CASE_NAMES).toStrictEqual(['inventory-reorder']);
   });
 });
