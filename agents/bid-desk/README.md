@@ -101,7 +101,7 @@ The members of the quote, in this order:
 | `notes` | the note of the model: at most 500 characters |
 | `price_list_sha256` | the SHA-256 of the price list file that the desk serves |
 | `credential` | the credential of the desk from the identity gateway, a compact JWS |
-| `sender` | the sender: `did`, `organisation` and `organisation_verified`. The organisation is the one that the covering Accountable Party names, or `null`. It is recorded and never a reason to refuse |
+| `sender` | the sender: `did`, `organisation` and `organisation_verified`. The organisation is the one that the covering Accountable Party names, or `null`. It is recorded, and the hook never refuses a sender for it. The job refuses one of more than 1024 characters with `precheck_missing` (500) after the Claim |
 | `checks` | the 7 checks of the hook, each `true`: `sender_active`, `sender_accountable`, `sender_key`, `delegation`, `delegation_usable`, `vault_paid` and `not_duplicate` |
 | `decisions` | the one decision `quote`: the choice of the model and the proof of the model hire |
 | `fault_mode` | the setting of the fault switch, empty for a clean run. It is the last member |
@@ -200,7 +200,7 @@ A Bid Desk is the hired side. A job that fails answers with its HTTP status, and
 | 403, the job, after the Claim | `duplicate_rfq` (the book holds an answer to this request already: the hook passed two escrows of one request before the first job wrote the book) |
 | 404, no such route | `not_found` (no message) |
 | 409, the service is busy | `busy` (a job runs, or the slot is reserved for another escrow. The answer to a job has no message, and the answer of the hook has one) |
-| 422, the job | `deadline` (the caller hung up before the model hire or before the record in the book, or less than 30 s are left before the runtime stops waiting for the job) |
+| 422, the job | `deadline` (the caller hung up before the model hire or before the record in the book, or less than 30 s are left before `deliver_by`) |
 | 500, the service | `precheck_missing` (the job has no record of passed checks for its body), `store_write_failed` (the rfq book or the record of the model hire cannot be written), `internal` (a fault of the service: a plain 500 with no message when nothing names it, and the fixed message when the job names it) |
 | 502, a third party | `credential_failed` (the identity gateway gave no credential that a quote can hold), `inference_failed` (the model hire failed, or it did not start because less than 60 s were left for it), `model_output_invalid` (the answer of the model cannot be used: it breaks the shape of the decision, or a line is not an item of the request, or there is no line) |
 | 503, the service cannot answer now | `check_unavailable` (the hook could not read a source), `shutting_down` (the service is stopping) |
@@ -211,7 +211,7 @@ A refusal of the hook leaves the escrow open, and nothing is paid. A job that fa
 
 | Time | Value | What it bounds |
 |---|---|---|
-| Deadline of a job | 300000 ms | a job ends with a quote or a refusal this long after its request arrives. The model hire ends by then, or earlier: 50 s before the runtime stops waiting for the job, so that the credential can be fetched and the quote recorded. A hire does not start with less than 60 s left for it |
+| Deadline of a job | 300000 ms | the service sets this deadline for the model hire when a request arrives, and it holds the hire only: the hire ends 300000 ms after the request arrives, or 50 s before `deliver_by` when that is earlier, so that the credential can be fetched and the quote recorded. A hire does not start with less than 60 s left for it |
 | Timeout of the runtime for a job | 360000 ms | `SERVICE_TIMEOUT_MS` of the runtime: 60 s after the deadline of a job |
 | Window of the advert | 480000 ms to 86400000 ms | `ADVERT_MAX_PROCESSING_MS`: at least 8 min, at most 24 h. The default is the least |
 | Call for the credential | 20000 ms | the one timeout of the call to the identity gateway for the credential of the desk. It fits inside the deadline of a job |
@@ -219,7 +219,7 @@ A refusal of the hook leaves the escrow open, and nothing is paid. A job that fa
 | Wait of the runtime for the hook | 10000 ms | the runtime reads silence as a refusal |
 | Reservation of the job slot | 120000 ms | a go of the hook holds the slot for its escrow this long |
 | Record of the checks | 300000 ms | the record that the hook keeps for the job lives this long, in memory |
-| Least time left before delivery | 30000 ms | the job records no quote when less than this is left before the runtime stops waiting for it |
+| Least time left before delivery | 30000 ms | the job records no quote when less than this is left before `deliver_by`. The runtime stops waiting for the job this long before `deliver_by` |
 | Interim line | 60000 ms | the server writes `102 Processing` this often while a job runs |
 | Pass of the janitor | 60000 ms | the janitor of the service key looks at the stranded file this often. A pass that is still in flight at a stop is abandoned after 30 s |
 | Wait of a stop | 300000 ms | a stop waits this long for the job that is running |
@@ -259,7 +259,7 @@ mkdir -p /tmp/bid-desk-state                                            # where 
 BID_DESK_STATE_DIR=/tmp/bid-desk-state PORT=9106 pnpm start
 ```
 
-The service logs the address that the service key derives. That address pays for the model hire, so it needs funds. The start makes no call of its own to a third party. After it, the hook reads the identity gateway and the ledger, a job asks the identity gateway for the credential and a model supplier on the marketplace for its answer, and the janitor reads the ledger for each escrow that the stranded file holds.
+The service logs the address that the service key derives. That address pays for the model hire, so it needs funds. The start makes no call of its own to a third party. The janitor runs its first pass at once, and then one pass every 60 s. A pass reads the ledger for each escrow of the stranded file that is due, and it can submit a Reclaim, or one more Accept. The hook reads the identity gateway and the ledger, and a job asks the identity gateway for the credential and a model supplier on the marketplace for its answer.
 
 The service stops at start, with the variable named, when a required setting of the table is not set, when a setting is not well formed, when `SUPPLIER_PUB_KEY_HEX` is not the public key of `SUPPLIER_PKH`, when `BID_DESK_SERVICE_PKH` is not the key hash of the service key, when the service key is the supplier key, when `IDENTITY_POLICY_ID` is not the identity policy that `VECTOR_IDENTITY_LEGACY_ROOT` and `VECTOR_IDENTITY_CONFIG_SEED` give, when `FAULT_MODE` names a value that the Bid Desk does not list, when `BID_DESK_INSTANCE` is not `alfa`, `bravo` or `charlie`, when `BID_DESK_ORGANISATION` is not a domain name in lower case, when `BID_DESK_PUBLIC_ORIGIN` is not an https origin, when `VECTOR_OGMIOS_URL` is an http address, when `CHECKS_READ_BUDGET_MS` is not from 500 to 2249, when `ADVERT_MAX_PROCESSING_MS` is below 8 min or above 24 h, or when it cannot write to its state directory.
 
