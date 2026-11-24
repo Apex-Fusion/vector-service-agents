@@ -12,13 +12,13 @@ import { FactsFile } from '../lib/facts.ts';
 import { loadTask } from '../lib/load.ts';
 import { MOCK_MTLS_BASE, MOCK_PUBLIC_BASE } from '../lib/mock-hosts.ts';
 import task, { checkEnvFiles } from '../tasks/env.ts';
+import BIDS from '../usecases/bid-evaluation.ts';
 import USE from '../usecases/inventory-reorder.ts';
+import PRIORAUTH from '../usecases/prior-authorization.ts';
 import { NOW, USE_CASE, hashOf, taskWorld } from './support/task-world.ts';
 import type { TaskWorld } from './support/task-world.ts';
 
 const SERVER = fileURLToPath(new URL('../../../deploy/server/', import.meta.url));
-const NAMES = USE.keys.map((key) => key.name);
-const SHARED = USE.keys.filter((key) => key.scope === 'shared').map((key) => key.name);
 const CONTACT = 'role@example.org';
 const COMMIT = 'ab'.repeat(20);
 const REORDER = 'reorder-agent/.env.reorder-agent';
@@ -73,7 +73,7 @@ const ADVERTS: ReadonlyArray<readonly [agent: string, model: string, file: strin
 ];
 
 function factsOf(w: TaskWorld): FactsFile {
-  return FactsFile.open(join(w.stateDir, 'facts.json'), { useCase: USE_CASE, network: 'vector-mainnet' });
+  return FactsFile.open(join(w.stateDir, 'facts.json'), { useCase: w.use.name, network: 'vector-mainnet' });
 }
 function putRecords(w: TaskWorld, ids: readonly string[] = ['reorder-agent', 'stock-reader', 'order-desk']): void {
   for (const id of ids) factsOf(w).put('records', [id], recordOf(id));
@@ -87,12 +87,20 @@ interface WorldOptions { env?: Record<string, string | undefined>; use?: Partial
 async function envWorld(options: WorldOptions = {}): Promise<EnvWorld> {
   const agents = mkdtempSync(join(tmpdir(), 'operator-agents-'));
   roots.push(agents);
-  for (const [folder, names] of Object.entries({ 'reorder-agent': ['.env.reorder-agent.example'], 'order-desk': ['.env.order-desk.example', '.env.order-desk-runtime.example'] })) {
+  const use = { ...USE, ...options.use };
+  for (const agent of use.agents) {
+    const { folder, serviceEnvFile } = agent;
+    const names = [agent.exampleEnvFile ?? `${serviceEnvFile}.example`];
+    if (agent.adverts.some((advert) => advert.runtimeEnvFile !== serviceEnvFile)) names.push(`${serviceEnvFile}-runtime.example`);
     mkdirSync(join(agents, folder), { mode: 0o750 });
     if (options.examples !== false) for (const name of names) copyFileSync(join(SERVER, name), join(agents, folder, name));
   }
-  const w = await taskWorld({ keys: NAMES, shared: SHARED, use: { ...USE, ...options.use }, env: { OPERATOR_AGENTS_DIR: agents, OPERATOR_CONTACT: CONTACT, OPERATOR_MODULE1_COMMIT: COMMIT, ...options.env } });
-  if (options.records !== false) putRecords(w);
+  // The injected loader supplies the data. Use a name the CLI accepts before activation.
+  const w = await taskWorld({
+    keys: use.keys.map((key) => key.name), shared: use.keys.filter((key) => key.scope === 'shared').map((key) => key.name), use,
+    env: { OPERATOR_USE_CASE: USE.name, OPERATOR_AGENTS_DIR: agents, OPERATOR_CONTACT: CONTACT, OPERATOR_MODULE1_COMMIT: COMMIT, ...options.env },
+  });
+  if (options.records !== false) putRecords(w, [...use.agents, ...use.subagents].map((record) => record.id));
   if (options.go !== false) w.writeGo({ tasks: ['env'] });
   return { w, agents, path: (file) => join(agents, file), text: (file) => readFileSync(join(agents, file), 'utf8'), value: (file, name) => EnvFile.open(join(agents, file)).get(name) };
 }
@@ -116,7 +124,7 @@ const dry = (e: EnvWorld, ...argv: string[]): Promise<number> => e.w.run(task, .
 const other = (label: string, length: number): string => hashOf(label).repeat(2).slice(0, length);
 
 /** Every seed that the test registry holds, as text that a stream or a file must not show. */
-const seedsOf = (e: EnvWorld): string[] => NAMES.map((name) => e.w.keys.seedOf(name));
+const seedsOf = (e: EnvWorld): string[] => e.w.use.keys.map((key) => e.w.keys.seedOf(key.name));
 const tokensOf = (e: EnvWorld): string[] => [REORDER, SERVICE].map((file) => e.value(file, 'SERVICE_AUTH_HEADER')!);
 
 describe('the files that the task makes from the examples', () => {
@@ -255,6 +263,127 @@ describe('the files that the task makes from the examples', () => {
     expect(await submit(e, '--replace-advert')).toBe(2);
     expect(e.w.screen.errorText).toContain('REORDER_SERVICE_PKH');
     expect(e.text(REORDER)).toBe(before);
+  });
+});
+
+describe('the service files for the additional agents', () => {
+  const cases = [
+    { use: PRIORAUTH, dids: [['RECORD_READER_DID', 'record-reader'], ['DRAFTER_DID', 'drafter']] },
+    { use: BIDS, dids: [['SCORER_1_DID', 'scorer-1'], ['SCORER_2_DID', 'scorer-2'], ['SCORER_3_DID', 'scorer-3']] },
+  ] as const;
+  const label = (agent: AgentSpec): string => `${agent.folder}/${agent.serviceEnvFile}`;
+  const composeOwned = ['BID_DESK_INSTANCE', 'BID_DESK_ORGANISATION', 'BID_DESK_PUBLIC_ORIGIN'];
+  const sourcing = BIDS.agents[0]!;
+  const desks = BIDS.agents.filter((agent) => agent.kind === 'bid-desk');
+
+  it.each(cases)('uses the real examples for $use.title', async ({ use, dids }) => {
+    const e = await envWorld({ use });
+    const files = use.agents.map(label);
+    expect(await dry(e)).toBe(0);
+    expect(e.w.machine().result).toMatchObject({ files, made: files });
+    for (const file of files) expect(existsSync(e.path(file)), file).toBe(false);
+    expect(await submit(e)).toBe(0);
+    expect(e.w.machine().result).toMatchObject({ files, made: files });
+    const content = files.map(e.text).join('\n');
+    const tokens = new Set<string>();
+    const registry = e.w.keys.registry;
+    for (const agent of use.agents) {
+      const file = label(agent);
+      expect(mode(e.path(file))).toBe(0o600);
+      expect(e.value(file, 'AGENT_DID')).toBe(recordOf(agent.id).did);
+      expect(e.value(file, 'AGENT_ID')).toBe(recordOf(agent.id).id);
+      expect(e.value(file, 'OPERATOR_CONTACT')).toBe(CONTACT);
+      expect(e.value(file, 'IDENTITY_ADDRESS')).toBe(e.w.chain.deployment.identity.address);
+      expect(e.value(file, 'ADVERT_REF')).toBe('');
+      const token = e.value(file, 'SERVICE_AUTH_HEADER')!;
+      expect(token).toMatch(/^Bearer [0-9a-f]{64}$/);
+      tokens.add(token);
+      expect(e.w.allText()).not.toContain(token);
+      expect(e.value(file, 'SUPPLIER_PKH')).toBe(registry.hashOf(agent.adverts[0]!.supplierKey));
+      for (const entry of [...agent.keys, ...use.subagents.filter((sub) => sub.parent === agent.id).flatMap((sub) => sub.keys)]) {
+        const seed = e.w.keys.seedOf(entry.key);
+        const secret = entry.lines.find((line) => line.of === 'secret')!;
+        expect(e.value(file, secret.name)).toBe(seed);
+        expect(count(content, seed)).toBe(1);
+        expect(e.w.allText()).not.toContain(seed);
+      }
+      expect(checkEnvFiles(use, agent, new Map([[agent.serviceEnvFile, EnvFile.open(e.path(file))]]), registry)).toEqual([]);
+    }
+    expect(tokens.size).toBe(files.length);
+    const example = label(use.agents[0]!);
+    for (const [line, id] of dids) {
+      expect(e.value(example, line)).toBe(recordOf(id).did);
+      for (const file of files.slice(1)) expect(e.value(file, line)).toBeUndefined();
+    }
+    for (const agent of use === PRIORAUTH ? use.agents : [sourcing]) {
+      expect(e.value(label(agent), 'MOCK_PUBLIC_BASE')).toBe(MOCK_PUBLIC_BASE);
+      expect(e.value(label(agent), 'MOCK_MTLS_BASE')).toBe(MOCK_MTLS_BASE);
+      expect(e.value(label(agent), 'VECTOR_MODULE1_MANIFEST')).toContain(`/${COMMIT}/`);
+    }
+    if (use === BIDS) {
+      for (const desk of desks) {
+        const file = label(desk);
+        for (const line of ['MOCK_PUBLIC_BASE', 'MOCK_MTLS_BASE', 'VECTOR_MODULE1_MANIFEST', ...composeOwned]) expect(e.value(file, line)).toBeUndefined();
+        expect(existsSync(e.path(`${desk.folder}/.env.bid-desk.example`))).toBe(true);
+        expect(existsSync(e.path(`${file}.example`))).toBe(false);
+        expect(e.value(file, 'BID_DESK_SERVICE_PKH')).toBe(registry.hashOf(desk.serviceKey));
+        expect(e.value(file, 'COMPLIANCE_ISSUER_PKH')).toBeUndefined();
+      }
+      expect(e.value(label(sourcing), 'COMPLIANCE_ISSUER_PKH')).toBe(registry.hashOf('registry-foxtrot'));
+      expect(content + e.w.allText()).not.toContain(e.w.keys.seedOf('registry-foxtrot'));
+    }
+  });
+
+  it('needs no mock lines or Module-1 setting when only the Bid Desks are present', async () => {
+    const e = await envWorld({ use: { ...BIDS, agents: desks, subagents: [] }, env: { OPERATOR_MODULE1_COMMIT: undefined } });
+    expect(await submit(e)).toBe(0);
+    expect(e.w.machine().result).toMatchObject({ files: desks.map(label) });
+    expect(await e.w.run(task, 'status')).toBe(0);
+    for (const desk of desks) expect(e.w.screen.lines).toContain(`env file ${label(desk)}: mode 600, 11 of 12 managed lines set; empty: ADVERT_REF`);
+  });
+
+  it('stops before any write when the example lacks a scorer DID or the pending advert line', async () => {
+    const e = await envWorld({ use: BIDS });
+    const path = e.path(`${sourcing.folder}/${sourcing.serviceEnvFile}.example`);
+    const example = readFileSync(path, 'utf8');
+    writeFileSync(path, example.replace(/^SCORER_3_DID=.*\n|^ADVERT_REF=.*\n/gm, ''));
+    expect(await submit(e)).toBe(2);
+    expect(e.w.screen.errorText).toContain('the example has no line SCORER_3_DID');
+    expect(e.w.screen.errorText).toContain('the example has no line ADVERT_REF');
+    for (const agent of BIDS.agents) expect(existsSync(e.path(label(agent)))).toBe(false);
+    writeFileSync(path, example);
+    expect(await submit(e)).toBe(0);
+  });
+
+  it('requires the foreign key but refuses its secret, public key or address before any write', async () => {
+    const flags = { has: () => false, value: () => undefined };
+    expect(task.needs.keys(BIDS, flags)).toContain('registry-foxtrot');
+    for (const of of ['secret', 'pub', 'address'] as const) {
+      const altered = { ...sourcing, publicKeyLines: [{ key: 'registry-foxtrot', lines: [{ file: sourcing.serviceEnvFile, name: 'COMPLIANCE_ISSUER_PKH', of }] }] };
+      const e = await envWorld({ use: { ...BIDS, agents: [altered, ...desks] } });
+      expect(await submit(e), of).toBe(2);
+      expect(e.w.screen.errorText).toContain('COMPLIANCE_ISSUER_PKH');
+      expect(e.w.screen.errorText).toContain('only a key hash');
+      expect(e.w.allText()).not.toContain(e.w.keys.seedOf('registry-foxtrot'));
+      for (const agent of BIDS.agents) expect(existsSync(e.path(label(agent)))).toBe(false);
+    }
+  });
+
+  it('rejects a foreign hash that does not match the registry', async () => {
+    const e = await envWorld({ use: BIDS });
+    expect(await submit(e)).toBe(0);
+    const env = EnvFile.open(e.path(label(sourcing)));
+    env.set('COMPLIANCE_ISSUER_PKH', other('wrong issuer', 56));
+    const problems = checkEnvFiles(BIDS, sourcing, new Map([[sourcing.serviceEnvFile, env]]), e.w.keys.registry);
+    expect(problems).toContain(`${label(sourcing)}: the line COMPLIANCE_ISSUER_PKH is not the key hash of registry-foxtrot`);
+  });
+
+  it('refuses an example path outside the agent folder before any write', async () => {
+    const altered = { ...desks[0]!, exampleEnvFile: '../.env.bid-desk.example' };
+    const e = await envWorld({ use: { ...BIDS, agents: [altered], subagents: [] }, examples: false });
+    expect(await submit(e)).toBe(2);
+    expect(e.w.screen.errorText).toContain('must use a single name for each folder, env file and example');
+    expect(existsSync(e.path(label(altered)))).toBe(false);
   });
 });
 
