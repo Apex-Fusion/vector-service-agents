@@ -1,0 +1,680 @@
+{
+  "run": "use-case-2-failure",
+  "kind": "failure",
+  "date": "2026-12-01",
+  "capability_id": "health.priorauth.draft.v1",
+  "builder": "https://mcp.vector.mainnet.apexfusion.org/mcp",
+  "advert_ref": "612639b1d1a2c47075afadc03a3173cfb56081e55854cc1613ac1343ad59342f#0",
+  "escrow_ref": "616f86ecc600d1c08ac35844b74b9acd0c9795fd305e8a87c8eee631ce99e6eb#0",
+  "post_tx": "616f86ecc600d1c08ac35844b74b9acd0c9795fd305e8a87c8eee631ce99e6eb",
+  "accept_tx": "b1c19e51b149132001d8b163c72e92bcdb804f7e6e0035f6b77940fc22877bae",
+  "explorer": {
+    "post": "https://explorer.vector.mainnet.apexfusion.org/transaction/hash/616f86ecc600d1c08ac35844b74b9acd0c9795fd305e8a87c8eee631ce99e6eb",
+    "accept": "https://explorer.vector.mainnet.apexfusion.org/transaction/hash/b1c19e51b149132001d8b163c72e92bcdb804f7e6e0035f6b77940fc22877bae"
+  },
+  "verdict": "VERIFIED",
+  "result_sha256": "bfbe27ee139ce96cce0e0f894f8a89014512baddc3c812cbf1cb7c95d3685075",
+  "result_projection": {
+    "operation": "execute",
+    "outcome": "refused_by_counterparty",
+    "reason": "approval_digest_mismatch",
+    "exit_state": "Escalated",
+    "proposal_digest": "f7158e15b483ed1d24589e20184e8f7c9733c20259d9170aaac02e9cacc86742"
+  },
+  "hires": [
+    {
+      "step": "propose-d",
+      "agent": "prior-authorization-agent",
+      "advert_ref": "612639b1d1a2c47075afadc03a3173cfb56081e55854cc1613ac1343ad59342f#0",
+      "escrow_ref": "77f85d3146671a47c13b95f3d46b4c66cd3390d261ecef5b989d092132ae6aba#0",
+      "post_tx": "77f85d3146671a47c13b95f3d46b4c66cd3390d261ecef5b989d092132ae6aba",
+      "accept_tx": "496d727b2dbb97e3efd22dbddce7e7b00ff5bc2ac6c3dfd9096225c0d0f682d4",
+      "reclaim_tx": null,
+      "verdict": "VERIFIED",
+      "result_sha256": "1fbd312d97906a93cca3e0a4779c5960af01ac4ccf5af0e0fb1e0a990ef4cdcd"
+    },
+    {
+      "step": "intake-d1",
+      "agent": "insurer-intake-agent",
+      "advert_ref": "db1c96cbf146988b386c521dbe208ed5df5697bab4e41470d0b6da1b0ffb423d#0",
+      "escrow_ref": "a9f8532ed2685a2fb1777ded5d64b28d97f9821afbb79bde0b6f825af3d0af75#0",
+      "post_tx": "a9f8532ed2685a2fb1777ded5d64b28d97f9821afbb79bde0b6f825af3d0af75",
+      "accept_tx": null,
+      "reclaim_tx": "e80155c45b59fa05c3df26edd669dd0465db8bd8e29303511642332a7b8d5afa",
+      "verdict": null,
+      "result_sha256": null
+    },
+    {
+      "step": "execute-d1",
+      "agent": "prior-authorization-agent",
+      "advert_ref": "612639b1d1a2c47075afadc03a3173cfb56081e55854cc1613ac1343ad59342f#0",
+      "escrow_ref": "8255998e797dee2d3dca608e3cc40aa6e42f03705a143539d4d9a538b775ea29#0",
+      "post_tx": "8255998e797dee2d3dca608e3cc40aa6e42f03705a143539d4d9a538b775ea29",
+      "accept_tx": "65af5967c00275755b0f12889f0a0fc0c1c21598a938aca22460e1d11eccb72a",
+      "reclaim_tx": null,
+      "verdict": "VERIFIED",
+      "result_sha256": "831069505e4c40581342921e81b7a435a793dc06f1986975b3f6b67241479914"
+    },
+    {
+      "step": "intake-d2",
+      "agent": "insurer-intake-agent",
+      "advert_ref": "db1c96cbf146988b386c521dbe208ed5df5697bab4e41470d0b6da1b0ffb423d#0",
+      "escrow_ref": "affda58b4a77bbbd958825f0ef4fb3cde07d9121e0c8aeab1b93136859c3bda4#0",
+      "post_tx": "affda58b4a77bbbd958825f0ef4fb3cde07d9121e0c8aeab1b93136859c3bda4",
+      "accept_tx": "02d9eb494913259a8fdfcd7b634905b7206318a1b8e8b1ff03368782fbca3794",
+      "reclaim_tx": null,
+      "verdict": "VERIFIED",
+      "result_sha256": "da70e5335da867dda3649f9a8f21b4de76286d3f05f3b8cf297a7bb4906efb67"
+    },
+    {
+      "step": "execute-d2",
+      "agent": "prior-authorization-agent",
+      "advert_ref": "612639b1d1a2c47075afadc03a3173cfb56081e55854cc1613ac1343ad59342f#0",
+      "escrow_ref": "cb7b0d3f167b2564bff02a3c09e5625c9c2d4e52a6cf6fff1841255744cc6c8f#0",
+      "post_tx": "cb7b0d3f167b2564bff02a3c09e5625c9c2d4e52a6cf6fff1841255744cc6c8f",
+      "accept_tx": "b09cd5607c78523992895839cfb2b86e0e080932f46466c30075d99896298c6e",
+      "reclaim_tx": null,
+      "verdict": "VERIFIED",
+      "result_sha256": "b1f71b0c386756fbeb1cd84ec0dc1dc14bedb2c0c55d21dcd4a9508786e74941"
+    },
+    {
+      "step": "propose-e",
+      "agent": "prior-authorization-agent",
+      "advert_ref": "612639b1d1a2c47075afadc03a3173cfb56081e55854cc1613ac1343ad59342f#0",
+      "escrow_ref": "f714a944b597555d6afb577e55ecf62ff0f4704d0ae48d8c33491dd7cecbbecd#0",
+      "post_tx": "f714a944b597555d6afb577e55ecf62ff0f4704d0ae48d8c33491dd7cecbbecd",
+      "accept_tx": "fd597a950879a7061957cc7a8c462de941f7db1d31ce3f108b7376695ee5e9c1",
+      "reclaim_tx": null,
+      "verdict": "VERIFIED",
+      "result_sha256": "28503038b0e73594724ffbdd970db83d7f19e24e5702a424ccd77d9fb3e4faeb"
+    },
+    {
+      "step": "intake-e",
+      "agent": "insurer-intake-agent",
+      "advert_ref": "db1c96cbf146988b386c521dbe208ed5df5697bab4e41470d0b6da1b0ffb423d#0",
+      "escrow_ref": "3b3404849e892478c4a5bdd8e5a7b2753159288cec5705791151a9bb2d47d455#0",
+      "post_tx": "3b3404849e892478c4a5bdd8e5a7b2753159288cec5705791151a9bb2d47d455",
+      "accept_tx": null,
+      "reclaim_tx": "eaf517bdeed6db46f0ed035148f2c0362128cd4f6662762329a338187e1d663f",
+      "verdict": null,
+      "result_sha256": null
+    },
+    {
+      "step": "execute-e",
+      "agent": "prior-authorization-agent",
+      "advert_ref": "612639b1d1a2c47075afadc03a3173cfb56081e55854cc1613ac1343ad59342f#0",
+      "escrow_ref": "6daddab25c9493f7e85966d58ef2b91e2fd3cd75c8db4b8cffd4196433a18a90#0",
+      "post_tx": "6daddab25c9493f7e85966d58ef2b91e2fd3cd75c8db4b8cffd4196433a18a90",
+      "accept_tx": "6de62b36bbcf62268817604668e7a5554b4af1295de8dafc04e22e88dca2b5c7",
+      "reclaim_tx": null,
+      "verdict": "VERIFIED",
+      "result_sha256": "a18c07309ec055fa7734918e989df907cdea8b6eae455faa099b5bc523397686"
+    },
+    {
+      "step": "propose-a",
+      "agent": "prior-authorization-agent",
+      "advert_ref": "612639b1d1a2c47075afadc03a3173cfb56081e55854cc1613ac1343ad59342f#0",
+      "escrow_ref": "15f7148745c151e3fa127f088a23c407a488cb9b90184b3e0db315a49566346f#0",
+      "post_tx": "15f7148745c151e3fa127f088a23c407a488cb9b90184b3e0db315a49566346f",
+      "accept_tx": "f22f654f10620e406685337122eed07b827946c88a4bf5e7f4a0c2265b599b74",
+      "reclaim_tx": null,
+      "verdict": "VERIFIED",
+      "result_sha256": "4667e910d1229b5167e0dc424fab93e4a31fbcc76a8604c452899173101afd60"
+    },
+    {
+      "step": "intake-a",
+      "agent": "insurer-intake-agent",
+      "advert_ref": "db1c96cbf146988b386c521dbe208ed5df5697bab4e41470d0b6da1b0ffb423d#0",
+      "escrow_ref": "914f8364bf5b585a1d1514f10e64d841ffe94b9d7294c74b8f84302471920ea8#0",
+      "post_tx": "914f8364bf5b585a1d1514f10e64d841ffe94b9d7294c74b8f84302471920ea8",
+      "accept_tx": null,
+      "reclaim_tx": "2ee26d5273d3d8a12c0751f5023f72e6fd7a6c5c25b99f6e6a64112b1f1827b7",
+      "verdict": null,
+      "result_sha256": null
+    },
+    {
+      "step": "execute-a",
+      "agent": "prior-authorization-agent",
+      "advert_ref": "612639b1d1a2c47075afadc03a3173cfb56081e55854cc1613ac1343ad59342f#0",
+      "escrow_ref": "616f86ecc600d1c08ac35844b74b9acd0c9795fd305e8a87c8eee631ce99e6eb#0",
+      "post_tx": "616f86ecc600d1c08ac35844b74b9acd0c9795fd305e8a87c8eee631ce99e6eb",
+      "accept_tx": "b1c19e51b149132001d8b163c72e92bcdb804f7e6e0035f6b77940fc22877bae",
+      "reclaim_tx": null,
+      "verdict": "VERIFIED",
+      "result_sha256": "bfbe27ee139ce96cce0e0f894f8a89014512baddc3c812cbf1cb7c95d3685075"
+    }
+  ],
+  "delegation": [
+    {
+      "id": "bd48392fd107b583aa0401830948c37e413db15152c6c0f5d257c562aa2109aa",
+      "tx": "358495c5c8f32f6207415b87d02e5381688720ec9ad3a215b134a55bfacd9e07",
+      "ended_tx": "05b772dd3847340e811907ad484fddb8fa9b96a784c1785fa7662e45f22cf616",
+      "state": "ended"
+    }
+  ],
+  "vault": [
+    {
+      "ref": "914f8364bf5b585a1d1514f10e64d841ffe94b9d7294c74b8f84302471920ea8#1",
+      "open_tx": "ccaadcc8987bc087e901e31b784db6850d63bac576631b37f12edfcd50de2fc0",
+      "close_tx": "40f005524d057193695517a52ef2f045ab769a77848130e5a1a7ee994a4e564a",
+      "state": "closed"
+    }
+  ],
+  "sub_delegations": [],
+  "mock": {
+    "tenant": "prior-fixture-r2",
+    "log": [
+      {
+        "at": "2026-11-18T12:44:14.600Z",
+        "route": "POST /insurer/requests",
+        "credential": "jwt-svid",
+        "decision": "allowed",
+        "status": 201
+      },
+      {
+        "at": "2026-11-18T12:46:14.600Z",
+        "route": "POST /records/orders/{order_id}/submission",
+        "credential": "token",
+        "decision": "allowed",
+        "status": 201
+      }
+    ],
+    "unattributed_lines": 0,
+    "state": {
+      "insurer_requests": 1,
+      "record_submissions": 1
+    }
+  },
+  "decisions": [
+    {
+      "step": "propose-d",
+      "decisions": [
+        {
+          "name": "justification",
+          "escrow_ref": "ffd2ac6da5aa8e777c28b4bb6fab43f55014d6ae6e1e6f3d41239ac3bcaeff3d#0"
+        }
+      ]
+    },
+    {
+      "step": "intake-d2",
+      "decisions": [
+        {
+          "name": "completeness",
+          "escrow_ref": "a09bfdf5b14c969eb1ba34934a640da0e28bd18b859a833bf184b14ed10735b7#0"
+        }
+      ]
+    },
+    {
+      "step": "execute-d2",
+      "decisions": [
+        {
+          "name": "accept_delivery",
+          "escrow_ref": "721b7ac9c2a33c0d0fbeb6053a5d86a08c2793a088240a5d8abd74c1cfaf4417#0"
+        }
+      ]
+    },
+    {
+      "step": "propose-e",
+      "decisions": [
+        {
+          "name": "justification",
+          "escrow_ref": "ffd2ac6da5aa8e777c28b4bb6fab43f55014d6ae6e1e6f3d41239ac3bcaeff3d#0"
+        }
+      ]
+    },
+    {
+      "step": "propose-a",
+      "decisions": [
+        {
+          "name": "justification",
+          "escrow_ref": "ffd2ac6da5aa8e777c28b4bb6fab43f55014d6ae6e1e6f3d41239ac3bcaeff3d#0"
+        }
+      ]
+    }
+  ],
+  "claims": {
+    "prior-authorization-agent": "3b4a273f85e7db845968f6c2f6e69c7c830c6a58ba3bd4f1ef3c4f2601d51fcc#0",
+    "insurer-intake-agent": "33bba1c9420c65c94c3225f61f7647f78306d698bc00cc0c2f6d4483a3a6ebd7#0"
+  },
+  "challenge": {
+    "claim": "3b4a273f85e7db845968f6c2f6e69c7c830c6a58ba3bd4f1ef3c4f2601d51fcc#0",
+    "evidence": "1f76be688ff39fc19a713f66d0d15abcb2bbbc541626ece6ee9a053dafeec957",
+    "challenge": "9d5e179bc7173a676f05ca1c2d68292704c458e8a78f965ddfafe4b259e88c99#0"
+  },
+  "case": {
+    "verdict": "AuditorWins",
+    "live": null,
+    "indexed": {
+      "jury": "adadadadadadadadadadadadadadadadadadadadadadadadadadadad",
+      "case_token": "b8a8347fc20e90b02f3c1d3a524d02659df3d6c4eb54ee93bb0f164b46f84e96",
+      "state": "closed",
+      "window": "ended",
+      "tally": {
+        "claimer": 0,
+        "auditor": 3,
+        "inconclusive": 0
+      },
+      "revealed": 3,
+      "result": "AuditorWins",
+      "opened_tx": "b0c647c8be1b61d1327ce1b31dc19482c8d8582afa8112de5e9db1bae6a8c1c2",
+      "finalized_tx": "a2b47fef7f1463c9af23ce34b9e9c28d4587976a50b63f186c96d35a2321891c",
+      "finalized_result": "AuditorWins",
+      "closed_tx": "a2b47fef7f1463c9af23ce34b9e9c28d4587976a50b63f186c96d35a2321891c"
+    },
+    "hold": {
+      "reason": 64,
+      "since": 1795024454000,
+      "until": 1795629254000,
+      "record_output": "12a14e4dafa8a0fdef4d738b7a7cfac7696985e82e4b77c2b0b77525207d9884#0",
+      "gateway_status": "Suspended"
+    }
+  },
+  "fault_mode": {
+    "prior-authorization-agent": "alter_after_approval",
+    "insurer-intake-agent": ""
+  },
+  "exit_state": "Escalated",
+  "steps": [
+    {
+      "id": "r2-d",
+      "status": "shown",
+      "refs": [
+        {
+          "kind": "attestation",
+          "value": "a4deac2678f637ced51ffb901f61c59f58673fd8b61d3c6d88ddb9149df8ce82"
+        },
+        {
+          "kind": "transaction",
+          "value": "320b02bdf3d864a750f913ba9db4e2b652676985cf9925805c414723b9f384e1"
+        },
+        {
+          "kind": "transaction",
+          "value": "4f7c22ec37f5c6c92967b19a59ca862e0c0e837bef024b72c541b11ac69d6ad7"
+        },
+        {
+          "kind": "attestation",
+          "value": "83b31e2c1b0c5fadb8278d89dbb630d3dcd4faa512ffb942deacfda07e96b065"
+        },
+        {
+          "kind": "transaction",
+          "value": "02a6278989cbbcb11cf390c261d13d0cb6dcac0ab6df0db4135ba9551a5f6a85"
+        },
+        {
+          "kind": "transaction",
+          "value": "8255998e797dee2d3dca608e3cc40aa6e42f03705a143539d4d9a538b775ea29"
+        },
+        {
+          "kind": "escrow",
+          "value": "8255998e797dee2d3dca608e3cc40aa6e42f03705a143539d4d9a538b775ea29#0"
+        },
+        {
+          "kind": "transaction",
+          "value": "65af5967c00275755b0f12889f0a0fc0c1c21598a938aca22460e1d11eccb72a"
+        },
+        {
+          "kind": "transaction",
+          "value": "a9f8532ed2685a2fb1777ded5d64b28d97f9821afbb79bde0b6f825af3d0af75"
+        },
+        {
+          "kind": "escrow",
+          "value": "a9f8532ed2685a2fb1777ded5d64b28d97f9821afbb79bde0b6f825af3d0af75#0"
+        },
+        {
+          "kind": "transaction",
+          "value": "e80155c45b59fa05c3df26edd669dd0465db8bd8e29303511642332a7b8d5afa"
+        },
+        {
+          "kind": "vault",
+          "value": "e80155c45b59fa05c3df26edd669dd0465db8bd8e29303511642332a7b8d5afa#0"
+        },
+        {
+          "kind": "vault",
+          "value": "e80155c45b59fa05c3df26edd669dd0465db8bd8e29303511642332a7b8d5afa#1"
+        },
+        {
+          "kind": "transaction",
+          "value": "cb7b0d3f167b2564bff02a3c09e5625c9c2d4e52a6cf6fff1841255744cc6c8f"
+        },
+        {
+          "kind": "escrow",
+          "value": "cb7b0d3f167b2564bff02a3c09e5625c9c2d4e52a6cf6fff1841255744cc6c8f#0"
+        },
+        {
+          "kind": "transaction",
+          "value": "b09cd5607c78523992895839cfb2b86e0e080932f46466c30075d99896298c6e"
+        },
+        {
+          "kind": "transaction",
+          "value": "affda58b4a77bbbd958825f0ef4fb3cde07d9121e0c8aeab1b93136859c3bda4"
+        },
+        {
+          "kind": "escrow",
+          "value": "affda58b4a77bbbd958825f0ef4fb3cde07d9121e0c8aeab1b93136859c3bda4#0"
+        }
+      ],
+      "note": ""
+    },
+    {
+      "id": "r2-e",
+      "status": "shown",
+      "refs": [
+        {
+          "kind": "attestation",
+          "value": "b45dd0bd44d3245ea215104dc861ba268e869f0fa16fb4d7e4e0e7199822d0b5"
+        },
+        {
+          "kind": "transaction",
+          "value": "55caed415c2761c74bdca7b924ecc2a7177832a2c7316549008a14cfda7b420f"
+        },
+        {
+          "kind": "transaction",
+          "value": "6daddab25c9493f7e85966d58ef2b91e2fd3cd75c8db4b8cffd4196433a18a90"
+        },
+        {
+          "kind": "escrow",
+          "value": "6daddab25c9493f7e85966d58ef2b91e2fd3cd75c8db4b8cffd4196433a18a90#0"
+        },
+        {
+          "kind": "transaction",
+          "value": "6de62b36bbcf62268817604668e7a5554b4af1295de8dafc04e22e88dca2b5c7"
+        },
+        {
+          "kind": "transaction",
+          "value": "3b3404849e892478c4a5bdd8e5a7b2753159288cec5705791151a9bb2d47d455"
+        },
+        {
+          "kind": "escrow",
+          "value": "3b3404849e892478c4a5bdd8e5a7b2753159288cec5705791151a9bb2d47d455#0"
+        },
+        {
+          "kind": "transaction",
+          "value": "eaf517bdeed6db46f0ed035148f2c0362128cd4f6662762329a338187e1d663f"
+        },
+        {
+          "kind": "vault",
+          "value": "eaf517bdeed6db46f0ed035148f2c0362128cd4f6662762329a338187e1d663f#0"
+        },
+        {
+          "kind": "vault",
+          "value": "eaf517bdeed6db46f0ed035148f2c0362128cd4f6662762329a338187e1d663f#1"
+        }
+      ],
+      "note": ""
+    },
+    {
+      "id": "r2-a",
+      "status": "shown",
+      "refs": [
+        {
+          "kind": "attestation",
+          "value": "a6254701be600a93a038788e0e9358f5b7d5b4576ae5f953d462623e067b9390"
+        },
+        {
+          "kind": "transaction",
+          "value": "5c4e9c42b6e23e0a6126e154bdeb6e0f62838312b492e65c68363e0335ee20e0"
+        },
+        {
+          "kind": "transaction",
+          "value": "616f86ecc600d1c08ac35844b74b9acd0c9795fd305e8a87c8eee631ce99e6eb"
+        },
+        {
+          "kind": "escrow",
+          "value": "616f86ecc600d1c08ac35844b74b9acd0c9795fd305e8a87c8eee631ce99e6eb#0"
+        },
+        {
+          "kind": "transaction",
+          "value": "b1c19e51b149132001d8b163c72e92bcdb804f7e6e0035f6b77940fc22877bae"
+        },
+        {
+          "kind": "transaction",
+          "value": "914f8364bf5b585a1d1514f10e64d841ffe94b9d7294c74b8f84302471920ea8"
+        },
+        {
+          "kind": "escrow",
+          "value": "914f8364bf5b585a1d1514f10e64d841ffe94b9d7294c74b8f84302471920ea8#0"
+        },
+        {
+          "kind": "transaction",
+          "value": "2ee26d5273d3d8a12c0751f5023f72e6fd7a6c5c25b99f6e6a64112b1f1827b7"
+        },
+        {
+          "kind": "vault",
+          "value": "2ee26d5273d3d8a12c0751f5023f72e6fd7a6c5c25b99f6e6a64112b1f1827b7#0"
+        },
+        {
+          "kind": "vault",
+          "value": "2ee26d5273d3d8a12c0751f5023f72e6fd7a6c5c25b99f6e6a64112b1f1827b7#1"
+        },
+        {
+          "kind": "fault_check",
+          "value": "2026-11-18T13:55:14.000Z"
+        }
+      ],
+      "note": ""
+    },
+    {
+      "id": "r2-b",
+      "status": "shown",
+      "refs": [
+        {
+          "kind": "claim",
+          "value": "3b4a273f85e7db845968f6c2f6e69c7c830c6a58ba3bd4f1ef3c4f2601d51fcc#0"
+        },
+        {
+          "kind": "transaction",
+          "value": "1f76be688ff39fc19a713f66d0d15abcb2bbbc541626ece6ee9a053dafeec957"
+        },
+        {
+          "kind": "challenge",
+          "value": "9d5e179bc7173a676f05ca1c2d68292704c458e8a78f965ddfafe4b259e88c99#0"
+        }
+      ],
+      "note": ""
+    },
+    {
+      "id": "r2-b-hold",
+      "status": "shown",
+      "refs": [
+        {
+          "kind": "case",
+          "value": "b8a8347fc20e90b02f3c1d3a524d02659df3d6c4eb54ee93bb0f164b46f84e96"
+        },
+        {
+          "kind": "transaction",
+          "value": "a2b47fef7f1463c9af23ce34b9e9c28d4587976a50b63f186c96d35a2321891c"
+        },
+        {
+          "kind": "hold",
+          "value": "12a14e4dafa8a0fdef4d738b7a7cfac7696985e82e4b77c2b0b77525207d9884#0"
+        }
+      ],
+      "note": ""
+    },
+    {
+      "id": "r2-c",
+      "status": "shown",
+      "refs": [
+        {
+          "kind": "hold",
+          "value": "12a14e4dafa8a0fdef4d738b7a7cfac7696985e82e4b77c2b0b77525207d9884#0"
+        },
+        {
+          "kind": "transaction",
+          "value": "12a14e4dafa8a0fdef4d738b7a7cfac7696985e82e4b77c2b0b77525207d9884"
+        }
+      ],
+      "note": ""
+    },
+    {
+      "id": "r2-f",
+      "status": "shown",
+      "refs": [
+        {
+          "kind": "transaction",
+          "value": "12a14e4dafa8a0fdef4d738b7a7cfac7696985e82e4b77c2b0b77525207d9884"
+        },
+        {
+          "kind": "did",
+          "value": "did:vector:21ea83ddf4479b6dc2deea0074e901a3df6b25754679a87a9f1795c3ecfd9cd8"
+        },
+        {
+          "kind": "did",
+          "value": "did:vector:6487bcdd62c8506f0ac7a60acb14e74b85e3638f9868dae578a84451ac8291e5"
+        },
+        {
+          "kind": "probe",
+          "value": "2026-11-18T14:31:14.000Z"
+        },
+        {
+          "kind": "probe",
+          "value": "2026-11-18T19:01:14.000Z"
+        }
+      ],
+      "note": ""
+    }
+  ],
+  "refusals": [
+    {
+      "step": "r2-c",
+      "kind": "tool",
+      "message_sha256": "0c14cafe600bf6110807c4e8ed9b1f0661251fa37008d1a7f0bf2e5b5f6ad858"
+    }
+  ],
+  "approvals": [
+    {
+      "attestation": "a4deac2678f637ced51ffb901f61c59f58673fd8b61d3c6d88ddb9149df8ce82",
+      "tx": "320b02bdf3d864a750f913ba9db4e2b652676985cf9925805c414723b9f384e1",
+      "hire": "execute-d1",
+      "digest": "38eb93edc633da7f03afeeef3f275f4f91c134929d3a65116281984639ed8d90",
+      "issued_at": 1795003874000,
+      "issued_block_at": 1795003874000,
+      "valid_until": 1795017074000,
+      "checked_at": 1795004474000,
+      "state_at_hire": "revoked",
+      "link": "request",
+      "revoked_tx": "4f7c22ec37f5c6c92967b19a59ca862e0c0e837bef024b72c541b11ac69d6ad7",
+      "supersedes": null
+    },
+    {
+      "attestation": "83b31e2c1b0c5fadb8278d89dbb630d3dcd4faa512ffb942deacfda07e96b065",
+      "tx": "02a6278989cbbcb11cf390c261d13d0cb6dcac0ab6df0db4135ba9551a5f6a85",
+      "hire": "execute-d2",
+      "digest": "38eb93edc633da7f03afeeef3f275f4f91c134929d3a65116281984639ed8d90",
+      "issued_at": 1795005134000,
+      "issued_block_at": 1795005134000,
+      "valid_until": 1795017074000,
+      "checked_at": 1795005674000,
+      "state_at_hire": "active",
+      "link": "request",
+      "revoked_tx": null,
+      "supersedes": "a4deac2678f637ced51ffb901f61c59f58673fd8b61d3c6d88ddb9149df8ce82"
+    },
+    {
+      "attestation": "b45dd0bd44d3245ea215104dc861ba268e869f0fa16fb4d7e4e0e7199822d0b5",
+      "tx": "55caed415c2761c74bdca7b924ecc2a7177832a2c7316549008a14cfda7b420f",
+      "hire": "execute-e",
+      "digest": "1730c897a4e6cd2f5ee5dce834561e21c22044088414601c17c156f1932d7fea",
+      "issued_at": 1795006934000,
+      "issued_block_at": 1795006934000,
+      "valid_until": 1795007534000,
+      "checked_at": 1795008074000,
+      "state_at_hire": "expired",
+      "link": "request",
+      "revoked_tx": null,
+      "supersedes": null
+    },
+    {
+      "attestation": "a6254701be600a93a038788e0e9358f5b7d5b4576ae5f953d462623e067b9390",
+      "tx": "5c4e9c42b6e23e0a6126e154bdeb6e0f62838312b492e65c68363e0335ee20e0",
+      "hire": "execute-a",
+      "digest": "f7158e15b483ed1d24589e20184e8f7c9733c20259d9170aaac02e9cacc86742",
+      "issued_at": 1795009634000,
+      "issued_block_at": 1795009634000,
+      "valid_until": 1795017074000,
+      "checked_at": 1795010474000,
+      "state_at_hire": "active",
+      "link": "request",
+      "revoked_tx": null,
+      "supersedes": null
+    }
+  ],
+  "binding": null,
+  "outcomes": [
+    {
+      "step": "execute-d1",
+      "operation": "execute",
+      "outcome": "refused_by_counterparty",
+      "reason": "approval_revoked",
+      "exit_state": "Rejected",
+      "proposal_digest": "38eb93edc633da7f03afeeef3f275f4f91c134929d3a65116281984639ed8d90"
+    },
+    {
+      "step": "execute-d2",
+      "operation": "execute",
+      "outcome": "completed",
+      "reason": null,
+      "exit_state": "Completed",
+      "proposal_digest": "38eb93edc633da7f03afeeef3f275f4f91c134929d3a65116281984639ed8d90"
+    },
+    {
+      "step": "execute-e",
+      "operation": "execute",
+      "outcome": "refused_by_counterparty",
+      "reason": "approval_expired",
+      "exit_state": "Expired",
+      "proposal_digest": "1730c897a4e6cd2f5ee5dce834561e21c22044088414601c17c156f1932d7fea"
+    },
+    {
+      "step": "execute-a",
+      "operation": "execute",
+      "outcome": "refused_by_counterparty",
+      "reason": "approval_digest_mismatch",
+      "exit_state": "Escalated",
+      "proposal_digest": "f7158e15b483ed1d24589e20184e8f7c9733c20259d9170aaac02e9cacc86742"
+    }
+  ],
+  "intake": {
+    "status": "complete",
+    "missing_count": 0,
+    "attestations": {
+      "provenance": "valid",
+      "software": "valid",
+      "principal_binding": "absent"
+    },
+    "checks": 15
+  },
+  "submission": {
+    "intake_id_sha256": "3b00e26029acca3647c5995718b88d4e3db4445819e13db8ea44286d39b70f69",
+    "request_number_sha256": "f083742f25332d171837b893b7785f515a7b34b1d0161477cbdd911bab2d4bcd"
+  },
+  "subagent_ends": {
+    "tx": "12a14e4dafa8a0fdef4d738b7a7cfac7696985e82e4b77c2b0b77525207d9884",
+    "at": 1795027874000,
+    "epoch_before": 0,
+    "epoch_after": 1
+  },
+  "subagent_resolutions": [
+    {
+      "did": "did:vector:21ea83ddf4479b6dc2deea0074e901a3df6b25754679a87a9f1795c3ecfd9cd8",
+      "effective": "Revoked"
+    },
+    {
+      "did": "did:vector:6487bcdd62c8506f0ac7a60acb14e74b85e3638f9868dae578a84451ac8291e5",
+      "effective": "Revoked"
+    }
+  ],
+  "probe": {
+    "control": {
+      "at": "2026-11-18T14:31:14.000Z",
+      "did": "did:vector:21ea83ddf4479b6dc2deea0074e901a3df6b25754679a87a9f1795c3ecfd9cd8",
+      "status": 200,
+      "code": null
+    },
+    "refusal": {
+      "at": "2026-11-18T19:01:14.000Z",
+      "did": "did:vector:21ea83ddf4479b6dc2deea0074e901a3df6b25754679a87a9f1795c3ecfd9cd8",
+      "status": 400,
+      "code": "invalid_request"
+    }
+  }
+}

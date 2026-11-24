@@ -1,0 +1,402 @@
+{
+  "run": "use-case-2-clean",
+  "kind": "clean",
+  "date": "2026-12-01",
+  "capability_id": "health.priorauth.draft.v1",
+  "builder": "https://mcp.vector.mainnet.apexfusion.org/mcp",
+  "advert_ref": "612639b1d1a2c47075afadc03a3173cfb56081e55854cc1613ac1343ad59342f#0",
+  "escrow_ref": "8341867172aeec8ec8f0612c3c884d2461ed290b1aaba8380026e38d4cf301d1#0",
+  "post_tx": "8341867172aeec8ec8f0612c3c884d2461ed290b1aaba8380026e38d4cf301d1",
+  "accept_tx": "14c25703749604fae39c642103e806ca54e0010b503fd055863edde9027b7695",
+  "explorer": {
+    "post": "https://explorer.vector.mainnet.apexfusion.org/transaction/hash/8341867172aeec8ec8f0612c3c884d2461ed290b1aaba8380026e38d4cf301d1",
+    "accept": "https://explorer.vector.mainnet.apexfusion.org/transaction/hash/14c25703749604fae39c642103e806ca54e0010b503fd055863edde9027b7695"
+  },
+  "verdict": "VERIFIED",
+  "result_sha256": "7b77e43a41fd15ba1e9c10980623cc3729fad2afe1ed384d034476737f25ca5f",
+  "result_projection": {
+    "operation": "execute",
+    "outcome": "completed",
+    "reason": null,
+    "exit_state": "Completed",
+    "proposal_digest": "7469a51ce24f24e6927554400b31cec457993043907b67f1869131ce482b0956"
+  },
+  "hires": [
+    {
+      "step": "propose",
+      "agent": "prior-authorization-agent",
+      "advert_ref": "612639b1d1a2c47075afadc03a3173cfb56081e55854cc1613ac1343ad59342f#0",
+      "escrow_ref": "d21d0da3be07c4425c69a6b9e954614b34c04dfc30838dd2cf0e4e35e5e5bdee#0",
+      "post_tx": "d21d0da3be07c4425c69a6b9e954614b34c04dfc30838dd2cf0e4e35e5e5bdee",
+      "accept_tx": "63803e72962cf3313cbff83f75f9ab16a52dc584605bd156b1190c0902193c84",
+      "reclaim_tx": null,
+      "verdict": "VERIFIED",
+      "result_sha256": "b8f3848c975794578fe7e8ac74da85bc41a11d056f3c6ca1b3b3efbf1d3e3eaa"
+    },
+    {
+      "step": "intake",
+      "agent": "insurer-intake-agent",
+      "advert_ref": "db1c96cbf146988b386c521dbe208ed5df5697bab4e41470d0b6da1b0ffb423d#0",
+      "escrow_ref": "c392389215b6e7baf14604b95e49b8ed2da12e69a4667e1b938291a056e9c213#0",
+      "post_tx": "c392389215b6e7baf14604b95e49b8ed2da12e69a4667e1b938291a056e9c213",
+      "accept_tx": "3e1fc4c8e04d8ed6160002c547a72fbb6d68be01a66b9b8a9a448d5489e995d8",
+      "reclaim_tx": null,
+      "verdict": "VERIFIED",
+      "result_sha256": "2b8c349f7136b40c08fa88a1b5be0ed9fb4a2b20467e725723051e8f506f5f76"
+    },
+    {
+      "step": "execute",
+      "agent": "prior-authorization-agent",
+      "advert_ref": "612639b1d1a2c47075afadc03a3173cfb56081e55854cc1613ac1343ad59342f#0",
+      "escrow_ref": "8341867172aeec8ec8f0612c3c884d2461ed290b1aaba8380026e38d4cf301d1#0",
+      "post_tx": "8341867172aeec8ec8f0612c3c884d2461ed290b1aaba8380026e38d4cf301d1",
+      "accept_tx": "14c25703749604fae39c642103e806ca54e0010b503fd055863edde9027b7695",
+      "reclaim_tx": null,
+      "verdict": "VERIFIED",
+      "result_sha256": "7b77e43a41fd15ba1e9c10980623cc3729fad2afe1ed384d034476737f25ca5f"
+    }
+  ],
+  "delegation": [
+    {
+      "id": "bd48392fd107b583aa0401830948c37e413db15152c6c0f5d257c562aa2109aa",
+      "tx": "358495c5c8f32f6207415b87d02e5381688720ec9ad3a215b134a55bfacd9e07",
+      "ended_tx": "05b772dd3847340e811907ad484fddb8fa9b96a784c1785fa7662e45f22cf616",
+      "state": "ended"
+    }
+  ],
+  "vault": [
+    {
+      "ref": "c392389215b6e7baf14604b95e49b8ed2da12e69a4667e1b938291a056e9c213#1",
+      "open_tx": "ccaadcc8987bc087e901e31b784db6850d63bac576631b37f12edfcd50de2fc0",
+      "close_tx": "40f005524d057193695517a52ef2f045ab769a77848130e5a1a7ee994a4e564a",
+      "state": "closed"
+    }
+  ],
+  "sub_delegations": [
+    {
+      "id": "e1cbea017112ebb4ac889b2bbc789d98a1ab5481edb48a47e1e2ffc90b11a38f",
+      "delegate_tx": "51c1b5335b4b92bebfb96ce6eb6c44c9065a5c83e2b584e9e5ada09ab249c60b",
+      "undelegate_tx": "11121c6c9ea58faa58d0551e7b9d380b2119d357a951a81da9a1323577f85c69",
+      "subagent": "record-reader",
+      "hire": "propose"
+    },
+    {
+      "id": "31d08edfef966950e173365b7774452a5b6fd9d53886cd6e8bc40f87863d10c4",
+      "delegate_tx": "7c85f31bbe463fa15ecc664649d786772fab419d8a71e16122e1e381d8c7865c",
+      "undelegate_tx": "2c509ea96c26fbb257ad3e14b9269abc94cd2a996839ef53871bbf5564b32be5",
+      "subagent": "drafter",
+      "hire": "propose"
+    }
+  ],
+  "mock": {
+    "tenant": "prior-fixture-r1",
+    "log": [
+      {
+        "at": "2026-11-18T12:24:14.600Z",
+        "route": "POST /insurer/requests",
+        "credential": "jwt-svid",
+        "decision": "allowed",
+        "status": 201
+      },
+      {
+        "at": "2026-11-18T12:26:14.600Z",
+        "route": "POST /records/orders/{order_id}/submission",
+        "credential": "token",
+        "decision": "allowed",
+        "status": 201
+      },
+      {
+        "at": "2026-11-18T12:04:14.000Z",
+        "route": "GET /records/orders/{order_id}",
+        "credential": "token",
+        "decision": "allowed",
+        "status": 200
+      },
+      {
+        "at": "2026-11-18T12:06:14.000Z",
+        "route": "GET /guidelines/{code}",
+        "credential": "token",
+        "decision": "allowed",
+        "status": 200
+      }
+    ],
+    "unattributed_lines": 0,
+    "state": {
+      "insurer_requests": 1,
+      "record_submissions": 1
+    }
+  },
+  "decisions": [
+    {
+      "step": "propose",
+      "decisions": [
+        {
+          "name": "justification",
+          "escrow_ref": "ffd2ac6da5aa8e777c28b4bb6fab43f55014d6ae6e1e6f3d41239ac3bcaeff3d#0"
+        }
+      ]
+    },
+    {
+      "step": "intake",
+      "decisions": [
+        {
+          "name": "completeness",
+          "escrow_ref": "a09bfdf5b14c969eb1ba34934a640da0e28bd18b859a833bf184b14ed10735b7#0"
+        }
+      ]
+    },
+    {
+      "step": "execute",
+      "decisions": [
+        {
+          "name": "accept_delivery",
+          "escrow_ref": "721b7ac9c2a33c0d0fbeb6053a5d86a08c2793a088240a5d8abd74c1cfaf4417#0"
+        }
+      ]
+    }
+  ],
+  "claims": {
+    "prior-authorization-agent": "3b4a273f85e7db845968f6c2f6e69c7c830c6a58ba3bd4f1ef3c4f2601d51fcc#0",
+    "insurer-intake-agent": "33bba1c9420c65c94c3225f61f7647f78306d698bc00cc0c2f6d4483a3a6ebd7#0"
+  },
+  "challenge": null,
+  "case": null,
+  "fault_mode": {
+    "prior-authorization-agent": "",
+    "insurer-intake-agent": ""
+  },
+  "exit_state": "Completed",
+  "steps": [
+    {
+      "id": "r1-01",
+      "status": "shown",
+      "refs": [
+        {
+          "kind": "delegation",
+          "value": "bd48392fd107b583aa0401830948c37e413db15152c6c0f5d257c562aa2109aa"
+        },
+        {
+          "kind": "transaction",
+          "value": "358495c5c8f32f6207415b87d02e5381688720ec9ad3a215b134a55bfacd9e07"
+        },
+        {
+          "kind": "attestation",
+          "value": "eb272435dc28973cc68c59c8d820ba49de66b0748ba1092f52ebe530db0b7080"
+        },
+        {
+          "kind": "transaction",
+          "value": "db5276cf09e2bff206754f834b36f7923c316b1f51155681d844dc4ed711851c"
+        },
+        {
+          "kind": "vault",
+          "value": "c392389215b6e7baf14604b95e49b8ed2da12e69a4667e1b938291a056e9c213#1"
+        },
+        {
+          "kind": "transaction",
+          "value": "ccaadcc8987bc087e901e31b784db6850d63bac576631b37f12edfcd50de2fc0"
+        }
+      ],
+      "note": ""
+    },
+    {
+      "id": "r1-02",
+      "status": "shown",
+      "refs": [
+        {
+          "kind": "transaction",
+          "value": "d21d0da3be07c4425c69a6b9e954614b34c04dfc30838dd2cf0e4e35e5e5bdee"
+        },
+        {
+          "kind": "escrow",
+          "value": "d21d0da3be07c4425c69a6b9e954614b34c04dfc30838dd2cf0e4e35e5e5bdee#0"
+        },
+        {
+          "kind": "transaction",
+          "value": "63803e72962cf3313cbff83f75f9ab16a52dc584605bd156b1190c0902193c84"
+        },
+        {
+          "kind": "delegation",
+          "value": "e1cbea017112ebb4ac889b2bbc789d98a1ab5481edb48a47e1e2ffc90b11a38f"
+        },
+        {
+          "kind": "transaction",
+          "value": "51c1b5335b4b92bebfb96ce6eb6c44c9065a5c83e2b584e9e5ada09ab249c60b"
+        },
+        {
+          "kind": "transaction",
+          "value": "11121c6c9ea58faa58d0551e7b9d380b2119d357a951a81da9a1323577f85c69"
+        },
+        {
+          "kind": "delegation",
+          "value": "31d08edfef966950e173365b7774452a5b6fd9d53886cd6e8bc40f87863d10c4"
+        },
+        {
+          "kind": "transaction",
+          "value": "7c85f31bbe463fa15ecc664649d786772fab419d8a71e16122e1e381d8c7865c"
+        },
+        {
+          "kind": "transaction",
+          "value": "2c509ea96c26fbb257ad3e14b9269abc94cd2a996839ef53871bbf5564b32be5"
+        },
+        {
+          "kind": "escrow",
+          "value": "ffd2ac6da5aa8e777c28b4bb6fab43f55014d6ae6e1e6f3d41239ac3bcaeff3d#0"
+        }
+      ],
+      "note": ""
+    },
+    {
+      "id": "r1-03",
+      "status": "shown",
+      "refs": [
+        {
+          "kind": "attestation",
+          "value": "9017dcf9027b8fc887021c214a0902d6a37549876a489a1d32a55e68406aabb7"
+        },
+        {
+          "kind": "transaction",
+          "value": "ec4a8d6a134092eb2c88908993a200806d8fe5ad7d1a1c0ea16cfaca4cf2e0bb"
+        }
+      ],
+      "note": ""
+    },
+    {
+      "id": "r1-04",
+      "status": "shown",
+      "refs": [
+        {
+          "kind": "transaction",
+          "value": "8341867172aeec8ec8f0612c3c884d2461ed290b1aaba8380026e38d4cf301d1"
+        },
+        {
+          "kind": "escrow",
+          "value": "8341867172aeec8ec8f0612c3c884d2461ed290b1aaba8380026e38d4cf301d1#0"
+        },
+        {
+          "kind": "transaction",
+          "value": "14c25703749604fae39c642103e806ca54e0010b503fd055863edde9027b7695"
+        },
+        {
+          "kind": "transaction",
+          "value": "c392389215b6e7baf14604b95e49b8ed2da12e69a4667e1b938291a056e9c213"
+        },
+        {
+          "kind": "escrow",
+          "value": "c392389215b6e7baf14604b95e49b8ed2da12e69a4667e1b938291a056e9c213#0"
+        },
+        {
+          "kind": "vault",
+          "value": "ccaadcc8987bc087e901e31b784db6850d63bac576631b37f12edfcd50de2fc0#0"
+        }
+      ],
+      "note": ""
+    },
+    {
+      "id": "r1-05",
+      "status": "shown",
+      "refs": [
+        {
+          "kind": "transaction",
+          "value": "c392389215b6e7baf14604b95e49b8ed2da12e69a4667e1b938291a056e9c213"
+        },
+        {
+          "kind": "escrow",
+          "value": "c392389215b6e7baf14604b95e49b8ed2da12e69a4667e1b938291a056e9c213#0"
+        },
+        {
+          "kind": "escrow",
+          "value": "a09bfdf5b14c969eb1ba34934a640da0e28bd18b859a833bf184b14ed10735b7#0"
+        }
+      ],
+      "note": ""
+    },
+    {
+      "id": "r1-06",
+      "status": "shown",
+      "refs": [
+        {
+          "kind": "transaction",
+          "value": "3e1fc4c8e04d8ed6160002c547a72fbb6d68be01a66b9b8a9a448d5489e995d8"
+        },
+        {
+          "kind": "escrow",
+          "value": "721b7ac9c2a33c0d0fbeb6053a5d86a08c2793a088240a5d8abd74c1cfaf4417#0"
+        }
+      ],
+      "note": ""
+    },
+    {
+      "id": "r1-07",
+      "status": "shown",
+      "refs": [
+        {
+          "kind": "transaction",
+          "value": "40f005524d057193695517a52ef2f045ab769a77848130e5a1a7ee994a4e564a"
+        },
+        {
+          "kind": "transaction",
+          "value": "05b772dd3847340e811907ad484fddb8fa9b96a784c1785fa7662e45f22cf616"
+        }
+      ],
+      "note": ""
+    }
+  ],
+  "refusals": [],
+  "approvals": [
+    {
+      "attestation": "9017dcf9027b8fc887021c214a0902d6a37549876a489a1d32a55e68406aabb7",
+      "tx": "ec4a8d6a134092eb2c88908993a200806d8fe5ad7d1a1c0ea16cfaca4cf2e0bb",
+      "hire": "execute",
+      "digest": "7469a51ce24f24e6927554400b31cec457993043907b67f1869131ce482b0956",
+      "issued_at": 1795003934000,
+      "issued_block_at": 1795003934000,
+      "valid_until": 1795017074000,
+      "checked_at": 1795004474000,
+      "state_at_hire": "active",
+      "link": "request",
+      "revoked_tx": null,
+      "supersedes": null
+    }
+  ],
+  "binding": {
+    "attestation": "eb272435dc28973cc68c59c8d820ba49de66b0748ba1092f52ebe530db0b7080",
+    "tx": "db5276cf09e2bff206754f834b36f7923c316b1f51155681d844dc4ed711851c",
+    "hire": "execute",
+    "digest": "57498f960e65bdb72404703c99621f755f4a3c246260ca0ca231d08e0b47ecd9",
+    "issued_at": 1795002974000,
+    "issued_block_at": 1795002974000,
+    "valid_until": 1795062674000,
+    "checked_at": 1795004474000,
+    "state_at_hire": "active",
+    "link": "not_applicable",
+    "revoked_tx": null,
+    "supersedes": null
+  },
+  "outcomes": [
+    {
+      "step": "execute",
+      "operation": "execute",
+      "outcome": "completed",
+      "reason": null,
+      "exit_state": "Completed",
+      "proposal_digest": "7469a51ce24f24e6927554400b31cec457993043907b67f1869131ce482b0956"
+    }
+  ],
+  "intake": {
+    "status": "complete",
+    "missing_count": 0,
+    "attestations": {
+      "provenance": "valid",
+      "software": "valid",
+      "principal_binding": "valid"
+    },
+    "checks": 15
+  },
+  "submission": {
+    "intake_id_sha256": "3b00e26029acca3647c5995718b88d4e3db4445819e13db8ea44286d39b70f69",
+    "request_number_sha256": "680648defb2ba2f1b7f13de6762b7eeba8a5f552fe2f6f4383284baa91529ac4"
+  },
+  "subagent_ends": null,
+  "subagent_resolutions": [],
+  "probe": null
+}
