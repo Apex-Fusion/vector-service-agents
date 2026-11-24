@@ -199,6 +199,15 @@ describe('the members of the manifest', () => {
     expect(manifestOf().interface.routes).toStrictEqual({ job: '/v1/job', status: '/status', capability: '/capability', lots: '/lots.json' });
   });
 
+  test('the line about the ledger says that the service writes to it for each model hire and after a digest mismatch, and it does not say that the writes are only after a mismatch', () => {
+    const parties = manifestOf().behaviour.third_parties;
+    expect(parties.at(-1)).toBe('the Vector ledger (the escrow of each model hire, which carries only hashes, and, after a digest mismatch, the evidence document and the challenge)');
+    expect(parties.filter((party) => party.includes('written only'))).toStrictEqual([]);
+    // The other line about the ledger is the line of the reads.
+    expect(parties.filter((party) => party.includes('ledger'))).toHaveLength(2);
+    expect(parties[1].startsWith('the ledger, read only')).toBe(true);
+  });
+
   test('hold no dash of the long kind and no name of the ledger unit', () => {
     const { text } = served();
     expect(text).not.toMatch(/[\u{2013}\u{2014}]/u);

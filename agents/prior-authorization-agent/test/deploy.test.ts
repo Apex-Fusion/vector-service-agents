@@ -1201,6 +1201,12 @@ describe('deploy/server/RUNBOOK-prior-authorization-agent.md', () => {
     expect(file).toMatch(/eight keys, and all eight are different/);
   });
 
+  test('the service key signs the challenges, and it signs the claim of the agent only once a command stakes one, as the page of the agent says', () => {
+    const once = 'It signs the claim of the agent too, once a command stakes one.';
+    expect(readFileSync(join(root, 'specs', 'prior-authorization-agent.md'), 'utf8')).toContain(once);
+    expect(sectionOf(runbookText, 'The env file')).toContain(`\`PRIORAUTH_SERVICE_PRIV_KEY_HEX\` pays the model hires and signs the challenges. ${once}`);
+  });
+
   test('both images are pulled by the tag of the reviewed commit and pinned by digest', () => {
     const images = sectionOf(runbookText, 'The images');
     for (const part of [SERVICE_IMAGE, RUNTIME_IMAGE, '<full git commit sha>', 'sha256', 'denied', 'read:packages', FILES.compose, '<digest>']) expect(images, part).toContain(part);
