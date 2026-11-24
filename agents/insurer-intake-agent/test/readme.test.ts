@@ -460,7 +460,7 @@ describe('agents/insurer-intake-agent/README.md: the routes, the checks and the 
     expect(routes).toContain(`(its \`SERVICE_TIMEOUT_MS\` is ${JOB_DEADLINE_MS + 60_000}), and the window of the advert is ${MIN_PROCESSING_WINDOW_MS} ms at least`);
     expect(routes).toContain(`One call to the insurer portal takes ${CALL_TIMEOUT_MS} ms at most.`);
     expect(routes).toContain(`The job files no entry when that call could end less than ${RUNTIME_MARGIN_MS / 1000} s before \`deliver_by\``);
-    expect(textOf('../src/serve/wiring.ts')).toContain('Math.min(arrivedAt + JOB_DEADLINE_MS, context.deliverByMs - RUNTIME_MARGIN_MS - CALL_TIMEOUT_MS)');
+    expect(textOf('../src/serve/wiring.ts')).toContain('Math.min(arrivedAt + JOB_DEADLINE_MS, context.deliverByMs - RUNTIME_MARGIN_MS - CALL_TIMEOUT_MS - GATEWAY_DEFAULT_TIMEOUT_MS)');
     expect(routes).toContain(`The report of the attestations has ${REPORT_BUDGET_MS} ms at most for the whole report and ${READ_BUDGET_MS} ms for one read.`);
     expect([JOB_REPORT_BUDGET_MS, REPORT_BUDGET_MS, READ_BUDGET_MS]).toStrictEqual([45_000, 45_000, 15_000]);
     // The hang-up: the job stops before the decision and before the filing call, and it goes on during the filing call and after it.
