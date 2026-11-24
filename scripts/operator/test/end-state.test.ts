@@ -7,16 +7,20 @@ import { setImmediate as nextTurn } from 'node:timers/promises';
 import { describe, expect, it, vi } from 'vitest';
 import { testKey } from '../../../packages/buyer-core/test/fixtures/identity-world.ts';
 import { AUDITOR_ID, CLAIMER_ID, MODULE1, MODULE1_MANIFEST, agentRecord, claimUtxo, recordUtxo } from '../../../packages/buyer-core/test/fixtures/jury-world.ts';
-import { MAINNET, delegation, delegationUtxo } from '../../../packages/buyer-core/test/fixtures/ledger-read-world.ts';
+import { MAINNET, attestation, attestationUtxo, delegation, delegationUtxo, recordUtxo as registryUtxo } from '../../../packages/buyer-core/test/fixtures/ledger-read-world.ts';
 import { LedgerProvider, koiosOf, ledgerWorld } from '../../../packages/usecase-kit/test/dispute/ledger.ts';
 import { HostedError } from '../../checks/lib/hosted.ts';
 import { iso } from '../../checks/lib/format.ts';
 import type { ChainAccess } from '../../checks/lib/session.ts';
+import type { UseCase } from '../lib/contract.ts';
 import { FactsFile } from '../lib/facts.ts';
+import { ATT_TYPES, calculateMinLovelaceFromUTxO } from '../lib/platform.ts';
 import { LEGACY_PUBLIC_MANIFEST, publicManifestFile, writePublicManifest } from '../lib/registry.ts';
 import { runTask } from '../lib/runner.ts';
 import endState from '../tasks/end-state.ts';
 import data from '../usecases/inventory-reorder.ts';
+import bidEvaluation from '../usecases/bid-evaluation.ts';
+import priorAuthorization from '../usecases/prior-authorization.ts';
 import { PackHosted } from './support/pack-hosted.ts';
 import { NOW, USE_CASE, hashOf, taskWorld } from './support/task-world.ts';
 import type { TaskWorld } from './support/task-world.ts';
@@ -39,6 +43,13 @@ const CONTAINERS = data.agents.flatMap((agent) => agent.adverts.map((advert) => 
 const STATUS_URLS = data.agents.flatMap((agent) => agent.adverts.map((advert) => `${advert.origin}/status`));
 const SLOW = 240_000;
 const FAIR_FLOAT = 1_000_000_000n;
+const NODE_URL = 'https://ogmios.test';
+const COINS_PER_BYTE = 5_003;
+const RECLAIM_TX = hashOf('end-state reclaim Bravo');
+const LIFE_STEPS = [
+  ['change-controller', 15], ['recovery-start', 13], ['recovery-wait', 12], ['recovery-complete', 6],
+  ['retire', 5], ['set-successor', 4], ['reclaim', 3],
+] as const;
 
 const did = (id: string): string => `did:vector:${id}`;
 const hash = (name: string): string => hashOf(`end-state ${name}`);
@@ -60,11 +71,14 @@ const RETIRED = recordUtxo(ORDER_ID, agentRecord({ status: { type: 'Retired', at
 type Result = 'ok' | 'wait' | 'fail';
 const ALL_CHECKS = [
   'record_active:reorder-agent', 'record_active:order-desk', 'organisation:reorder-agent', 'organisation:order-desk', 'adverts', 'claims:reorder-agent', 'claims:order-desk', 'delegations', 'holds', 'wallets',
-  'attestations', 'runtimes',
+  'attestations', 'runtimes', 'subagents:reorder-agent',
 ];
 
 interface Row { advert_ref: string; capability_id: string; model: string; agent_id: string; did: string; status: string }
-interface Gateway { verified: boolean; listed: string[]; parties: boolean }
+interface Gateway {
+  verified: boolean; listed: string[]; parties: boolean; domain?: string; effective?: 'active' | 'revoked';
+  parent?: { parent: string; parentEpoch: number; depth: number };
+}
 
 interface Rig {
   readonly world: TaskWorld;
@@ -77,6 +91,8 @@ interface Rig {
   /** What each status address answers: the word of the status, an HTTP status code, or `hang` for a request that never gets an answer (a fetch that ignores the abort signal). */
   readonly statuses: Map<string, string | number>;
   readonly webCalls: string[];
+  readonly protocolRequests: unknown[];
+  idOf(name: string): string;
   /** Puts a record on the ledger in place of the record of the same agent. */
   setRecord(id: string, utxo: LedgerProvider['live'][number]): void;
   /** Gives a wallet exactly these outputs. */
@@ -87,25 +103,47 @@ interface Rig {
   errors(): string;
 }
 
-async function makeRig(options: { env?: Record<string, string | undefined>; skipAttestation?: string } = {}): Promise<Rig> {
-  const names = data.funding.map((line) => line.wallet);
+interface RigOptions {
+  env?: Record<string, string | undefined>;
+  skipAttestation?: string;
+  skipSubagentEnd?: boolean;
+  skipStep?: string;
+  protocolParameters?: unknown;
+}
+
+async function makeRig(options: RigOptions = {}, use: UseCase = data): Promise<Rig> {
+  const names = use.funding.map((line) => line.wallet);
+  if (use.compliance !== null) names.push(use.compliance.issuerKey, 'provider');
   const world = await taskWorld({
-    keys: names, shared: ['fee'], env: { OPERATOR_MODULE1_COMMIT: COMMIT, ...options.env },
-    use: { title: data.title, agents: data.agents, subagents: data.subagents, organisations: data.organisations, funding: data.funding, attestations: data.attestations, runs: data.runs, moduleManifestPath: data.moduleManifestPath },
+    keys: names, shared: names.filter((name) => use.keys.some((key) => key.name === name && key.scope === 'shared')),
+    env: { OPERATOR_USE_CASE: USE_CASE, OPERATOR_MODULE1_COMMIT: COMMIT, VECTOR_OGMIOS_URL: NODE_URL, ...options.env },
+    use: { ...use, keys: use.keys.filter(({ name }) => names.includes(name)) },
   });
   mkdirSync(world.stateDir, { recursive: true, mode: 0o700 });
   chmodSync(world.stateDir, 0o700);
-  writePublicManifest(join(world.keys.root, publicManifestFile(USE_CASE)), world.keys.registry, { network: 'vector-mainnet', useCase: USE_CASE });
-  const ledger = ledgerWorld([], [ACTIVE_REORDER, ACTIVE_ORDER]);
-  const facts = FactsFile.open(join(world.stateDir, 'facts.json'), { useCase: USE_CASE, network: 'vector-mainnet' });
-  const statuses = new Map<string, string | number>(STATUS_URLS.map((url) => [url, 'free']));
+  const factsId = { useCase: use.name, network: 'vector-mainnet' as const };
+  writePublicManifest(join(world.keys.root, publicManifestFile(use.name)), world.keys.registry, factsId);
+  const ledger = ledgerWorld([], []);
+  const facts = FactsFile.open(join(world.stateDir, 'facts.json'), factsId);
+  const statuses = new Map<string, string | number>();
   const webCalls: string[] = [];
+  const protocolRequests: unknown[] = [];
+  const all = [...use.agents, ...use.subagents, ...use.records];
+  const legacyIds: Readonly<Partial<Record<string, string>>> = { 'reorder-agent': REORDER_ID, 'order-desk': ORDER_ID, 'stock-reader': READER_ID };
+  const ids = new Map(all.map(({ id }) => [id, legacyIds[id] ?? hash(`identity ${id}`)]));
+  const idOf = (name: string): string => ids.get(name)!;
   const gateway = new Map<string, Gateway>();
   const listing: Row[] = [];
-  const web: typeof fetch = async (input) => {
+  const web: typeof fetch = async (input, init) => {
     const url = String(input);
     webCalls.push(url);
     if (url === MANIFEST_URL) return new Response(JSON.stringify(MODULE1_MANIFEST), { status: 200 });
+    if (url === NODE_URL) {
+      const request = JSON.parse(String(init?.body)) as { id: unknown };
+      protocolRequests.push(request);
+      const result = options.protocolParameters ?? { minUtxoDepositCoefficient: COINS_PER_BYTE };
+      return Response.json({ jsonrpc: '2.0', id: request.id, result });
+    }
     const status = statuses.get(url);
     if (status === 'hang') return new Promise<Response>(() => undefined);
     if (typeof status === 'string') return new Response(status === 'not json' ? 'not json' : JSON.stringify({ status }), { status: 200 });
@@ -118,15 +156,19 @@ async function makeRig(options: { env?: Record<string, string | undefined>; skip
   };
   const hosted = new PackHosted({
     vector_resolve_did: (args) => {
-      const state = gateway.get(String(args.did));
-      const agent = data.agents.find((candidate) => did(candidate.id === 'reorder-agent' ? REORDER_ID : ORDER_ID) === args.did)!;
-      const domain = data.organisations.find((organisation) => organisation.id === agent.organisation)!.domain;
+      const canonicalId = String(args.did);
+      const state = gateway.get(canonicalId);
+      if (state === undefined) throw new Error('the gateway knows no such record');
+      const effective = state.effective ?? 'active';
+      const deactivated = effective === 'revoked';
       const metadata = {
-        vectorStatus: { status: 'active', effective: 'active' },
-        vectorParties: state!.parties ? [{ role: 'accountable', signer: 'controller', organisation: domain, ...(state!.verified ? { organisationVerified: true } : {}), rights: ['suspend', 'revoke'], notBefore: '2026-10-16T12:00:00Z' }] : [],
-        vectorProvenance: { attestations: state!.listed.map((id) => ({ id, type: 'provenance', issuer: 'did:key:z6Mk', issuedAt: '2026-11-01T10:00:00Z', solicited: true, digest: hash('digest') })) },
+        canonicalId, ...(deactivated ? { deactivated } : {}),
+        vectorStatus: { status: 'active', effective, ...(deactivated ? { effectiveReason: 'parentRevoked' } : {}) },
+        ...(state.parent === undefined ? {} : { vectorParent: state.parent }),
+        vectorParties: state.parties ? [{ role: 'accountable', signer: 'controller', organisation: state.domain, ...(state.verified ? { organisationVerified: true } : {}), rights: ['suspend', 'revoke'], notBefore: '2026-10-16T12:00:00Z' }] : [],
+        vectorProvenance: { attestations: state.listed.map((id) => ({ id, type: 'provenance', issuer: 'did:key:z6Mk', issuedAt: '2026-11-01T10:00:00Z', solicited: true, digest: hash('digest') })) },
       };
-      return { text: `# DID resolution\n\n**DID:** ${String(args.did)}\n**HTTP status:** 200 (resolved)\n\nThe resolution result from the identity gateway, unchanged:\n\n\`\`\`json\n${JSON.stringify({ didDocument: { id: args.did }, didDocumentMetadata: metadata }, null, 2)}\n\`\`\`` };
+      return { didDocument: deactivated ? null : { id: canonicalId }, didDocumentMetadata: metadata, didResolutionMetadata: {} };
     },
     vector_marketplace_list_suppliers: (args) => {
       const rows = rig.listing.filter((row) => row.capability_id === args.capability_id);
@@ -139,42 +181,116 @@ async function makeRig(options: { env?: Record<string, string | undefined>; skip
     ledger.live = ledger.live.filter((utxo) => utxo.address !== address);
     outputs.forEach((lovelace, index) => ledger.live.push({ txHash: hash(`wallet ${name} ${index}`), outputIndex: 0, address, assets: { lovelace } }));
   };
-  for (const line of data.funding) setWallet(line.wallet, [line.collateralLovelace, line.floatLovelace]);
+  for (const line of use.funding) setWallet(line.wallet, [line.collateralLovelace, line.floatLovelace]);
 
   // The facts: the records, the adverts, the attestations.
-  for (const agent of [...data.agents, ...data.subagents]) {
-    const id = agent.id === 'reorder-agent' ? REORDER_ID : agent.id === 'order-desk' ? ORDER_ID : READER_ID;
-    facts.put('records', [agent.id], { did: did(id), id, tx: hash(`record ${agent.id}`), recordRef: ref(`record ${agent.id}`), depositLovelace: '10000000', registeredAt: iso(NOW - 20 * DAY) });
+  for (const { id: name } of all) {
+    const id = idOf(name);
+    facts.put('records', [name], { did: did(id), id, tx: hash(`record ${name}`), recordRef: ref(`record ${name}`), depositLovelace: '10000000', registeredAt: iso(NOW - 20 * DAY) });
   }
-  for (const agent of data.agents) {
-    const id = agent.id === 'reorder-agent' ? REORDER_ID : ORDER_ID;
-    const listed: string[] = [];
+  const validUntil = NOW + 300 * DAY;
+  const issuedAt = NOW - 65 * DAY;
+  const digest = hash('digest');
+  const locator = 'https://example.test/doc';
+  const locatorHex = Buffer.from(locator, 'utf8').toString('hex');
+  const expectedRunning: string[] = [];
+  for (const agent of use.agents) {
+    const id = idOf(agent.id);
+    const ended = agent.end.subagents === 'ended';
+    if (ended && !options.skipSubagentEnd) facts.put('subagentEnds', [agent.id], { tx: hash(`end ${agent.id}`), at: iso(NOW - DAY), epochBefore: 0, epochAfter: 1 });
+    const successor = agent.end.successor === null ? null : idOf(agent.end.successor);
+    if (agent.end.record === 'retired') {
+      const output = registryUtxo(id, agentRecord({ keys: [], parties: [], status: { type: 'Retired', at: NOW - 5 * DAY, successor } }));
+      const minimum = calculateMinLovelaceFromUTxO(BigInt(COINS_PER_BYTE), { ...output, assets: { ...output.assets, lovelace: 0n } });
+      ledger.live.push({ ...output, txHash: RECLAIM_TX, assets: { ...output.assets, lovelace: minimum } });
+    } else if (agent.end.record === 'revoked') {
+      const status = { type: 'Revoked', by: { type: 'KeyHash', hash: testKey(3).keyHash }, reason: 9, invalidFrom: NOW - 2 * DAY, at: NOW - DAY, successor } as const;
+      ledger.live.push(registryUtxo(id, agentRecord({ keys: [], parties: [], status })));
+      facts.put('revocations', [agent.id], { tx: hash(`revoke ${agent.id}`), reason: status.reason, invalidFrom: iso(status.invalidFrom), revokedAt: iso(status.at) });
+    } else {
+      ledger.live.push(agent === REORDER ? ACTIVE_REORDER : agent === ORDER ? ACTIVE_ORDER : registryUtxo(id, agentRecord({ subagentEpoch: ended ? 1 : 0 })));
+    }
     for (const advert of agent.adverts) {
-      facts.put('adverts', [agent.id, advert.model], { ref: ref(`advert ${advert.model}`), tx: hash(`advert ${advert.model}`), detailUri: `${advert.origin}/agent.json`, detailHash: hash('detail'), endpoint: advert.origin, postedAt: iso(NOW - 10 * DAY) });
-      listing.push({ advert_ref: ref(`advert ${advert.model}`), capability_id: agent.capability, model: advert.model, agent_id: id, did: did(id), status: 'free' });
+      const tx = hash(use === data ? `advert ${advert.model}` : `advert ${agent.id} ${advert.model}`);
+      const ref = `${tx}#0`;
+      facts.put('adverts', [agent.id, advert.model], { ref, tx, detailUri: `${advert.origin}/agent.json`, detailHash: hash('detail'), endpoint: advert.origin, postedAt: iso(NOW - 10 * DAY) });
+      if (agent.end.advert === 'listed') {
+        listing.push({ advert_ref: ref, capability_id: agent.capability, model: advert.model, agent_id: id, did: did(id), status: 'free' });
+        expectedRunning.push(advert.runtimeContainer);
+        statuses.set(`${advert.origin}/status`, 'free');
+      }
     }
-    for (const type of ['provenance', 'software']) {
+    const listed: string[] = [];
+    const spec = use.attestations.find(({ agent: name }) => name === agent.id)!;
+    for (const type of spec.types) {
       if (options.skipAttestation === 'all' || options.skipAttestation === `${agent.id}/${type}`) continue;
-      const attestation = hash(`attestation ${agent.id} ${type}`);
-      listed.push(attestation);
-      facts.put('attestations', [agent.id, type], { id: attestation, tx: hash(`attest tx ${agent.id} ${type}`), digest: hash('digest'), locator: 'https://example.test/doc', validUntil: iso(NOW + 300 * DAY), issuedAt: iso(NOW - 65 * DAY), envelope: false });
+      const attestationId = hash(`attestation ${agent.id} ${type}`);
+      const tx = hash(`attest tx ${agent.id} ${type}`);
+      listed.push(attestationId);
+      facts.put('attestations', [agent.id, type], { id: attestationId, tx, digest, locator, validUntil: iso(validUntil), issuedAt: iso(issuedAt), envelope: false });
+      if (agent.end.record !== 'active') {
+        const issuer = world.keys.registry.publicKeyOf('provider');
+        ledger.live.push(attestationUtxo(attestationId, attestation({
+          subject: id, issuer, attType: ATT_TYPES[type], format: spec.format, digest, locator: locatorHex, issuedAt, validUntil, solicited: true,
+        }), { txHash: tx }));
+      }
     }
-    gateway.set(did(id), { verified: true, listed, parties: true });
+    if (agent.end.record === 'active') {
+      const domain = use.organisations.find(({ id: name }) => name === agent.organisation)!.domain;
+      gateway.set(did(id), { verified: true, listed, parties: true, domain });
+    }
+  }
+  for (const child of use.subagents) {
+    const parent = use.agents.find(({ id }) => id === child.parent)!;
+    gateway.set(did(idOf(child.id)), {
+      verified: false, listed: [], parties: false, effective: parent.end.subagents === 'ended' ? 'revoked' : 'active',
+      parent: { parent: did(idOf(parent.id)), parentEpoch: 0, depth: 1 },
+    });
+  }
+  for (const record of use.records) {
+    const id = idOf(record.id);
+    ledger.live.push(registryUtxo(id, agentRecord()));
+    const domain = use.organisations.find(({ id: name }) => name === record.organisation)!.domain;
+    gateway.set(did(id), { verified: true, listed: [], parties: true, domain });
+  }
+  const compliance = use.compliance;
+  if (compliance !== null) {
+    const issuer = world.keys.registry.publicKeyOf(compliance.issuerKey);
+    for (const subject of compliance.subjects) {
+      const id = hash(`compliance ${subject}`);
+      const tx = hash(`compliance tx ${subject}`);
+      const revoked = use.agents.find((agent) => agent.id === subject)!.end.record === 'revoked';
+      const revokeTx = revoked ? hash(`compliance revoke ${subject}`) : null;
+      const contestTx = revoked ? hash(`compliance contest ${subject}`) : null;
+      const replySha256 = revoked ? hash('reply') : null;
+      const replyUri = revoked ? 'https://example.test/reply' : null;
+      facts.put('compliance', [subject], { id, tx, digest, locator, issuedAt: iso(issuedAt), validUntil: iso(validUntil), revokeTx, contestTx, replySha256, replyUri });
+      ledger.live.push(attestationUtxo(id, attestation({
+        subject: idOf(subject), issuer, attType: ATT_TYPES.identity, format: compliance.format, digest, locator: locatorHex, issuedAt, validUntil,
+        status: revoked ? { type: 'AttRevoked', at: NOW - 2 * DAY, reason: 9 } : { type: 'AttActive' },
+        contested: replyUri === null || replySha256 === null ? null : { uri: Buffer.from(replyUri, 'utf8').toString('hex'), sha256: replySha256 },
+      }), { txHash: contestTx ?? tx }));
+    }
+  }
+  if (use.lifecycle !== null) for (const [step, days] of LIFE_STEPS) {
+    if (options.skipStep === step) continue;
+    const tx = step === 'reclaim' ? RECLAIM_TX : hash(step === 'recovery-wait' ? 'recovery-start' : step);
+    facts.put('lifecycle', [step], { tx, at: iso(NOW - days * DAY) });
   }
 
-  const writeRunning = (containers: readonly string[] = CONTAINERS, at: number = NOW): void => {
+  const writeRunning = (containers: readonly string[] = expectedRunning, at: number = NOW): void => {
     const images = Object.fromEntries(containers.map((container) => [container, IMAGE]));
     writeFileSync(join(world.stateDir, 'running-images.json'), `${JSON.stringify({ generated_at: iso(at), images })}\n`, { mode: 0o600 });
   };
   writeRunning();
 
   const rig: Rig = {
-    world, ledger, hosted, facts, gateway, statuses, webCalls,
+    world, ledger, hosted, facts, gateway, statuses, webCalls, protocolRequests, idOf,
     get listing() { return listing; },
     set listing(rows) { listing.splice(0, listing.length, ...rows); },
     setRecord: (id, utxo) => { ledger.live = [...ledger.live.filter((candidate) => candidate.assets[`${MAINNET.identity.hash}${id}`] === undefined), utxo]; },
     setWallet, writeRunning,
-    run: (...argv) => runTask(endState, argv, world.deps({ chain, hosted, fetchImpl: web })),
+    run: (...argv) => runTask(endState, [...argv, '--use-case', use.name], world.deps({ chain, hosted, fetchImpl: web })),
     checks: () => {
       const found = new Map<string, { result: Result; text: string }>();
       for (const line of world.screen.lines) {
@@ -193,6 +309,12 @@ function expectChecks(rig: Rig, expected: Record<string, Result> = {}): void {
   const found = rig.checks();
   expect([...found.keys()]).toEqual(ALL_CHECKS);
   for (const [name, check] of found) expect(check.result, `${name}: ${check.text}`).toBe(expected[name] ?? 'ok');
+}
+
+async function expectFailure(rig: Rig, name: string, detail: string): Promise<void> {
+  expect(await rig.run(), rig.errors()).toBe(1);
+  expect(rig.checks().get(name)).toMatchObject({ result: 'fail', text: expect.stringContaining(detail) });
+  expect(rig.world.machine()).toMatchObject({ outcome: 'failed', exit: 1, result: { verdict: 'fail' } });
 }
 
 const openClaim = (over: { claimer?: string; ageMs?: number; windowMs?: number; token?: string; tx?: string; state?: 'Open' | 'Challenged' | 'Validated' | 'Invalidated' } = {}) => ({
@@ -217,7 +339,7 @@ describe('the task end-state', () => {
   });
 
   describe('a state in which all is well', () => {
-    it('gives exit 0, one line for each of the twelve checks, all ok, and the line DONE', async () => {
+    it('gives exit 0, keeps the twelve original checks, checks the live subagent, and prints DONE', async () => {
       const rig = await makeRig();
       expect(await rig.run()).toBe(0);
       expectChecks(rig);
@@ -225,7 +347,7 @@ describe('the task end-state', () => {
       expect(rig.world.screen.lines).toContain('the end state is reached: every check is ok');
       const line = rig.world.machine();
       expect(line).toMatchObject({ task: 'end-state', command: 'run', outcome: 'finished', exit: 0, step: null, result: { verdict: 'done' } });
-      expect((line.result.checks as unknown[]).length).toBe(12);
+      expect((line.result.checks as unknown[]).length).toBe(ALL_CHECKS.length);
     }, SLOW);
 
     it('reads only: the ledger takes no transaction, the facts and the state hold nothing new, and no runtime or manifest read is a write', async () => {
@@ -257,6 +379,169 @@ describe('the task end-state', () => {
       expectChecks(rig);
       expect(rig.world.screen.lines).toContain('end state: DONE: every check is ok');
       expect(rig.world.machine()).toMatchObject({ command: 'status', outcome: 'done', exit: 0 });
+    }, SLOW);
+  });
+
+  describe('the other use cases', () => {
+    it('accepts the active parent with two ended children, the spent advert and the stopped runtime', async () => {
+      const rig = await makeRig({}, priorAuthorization);
+      expect(await rig.run('status'), rig.errors()).toBe(0);
+      expect([...rig.checks().keys()]).toEqual([
+        'record_active:prior-authorization-agent', 'record_active:insurer-intake-agent', 'organisation:prior-authorization-agent', 'organisation:insurer-intake-agent',
+        'adverts', 'claims:prior-authorization-agent', 'claims:insurer-intake-agent', 'delegations', 'holds', 'wallets', 'attestations', 'runtimes',
+        'subagents:prior-authorization-agent',
+      ]);
+      for (const check of rig.checks().values()) expect(check.result, check.text).toBe('ok');
+      expect(rig.checks().get('adverts')!.text).toContain('insurer-intake-agent 1');
+      expect(rig.checks().get('subagents:prior-authorization-agent')!.text).toContain('revoked (record-reader, drafter)');
+      expect(rig.checks().get('runtimes')!.text).toContain('the retired runtimes are stopped (priorauth-runtime)');
+      expect(rig.webCalls).not.toContain(priorAuthorization.agents[0]!.statusUrls[0]);
+      expect(rig.protocolRequests).toEqual([]);
+    }, SLOW);
+
+    it('refuses a live or unrelated child, an unavailable child, and the absence of an end fact', async () => {
+      const rig = await makeRig({}, priorAuthorization);
+      const child = did(rig.idOf('drafter'));
+      const original = rig.gateway.get(child)!;
+      const name = 'subagents:prior-authorization-agent';
+      rig.gateway.set(child, { ...original, effective: 'active' });
+      await expectFailure(rig, name, 'does not show drafter as revoked');
+      rig.gateway.set(child, { ...original, parent: { parent: did(rig.idOf('insurer-intake-agent')), parentEpoch: 0, depth: 1 } });
+      await expectFailure(rig, name, 'does not show drafter as a direct child of the expected parent');
+      rig.gateway.delete(child);
+      await expectFailure(rig, name, 'the gateway knows no such record');
+      const missing = await makeRig({ skipSubagentEnd: true }, priorAuthorization);
+      await expectFailure(missing, name, 'the facts hold no end of the subagents');
+    }, SLOW);
+
+    it('refuses a retired advert runtime that is still running and a live outgoing child delegation', async () => {
+      const rig = await makeRig({}, priorAuthorization);
+      rig.writeRunning(['intake-runtime', 'priorauth-runtime']);
+      await expectFailure(rig, 'runtimes', 'the retired runtime priorauth-runtime is still running');
+      rig.writeRunning();
+      rig.ledger.live.push(delegationUtxo(hash('outgoing delegation'), delegation({
+        delegate: hash('another agent'), delegator: { type: 'Agent', id: rig.idOf('record-reader') }, parent: hash('parent'), depth: 2,
+      })));
+      await expectFailure(rig, 'delegations', 'is live, delegator agent');
+    }, SLOW);
+
+    it('accepts the bid end state with one desk listed, terminal records and two retired adverts', async () => {
+      const rig = await makeRig({}, bidEvaluation);
+      expect(await rig.run(), rig.errors()).toBe(0);
+      for (const check of rig.checks().values()) expect(check.result, check.text).toBe('ok');
+      expect(rig.checks().get('record:bid-desk-bravo')!.text).toContain(`Retired and names the successor ${did(rig.idOf('bravo-successor'))}`);
+      expect(rig.checks().get('record:bid-desk-charlie')!.text).toContain('Revoked and matches the facts');
+      expect(rig.checks().get('organisation:bravo-successor')!.result).toBe('ok');
+      expect(rig.checks().get('subagents:sourcing-agent')!.text).toContain('Active (scorer-1, scorer-2, scorer-3)');
+      const advertised = rig.checks().get('adverts')!.text;
+      expect(advertised).toContain('(sourcing-agent 1, bid-desk-alfa 1)');
+      expect(advertised).toContain('bid-desk-bravo/bid-desk-v1');
+      expect(advertised).toContain('bid-desk-charlie/bid-desk-v1');
+      const quotes = bidEvaluation.agents[1]!.capability;
+      expect(rig.hosted.calls.filter(({ name, args }) => name === 'vector_marketplace_list_suppliers' && args.capability_id === quotes)).toEqual([
+        { name: 'vector_marketplace_list_suppliers', args: { capability_id: quotes, only_free: false, limit: 50 } },
+      ]);
+      expect(rig.checks().get('attestations')!.text).toContain('bid-desk-bravo/software');
+      expect(rig.checks().get('attestations')!.text).toContain('is on the node, valid until');
+      const gatewayDids = rig.hosted.calls.filter(({ name }) => name === 'vector_resolve_did').map(({ args }) => args.did);
+      expect(gatewayDids).not.toContain(did(rig.idOf('bid-desk-bravo')));
+      expect(gatewayDids).not.toContain(did(rig.idOf('bid-desk-charlie')));
+      const compliance = rig.checks().get('compliance')!.text;
+      expect(compliance).toContain(`is revoked with reply ${hash('reply')}, deposit due ${iso(NOW + 88 * DAY)}`);
+      expect(compliance).toContain(`is active, deposit due ${iso(NOW + 390 * DAY)}`);
+      expect(rig.checks().get('lifecycle')!.text).toContain('the deposit above the ledger minimum was reclaimed');
+      expect(rig.protocolRequests).toEqual([{ jsonrpc: '2.0', method: 'queryLedgerState/protocolParameters', params: {}, id: 'end-state' }]);
+    }, SLOW);
+
+    it('does not let one desk stand for another or ignore a retired advert from the same capability', async () => {
+      const rig = await makeRig({}, bidEvaluation);
+      const alfa = rig.listing.find((row) => row.agent_id === rig.idOf('bid-desk-alfa'))!;
+      const original = [...rig.listing];
+      const bravo = rig.facts.read().adverts['bid-desk-bravo']!['bid-desk-v1']!;
+      rig.listing = [...original, { ...alfa, advert_ref: bravo.ref, agent_id: rig.idOf('bid-desk-bravo'), did: did(rig.idOf('bid-desk-bravo')) }];
+      await expectFailure(rig, 'adverts', 'the indexer still lists the retired advert bid-desk-bravo/bid-desk-v1');
+      rig.listing = original.map((row) => row === alfa ? { ...row, agent_id: rig.idOf('bid-desk-charlie'), did: did(rig.idOf('bid-desk-charlie')) } : row);
+      await expectFailure(rig, 'adverts', 'another record or model, not bid-desk-alfa/bid-desk-v1');
+      rig.listing = [...original, { ...alfa, advert_ref: ref('foreign advert'), agent_id: hash('foreign desk'), did: did(hash('foreign desk')) }];
+      await expectFailure(rig, 'adverts', 'an advert of the capability');
+      rig.listing = original;
+      rig.ledger.live.push({ txHash: bravo.tx, outputIndex: 0, address: MAINNET.advert.address, assets: { lovelace: 2_500_000n } });
+      await expectFailure(rig, 'adverts', 'the node still holds an unspent output for a retired advert');
+    }, SLOW);
+
+    it('fails closed if the node cannot read a retired advert', async () => {
+      const rig = await makeRig({}, bidEvaluation);
+      const { tx } = rig.facts.read().adverts['bid-desk-bravo']!['bid-desk-v1']!;
+      const read = rig.ledger.getUtxosByOutRef.bind(rig.ledger);
+      vi.spyOn(rig.ledger, 'getUtxosByOutRef').mockImplementation(async (refs) => {
+        if (refs.some(({ txHash }) => txHash === tx)) throw new Error('the advert output lookup failed');
+        return read(refs);
+      });
+      await expectFailure(rig, 'adverts', 'cannot tell: the advert output lookup failed');
+      expect(rig.checks().get('lifecycle')!.result).toBe('ok');
+      expect(await rig.run('status')).toBe(1);
+      expect(rig.world.machine()).toMatchObject({ command: 'status', outcome: 'failed', exit: 1 });
+      expect(rig.world.screen.text).not.toContain('end state: DONE');
+    }, SLOW);
+
+    it('requires the exact terminal status, successor and revocation facts', async () => {
+      const rig = await makeRig({}, bidEvaluation);
+      const bravo = rig.idOf('bid-desk-bravo');
+      const original = rig.ledger.at(`${RECLAIM_TX}#0`)!;
+      rig.setRecord(bravo, registryUtxo(bravo, agentRecord({
+        keys: [], parties: [], status: { type: 'Revoked', by: { type: 'ControllerSet' }, reason: 9, invalidFrom: null, at: NOW - DAY, successor: null },
+      })));
+      await expectFailure(rig, 'record:bid-desk-bravo', 'is Revoked: it must be Retired');
+      rig.setRecord(bravo, registryUtxo(bravo, agentRecord({ keys: [], parties: [], status: { type: 'Retired', at: NOW - DAY, successor: null } })));
+      await expectFailure(rig, 'record:bid-desk-bravo', 'does not name the expected successor');
+      rig.setRecord(bravo, original);
+      const successor = rig.idOf('bravo-successor');
+      rig.gateway.get(did(successor))!.verified = false;
+      await expectFailure(rig, 'organisation:bravo-successor', 'does not show the organisation');
+      rig.gateway.get(did(successor))!.verified = true;
+      rig.setRecord(successor, registryUtxo(successor, agentRecord({ keys: [], parties: [], status: { type: 'Retired', at: NOW - DAY, successor: null } })));
+      await expectFailure(rig, 'record:bid-desk-bravo', 'is not an Active root record');
+      rig.facts.put('revocations', ['bid-desk-charlie'], { ...rig.facts.read().revocations['bid-desk-charlie'], reason: 8 }, { replace: true });
+      await expectFailure(rig, 'record:bid-desk-charlie', 'on the node does not match the facts');
+    }, SLOW);
+
+    it('requires the compliance contest transaction and verifies the reply and the Provider output on the node', async () => {
+      const rig = await makeRig({}, bidEvaluation);
+      const charlie = 'bid-desk-charlie';
+      const original = rig.facts.read().compliance[charlie]!;
+      rig.facts.put('compliance', [charlie], { ...original, contestTx: null }, { replace: true });
+      await expectFailure(rig, 'compliance', 'no complete revoke and contest');
+      rig.facts.put('compliance', [charlie], { ...original, replySha256: hash('other reply') }, { replace: true });
+      await expectFailure(rig, 'compliance', 'the reply to the compliance attestation of bid-desk-charlie does not match the facts on the node');
+      rig.facts.put('compliance', [charlie], original, { replace: true });
+      const { tx } = rig.facts.read().attestations[charlie]!.software!;
+      rig.ledger.live = rig.ledger.live.filter(({ txHash }) => txHash !== tx);
+      await expectFailure(rig, 'attestations', 'bid-desk-charlie/software does not match the facts on the node');
+    }, SLOW);
+
+    it('checks the exact deposit, its reclaim transaction and the presence of all lifecycle steps', async () => {
+      const rig = await makeRig({}, bidEvaluation);
+      const bravo = rig.idOf('bid-desk-bravo');
+      const output = rig.ledger.at(`${RECLAIM_TX}#0`)!;
+      rig.setRecord(bravo, { ...output, assets: { ...output.assets, lovelace: output.assets.lovelace! + 1n } });
+      await expectFailure(rig, 'lifecycle', 'the deposit above the ledger minimum was not reclaimed: 0.000001 units remain');
+      expect(rig.checks().get('record:bid-desk-bravo')).toMatchObject({ result: 'ok', text: expect.stringContaining('the controller can still reclaim 0.000001 units') });
+      rig.setRecord(bravo, { ...output, txHash: hash('other output') });
+      await expectFailure(rig, 'lifecycle', 'the tombstone output does not match the reclaim transaction');
+      rig.setRecord(bravo, { ...output, assets: { ...output.assets, [MAINNET.attestation.hash + hash('unrelated token')]: 1n } });
+      await expectFailure(rig, 'record:bid-desk-bravo', 'the tombstone must hold just its identity token');
+      const missing = await makeRig({ skipStep: 'recovery-wait' }, bidEvaluation);
+      await expectFailure(missing, 'lifecycle', 'no usable lifecycle step(s): recovery-wait');
+    }, SLOW);
+
+    it('does not substitute a default for missing, invalid or conflicting protocol parameters', async () => {
+      for (const protocolParameters of [{}, { minUtxoDepositCoefficient: 0 }, { minUtxoDepositCoefficient: 5.5 }, { minUtxoDepositCoefficient: COINS_PER_BYTE, coinsPerUtxoByte: 4_310 }]) {
+        const rig = await makeRig({ protocolParameters }, bidEvaluation);
+        await expectFailure(rig, 'lifecycle', 'the node did not give one positive integer for the coins per UTxO byte');
+        expect(rig.protocolRequests).toHaveLength(1);
+      }
+      const alias = await makeRig({ protocolParameters: { coinsPerUtxoByte: COINS_PER_BYTE } }, bidEvaluation);
+      expect(await alias.run('status')).toBe(0);
     }, SLOW);
   });
 
@@ -318,7 +603,7 @@ describe('the task end-state', () => {
       const down = await makeRig();
       down.hosted.handlers.vector_resolve_did = () => ({ text: 'Failed to resolve DID: the gateway is down', isError: true });
       expect(await down.run()).toBe(1);
-      expectChecks(down, { 'organisation:reorder-agent': 'fail', 'organisation:order-desk': 'fail', 'attestations': 'fail' });
+      expectChecks(down, { 'organisation:reorder-agent': 'fail', 'organisation:order-desk': 'fail', 'attestations': 'fail', 'subagents:reorder-agent': 'fail' });
       expect(down.checks().get('organisation:order-desk')!.text).toContain('the hosted tool vector_resolve_did failed: Failed to resolve DID: the gateway is down');
     }, SLOW);
 

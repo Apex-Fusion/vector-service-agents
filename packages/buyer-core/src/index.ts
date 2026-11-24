@@ -66,6 +66,7 @@ export type { LlmSupplierChoice, OcrAdvertListing } from './select-supplier.ts';
 // The read and check code of the identity registry and the Module-1 builders, vendored from Apex-Fusion/mcp-server at 2d95483 and ebce68a (VENDORED-FROM.md).
 // The reads work on a LedgerEnv (the node, the deployment, Koios) and end inside one budget. The builders take Lucid bound to the wallet, the node
 // and the Module-1 deployment, and return an unsigned transaction.
+export { calculateMinLovelaceFromUTxO } from '@lucid-evolution/lucid';
 export { MAX_PAGE, DEFAULT_PAGE, KOIOS_ANSWER_BYTES, READ_BUDGET_MS, BudgetSpent, TooManyMatches, withinBudget, utxoOfKoiosRow, soleTokenName, credentialOutputs, credentialPage, koiosTipHeight, dataOfKoiosJson, checkPage, pageOf } from './vendored/mcp/ledger-read.ts';
 export type { LedgerEnv, ReadSession, CredentialFilter, Page } from './vendored/mcp/ledger-read.ts';
 export { readAttestation, readAttestationDatum, attestationState, parseIssuer, issuerMatches, listAttestations, checkAttestation } from './vendored/mcp/attestation-read.ts';

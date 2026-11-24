@@ -20,6 +20,7 @@ export { keyObjectOfRawKey } from '../../../packages/usecase-kit/src/live/index.
 // More of buyer-core. `ensureSlotConfig` sets the slot clock of Vector: a task calls it before it sets a `validTo`.
 export {
   ensureSlotConfig, buildDocumentPublish, buildSubmitClaim, buildWithdrawClaim, checkAttestation, envelopeSigStructure, envelopeVerifies, liveDelegations, module1FromManifest, readDelegation,
+  attestationState, calculateMinLovelaceFromUTxO, readAttestation,
   readManifest, escrowPaidFromVault, verifyReceipt,
 } from '../../../packages/buyer-core/src/index.ts';
-export type { LedgerEnv } from '../../../packages/buyer-core/src/index.ts';
+export type { AttestationView, LedgerEnv } from '../../../packages/buyer-core/src/index.ts';

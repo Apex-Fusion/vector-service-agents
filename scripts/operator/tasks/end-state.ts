@@ -4,18 +4,20 @@
 //   status   reads the same and prints the same lines. It ends with exit 0 when every check is ok. The runner cannot end `status` with exit 4, so a status that is not done ends with exit 1, a wait
 //            included. It never ends with exit 0 and the outcome done for a state that is not done
 //
-// The agents that work stay listed and funded. No claim is open, no delegation of a hirer is live, no hold of this pack is on, each record is Active, each organisation is verified, and the
-// deposits that return have their dates. Each check has a name, a result (`ok`, `wait` or `fail`) and a line that says in words what is still to do. A source that cannot be read is a `fail` with
-// its own line: it is never a pass. The check never says done while a claim is open, a delegation is live, a hold is on, a record is not Active or an organisation is not verified. The task signs
+// The data names which records and adverts stay live and which end. No claim, delegation or hold can be left open. Each check gives its result (`ok`, `wait` or `fail`) and a line that says
+// what is still to do. A source that cannot be read is a `fail`: it is never a pass. The task signs
 // nothing: the claims are read through the read methods of a chain port whose signature throws.
 import { readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { collateralAdvice, isCollateralOutput } from '../../checks/lib/collateral.ts';
 import { duration, iso, units } from '../../checks/lib/format.ts';
-import type { AgentSpec, Facts, StepOutcome, TaskDefinition, TaskSession } from '../lib/contract.ts';
+import type { AgentSpec, AttestationFact, Facts, LifecycleSpec, StepOutcome, SubagentSpec, TaskDefinition, TaskSession } from '../lib/contract.ts';
 import { readRunning, readRuntimeStatus, runtimesOf } from '../lib/free.ts';
-import { createModule1Port, effectiveStatus, findRecord, liveDelegations, module1FromManifest, readManifest, withdrawableFrom } from '../lib/platform.ts';
-import type { RecordUtxo } from '../lib/platform.ts';
+import {
+  ATT_TYPES, attestationState, calculateMinLovelaceFromUTxO, createModule1Port, effectiveStatus, findRecord, formatOutRef, liveDelegations, module1FromManifest, parseOutRef, readAttestation,
+  readManifest, withdrawableFrom,
+} from '../lib/platform.ts';
+import type { AttestationView, RecordUtxo } from '../lib/platform.ts';
 import { codeOf, findPublicManifest } from '../lib/registry.ts';
 import { holdsSecret } from '../lib/secrets.ts';
 // `lib/platform.ts` does not give these names, and this task is their only caller in the pack: the types of the chain port of the kit and the Module-1 deployment type.
@@ -48,6 +50,8 @@ const DEPOSIT_DELAY_MS = 90 * 86_400_000;
 const JURY_HOLD_REASON = 64;
 const READ_TIMEOUT_MS = 20_000;
 const MOST_ADVERTS = 50;
+const ID = /^[0-9a-f]{64}$/;
+const LIFECYCLE_STEPS = ['change-controller', 'recovery-start', 'recovery-wait', 'recovery-complete', 'retire', 'set-successor', 'reclaim'] as const;
 
 const passed = (name: string, line: string): Check => ({ name, result: 'ok', line, untilMs: null });
 const waiting = (name: string, line: string, untilMs: number | null = null): Check => ({ name, result: 'wait', line, untilMs });
@@ -69,45 +73,58 @@ async function attempt(name: string, work: () => Promise<Check>): Promise<Check>
 type Hold = Extract<RecordUtxo['record']['status'], { type: 'Suspended' }>['holds'][number];
 const isJuryHold = (hold: Hold): boolean => hold.reason === JURY_HOLD_REASON && hold.by.type === 'Script';
 
-interface RecordRead { readonly did: string; readonly status: 'Active' | 'Suspended' | 'Revoked' | 'Retired'; readonly holds: readonly Hold[] }
+interface RecordRead {
+  readonly did: string; readonly status: 'Active' | 'Suspended' | 'Revoked' | 'Retired'; readonly holds: readonly Hold[]; readonly output: RecordUtxo;
+}
 type RecordResult = { readonly kind: 'read'; readonly read: RecordRead } | { readonly kind: 'problem'; readonly line: string };
 type Resolution = { readonly kind: 'read'; readonly metadata: Record<string, unknown> } | { readonly kind: 'problem'; readonly line: string };
+interface PublicKey { readonly address: string | null; readonly publicKey: string | null }
 
 /** What the checks share in one read: the facts, the time, and the reads that more than one check needs, each made once. */
 interface Context {
   readonly session: TaskSession<EndStateExtra>;
   readonly now: number;
   readonly facts: Readonly<Facts>;
-  record(agent: AgentSpec): Promise<RecordResult>;
-  resolution(agent: AgentSpec): Promise<Resolution>;
+  record(id: string): Promise<RecordResult>;
+  resolution(id: string): Promise<Resolution>;
   module1(): Promise<Module1Deployment>;
-  addresses(): ReadonlyMap<string, string>;
+  publicKeys(): ReadonlyMap<string, PublicKey>;
+  reclaimable(read: RecordRead): Promise<bigint>;
 }
 
 /** The record of an agent as the node shows it now: its status, and the holds that are in force. */
-async function readRecord(session: TaskSession<EndStateExtra>, facts: Readonly<Facts>, now: number, agent: AgentSpec): Promise<RecordResult> {
-  const fact = facts.records[agent.id];
-  if (fact === undefined) return { kind: 'problem', line: `the facts hold no record of the agent ${agent.id}: run the task register first` };
+async function readRecord(session: TaskSession<EndStateExtra>, facts: Readonly<Facts>, now: number, id: string): Promise<RecordResult> {
+  const fact = facts.records[id];
+  if (fact === undefined) return { kind: 'problem', line: `the facts hold no record of ${id}: run the task register first` };
+  if (!ID.test(fact.id) || fact.did !== `did:vector:${fact.id}`) return { kind: 'problem', line: `the record fact of ${id} does not hold a matching DID and identifier` };
   const found = await findRecord(session.chain.provider, session.chain.deployment, fact.id);
   if (found === null) return { kind: 'problem', line: `the record ${fact.did} is not in the identity registry` };
   const status = effectiveStatus(found.record, new Map(), now, now);
   const holds = found.record.status.type === 'Suspended' ? found.record.status.holds.filter((hold) => hold.until > now) : [];
-  return { kind: 'read', read: { did: fact.did, status, holds } };
+  return { kind: 'read', read: { did: fact.did, status, holds, output: found } };
 }
 
 /** The DID resolution of an agent at the gateway, through the hosted tool. The metadata decides: the text of the answer is never read for success. */
-async function readResolution(session: TaskSession<EndStateExtra>, facts: Readonly<Facts>, agent: AgentSpec): Promise<Resolution> {
-  const fact = facts.records[agent.id];
-  if (fact === undefined) return { kind: 'problem', line: `the facts hold no record of the agent ${agent.id}: run the task register first` };
+async function readResolution(session: TaskSession<EndStateExtra>, facts: Readonly<Facts>, id: string): Promise<Resolution> {
+  const fact = facts.records[id];
+  if (fact === undefined) return { kind: 'problem', line: `the facts hold no record of ${id}: run the task register first` };
+  if (!ID.test(fact.id) || fact.did !== `did:vector:${fact.id}`) return { kind: 'problem', line: `the record fact of ${id} does not hold a matching DID and identifier` };
   const answer = await session.hosted.call('vector_resolve_did', { did: fact.did });
   if (answer.failed) return { kind: 'problem', line: `the hosted tool vector_resolve_did failed: ${shown(answer.message)}` };
   const metadata = answer.json?.didDocumentMetadata;
   if (!isObject(metadata)) return { kind: 'problem', line: 'the answer of vector_resolve_did holds no DID document metadata' };
+  const resolution = answer.json?.didResolutionMetadata;
+  if (isObject(resolution) && resolution.error != null) return { kind: 'problem', line: 'the gateway returned a DID resolution error' };
+  const doc = answer.json?.didDocument;
+  const resolvedDid = isObject(doc) ? doc.id : doc === null && metadata.deactivated === true ? metadata.canonicalId : null;
+  if (resolvedDid !== fact.did || (metadata.canonicalId !== undefined && metadata.canonicalId !== fact.did)) {
+    return { kind: 'problem', line: `the gateway did not resolve the DID of ${id}` };
+  }
   return { kind: 'read', metadata };
 }
 
-/** The addresses of the wallets, from the public key file of the use case that the task keys wrote (or the file of the earlier name, when the use case has none yet). The file holds no secret. */
-function readAddresses(session: TaskSession<EndStateExtra>): ReadonlyMap<string, string> {
+/** The public keys and wallet addresses that the task keys wrote, with the legacy file name supported. */
+function readPublicKeys(session: TaskSession<EndStateExtra>): ReadonlyMap<string, PublicKey> {
   const path = findPublicManifest(session.settings.keysDir, session.use.name);
   const file = basename(path);
   let parsed: unknown;
@@ -116,9 +133,14 @@ function readAddresses(session: TaskSession<EndStateExtra>): ReadonlyMap<string,
   }
   if (!isObject(parsed) || !isObject(parsed.keys)) throw new Error(`the public key file ${file} has no keys`);
   if (parsed.use_case !== session.use.name || parsed.network !== session.settings.network.name) throw new Error(`the public key file ${file} is for another use case or another network`);
-  const addresses = new Map<string, string>();
-  for (const [name, entry] of Object.entries(parsed.keys)) if (isObject(entry) && typeof entry.address === 'string' && entry.address.startsWith('addr')) addresses.set(name, entry.address);
-  return addresses;
+  const keys = new Map<string, PublicKey>();
+  for (const [name, entry] of Object.entries(parsed.keys)) {
+    if (isObject(entry)) keys.set(name, {
+      address: typeof entry.address === 'string' && entry.address.startsWith('addr') ? entry.address : null,
+      publicKey: typeof entry.public_key_hex === 'string' && ID.test(entry.public_key_hex) ? entry.public_key_hex : null,
+    });
+  }
+  return keys;
 }
 
 /** The Module-1 deployment, read from the manifest at the pinned commit. It must name the identity registry of the chain of this run. */
@@ -131,32 +153,66 @@ async function readModule1(session: TaskSession<EndStateExtra>): Promise<Module1
   return module1;
 }
 
+/** Read the coefficient without the provider's default. A missing or inconsistent result cannot prove a reclaim. */
+async function readCoinsPerByte(session: TaskSession<EndStateExtra>): Promise<bigint> {
+  const id = 'end-state';
+  const response = await session.fetchImpl(session.settings.urls.ogmios, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, redirect: 'manual', signal: AbortSignal.timeout(READ_TIMEOUT_MS),
+    body: JSON.stringify({ jsonrpc: '2.0', method: 'queryLedgerState/protocolParameters', params: {}, id }),
+  });
+  if (!response.ok) throw new Error(`the node did not give the protocol parameters (HTTP ${response.status})`);
+  const answer: unknown = await response.json().catch(() => { throw new Error('the node did not give JSON for the protocol parameters'); });
+  if (!isObject(answer) || answer.jsonrpc !== '2.0' || answer.id !== id || 'error' in answer || !isObject(answer.result)) {
+    throw new Error('the node did not give a protocol parameter result');
+  }
+  const { minUtxoDepositCoefficient: coefficient, coinsPerUtxoByte: other } = answer.result;
+  const coins = coefficient ?? other;
+  if (typeof coins !== 'number' || !Number.isSafeInteger(coins) || coins <= 0
+      || (coefficient !== undefined && coefficient !== coins) || (other !== undefined && other !== coins)) {
+    throw new Error('the node did not give one positive integer for the coins per UTxO byte');
+  }
+  return BigInt(coins);
+}
+
 function makeContext(session: TaskSession<EndStateExtra>): Context {
   const now = session.clock.now();
   const facts = session.facts.read();
   const records = new Map<string, Promise<RecordResult>>();
   const resolutions = new Map<string, Promise<Resolution>>();
   let module1: Promise<Module1Deployment> | null = null;
-  let addresses: ReadonlyMap<string, string> | null = null;
+  let keys: ReadonlyMap<string, PublicKey> | null = null;
+  const deposits = new Map<string, Promise<bigint>>();
+  let coinsPerByte: Promise<bigint> | null = null;
+  const readReclaimable = async ({ output }: RecordRead): Promise<bigint> => {
+    const { id, utxo } = output;
+    const identity = session.chain.deployment.identity;
+    const unit = `${identity.hash}${id}`;
+    if (utxo.address !== identity.address || utxo.assets[unit] !== 1n || Object.keys(utxo.assets).length !== 2
+        || utxo.datum === undefined || utxo.datum === '' || utxo.scriptRef != null || typeof utxo.assets.lovelace !== 'bigint' || utxo.assets.lovelace <= 0n) {
+      throw new Error('the tombstone must hold just its identity token, lovelace and an inline datum at the identity address');
+    }
+    const minimum = calculateMinLovelaceFromUTxO(await (coinsPerByte ??= readCoinsPerByte(session)), { ...utxo, assets: { lovelace: 0n, [unit]: 1n } });
+    return utxo.assets.lovelace > minimum ? utxo.assets.lovelace - minimum : 0n;
+  };
   return {
     session, now, facts,
-    record: (agent) => records.get(agent.id) ?? records.set(agent.id, readRecord(session, facts, now, agent)).get(agent.id)!,
-    resolution: (agent) => resolutions.get(agent.id) ?? resolutions.set(agent.id, readResolution(session, facts, agent)).get(agent.id)!,
+    record: (id) => records.get(id) ?? records.set(id, readRecord(session, facts, now, id)).get(id)!,
+    resolution: (id) => resolutions.get(id) ?? resolutions.set(id, readResolution(session, facts, id)).get(id)!,
     module1: () => (module1 ??= readModule1(session)),
-    addresses: () => (addresses ??= readAddresses(session)),
+    publicKeys: () => (keys ??= readPublicKeys(session)),
+    reclaimable: (read) => deposits.get(read.did) ?? deposits.set(read.did, readReclaimable(read)).get(read.did)!,
   };
 }
 
-// ---- 1. the record is Active ----
+// ---- 1. the records ----
 
 /** The end of the hold of the jury, when the record is held by the jury and by nobody else. */
 function juryHoldEnd(read: RecordRead): number | null {
   return read.status === 'Suspended' && read.holds.length > 0 && read.holds.every(isJuryHold) ? Math.max(...read.holds.map((hold) => hold.until)) : null;
 }
 
-async function recordActive(ctx: Context, agent: AgentSpec): Promise<Check> {
-  const name = `record_active:${agent.id}`;
-  const result = await ctx.record(agent);
+async function recordActive(ctx: Context, name: string, id: string): Promise<Check> {
+  const result = await ctx.record(id);
   if (result.kind === 'problem') return failed(name, result.line);
   const { did, status } = result.read;
   if (status === 'Active') return passed(name, `the record ${did} is Active`);
@@ -167,14 +223,60 @@ async function recordActive(ctx: Context, agent: AgentSpec): Promise<Check> {
     : `the record ${did} is ${status}: it must be Active`);
 }
 
+// Keep the existing label for an Active agent. Terminal agents and extra records use the general label.
+const recordCheckOf = (agent: AgentSpec): string => `${agent.end.record === 'active' ? 'record_active' : 'record'}:${agent.id}`;
+
+async function agentRecord(ctx: Context, agent: AgentSpec): Promise<Check> {
+  const name = recordCheckOf(agent);
+  if (agent.end.record === 'active') return recordActive(ctx, name, agent.id);
+  const result = await ctx.record(agent.id);
+  if (result.kind === 'problem') return failed(name, result.line);
+  const { did, output } = result.read;
+  const status = output.record.status;
+  const expected = agent.end.record === 'revoked' ? 'Revoked' : 'Retired';
+  if (status.type !== expected) return failed(name, `the record ${did} is ${result.read.status}: it must be ${expected}`);
+  if (output.record.keys.length !== 0 || output.record.parties.length !== 0 || output.record.pendingRecovery !== null) {
+    return failed(name, `the ${expected} record ${did} is not a tombstone`);
+  }
+  if (status.type === 'Revoked') {
+    const fact = ctx.facts.revocations[agent.id];
+    if (fact === undefined) return failed(name, `the facts hold no revocation of ${agent.id}`);
+    const invalidFrom = fact.invalidFrom === null ? null : timeOf(fact.invalidFrom);
+    if (!ID.test(fact.tx) || fact.reason !== status.reason || timeOf(fact.revokedAt) !== status.at || invalidFrom !== status.invalidFrom || (fact.invalidFrom !== null && invalidFrom === null)) {
+      return failed(name, `the revocation of ${did} on the node does not match the facts`);
+    }
+  }
+  const successor = agent.end.successor;
+  let next = '';
+  if (successor === null) {
+    if (status.successor !== null) return failed(name, `the ${expected} record ${did} names an unexpected successor`);
+  } else {
+    const use = ctx.session.use;
+    if (!use.records.some((record) => record.id === successor) && !use.agents.some((record) => record.id === successor)) {
+      return failed(name, `the data names no successor record ${successor} for ${agent.id}`);
+    }
+    const target = await ctx.record(successor);
+    if (target.kind === 'problem') return failed(name, target.line);
+    if (status.successor !== target.read.output.id) return failed(name, `the ${expected} record ${did} does not name the expected successor ${target.read.did}`);
+    if (target.read.status !== 'Active' || target.read.output.record.lineage.type !== 'Root') {
+      return failed(name, `the successor ${target.read.did} is not an Active root record`);
+    }
+    next = ` and names the successor ${target.read.did}`;
+  }
+  if (status.type === 'Revoked') return passed(name, `the record ${did} is Revoked${next} and matches the facts`);
+  const excess = await ctx.reclaimable(result.read);
+  return passed(name, `the record ${did} is Retired${next}; ${excess > 0n ? `the controller can still reclaim ${units(excess)}` : 'there is no deposit above the ledger minimum to reclaim'}`);
+}
+
 // ---- 2. the organisation is verified ----
 
-async function organisation(ctx: Context, agent: AgentSpec): Promise<Check> {
-  const name = `organisation:${agent.id}`;
-  const domain = ctx.session.use.organisations.find((candidate) => candidate.id === agent.organisation)?.domain;
-  if (domain === undefined) return failed(name, `the data names no organisation ${agent.organisation} for the agent ${agent.id}`);
-  const resolved = await ctx.resolution(agent);
+async function organisation(ctx: Context, id: string, organisationId: string): Promise<Check> {
+  const name = `organisation:${id}`;
+  const domain = ctx.session.use.organisations.find((candidate) => candidate.id === organisationId)?.domain;
+  if (domain === undefined) return failed(name, `the data names no organisation ${organisationId} for ${id}`);
+  const resolved = await ctx.resolution(id);
   if (resolved.kind === 'problem') return failed(name, resolved.line);
+  if (resolved.metadata.deactivated === true) return failed(name, `the gateway shows the record of ${id} as deactivated`);
   const parties: unknown[] = Array.isArray(resolved.metadata.vectorParties) ? resolved.metadata.vectorParties : [];
   const party = parties.find((candidate) => isObject(candidate) && candidate.role === 'accountable' && candidate.organisation === domain);
   if (!isObject(party)) return failed(name, `the gateway shows no Accountable party that names the organisation ${domain}`);
@@ -191,55 +293,108 @@ function lastJsonValue(text: string): unknown {
   try { return JSON.parse(block[1]!); } catch { return undefined; }
 }
 
-/** The references of the adverts that the indexer lists for a capability, listed or not free. */
-async function listedRefs(session: TaskSession<EndStateExtra>, capability: string): Promise<string[]> {
+interface ListedAdvert { readonly agent: string | null; readonly model: string }
+
+/** All references of one capability, whether free or working. A truncated listing cannot prove the expected set. */
+async function listedRefs(session: TaskSession<EndStateExtra>, capability: string): Promise<Map<string, ListedAdvert>> {
   const answer = await session.hosted.call('vector_marketplace_list_suppliers', { capability_id: capability, only_free: false, limit: MOST_ADVERTS });
   if (answer.failed) throw new Error(`the hosted tool vector_marketplace_list_suppliers failed: ${shown(answer.message)}`);
   const rows = lastJsonValue(answer.text);
   if (!Array.isArray(rows)) throw new Error('the answer of vector_marketplace_list_suppliers holds no list of adverts');
-  return rows.flatMap((row: unknown) => {
-    if (!isObject(row) || typeof row.advert_ref !== 'string' || typeof row.capability_id !== 'string') throw new Error('a row of the answer of vector_marketplace_list_suppliers is no advert');
-    return row.capability_id === capability ? [row.advert_ref] : [];
-  });
+  if (rows.length >= MOST_ADVERTS) throw new Error('the advert listing reached its row limit, so its complete set is unknown');
+  const listed = new Map<string, ListedAdvert>();
+  for (const row of rows as unknown[]) {
+    if (!isObject(row) || typeof row.advert_ref !== 'string' || row.capability_id !== capability || typeof row.model !== 'string'
+        || (row.agent_id !== null && (typeof row.agent_id !== 'string' || !ID.test(row.agent_id)))) {
+      throw new Error('a row of the answer of vector_marketplace_list_suppliers is no advert of the requested capability');
+    }
+    const ref = advertRef(row.advert_ref);
+    if (listed.has(ref)) throw new Error('the advert listing gives the same reference twice');
+    listed.set(ref, { agent: row.agent_id, model: row.model });
+  }
+  return listed;
 }
+
+function advertRef(ref: string): string {
+  const parsed = parseOutRef(ref);
+  if (!Number.isSafeInteger(parsed.outputIndex)) throw new Error('an advert reference has an invalid output index');
+  return formatOutRef(parsed.txHash, parsed.outputIndex);
+}
+
+interface ExpectedAdvert { readonly agent: AgentSpec; readonly model: string; readonly didId: string }
 
 async function adverts(ctx: Context): Promise<Check> {
   const name = 'adverts';
   const problems: string[] = [];
   const waits: string[] = [];
-  const counts: string[] = [];
-  let until = 0;
+  const retired: string[] = [];
+  const groups = new Map<string, Map<string, ExpectedAdvert>>();
+  const known = new Set<string>();
   for (const agent of ctx.session.use.agents) {
-    const expected = new Map<string, string>();
-    for (const advert of agent.adverts) {
-      const fact = ctx.facts.adverts[agent.id]?.[advert.model];
-      if (fact === undefined) problems.push(`the facts hold no reference for the advert ${agent.id}/${advert.model}: run the task advert first`);
-      else expected.set(fact.ref, advert.model);
+    const group = groups.get(agent.capability) ?? new Map<string, ExpectedAdvert>();
+    groups.set(agent.capability, group);
+    const record = ctx.facts.records[agent.id];
+    if (record === undefined) {
+      problems.push(`the facts hold no record of ${agent.id}, so its adverts cannot be checked`);
+      continue;
     }
-    const listed = await listedRefs(ctx.session, agent.capability);
-    const record = await ctx.record(agent);
-    const held = record.kind === 'read' ? juryHoldEnd(record.read) : null;
-    let complete = true;
-    for (const [ref, model] of expected) {
-      if (listed.includes(ref)) continue;
-      complete = false;
-      if (held !== null) {
+    const held = ctx.facts.adverts[agent.id] ?? {};
+    for (const { model } of agent.adverts) {
+      if (held[model] === undefined) problems.push(`the facts hold no reference for the advert ${agent.id}/${model}: run the task advert first`);
+    }
+    for (const [model, fact] of Object.entries(held)) {
+      const ref = advertRef(fact.ref);
+      if (known.has(ref)) {
+        problems.push(`more than one advert fact names ${ref}`);
+        continue;
+      }
+      known.add(ref);
+      group.set(ref, { agent, model, didId: record.id });
+      if (!agent.adverts.some((spec) => spec.model === model)) problems.push(`the facts hold an advert ${agent.id}/${model} that the data do not name`);
+    }
+  }
+  let until = 0;
+  const counts = new Map<string, number>();
+  for (const [capability, expected] of groups) {
+    const listed = await listedRefs(ctx.session, capability);
+    const retiredRefs: string[] = [];
+    for (const [ref, { agent, model, didId }] of expected) {
+      const listing = listed.get(ref);
+      if (agent.end.advert === 'retired') {
+        retiredRefs.push(ref);
+        if (listing !== undefined) problems.push(`the indexer still lists the retired advert ${agent.id}/${model} (${ref})`);
+        else retired.push(`${agent.id}/${model} (${ref})`);
+        continue;
+      }
+      if (listing !== undefined) {
+        if (listing.agent !== didId || listing.model !== model) problems.push(`the indexer lists ${ref} for another record or model, not ${agent.id}/${model}`);
+        else counts.set(agent.id, (counts.get(agent.id) ?? 0) + 1);
+        continue;
+      }
+      const record = await ctx.record(agent.id);
+      const held = record.kind === 'read' ? juryHoldEnd(record.read) : null;
+      if (held === null) problems.push(`the indexer does not list the advert ${agent.id}/${model} (${ref})`);
+      else {
         waits.push(`the advert ${agent.id}/${model} is not listed while the record is on hold until ${iso(held)}`);
         until = Math.max(until, held);
-      } else {
-        problems.push(`the indexer does not list the advert ${agent.id}/${model} (${ref})`);
       }
     }
-    for (const ref of listed) {
-      if (expected.has(ref)) continue;
-      complete = false;
-      problems.push(`the indexer lists an advert of the capability ${agent.capability} that the facts do not hold (${ref})`);
+    for (const ref of listed.keys()) {
+      if (!expected.has(ref)) problems.push(`the indexer lists an advert of the capability ${capability} that the facts do not hold (${ref})`);
     }
-    if (complete && expected.size === agent.adverts.length) counts.push(`${agent.id} ${expected.size}`);
+    if (retiredRefs.length !== 0) {
+      const unspent = await ctx.session.chain.provider.getUtxosByOutRef(retiredRefs.map(parseOutRef));
+      for (const output of unspent) {
+        const ref = formatOutRef(output.txHash, output.outputIndex);
+        problems.push(`the node still holds an unspent output for a retired advert (${ref})`);
+      }
+    }
   }
   if (problems.length > 0) return failed(name, `${[...problems, ...waits].join('; ')}: the indexer must list exactly the adverts of the data`);
   if (waits.length > 0) return waiting(name, `${waits.join('; ')}: the adverts return when the hold ends`, until);
-  return passed(name, `the indexer lists exactly the adverts of the data (${counts.join(', ')}), each with its reference in the facts`);
+  const active = [...counts].map(([agent, count]) => `${agent} ${count}`).join(', ');
+  return passed(name, `the indexer lists exactly the adverts of the data (${active}), each with its reference in the facts`
+    + (retired.length === 0 ? '' : `; the retired adverts are not listed and their outputs are spent (${retired.join(', ')})`));
 }
 
 // ---- 4. the claims ----
@@ -253,8 +408,8 @@ function refuseSigning(): never {
 
 /** The chain port of the kit for the service wallet of an agent. Its signature throws: the task reads claims only. */
 function portOf(ctx: Context, agent: AgentSpec, id: string, module1: Module1Deployment): Module1Port {
-  const address = ctx.addresses().get(agent.serviceKey);
-  if (address === undefined) throw new Error(`the public key file lists no wallet for the key ${agent.serviceKey}`);
+  const address = ctx.publicKeys().get(agent.serviceKey)?.address;
+  if (address == null) throw new Error(`the public key file lists no wallet for the key ${agent.serviceKey}`);
   // The real provider is an OgmiosProvider and gives the start time of the chain. A provider that does not is no node of Vector.
   const candidate = ctx.session.chain.provider as Partial<Module1Provider>;
   if (typeof candidate.getSystemStartMs !== 'function') throw new Error('the provider of the chain gives no start time of the chain, and the chain port needs it');
@@ -319,17 +474,22 @@ async function claims(ctx: Context, agent: AgentSpec): Promise<Check> {
 async function delegations(ctx: Context): Promise<Check> {
   const name = 'delegations';
   const delegates = new Map<string, string>();
-  for (const agent of [...ctx.session.use.agents, ...ctx.session.use.subagents]) {
+  for (const agent of [...ctx.session.use.agents, ...ctx.session.use.subagents, ...ctx.session.use.records]) {
     const fact = ctx.facts.records[agent.id];
-    if (fact !== undefined) delegates.set(fact.id.toLowerCase(), agent.id);
+    if (fact === undefined || !ID.test(fact.id) || fact.did !== `did:vector:${fact.id}`) {
+      return failed(name, `the facts hold no usable record of ${agent.id}, so its delegations cannot be checked`);
+    }
+    if (delegates.has(fact.id)) return failed(name, 'two record facts have the same identifier, so their delegations cannot be checked');
+    delegates.set(fact.id, agent.id);
   }
   if (delegates.size === 0) return failed(name, 'the facts hold no record of an agent, so no delegate is known: run the task register first');
-  const live = (await liveDelegations(ctx.session.chain.provider, ctx.session.chain.deployment)).filter((entry) => delegates.has(entry.delegation.delegate.toLowerCase()));
+  const live = (await liveDelegations(ctx.session.chain.provider, ctx.session.chain.deployment)).filter(({ delegation }) =>
+    delegates.has(delegation.delegate) || (delegation.delegator.type === 'Agent' && delegates.has(delegation.delegator.id)));
   if (live.length === 0) return passed(name, `no live delegation has one of the agents as its delegate (${[...delegates.values()].join(', ')})`);
   const lines = live.map((entry) => {
     const delegator = entry.delegation.delegator;
     const who = delegator.type === 'PrincipalKey' ? `delegator key hash ${delegator.hash}` : `delegator agent ${delegator.id}`;
-    return `the delegation ${entry.id} to ${delegates.get(entry.delegation.delegate.toLowerCase())} is live, ${who}`;
+    return `the delegation ${entry.id} to ${delegates.get(entry.delegation.delegate) ?? entry.delegation.delegate} is live, ${who}`;
   });
   const hirer = live.some((entry) => entry.delegation.delegator.type === 'PrincipalKey');
   return failed(name, `${lines.join('; ')}. ${hirer ? 'The operator cannot end the delegation of a hirer: ask the hirer to end it.' : ''}${live.some((entry) => entry.delegation.delegator.type === 'Agent') ? ' An agent ends its own sub-delegation: check its service.' : ''}`.trimEnd());
@@ -344,7 +504,7 @@ async function holds(ctx: Context): Promise<Check> {
   const on: string[] = [];
   const unread: string[] = [];
   for (const agent of ctx.session.use.agents) {
-    const record = await ctx.record(agent);
+    const record = await ctx.record(agent.id);
     if (record.kind === 'problem') {
       unread.push(agent.id);
       continue;
@@ -363,12 +523,12 @@ async function holds(ctx: Context): Promise<Check> {
 
 async function wallets(ctx: Context): Promise<Check> {
   const name = 'wallets';
-  const addresses = ctx.addresses();
+  const keys = ctx.publicKeys();
   const missing: string[] = [];
   const low: string[] = [];
   for (const line of ctx.session.use.funding) {
-    const address = addresses.get(line.wallet);
-    if (address === undefined) {
+    const address = keys.get(line.wallet)?.address;
+    if (address == null) {
       missing.push(line.wallet);
       continue;
     }
@@ -387,41 +547,89 @@ async function wallets(ctx: Context): Promise<Check> {
 
 /** A time of the facts: a time with a date, a `T` and a zone, or POSIX milliseconds in digits. Null for any other text. */
 function timeOf(text: string): number | null {
-  if (/^\d{12,}$/.test(text)) return Number(text);
-  const parsed = /^\d{4}-\d{2}-\d{2}T/.test(text) ? Date.parse(text) : Number.NaN;
-  return Number.isNaN(parsed) ? null : parsed;
+  const parsed = /^\d{12,}$/.test(text) ? Number(text)
+    : /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/.test(text) ? Date.parse(text) : Number.NaN;
+  return Number.isSafeInteger(parsed) && parsed <= 8_640_000_000_000_000 - DEPOSIT_DELAY_MS ? parsed : null;
 }
 
 /** The identifiers of the attestations that the gateway lists in `vectorProvenance`. */
 function provenanceIds(metadata: Record<string, unknown>): ReadonlySet<string> {
   const provenance = metadata.vectorProvenance;
-  const listed: unknown[] = isObject(provenance) && Array.isArray(provenance.attestations) ? provenance.attestations : [];
-  return new Set(listed.flatMap((entry) => (isObject(entry) && typeof entry.id === 'string' ? [entry.id] : [])));
+  const ids = new Set<string>();
+  if (provenance === undefined) return ids;
+  if (!isObject(provenance) || !Array.isArray(provenance.attestations)) throw new Error('the gateway gave no readable vectorProvenance list');
+  for (const entry of provenance.attestations as unknown[]) {
+    if (!isObject(entry) || typeof entry.id !== 'string' || !ID.test(entry.id)) throw new Error('the gateway gave no usable attestation identifier in vectorProvenance');
+    ids.add(entry.id);
+  }
+  return ids;
+}
+
+/** Match the authentic output to the recorded attestation. Neither a gateway entry nor a matching digest alone supplies that proof. */
+function attestationMatches(
+  view: AttestationView | null, fact: Pick<AttestationFact, 'digest' | 'locator' | 'issuedAt' | 'validUntil'>,
+  subject: string, issuer: string, type: number, format: number, solicited: boolean,
+): view is AttestationView {
+  if (view === null) return false;
+  const datum = view.attestation;
+  return datum.subject === subject && datum.issuer === issuer && datum.issuerId === null && datum.attType === type && datum.format === format
+    && datum.solicited === solicited && datum.digest === fact.digest && datum.locator === Buffer.from(fact.locator, 'utf8').toString('hex')
+    && datum.issuedAt === timeOf(fact.issuedAt) && datum.validUntil === timeOf(fact.validUntil) && datum.validUntil !== null;
+}
+
+function depositDate(view: AttestationView): string {
+  return view.withdrawableFrom === null ? 'no deposit date' : `deposit due ${iso(view.withdrawableFrom)}`;
 }
 
 async function attestations(ctx: Context): Promise<Check> {
   const name = 'attestations';
   const problems: string[] = [];
   const lines: string[] = [];
-  // The data names the attestations that each agent holds: a fact that is missing is an attestation that the task attest did not make.
-  for (const spec of ctx.session.use.attestations) {
-    for (const type of spec.types) {
-      if (ctx.facts.attestations[spec.agent]?.[type] === undefined) problems.push(`the facts hold no attestation of the type ${type} for the agent ${spec.agent}: run the task attest first`);
+  const use = ctx.session.use;
+  for (const spec of use.attestations) {
+    const agent = use.agents.find(({ id }) => id === spec.agent);
+    const record = ctx.facts.records[spec.agent];
+    if (agent === undefined || record === undefined) {
+      problems.push(`the record of ${spec.agent} is unknown, so its attestations cannot be checked`);
+      continue;
     }
-  }
-  for (const agent of ctx.session.use.agents) {
     const byType = ctx.facts.attestations[agent.id];
-    if (byType === undefined) continue;
-    const resolved = await ctx.resolution(agent);
+    const types = spec.types.filter((type) => {
+      if (byType?.[type] !== undefined) return true;
+      problems.push(`the facts hold no attestation of the type ${type} for the agent ${agent.id}: run the task attest first`);
+      return false;
+    });
+    if (types.length === 0) continue;
+    if (agent.end.record !== 'active') {
+      const signer = agent.parties.find(({ role }) => role === 'Provider')?.signer;
+      const issuer = signer?.kind === 'key' ? ctx.publicKeys().get(signer.key)?.publicKey : null;
+      if (issuer == null) {
+        problems.push(`the public key file lists no Provider key for ${agent.id}`);
+        continue;
+      }
+      for (const type of types) {
+        const fact = byType![type]!;
+        const view = await readAttestation(ctx.session.chain, fact.id);
+        if (!attestationMatches(view, fact, record.id, issuer, ATT_TYPES[type], spec.format, true) || view.attestation.status.type !== 'AttActive'
+            || (view.attestation.envelopeSig !== null) !== fact.envelope) {
+          problems.push(`the attestation ${agent.id}/${type} does not match the facts on the node`);
+          continue;
+        }
+        lines.push(`${agent.id}/${type} ${fact.id} is on the node, valid until ${iso(view.attestation.validUntil!)}, ${depositDate(view)}`);
+      }
+      continue;
+    }
+    const resolved = await ctx.resolution(agent.id);
     if (resolved.kind === 'problem') {
       problems.push(`${agent.id}: ${resolved.line}`);
       continue;
     }
     const listed = provenanceIds(resolved.metadata);
-    for (const [type, fact] of Object.entries(byType)) {
+    for (const type of types) {
+      const fact = byType![type]!;
       const until = timeOf(fact.validUntil);
-      if (until === null) {
-        problems.push(`the facts hold a validUntil of ${agent.id}/${type} that is no time`);
+      if (until === null || !ID.test(fact.id)) {
+        problems.push(`the facts hold no usable identifier or validity time for ${agent.id}/${type}`);
         continue;
       }
       const expired = until <= ctx.now;
@@ -434,15 +642,64 @@ async function attestations(ctx: Context): Promise<Check> {
   return passed(name, lines.length === 0 ? 'the facts hold no attestation' : lines.join('; '));
 }
 
+async function compliance(ctx: Context, spec: NonNullable<TaskSession['use']['compliance']>): Promise<Check> {
+  const name = 'compliance';
+  const issuer = ctx.publicKeys().get(spec.issuerKey)?.publicKey;
+  if (issuer == null) return failed(name, `the public key file lists no key for the compliance issuer ${spec.issuerKey}`);
+  const problems: string[] = [];
+  const lines: string[] = [];
+  for (const subject of spec.subjects) {
+    const fact = ctx.facts.compliance[subject];
+    const agent = ctx.session.use.agents.find(({ id }) => id === subject);
+    const record = ctx.facts.records[subject];
+    if (fact === undefined || agent === undefined || record === undefined) {
+      problems.push(`the compliance fact or subject record of ${subject} is missing`);
+      continue;
+    }
+    const view = await readAttestation(ctx.session.chain, fact.id);
+    if (!attestationMatches(view, fact, record.id, issuer, ATT_TYPES.identity, spec.format, false)) {
+      problems.push(`the compliance attestation of ${subject} does not match the facts on the node`);
+      continue;
+    }
+    const state = attestationState(view.attestation, ctx.now);
+    const expected = agent.end.record === 'revoked' ? 'revoked' : 'active';
+    if (state !== expected) {
+      problems.push(`the compliance attestation of ${subject} is ${state}: it must be ${expected}`);
+      continue;
+    }
+    if (expected === 'revoked') {
+      if (fact.revokeTx === null || fact.contestTx === null || !ID.test(fact.revokeTx) || !ID.test(fact.contestTx)
+          || fact.replySha256 === null || fact.replyUri === null) {
+        problems.push(`the facts hold no complete revoke and contest of the compliance attestation of ${subject}`);
+        continue;
+      }
+      const reply = view.attestation.contested;
+      if (view.utxo.txHash !== fact.contestTx || reply === null || reply.sha256 !== fact.replySha256 || reply.uri !== Buffer.from(fact.replyUri, 'utf8').toString('hex')) {
+        problems.push(`the reply to the compliance attestation of ${subject} does not match the facts on the node`);
+        continue;
+      }
+      lines.push(`${subject} ${fact.id} is revoked with reply ${fact.replySha256}, ${depositDate(view)}`);
+    } else {
+      if (fact.revokeTx !== null || fact.contestTx !== null || fact.replySha256 !== null || fact.replyUri !== null || view.attestation.contested !== null) {
+        problems.push(`the compliance attestation of ${subject} is active but has a revoke or contest in the facts or on the node`);
+        continue;
+      }
+      lines.push(`${subject} ${fact.id} is active, ${depositDate(view)}`);
+    }
+  }
+  return problems.length > 0 ? failed(name, [...problems, ...lines].join('; ')) : passed(name, lines.join('; '));
+}
+
 // ---- 9. the runtimes ----
 
 async function runtimes(ctx: Context): Promise<Check> {
   const name = 'runtimes';
   let running: ReadonlySet<string>;
   try { running = readRunning(join(ctx.session.settings.stateDir, RUNNING_IMAGES), ctx.now); } catch (err) { return failed(name, `cannot tell: ${shown(err)}`); }
-  const refs = ctx.session.use.agents.flatMap(runtimesOf);
+  const refs = ctx.session.use.agents.filter(({ end }) => end.advert === 'listed').flatMap(runtimesOf);
   const answers = await Promise.all(refs.map(async (ref) => (running.has(ref.container) ? readRuntimeStatus(ctx.session.fetchImpl, ref.statusUrl) : null)));
-  const problems: string[] = [];
+  const stopped = ctx.session.use.agents.filter(({ end }) => end.advert === 'retired').flatMap(runtimesOf);
+  const problems: string[] = stopped.filter(({ container }) => running.has(container)).map(({ container }) => `the retired runtime ${container} is still running`);
   const working: string[] = [];
   const good: string[] = [];
   refs.forEach((ref, index) => {
@@ -454,7 +711,68 @@ async function runtimes(ctx: Context): Promise<Check> {
   });
   if (problems.length > 0) return failed(name, [...problems, ...working].join('; '));
   if (working.length > 0) return waiting(name, working.join('; '));
-  return passed(name, `the ${refs.length} runtimes run and say free (${good.join(', ')})`);
+  return passed(name, `the ${refs.length} runtimes run and say free (${good.join(', ')})`
+    + (stopped.length === 0 ? '' : `; the retired runtimes are stopped (${stopped.map(({ container }) => container).join(', ')})`));
+}
+
+async function subagents(ctx: Context, agent: AgentSpec, children: readonly SubagentSpec[]): Promise<Check> {
+  const name = `subagents:${agent.id}`;
+  const ended = agent.end.subagents === 'ended';
+  const parentFact = ctx.facts.records[agent.id];
+  if (parentFact === undefined) return failed(name, `the facts hold no parent record of ${agent.id}`);
+  let epochAfter: number | null = null;
+  if (ended) {
+    const fact = ctx.facts.subagentEnds[agent.id];
+    if (fact === undefined) return failed(name, `the facts hold no end of the subagents of ${agent.id}`);
+    const parent = await ctx.record(agent.id);
+    if (parent.kind === 'problem') return failed(name, parent.line);
+    if (!ID.test(fact.tx) || timeOf(fact.at) === null || !Number.isSafeInteger(fact.epochBefore) || fact.epochBefore < 0
+        || !Number.isSafeInteger(fact.epochAfter) || fact.epochAfter !== fact.epochBefore + 1 || parent.read.output.record.subagentEpoch < fact.epochAfter) {
+      return failed(name, `the epoch of ${agent.id} on the node does not support the end of its subagents in the facts`);
+    }
+    epochAfter = fact.epochAfter;
+  }
+  const problems: string[] = [];
+  for (const child of children) {
+    const resolved = await ctx.resolution(child.id);
+    if (resolved.kind !== 'read') {
+      problems.push(`${child.id}: ${resolved.line}`);
+      continue;
+    }
+    const status = resolved.metadata.vectorStatus;
+    const deactivated = resolved.metadata.deactivated === true;
+    if (!isObject(status) || (ended
+      ? status.effective !== 'revoked' || status.effectiveReason !== 'parentRevoked' || !deactivated
+      : status.effective !== 'active' || deactivated)) {
+      problems.push(`the gateway does not show ${child.id} as ${ended ? 'revoked by the end of its parent authority' : 'Active'}`);
+      continue;
+    }
+    const parent = resolved.metadata.vectorParent;
+    if (!isObject(parent) || parent.parent !== parentFact.did || parent.depth !== 1 || typeof parent.parentEpoch !== 'number'
+        || !Number.isSafeInteger(parent.parentEpoch) || parent.parentEpoch < 0 || (epochAfter !== null && parent.parentEpoch >= epochAfter)) {
+      problems.push(`the gateway does not show ${child.id} as a direct child of the expected parent${ended ? ' before the recorded end' : ''}`);
+    }
+  }
+  return problems.length > 0 ? failed(name, problems.join('; ')) : passed(name, `the gateway shows each subagent as ${ended ? 'revoked' : 'Active'} (${children.map(({ id }) => id).join(', ')})`);
+}
+
+async function lifecycle(ctx: Context, spec: LifecycleSpec): Promise<Check> {
+  const name = 'lifecycle';
+  const facts = ctx.facts.lifecycle;
+  const missing = LIFECYCLE_STEPS.filter((step) => facts[step] === undefined || !ID.test(facts[step].tx) || timeOf(facts[step].at) === null);
+  if (missing.length !== 0) return failed(name, `the facts hold no usable lifecycle step(s): ${missing.join(', ')}`);
+  if (facts['recovery-wait']!.tx !== facts['recovery-start']!.tx) return failed(name, 'the lifecycle wait does not name the recovery start');
+  const record = await ctx.record(spec.agent);
+  if (record.kind === 'problem') return failed(name, record.line);
+  const status = record.read.output.record.status;
+  const successor = ctx.facts.records[spec.successor];
+  if (status.type !== 'Retired' || successor === undefined || status.successor !== successor.id) {
+    return failed(name, `the lifecycle record ${record.read.did} is not Retired with the expected successor`);
+  }
+  const excess = await ctx.reclaimable(record.read);
+  if (excess > 0n) return failed(name, `the deposit above the ledger minimum was not reclaimed: ${units(excess)} remain`);
+  if (record.read.output.utxo.txHash !== facts.reclaim!.tx) return failed(name, 'the tombstone output does not match the reclaim transaction in the facts');
+  return passed(name, `all lifecycle steps are recorded; ${record.read.did} is Retired and names ${successor.did}; the deposit above the ledger minimum was reclaimed`);
 }
 
 // ---- the read and the report ----
@@ -465,9 +783,16 @@ async function readEndState(session: TaskSession<EndStateExtra>): Promise<Check[
   if (gate === null || !gate.ok) return [failed('network', gate === null ? 'the network guard did not run, so the reads of the node cannot be trusted' : `the network guard failed (${shown(gate.message)}), so the reads of the node cannot be trusted`)];
   const ctx = makeContext(session);
   const checks: Check[] = [];
-  const agents = session.use.agents;
-  for (const agent of agents) checks.push(await attempt(`record_active:${agent.id}`, () => recordActive(ctx, agent)));
-  for (const agent of agents) checks.push(await attempt(`organisation:${agent.id}`, () => organisation(ctx, agent)));
+  const { agents, records, compliance: complianceSpec, lifecycle: lifecycleSpec } = session.use;
+  for (const agent of agents) checks.push(await attempt(recordCheckOf(agent), () => agentRecord(ctx, agent)));
+  for (const record of records) {
+    const name = `record:${record.id}`;
+    checks.push(await attempt(name, () => recordActive(ctx, name, record.id)));
+  }
+  for (const record of [...agents.filter(({ end }) => end.record === 'active'), ...records]) {
+    const id = record.organisation;
+    if (id !== null) checks.push(await attempt(`organisation:${record.id}`, () => organisation(ctx, record.id, id)));
+  }
   checks.push(await attempt('adverts', () => adverts(ctx)));
   for (const agent of agents) checks.push(await attempt(`claims:${agent.id}`, () => claims(ctx, agent)));
   checks.push(await attempt('delegations', () => delegations(ctx)));
@@ -475,6 +800,12 @@ async function readEndState(session: TaskSession<EndStateExtra>): Promise<Check[
   checks.push(await attempt('wallets', () => wallets(ctx)));
   checks.push(await attempt('attestations', () => attestations(ctx)));
   checks.push(await attempt('runtimes', () => runtimes(ctx)));
+  for (const agent of agents) {
+    const children = session.use.subagents.filter(({ parent }) => parent === agent.id);
+    if (children.length !== 0) checks.push(await attempt(`subagents:${agent.id}`, () => subagents(ctx, agent, children)));
+  }
+  if (complianceSpec !== null) checks.push(await attempt('compliance', () => compliance(ctx, complianceSpec)));
+  if (lifecycleSpec !== null) checks.push(await attempt('lifecycle', () => lifecycle(ctx, lifecycleSpec)));
   return checks;
 }
 
