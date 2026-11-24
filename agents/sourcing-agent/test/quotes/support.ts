@@ -1,7 +1,7 @@
 // agents/sourcing-agent/test/quotes/support.ts
 // The documents that the tests of the quote fan-out share: the request for quotation, the price list, the three bidders, the quote that a bidder signs, the decision of the model, and the answers of the
 // two ports that the fan-out calls (the model and the challenge). No value is a key. A document is a plain object that a test changes with `over`, so that a test names what it changes.
-import { PRICE_LIST_SCHEMA, lineChecks, parsePriceList, parseQuote, parseRfqDocument, priceListSha256, quoteTotals, rfqSha256 } from '@vsa/usecase-kit/bids';
+import { PRICE_LIST_SCHEMA, lineChecks, parsePriceList, parseQuote, parseRfqDocument, priceFor, priceListSha256, quoteTotals, rfqSha256 } from '@vsa/usecase-kit/bids';
 import type { PriceList, Quote, RfqDocument } from '@vsa/usecase-kit/bids';
 import { evidenceDocument } from '@vsa/usecase-kit/dispute';
 import type { ChallengeFiled, ChallengeNotFiled, ChallengeResult, DeliveryChallengeInput, DocumentCode, JurorDocument } from '@vsa/usecase-kit/dispute';
@@ -34,10 +34,32 @@ const LIST_DOCUMENT = {
     { sku: 'MSK-N95', lead_time_days: 21, breaks: [{ min_quantity: 1, unit_price: 65 }, { min_quantity: 25, unit_price: 60 }, { min_quantity: 100, unit_price: 54 }, { min_quantity: 1000, unit_price: 47 }] },
   ],
 };
-/** The text of the price list as the bidders serve it, and the hash of that text. */
-export const LIST_TEXT = JSON.stringify(LIST_DOCUMENT);
-export const LIST_SHA = priceListSha256(LIST_TEXT);
-export const LIST: PriceList = must(parsePriceList(JSON.parse(LIST_TEXT)));
+/** A price list as a bidder serves it: the list, the text of the file and the hash of that text. */
+export interface ServedList { readonly list: PriceList; readonly text: string; readonly sha256: string }
+
+function served(document: unknown): ServedList {
+  const text = JSON.stringify(document);
+  return { list: must(parsePriceList(JSON.parse(text))), text, sha256: priceListSha256(text) };
+}
+
+/** The price list that Alfa and Charlie serve, and the hash of its text. */
+const SHARED = served(LIST_DOCUMENT);
+export const LIST_TEXT = SHARED.text;
+export const LIST_SHA = SHARED.sha256;
+export const LIST: PriceList = SHARED.list;
+
+/** The list of Bravo: the prices of the shared list, except the unit price of GLV-NIT-M at 100 and of MSK-N95 at 25. A step that takes the list of another bidder sees other prices and another hash. */
+const OWN = served({
+  schema: PRICE_LIST_SCHEMA,
+  items: LIST_DOCUMENT.items.map((entry) => ({
+    ...entry,
+    breaks: entry.breaks.map((step) => {
+      if (entry.sku === 'GLV-NIT-M' && step.min_quantity === 100) return { ...step, unit_price: 128 };
+      if (entry.sku === 'MSK-N95' && step.min_quantity === 25) return { ...step, unit_price: 62 };
+      return step;
+    }),
+  })),
+});
 
 // --- The bidders --------------------------------------------------------------------------------------------------------------------------------------------------------
 
@@ -60,19 +82,27 @@ export const BRAVO = desk('bravo', 'a3', 'https://203.0.113.52', 'c5');
 export const CHARLIE = desk('charlie', 'a4', 'https://203.0.113.53', 'c6');
 export const DESKS: readonly DeskSpec[] = [ALFA, BRAVO, CHARLIE];
 
+/** The price list that a bidder serves: Bravo has its own list, and Alfa and Charlie serve the same one. */
+export const listOf = (spec: DeskSpec): ServedList => (spec.name === 'bravo' ? OWN : SHARED);
+
 /** The bidder as the job hires it: the file names its advert and its organisation, and the job read its price list. */
 export function bidderOf(spec: DeskSpec, over: Partial<BidderToHire> = {}): BidderToHire {
-  return { did: spec.did, advert_ref: spec.advertRef, organisation: spec.organisation, price_list: { list: LIST, sha256: LIST_SHA }, ...over };
+  const own = listOf(spec);
+  return { did: spec.did, advert_ref: spec.advertRef, organisation: spec.organisation, price_list: { list: own.list, sha256: own.sha256 }, ...over };
 }
 
 // --- The quote ----------------------------------------------------------------------------------------------------------------------------------------------------------
 
 export interface Chosen { sku: string; quantity: number; unit_price: number; lead_time_days: number }
-export const GLV: Chosen = { sku: 'GLV-NIT-M', quantity: 100, unit_price: 125, lead_time_days: 14 };
-export const SYR: Chosen = { sku: 'SYR-10ML', quantity: 250, unit_price: 36, lead_time_days: 10 };
-export const MSK: Chosen = { sku: 'MSK-N95', quantity: 40, unit_price: 60, lead_time_days: 21 };
-/** The three lines of the request at the prices of the list. */
-export const LISTED: readonly Chosen[] = [GLV, SYR, MSK];
+
+/** The lines of the request at the prices of the list of `spec`: one line for each item, with the unit price and the lead time that its list gives. */
+export function listedLines(spec: DeskSpec): readonly Chosen[] {
+  return RFQ.items.map((item) => {
+    const price = priceFor(listOf(spec).list, item.sku, item.quantity);
+    if (price === null) throw new Error('the price list of the test does not price an item of the request');
+    return { sku: item.sku, quantity: item.quantity, unit_price: price.unit_price, lead_time_days: price.lead_time_days };
+  });
+}
 
 const SUB_JOB: SubJob = {
   capability_id: 'llm.text.generate.v1', advert_ref: `${'b3'.repeat(32)}#0`, escrow_ref: `${'4c'.repeat(32)}#0`, supplier_pkh: '7d'.repeat(28),
@@ -97,12 +127,12 @@ const CREDENTIAL = 'eyJhbGciOiJFZERTQSIsInR5cCI6InZjK2p3dCJ9.eyJ2YyI6eyJ0eXBlIjp
  * The quote that a bidder returns for the request: the lines `chosen`, the arithmetic of `quoteTotals`, the hash of the request and the hash of the price list, and the decision `quote` of its model. `over`
  * replaces members of the document.
  */
-export function quoteDocument(spec: DeskSpec, chosen: readonly Chosen[] = LISTED, over: Record<string, unknown> = {}): Record<string, unknown> {
+export function quoteDocument(spec: DeskSpec, chosen: readonly Chosen[] = listedLines(spec), over: Record<string, unknown> = {}): Record<string, unknown> {
   const totals = quoteTotals(chosen);
   if (totals === null) throw new Error('the lines of the quote of the test have no arithmetic');
   return {
     schema: 'vector.usecase.quote.v1', outcome: 'done', rfq_id: RFQ.rfq_id, rfq_sha256: must(rfqSha256(RFQ)), desk_did: spec.did, organisation: spec.organisation, lines: totals.lines, total: totals.total,
-    lead_time_days: totals.lead_time_days, valid_until: '2026-12-15', notes: 'All lines are at the listed price.', price_list_sha256: LIST_SHA, credential: CREDENTIAL,
+    lead_time_days: totals.lead_time_days, valid_until: '2026-12-15', notes: 'All lines are at the listed price.', price_list_sha256: listOf(spec).sha256, credential: CREDENTIAL,
     sender: { did: SENDER_DID, organisation: 'echo.example', organisation_verified: true },
     checks: { sender_active: true, sender_accountable: true, sender_key: true, delegation: true, delegation_usable: true, vault_paid: true, not_duplicate: true },
     decisions: [decisionOf('quote', { lines: chosen.map((line) => ({ ...line })), valid_until: '2026-12-15', notes: 'All lines are at the listed price.' }, 'Each line takes the listed price.')],
@@ -111,13 +141,13 @@ export function quoteDocument(spec: DeskSpec, chosen: readonly Chosen[] = LISTED
 }
 
 /** The text that a bidder serves for its quote. */
-export const quoteText = (spec: DeskSpec, chosen: readonly Chosen[] = LISTED, over: Record<string, unknown> = {}): string => JSON.stringify(quoteDocument(spec, chosen, over));
+export const quoteText = (spec: DeskSpec, chosen: readonly Chosen[] = listedLines(spec), over: Record<string, unknown> = {}): string => JSON.stringify(quoteDocument(spec, chosen, over));
 
 /** The quote as the typed value that the kit makes of it. */
-export const typedQuote = (spec: DeskSpec, chosen: readonly Chosen[] = LISTED, over: Record<string, unknown> = {}): Quote => must(parseQuote(quoteDocument(spec, chosen, over)));
+export const typedQuote = (spec: DeskSpec, chosen: readonly Chosen[] = listedLines(spec), over: Record<string, unknown> = {}): Quote => must(parseQuote(quoteDocument(spec, chosen, over)));
 
 /** The lines of the request with one line at another unit price than the list gives. */
-export const priced = (sku: string, unit: number): readonly Chosen[] => LISTED.map((line) => (line.sku === sku ? { ...line, unit_price: unit } : line));
+export const priced = (sku: string, unit: number, spec: DeskSpec = BRAVO): readonly Chosen[] => listedLines(spec).map((line) => (line.sku === sku ? { ...line, unit_price: unit } : line));
 
 // --- The model and the challenge ----------------------------------------------------------------------------------------------------------------------------------------
 

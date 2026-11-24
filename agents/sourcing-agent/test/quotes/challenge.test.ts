@@ -6,7 +6,7 @@ import { BID_CAPABILITIES, BID_DESK_CLAIM } from '@vsa/usecase-kit/bids';
 import { sha256Utf8Hex } from '@vsa/vector-read';
 import { CHALLENGE_CODES } from '../../src/quotes/ports.ts';
 import type { BidderToHire, QuotesResult } from '../../src/quotes/index.ts';
-import { BRAVO, CHALLENGE, GLV, LIST, LIST_SHA, MSK, SYR, acceptDecision, bidderOf, challengeFiled, challengeNotFiled, priced, quoteText, rightAnswer } from './support.ts';
+import { BRAVO, CHALLENGE, LIST_SHA, acceptDecision, bidderOf, challengeFiled, challengeNotFiled, listOf, listedLines, priced, quoteText, rightAnswer } from './support.ts';
 import type { Chosen } from './support.ts';
 import { BUYER_PKH, cleanWorlds, footprint, hired, words, world } from './world.ts';
 import type { World } from './world.ts';
@@ -14,7 +14,7 @@ import type { World } from './world.ts';
 afterEach(() => { cleanWorlds(); });
 
 /** The lines of the request with the unit price of each SKU that `over` names changed. */
-const lines = (over: Readonly<Record<string, number>>): readonly Chosen[] => [GLV, SYR, MSK].map((line) => ({ ...line, unit_price: over[line.sku] ?? line.unit_price }));
+const lines = (over: Readonly<Record<string, number>>): readonly Chosen[] => listedLines(BRAVO).map((line) => ({ ...line, unit_price: over[line.sku] ?? line.unit_price }));
 
 /** A model that holds the SKUs `named` to differ, whatever the prices are, and gives the decision for that no. */
 const naming = (named: readonly string[]) => () => ({ ok: true, decision: acceptDecision(false, named), choice: { accept: false, mismatch: [...named] } });
@@ -35,7 +35,7 @@ describe('a challenge with the facts of the line that the model named', () => {
     const outcome = hired(result.outcomes, 0);
     expect(w.dispute.calls).toStrictEqual([{
       counterparty: BRAVO.did, escrow_ref: outcome.record.escrow_ref, capability_id: BID_CAPABILITIES.quote, statement_text: BID_DESK_CLAIM.statements[0].text, buyer_pkhs: [BUYER_PKH],
-      evidence: { kind: 'quote_price', sku: 'SYR-10ML', quantity: 250, quoted_unit_price: 30, listed_unit_price: 36, price_list_sha256: LIST_SHA, quote_sha256: sha256Utf8Hex(text) },
+      evidence: { kind: 'quote_price', sku: 'SYR-10ML', quantity: 250, quoted_unit_price: 30, listed_unit_price: 36, price_list_sha256: listOf(BRAVO).sha256, quote_sha256: sha256Utf8Hex(text) },
     }]);
     // The hash of the quote is the hash that the receipt commits to for the text of the delivery.
     expect(outcome.record.receipt?.response_hash).toBe(sha256Utf8Hex(text));
@@ -71,13 +71,25 @@ describe('a challenge with the facts of the line that the model named', () => {
     for (const named of [['GLV-NIT-M', 'SYR-10ML'], ['SYR-10ML', 'GLV-NIT-M']]) {
       const { w } = await declined(lines({ 'GLV-NIT-M': 120, 'SYR-10ML': 30 }), named);
       expect(w.dispute.calls).toHaveLength(1);
-      expect(w.dispute.calls[0]?.evidence).toMatchObject({ sku: 'GLV-NIT-M', quoted_unit_price: 120, listed_unit_price: 125 });
+      expect(w.dispute.calls[0]?.evidence).toMatchObject({ sku: 'GLV-NIT-M', quoted_unit_price: 120, listed_unit_price: 128 });
     }
   });
 
   it('takes the first named line whose price differs: a named line at the listed price is passed over', async () => {
     const { w } = await declined(priced('SYR-10ML', 30), ['GLV-NIT-M', 'SYR-10ML']);
     expect(w.dispute.calls[0]?.evidence).toMatchObject({ sku: 'SYR-10ML' });
+  });
+
+  it('takes the price list of the bidder whose quote was not accepted, and no other list: Bravo has its own list, and its quote at the price that the other two list is the evidence', async () => {
+    const w = await world();
+    // Alfa and Charlie list 125 for GLV-NIT-M at 100. Bravo lists 128, so its quote at 125 breaks its own list, and the model, which reads the list of the bidder, names the line.
+    w.desks.bravo.answer = () => quoteText(BRAVO, lines({ 'GLV-NIT-M': 125 }));
+    const result = await w.run();
+    expect(result.outcomes.map(words)).toStrictEqual(['accepted', 'excluded disputed none', 'accepted']);
+    expect(w.accept.calls[1]?.list).toBe(listOf(BRAVO).list);
+    expect(w.dispute.calls).toHaveLength(1);
+    expect(w.dispute.calls[0]?.evidence).toMatchObject({ sku: 'GLV-NIT-M', quoted_unit_price: 125, listed_unit_price: 128, price_list_sha256: listOf(BRAVO).sha256 });
+    expect(listOf(BRAVO).sha256).not.toBe(LIST_SHA);
   });
 
   it('twin: a model that accepts files no challenge', async () => {
@@ -109,8 +121,9 @@ describe('no evidence, so no challenge', () => {
   }
 
   it('makes no challenge for a line that the price list does not price: the line has no listed price', async () => {
-    const withoutMask = { ...LIST, items: LIST.items.filter((entry) => entry.sku !== 'MSK-N95') };
-    const { w, result } = await declined(lines({}), ['MSK-N95'], bidderOf(BRAVO, { price_list: { list: withoutMask, sha256: LIST_SHA } }));
+    const own = listOf(BRAVO);
+    const withoutMask = { ...own.list, items: own.list.items.filter((entry) => entry.sku !== 'MSK-N95') };
+    const { w, result } = await declined(lines({}), ['MSK-N95'], bidderOf(BRAVO, { price_list: { list: withoutMask, sha256: own.sha256 } }));
     expect(words(result.outcomes[0]!)).toBe('excluded disputed no_evidence');
     expect(w.dispute.calls).toHaveLength(0);
   });

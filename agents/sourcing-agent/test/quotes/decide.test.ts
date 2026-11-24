@@ -9,7 +9,7 @@ import { sha256Utf8Hex } from '@vsa/vector-read';
 import { judgeQuote } from '../../src/quotes/decide.ts';
 import type { Learned } from '../../src/quotes/decide.ts';
 import type { QuoteOutcome } from '../../src/quotes/index.ts';
-import { ALFA, BRAVO, LIST, LIST_SHA, RFQ, acceptDecision, bidderOf, decisionOf, priced, quoteDocument, quoteText, rightAnswer } from './support.ts';
+import { ALFA, BRAVO, RFQ, acceptDecision, bidderOf, decisionOf, listOf, priced, quoteDocument, quoteText, rightAnswer } from './support.ts';
 import { NOTHING, cleanWorlds, footprint, words, world } from './world.ts';
 import type { World } from './world.ts';
 
@@ -59,7 +59,7 @@ describe('the checks in code, before the model is asked', () => {
 
   it('reports the first check that fails, in the order: a quote, the bidder, the request, the price list', async () => {
     const run = async (document: Record<string, unknown>): Promise<Learned | null> => {
-      const judge = judgeQuote({ acceptQuote: async () => ({ ok: false, code: 'unused' }), note: () => undefined }, RFQ, bidderOf(BRAVO), { list: LIST, sha256: LIST_SHA });
+      const judge = judgeQuote({ acceptQuote: async () => ({ ok: false, code: 'unused' }), note: () => undefined }, RFQ, bidderOf(BRAVO), listOf(BRAVO));
       await judge.decide(deliveryOf(JSON.stringify(document)));
       return judge.learned();
     };
@@ -79,7 +79,7 @@ describe('the checks in code, before the model is asked', () => {
     expect(w.accept.calls).toHaveLength(1);
     const asked = w.accept.calls[0]!;
     expect(asked.rfq).toStrictEqual(RFQ);
-    expect(asked.list).toBe(LIST);
+    expect(asked.list).toBe(listOf(BRAVO).list);
     expect(asked.quote).toStrictEqual(JSON.parse(JSON.stringify(asked.quote)));
     expect(asked.quote.desk_did).toBe(BRAVO.did);
   });
@@ -199,7 +199,7 @@ describe('the model and the Accept', () => {
 describe('the delivery that cannot be recorded', () => {
   it('declines a delivery whose receipt names no supplier key hash, with the code of the delivery, and does not ask the model', async () => {
     let asked = 0;
-    const judge = judgeQuote({ acceptQuote: async () => { asked += 1; return { ok: false, code: 'unused' }; }, note: () => undefined }, RFQ, bidderOf(BRAVO), { list: LIST, sha256: LIST_SHA });
+    const judge = judgeQuote({ acceptQuote: async () => { asked += 1; return { ok: false, code: 'unused' }; }, note: () => undefined }, RFQ, bidderOf(BRAVO), listOf(BRAVO));
     const delivery = deliveryOf(quoteText(BRAVO));
     const answer = await judge.decide({ ...delivery, receipt: { ...delivery.receipt, supplier_pkh: 'not a key hash' } });
     expect(answer).toStrictEqual({ accept: false, reason: 'delivery_not_recordable' });
@@ -211,7 +211,7 @@ describe('the delivery that cannot be recorded', () => {
     let asked = 0;
     const judge = judgeQuote({
       acceptQuote: async (given) => { asked += 1; return rightAnswer(given); }, note: () => undefined,
-    }, RFQ, bidderOf(BRAVO), { list: LIST, sha256: LIST_SHA });
+    }, RFQ, bidderOf(BRAVO), listOf(BRAVO));
     expect(await judge.decide(deliveryOf(quoteText(BRAVO)))).toStrictEqual({ accept: true });
     expect(asked).toBe(1);
   });
