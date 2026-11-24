@@ -17,6 +17,7 @@ import type { JobSlot, OpenRoute, Refusal } from '@vsa/service-kit';
 import type { CosignRoute } from '@vsa/usecase-kit/cosign';
 import { withFaultModeJob } from '@vsa/usecase-kit/fault';
 import type { FaultSwitch, WithFaultMode } from '@vsa/usecase-kit/fault';
+import { checkWirePayload } from '@vsa/usecase-kit/buyer';
 import { requestNumberOf } from '@vsa/usecase-kit/priorauth';
 import { ERROR_STATUS, checkRequestSize, parseJsonText, parseRequest } from '@vsa/usecase-kit/protocol';
 import type { ExecuteResult, ProposalResult, UseCaseRequest } from '@vsa/usecase-kit/protocol';
@@ -62,8 +63,8 @@ function isPortalTenant(tenant: string): boolean {
 }
 
 /** The request JSON of a job as a request of the agent. It throws `RequestError` for a text that is too large, that is not JSON, or that breaks a rule of the intake. */
-export function parseJob(requestJson: string): JobRequest {
-  const size = checkRequestSize(requestJson);
+export function parseJob(requestJson: string, wirePayload?: string): JobRequest {
+  const size = wirePayload === undefined ? checkWirePayload(requestJson) : checkRequestSize(wirePayload);
   if (!size.ok) throw new RequestError(size.code === 'request_too_large' ? 'request_too_large' : 'bad_shape', size.detail);
   const json = parseJsonText(requestJson, 'request');
   if (!json.ok) throw new RequestError('bad_shape', json.detail);

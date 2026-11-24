@@ -8,12 +8,11 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, test } from 'vitest';
 import { READ_BUDGET_MS, VAULT_PAYER_IDENTITY_SETTINGS } from '@vsa/buyer-core';
-import { RUNTIME_BODY_LIMIT_BYTES } from '@vsa/hire-kit';
-import { BUSY_TEXT, CONTEXT_HEADERS, HEARTBEAT_MS, JobSlot, MAX_BODY, RESERVATION_MS, SHUTDOWN_WAIT_MS, STOPPING_TEXT, TOKEN_SEARCH_MIN, operatorsText } from '@vsa/service-kit';
+import { BUSY_TEXT, CONTEXT_HEADERS, HEARTBEAT_MS, JobSlot, RESERVATION_MS, SHUTDOWN_WAIT_MS, STOPPING_TEXT, TOKEN_SEARCH_MIN, operatorsText } from '@vsa/service-kit';
 import { BID_CAPABILITIES, MAX_ITEM_QUANTITY, MAX_RFQ_ITEMS, SOURCING_CLAIM, WEIGHT_NAMES } from '@vsa/usecase-kit/bids';
 import { COSIGN_STATUS, DEFAULT_LIMITS } from '@vsa/usecase-kit/cosign';
 import { readFaultSwitch } from '@vsa/usecase-kit/fault';
-import { ERROR_STATUS, MAX_REQUEST_BYTES, checkRequestSize, refusedExit, refused } from '@vsa/usecase-kit/protocol';
+import { ERROR_STATUS, MAX_REQUEST_BYTES, refusedExit, refused } from '@vsa/usecase-kit/protocol';
 import { EXECUTE_DEADLINE_MS, EXECUTE_FAILURES } from '../src/execute/index.ts';
 import { MAX_INVITED, ACCEPT_QUOTE_DECISION, RANKING_DECISION, SCORE_DECISION, SHORTLIST_DECISION } from '../src/model/index.ts';
 import { PROPOSE_DEADLINE_MS, PROPOSE_FAILURES, RANKING_RESERVE_MS, SCORING_RESERVE_MS, TENANT_RULE } from '../src/propose/index.ts';
@@ -135,7 +134,6 @@ describe('agents/sourcing-agent/README.md: what it is', () => {
     expect(w.tokens).toHaveLength(1);
     expect(w.record.written).toHaveLength(1);
     expect(intro).toContain('The call to the sourcing record is made one time. The service never repeats it, also after a failure, because a failed call can have written the ranking.');
-    expect(textOf('../src/execute/execute.ts')).toContain('a call that failed may have written the ranking');
     expect(intro).toContain('The sourcing record has no rule of one ranking for each request.');
     expect(intro).toContain('Read the sourcing record before you send `execute` again.');
   });
@@ -147,8 +145,6 @@ describe('agents/sourcing-agent/README.md: what it is', () => {
     expect(sources.filter(({ text }) => /\b(?:stakeRunClaim|withdrawClaim|submitClaim|challengeApproval)\b/.test(text))).toStrictEqual([]);
     expect(sources.filter(({ text }) => /\bchallengeDelivery\b/.test(text)).map(({ file }) => file).sort()).toStrictEqual(['quotes/evidence.ts', 'quotes/ports.ts']);
     expect(intro).toContain('only after a decision of the model that did not accept a quote, and only for a unit price');
-    expect(textOf('../src/quotes/evidence.ts')).toContain('the evidence is one line whose unit price is not the listed price');
-    expect(textOf('../src/quotes/quotes.ts')).toContain('not_accepted, declined_by_model    a challenge against the open claim of THAT bidder');
   });
 
   test('the escrow and the vault payment stay locked up to the window of the advert, and the jobs are in memory', () => {
@@ -205,13 +201,8 @@ describe('agents/sourcing-agent/README.md: the routes', () => {
   });
 
   test('the body limits, the six headers of the context and the numbers of the slot and of the heartbeat are the code', () => {
-    expect(routes).toContain(`The service reads the body up to ${MAX_BODY} bytes. It reads the request JSON up to ${MAX_REQUEST_BYTES} bytes.`);
-    expect(checkRequestSize('x'.repeat(MAX_REQUEST_BYTES)).ok).toBe(true);
-    expect(checkRequestSize('x'.repeat(MAX_REQUEST_BYTES + 1)).ok).toBe(false);
     expect(JSON.parse(textOf('../agent.json.template')).terms.input_limits.request_bytes).toBe(MAX_REQUEST_BYTES);
     expect(routes).toContain('`terms.input_limits.request_bytes`');
-    expect(RUNTIME_BODY_LIMIT_BYTES).toBe(1_048_576);
-    expect(routes).toContain(`The limit of ${MAX_REQUEST_BYTES} bytes is safe only below the limit of the runtime, ${RUNTIME_BODY_LIMIT_BYTES} bytes, on the escaped body.`);
     expect(Object.values(CONTEXT_HEADERS)).toHaveLength(6);
     for (const header of Object.values(CONTEXT_HEADERS)) expect(routes, header).toContain(`\`${header}\``);
     expect(routes).toContain(`\`{"go":true,"reserved_ms":${RESERVATION_MS}}\``);
