@@ -257,7 +257,7 @@ describe('every refusal of a setting that the manifest publishes, with its accep
   const CONTACT_RULE = /^environment variable OPERATOR_CONTACT must be one line of at most 200 characters with no control character, and it has \d+ characters$/;
   const DID_RULE = /^environment variable AGENT_DID must be did:vector: and 64 lowercase hex characters, and it has \d+ characters$/;
   const keyHashRule = (name: string): RegExp => new RegExp(`^environment variable ${name} must be 56 hex characters, and (it has \\d+ characters|some of its \\d+ characters are not hex)$`);
-  const supplierRule = (name: string): RegExp => new RegExp(`^environment variable ${name} holds the key hash of SUPPLIER_PKH: the supplier key is the key of the runtime, and this key must be a key of its own$`);
+  const supplierRule = (name: string): RegExp => new RegExp(`^environment variable ${name} names the supplier key: the supplier key is the runtime's, and this key must be a key of its own$`);
   const sameRule = (name: string, other: string): RegExp => new RegExp(`^environment variable ${name} holds the same key hash as ${other}: each key of the service must be a key of its own$`);
   const NOT_THE_KEY = /^environment variable SUPPLIER_PUB_KEY_HEX is not the public key of SUPPLIER_PKH: the key hash of the one is not the other\. Both are published, so they must come from the same key pair, and the public key line must not hold a private key$/;
   const [SERVICE_PKH, DELEGATION_1_PKH] = (['service', 'delegation1'] as const).map((role) => keyOf(rawKey(KEY_NUMBERS[role])).pkh);

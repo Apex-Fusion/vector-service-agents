@@ -172,7 +172,7 @@ function keyHashesOf(env: NodeJS.ProcessEnv, supplierPkh: string): readonly [str
       continue;
     }
     const hash = hexOf(name, text, 28);
-    if (hash === supplierPkh) throw new Error(`environment variable ${name} holds the key hash of SUPPLIER_PKH: the supplier key is the key of the runtime, and this key must be a key of its own`);
+    if (hash === supplierPkh) throw new Error(`environment variable ${name} names the supplier key: the supplier key is the runtime's, and this key must be a key of its own`);
     const same = KEY_HASH_SETTINGS.find((_, index) => hashes[index] === hash);
     if (same !== undefined) throw new Error(`environment variable ${name} holds the same key hash as ${same[0]}: each key of the service must be a key of its own`);
     hashes.push(hash);

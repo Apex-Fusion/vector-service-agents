@@ -38,6 +38,11 @@ export const PRICE_DEFAULT_LOVELACE = 3_000_000;
 /** The two bonds of the advert, in lovelace. The lock of the escrow is the price and both bonds: 5 units for the default price. */
 export const SUPPLIER_BOND_LOVELACE = 1_000_000;
 export const BUYER_BOND_LOVELACE = 1_000_000;
+/**
+ * The highest price of the advert: with both bonds, the lock of an escrow stays inside its value cap (`MAX_ESCROW_LOVELACE` of buyer-core). A Post refuses an advert above the cap, so an advert with a higher price
+ * could not be hired.
+ */
+export const MAX_PRICE_LOVELACE = Number(MAX_ESCROW_LOVELACE - BigInt(SUPPLIER_BOND_LOVELACE + BUYER_BOND_LOVELACE));
 
 /** The least window left in the challenge window of a claim that the dispute code takes, as the dispute code holds it. */
 const LEAST_WINDOW_LEFT_MS = 2_000;
@@ -167,22 +172,18 @@ export function processingWindowOf(env: NodeJS.ProcessEnv): number {
     );
   }
   if (ms > MAX_PROCESSING_WINDOW_MS) {
-    throw new Error(`environment variable ADVERT_MAX_PROCESSING_MS must be at most ${MAX_PROCESSING_WINDOW_MS} (the ${MAX_PROCESSING_WINDOW_MS / 3_600_000} h that a Post holds the lock of a buyer for)`);
+    throw new Error(`environment variable ADVERT_MAX_PROCESSING_MS must be at most ${MAX_PROCESSING_WINDOW_MS} (24 h, the longest window that a Post accepts)`);
   }
   return ms;
 }
 
-/**
- * The price of the advert, in lovelace: a whole number of more than 0, and no more than the cap of an escrow less the two bonds, because the escrow locks the price and both bonds, and a Post refuses an advert whose
- * lock is above the cap. The two bonds are fixed.
- */
+/** The price of the advert, in lovelace: a whole number of more than 0, and at most MAX_PRICE_LOVELACE. The two bonds are fixed. */
 export function priceOf(env: NodeJS.ProcessEnv): number {
   const text = given(env.ADVERT_PRICE_LOVELACE);
   if (text === '') return PRICE_DEFAULT_LOVELACE;
   const price = lovelaceOf('ADVERT_PRICE_LOVELACE', text);
-  const bonds = BigInt(SUPPLIER_BOND_LOVELACE + BUYER_BOND_LOVELACE);
-  if (price + bonds > MAX_ESCROW_LOVELACE) {
-    throw new Error(`environment variable ADVERT_PRICE_LOVELACE must be at most ${MAX_ESCROW_LOVELACE - bonds} (the price and both bonds must stay within the ${MAX_ESCROW_LOVELACE} lovelace cap of an escrow)`);
+  if (price > BigInt(MAX_PRICE_LOVELACE)) {
+    throw new Error(`environment variable ADVERT_PRICE_LOVELACE must be at most ${MAX_PRICE_LOVELACE} (with both bonds, the lock of an escrow stays inside its value cap of ${MAX_ESCROW_LOVELACE} lovelace)`);
   }
   return Number(price);
 }

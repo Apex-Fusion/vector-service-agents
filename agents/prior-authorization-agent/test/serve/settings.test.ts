@@ -9,7 +9,7 @@ import { AGENT_KINDS, FAULT_MODES } from '@vsa/usecase-kit/protocol';
 import { REGISTRY_POLICY, legacyVectorDid } from '@vsa/vector-read';
 import {
   BUYER_BOND_LOVELACE, GATEWAY_DEFAULT, HOST_DEFAULT, JOB_DEADLINE_MS, MAX_PROCESSING_WINDOW_MS, MIN_PROCESSING_WINDOW_MS, PORT_DEFAULT, PRICE_DEFAULT_LOVELACE, STATE_DIR_DEFAULT, SUPPLIER_BOND_LOVELACE,
-  agentDidOf,
+  MAX_PRICE_LOVELACE, agentDidOf,
   cosignSettingsOf, disputeOf, drafterDidOf, endpointsFromEnv, faultOf, handoffLimitsOf, hostOf, httpsOriginOf, limitsOf, mockBasesOf, modelOf, module1SourceOf, portOf, priceOf, processingWindowOf,
   recordReaderDidOf, stateDirOf, supplierKeyOf,
 } from '../../src/serve/settings.ts';
@@ -42,8 +42,8 @@ const cosignRule = (detail: string): RegExp => new RegExp(`^the settings of the 
 const FAULT_REFUSAL = /^environment variable FAULT_MODE must be empty or "alter_after_approval" for prior-authorization-agent, and it has \d+ characters$/;
 const NOT_THE_KEY = /^environment variable SUPPLIER_PUB_KEY_HEX is not the public key of SUPPLIER_PKH: the key hash of the one is not the other\. Both are published, so they must come from the same key pair, and the public key line must not hold a private key$/;
 const WINDOW_RULE = /^environment variable ADVERT_MAX_PROCESSING_MS must be at least 1800000 \(the window of 30 min that the deadline of a job, 1620000 ms, assumes\)$/;
-const WINDOW_MAX_RULE = /^environment variable ADVERT_MAX_PROCESSING_MS must be at most 86400000 \(the 24 h that a Post holds the lock of a buyer for\)$/;
-const PRICE_CAP = /^environment variable ADVERT_PRICE_LOVELACE must be at most 9998000000 \(the price and both bonds must stay within the 10000000000 lovelace cap of an escrow\)$/;
+const WINDOW_MAX_RULE = /^environment variable ADVERT_MAX_PROCESSING_MS must be at most 86400000 \(24 h, the longest window that a Post accepts\)$/;
+const PRICE_CAP = /^environment variable ADVERT_PRICE_LOVELACE must be at most 9998000000 \(with both bonds, the lock of an escrow stays inside its value cap of 10000000000 lovelace\)$/;
 const SAME_HOST = /^environment variable MOCK_MTLS_BASE must name another host than MOCK_PUBLIC_BASE: the mock service tells the two hosts apart by the Host header$/;
 const OGMIOS_HTTPS = /^environment variable VECTOR_OGMIOS_URL must be an https address: the tip reader of the janitor takes https only, and it has \d+ characters$/;
 const MODULE1_FORM = /^environment variable VECTOR_MODULE1_MANIFEST must be an https URL with no user, query or fragment, and it has \d+ characters$/;
@@ -222,9 +222,9 @@ describe('the numbers of the service', () => {
 
   test('the window takes 1,800,000 ms to 86,400,000 ms, and the price takes 1 to the cap of an escrow less the two bonds', () => {
     for (const ms of [1_800_000, 86_400_000]) expect(processingWindowOf({ ADVERT_MAX_PROCESSING_MS: String(ms) })).toBe(ms);
-    const most = Number(MAX_ESCROW_LOVELACE) - SUPPLIER_BOND_LOVELACE - BUYER_BOND_LOVELACE;
-    for (const price of [1, most]) expect(priceOf({ ADVERT_PRICE_LOVELACE: String(price) })).toBe(price);
-    expect(most + SUPPLIER_BOND_LOVELACE + BUYER_BOND_LOVELACE).toBe(Number(MAX_ESCROW_LOVELACE));
+    expect(MAX_PRICE_LOVELACE).toBe(Number(MAX_ESCROW_LOVELACE) - SUPPLIER_BOND_LOVELACE - BUYER_BOND_LOVELACE);
+    expect(MAX_PRICE_LOVELACE).toBe(9_998_000_000);
+    for (const price of [1, MAX_PRICE_LOVELACE]) expect(priceOf({ ADVERT_PRICE_LOVELACE: String(price) })).toBe(price);
   });
 
   test('are the defaults of the readers, and a blank setting is a setting that is not set', () => {
