@@ -181,14 +181,14 @@ export async function runExecute(deps: ExecuteDeps, request: ExecuteRequest, arr
     throw new ExecuteRefusal(checked.code, checked.detail);
   }
 
-  let hash: string | null;
+  let read: Waited<string | null>;
   try {
-    const read = await waited(run, () => deps.delegateKeyOf(request.authority.delegation));
-    if (read.state === 'timed_out') return stop(FAILED.deadline, 'no time is left to read the delegate key');
-    hash = read.value;
+    read = await waited(run, () => deps.delegateKeyOf(request.authority.delegation));
   } catch {
     return stop(FAILED.ledger, 'the ledger could not be read for the delegate key');
   }
+  if (read.state === 'timed_out') return stop(FAILED.deadline, 'no time is left to read the delegate key');
+  const hash = read.value;
   // The DPoP key of the token is the delegate key of the delegation, so a delegation that the ledger does not show has no key, and nothing is sent.
   if (hash === null) return stop(FAILED.notFound, 'the ledger shows no delegation of this name');
   const entry = deps.delegationKeys.find(hash);
