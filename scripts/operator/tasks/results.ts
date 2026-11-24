@@ -68,12 +68,13 @@ export const PAGE_TEXT = {
 // ---- the evidence of a run, as the page reads it ----
 
 /** A reference of a step: a plain text (a transaction hash when it is 64 hex characters) or a labelled value (`kind` and `value`). */
-export interface Ref { readonly kind: string | null; readonly value: string }
-export interface EvidenceStep { readonly id: string; readonly status: 'shown' | 'not_run'; readonly refs: readonly Ref[]; readonly note: string; readonly complete: boolean }
-export interface PageRun { readonly label: string; readonly kind: string; readonly date: string; readonly steps: ReadonlyMap<string, EvidenceStep> }
+interface Ref { readonly kind: string | null; readonly value: string }
+interface EvidenceStep { readonly id: string; readonly status: 'shown' | 'not_run'; readonly refs: readonly Ref[]; readonly note: string; readonly complete: boolean }
+interface PageRun { readonly label: string; readonly kind: string; readonly date: string; readonly steps: ReadonlyMap<string, EvidenceStep> }
 
 type ResultPolicyData = Pick<UseCase, 'results' | 'runs' | 'evidenceSteps'>;
 type EvidenceCase = ResultPolicyData & Pick<UseCase, 'name' | 'agents'>;
+type ResultsCase = EvidenceCase & Pick<UseCase, 'title' | 'notCovered'>;
 type EvidenceIndex = ResultStepIndex<UseCase['evidenceSteps'][number]>;
 
 function requireResultPolicy(use: ResultPolicyData): EvidenceIndex {
@@ -316,29 +317,34 @@ function rowOf(step: UseCase['evidenceSteps'][number], found: EvidenceStep | und
 
 interface ResultsPageInput {
   readonly header: string;
-  readonly use: ResultPolicyData & Pick<UseCase, 'title' | 'notCovered'>;
-  readonly runs: readonly PageRun[];
+  readonly use: ResultsCase;
+  readonly sources: readonly { readonly label: string; readonly value: unknown }[];
 }
 
-/** The page: the header, the title, one table for each run, and the section "Not covered". The header comes first and verbatim. */
+/** Check public sources with the selected case policy, then render the page. The header comes first and verbatim. */
 export function renderPage(input: ResultsPageInput): string {
-  return renderRuns(input, requireResultPolicy(input.use));
+  const { header, use, sources } = input;
+  const policy = requireResultPolicy(use);
+  if (!Array.isArray(sources)) throw new PreconditionError('the results page has no list of evidence sources');
+  const runs: PageRun[] = [];
+  for (const { label, value } of sources) runs.push(parseRun(value, label, use, policy, false));
+  return renderRuns(header, use, runs, policy);
 }
 
-function renderRuns(input: ResultsPageInput, policy: EvidenceIndex): string {
-  const { lead, items } = input.use.notCovered;
-  const body: string[] = [`# ${input.use.title}: ${PAGE_TEXT.results}`, '', PAGE_TEXT.intro, ''];
-  for (const run of input.runs) {
+function renderRuns(header: string, use: ResultsCase, runs: readonly PageRun[], policy: EvidenceIndex): string {
+  const { lead, items } = use.notCovered;
+  const body: string[] = [`# ${use.title}: ${PAGE_TEXT.results}`, '', PAGE_TEXT.intro, ''];
+  for (const run of runs) {
     const rows = policy.get(run.kind);
     if (rows === undefined) throw new PreconditionError('the results run has no declared policy');
     body.push(`## ${PAGE_TEXT.run} ${run.label}: ${run.kind}, ${run.date}`, '', `| ${PAGE_TEXT.columns.join(' | ')} |`, `|${PAGE_TEXT.columns.map(() => '---').join('|')}|`);
     for (const step of rows.values()) {
-      body.push(`| ${rowOf(step, run.steps.get(step.id), input.use.results.wording).join(' | ')} |`);
+      body.push(`| ${rowOf(step, run.steps.get(step.id), use.results.wording).join(' | ')} |`);
     }
     body.push('');
   }
   body.push(`## ${PAGE_TEXT.notCovered}`, '', lead, '', ...items.map((item) => `- ${item}`), '', PAGE_TEXT.limitsLead, '', ...PAGE_TEXT.limitsItems.map((item) => `- ${item}`));
-  return `${input.header}${input.header.endsWith('\n') ? '' : '\n'}\n${body.join('\n')}\n`;
+  return `${header}${header.endsWith('\n') ? '' : '\n'}\n${body.join('\n')}\n`;
 }
 
 // ---- the files ----
@@ -455,7 +461,7 @@ async function produce(session: TaskSession<ResultsExtra>): Promise<StepOutcome>
   const policy = requireResultPolicy(use);
   const header = readHeader(extra.headerFile, session.settings.keysDir);
   const runs = loadRuns(listEvidence(session.settings.stateDir, use), extra.runs, use, policy);
-  const page = renderRuns({ header, use, runs }, policy);
+  const page = renderRuns(header, use, runs, policy);
   if (holdsSecret(page)) throw new PreconditionError('the page holds a mark of a secret: it is not shown and not written');
   const bytes = Buffer.byteLength(page, 'utf8');
   const sha256 = createHash('sha256').update(page, 'utf8').digest('hex');

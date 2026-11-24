@@ -64,6 +64,8 @@ const doc = (kind: UseCase['runs'][number]['id'], date: string, steps: unknown, 
   run: `use-case-1-${kind}`, kind, date, capability_id: 'supplychain.reorder.po.v1', builder: 'https://hosted.test/mcp', result: 'not a completed result', hires: [{ step: 'propose' }], steps, ...over,
 });
 
+const evidenceSource = (value: unknown, label = 'x') => ({ label, value });
+
 const cleanDoc = (over: Record<string, unknown> = {}): Record<string, unknown> =>
   ({ ...ASSEMBLED_CLEAN, date: '2026-12-01', steps: cleanSteps(), ...over });
 const failureDoc = (over: Record<string, unknown> = {}): Record<string, unknown> =>
@@ -245,11 +247,11 @@ describe('the task results', () => {
 
   describe('a step and its reference', () => {
     const use = data;
-    const runOf = (steps: unknown[]) => parseEvidence(doc('clean', '2026-12-01', steps), 'x', data);
+    const cleanSource = (steps: unknown[]) => evidenceSource(doc('clean', '2026-12-01', steps));
     const shown = (id: string, refs: unknown[]): unknown => ({ id, status: 'shown', refs });
 
     it('writes a step that has the required references as shown, with both sentences', () => {
-      const page = renderPage({ header: HEADER, use, runs: [runOf([shown('r1-02', [transaction('vault'), output('vault', 'vault')])])] });
+      const page = renderPage({ header: HEADER, use, sources: [cleanSource([shown('r1-02', [transaction('vault'), output('vault', 'vault')])])] });
       const row = rowOf(page, 'r1-02');
       expect(row[3]).toBe(`[\`${tx('vault')}\`](${EXPLORER_TX}${tx('vault')}); vault \`${tx('vault')}#0\``);
       expect(row[4]).toBe(use.results.wording['Vault']!.shows);
@@ -257,7 +259,7 @@ describe('the task results', () => {
     });
 
     it('never writes a step as shown when the evidence has no reference for it', () => {
-      const page = renderPage({ header: HEADER, use, runs: [runOf([shown('r1-02', [])])] });
+      const page = renderPage({ header: HEADER, use, sources: [cleanSource([shown('r1-02', [])])] });
       const row = rowOf(page, 'r1-02');
       expect(row[3]).toBe(PAGE_TEXT.none);
       expect(row[4]).toBe(PAGE_TEXT.noReference);
@@ -267,7 +269,7 @@ describe('the task results', () => {
     });
 
     it('writes a step that did not run as not run, with its reason and no reference', () => {
-      const page = renderPage({ header: HEADER, use, runs: [runOf([{ id: 'r1-02', status: 'not_run', refs: [], note: 'The member did not open a vault.' }])] });
+      const page = renderPage({ header: HEADER, use, sources: [cleanSource([{ id: 'r1-02', status: 'not_run', refs: [], note: 'The member did not open a vault.' }])] });
       const row = rowOf(page, 'r1-02');
       expect(row[3]).toBe(PAGE_TEXT.none);
       expect(row[4]).toBe(`${PAGE_TEXT.notRun} The member did not open a vault.`);
@@ -275,7 +277,7 @@ describe('the task results', () => {
     });
 
     it('gives no reference to a step that did not run, even when the evidence holds one, and says when it has no reason', () => {
-      const page = renderPage({ header: HEADER, use, runs: [runOf([{ id: 'r1-02', status: 'not_run', refs: [tx('vault')] }])] });
+      const page = renderPage({ header: HEADER, use, sources: [cleanSource([{ id: 'r1-02', status: 'not_run', refs: [tx('vault')] }])] });
       const row = rowOf(page, 'r1-02');
       expect(row[3]).toBe(PAGE_TEXT.none);
       expect(row[4]).toBe(`${PAGE_TEXT.notRun} ${PAGE_TEXT.noReason}`);
@@ -283,7 +285,7 @@ describe('the task results', () => {
     });
 
     it('says that a step has no entry when the evidence file leaves it out, and still writes one row for each step of the kind', () => {
-      const page = renderPage({ header: HEADER, use, runs: [runOf([shown('r1-02', [tx('vault')])])] });
+      const page = renderPage({ header: HEADER, use, sources: [cleanSource([shown('r1-02', [tx('vault')])])] });
       expect(rowOf(page, 'r1-01')[4]).toBe(`${PAGE_TEXT.notRun} ${PAGE_TEXT.noEntry}`);
       const ids = page.split('\n').filter((line) => /^\| r\d-/.test(line)).map((line) => line.split(' | ')[0]!.slice(2));
       expect(ids).toEqual(data.evidenceSteps.filter((step) => step.run !== 'failure').map((step) => step.id));
@@ -292,7 +294,7 @@ describe('the task results', () => {
     it('makes a link of each transaction hash, and shows another reference as text, with its kind when it has one', () => {
       const page = renderPage({
         header: HEADER, use,
-        runs: [runOf([shown('r1-03', [tx('a'), `${tx('a')}#0`, { kind: 'transaction', value: tx('b') }, { kind: 'delegation', value: hashOf('d') }, 'did:vector:abc'])])],
+        sources: [cleanSource([shown('r1-03', [tx('a'), `${tx('a')}#0`, { kind: 'transaction', value: tx('b') }, { kind: 'delegation', value: hashOf('d') }, 'did:vector:abc'])])],
       });
       const refs = rowOf(page, 'r1-03')[3]!.split('; ');
       expect(refs).toEqual([
@@ -301,8 +303,7 @@ describe('the task results', () => {
     });
 
     it('writes the rows of a kind from the data and no others, in the order of the data', () => {
-      const failure = parseEvidence(failureDoc(), 'x', data);
-      const page = renderPage({ header: HEADER, use, runs: [failure] });
+      const page = renderPage({ header: HEADER, use, sources: [evidenceSource(failureDoc())] });
       const ids = page.split('\n').filter((line) => /^\| r\d-/.test(line)).map((line) => line.split(' | ')[0]!.slice(2));
       expect(ids).toEqual(data.evidenceSteps.filter((step) => step.run !== 'clean').map((step) => step.id));
     });
@@ -354,11 +355,11 @@ describe('the task results', () => {
           { id: 'r2-a-hold', status: 'shown', refs: [{ kind: 'case', value: tx('case') }, transaction('finalize'), output('hold', 'hold')] },
           { id: 'r2-c', status: 'shown', refs: [transaction('proposal'), output('escrow', 'proposal'), transaction('posted'), output('hold', 'hold')] },
         ];
-        const run = parseEvidence(doc('failure', '2026-12-01', steps, {
+        const run = evidenceSource(doc('failure', '2026-12-01', steps, {
           run: `use-case-${number}-failure`, capability_id: use.agents[0]!.capability,
           refusals: [{ step: 'r2-c', kind: 'tool', message_sha256: tx('listing refusal') }],
-        }), 'failure', use);
-        const page = renderPage({ header: HEADER, use, runs: [run] });
+        }), 'failure');
+        const page = renderPage({ header: HEADER, use, sources: [run] });
         expect(page).not.toContain('Order Desk');
         expect(page).not.toContain('purchase order');
         expect(page).toContain(use.results.wording['Module-1 challenge']!.shows);
@@ -396,10 +397,10 @@ describe('the task results', () => {
         ],
       };
       const render = (principal: unknown[], log: unknown[], proof: Record<string, unknown> = {}) => renderPage({
-        header: HEADER, use: priorAuthorization, runs: [parseEvidence(doc('clean', '2026-12-01', [
+        header: HEADER, use: priorAuthorization, sources: [evidenceSource(doc('clean', '2026-12-01', [
           { id: 'r1-01', status: 'shown', refs: principal },
           { id: 'r1-06', status: 'shown', refs: [transaction('accept intake'), output('escrow', 'accept decision')] },
-        ], { run: 'use-case-2-clean', capability_id: priorAuthorization.agents[0]!.capability, mock: { log }, ...proof }), PRIOR_LABEL, priorAuthorization)],
+        ], { run: 'use-case-2-clean', capability_id: priorAuthorization.agents[0]!.capability, mock: { log }, ...proof }), PRIOR_LABEL)],
       });
       const incomplete = render([...refs.slice(0, -1), refs[1]], []);
       expect(rowOf(incomplete, 'r1-01')[4]).toBe(PAGE_TEXT.partialReference);
@@ -428,9 +429,9 @@ describe('the task results', () => {
       const hire = { step: 'quote-a3', escrow_ref: escrow.value, post_tx: tx('quote hire'), verdict: 'VERIFIED', accept_tx: null, reclaim_tx: null };
       const proof = { action: 'Release', escrow_ref: escrow.value, tx: spend.value, spent_output: output('escrow', 'submit').value, at: 1_795_000_000_000 };
       const check = (hires: unknown[], release: unknown, refs: unknown[] = [escrow, spend]) => renderPage({
-        header: HEADER, use: bidEvaluation, runs: [parseEvidence(doc('failure', '2026-12-04', [
+        header: HEADER, use: bidEvaluation, sources: [evidenceSource(doc('failure', '2026-12-04', [
           { id: 'r2-a-release', status: 'shown', refs },
-        ], { run: 'use-case-3-failure', capability_id: bidEvaluation.agents[0]!.capability, hires, release }), 'failure', bidEvaluation)],
+        ], { run: 'use-case-3-failure', capability_id: bidEvaluation.agents[0]!.capability, hires, release }), 'failure')],
       });
       for (const page of [
         check([], proof), check([hire], null), check([hire], { ...proof, action: 'Accept' }), check([hire], { ...proof, spent_output: escrow.value }),
@@ -481,9 +482,9 @@ describe('the task results', () => {
 
     it('describes only the linked record output when no revocation details are present', () => {
       const render = (record: string) => renderPage({
-        header: HEADER, use: bidEvaluation, runs: [parseEvidence(doc('failure', '2026-12-04', [
+        header: HEADER, use: bidEvaluation, sources: [evidenceSource(doc('failure', '2026-12-04', [
           { id: 'r2-e', status: 'shown', refs: [transaction('record spend'), output('record', record)] },
-        ], { run: 'use-case-3-failure', capability_id: bidEvaluation.agents[0]!.capability }), 'failure', bidEvaluation)],
+        ], { run: 'use-case-3-failure', capability_id: bidEvaluation.agents[0]!.capability }), 'failure')],
       });
       expect(rowOf(render('other record'), 'r2-e')[4]).toBe(PAGE_TEXT.partialReference);
       const row = rowOf(render('record spend'), 'r2-e');
@@ -510,7 +511,7 @@ describe('the task results', () => {
 
     it('reads the lead and items from the case data', () => {
       const use = { ...priorAuthorization, notCovered: { lead: 'This is the test lead:', items: ['This is the test gap.'] } };
-      const page = renderPage({ header: HEADER, use, runs: [] });
+      const page = renderPage({ header: HEADER, use, sources: [] });
       expect(page).toContain('## Not covered\n\nThis is the test lead:\n\n- This is the test gap.');
       expect(page).not.toContain(priorAuthorization.notCovered.lead);
       expect(PAGE_TEXT).not.toHaveProperty('notCoveredLead');
@@ -607,6 +608,9 @@ describe('the task results', () => {
         refusals: [{ step: 'l1-03', kind: 'tool', message: raw }],
       });
       expect(parseEvidence(evidence, label, bidEvaluation).steps.get('l1-03')?.complete).toBe(false);
+      const page = renderPage({ header: HEADER, use: bidEvaluation, sources: [evidenceSource(evidence, label)] });
+      expect(rowOf(page, 'l1-03')[4]).toBe(PAGE_TEXT.partialReference);
+      expect(page).not.toContain(raw);
       rig.put('public', label, evidence);
       expect(await rig.run(...NO_ARGUMENTS(rig), '--runs', label, '--submit')).toBe(0);
       expect(rowOf(rig.page(), 'l1-03')[4]).toBe(PAGE_TEXT.partialReference);
@@ -882,9 +886,8 @@ describe('the task results', () => {
     });
 
     it('uses only the selected case data for the run, row proof and wording', () => {
-      const evidence = doc('clean', '2026-12-01', [
-        { id: 'r1-02', status: 'shown', refs: [transaction('vault'), output('vault', 'vault')] },
-      ], { run: 'use-case-47-clean' });
+      const row = { id: 'r1-02', status: 'shown', refs: [transaction('vault'), output('vault', 'vault')] };
+      const evidence = doc('clean', '2026-12-01', [row], { run: 'use-case-47-clean' });
       const use = {
         ...data, name: 'test-case', results: {
           runPrefix: 'use-case-47' as const,
@@ -892,9 +895,15 @@ describe('the task results', () => {
         },
       };
       const checked = parseEvidence(evidence, 'test', use);
-      expect(rowOf(renderPage({ header: HEADER, use, runs: [checked] }), 'r1-02')[4]).toBe(use.results.wording.Vault.shows);
+      expect(checked.steps.get(row.id)?.complete).toBe(true);
+      expect(rowOf(renderPage({ header: HEADER, use, sources: [evidenceSource(evidence, 'test')] }), row.id)[4]).toBe(use.results.wording.Vault.shows);
       const stricter = { ...use, evidenceSteps: use.evidenceSteps.map((step) => step.id === 'r1-02' ? { ...step, proof: { refs: { vault: 2, transaction: 1 } } } : step) };
       expect(parseEvidence(evidence, 'test', stricter).steps.get('r1-02')?.complete).toBe(false);
+      const renderStricter = (value: unknown) => renderPage({ header: HEADER, use: stricter, sources: [evidenceSource(value, 'test')] });
+      expect(rowOf(renderStricter(evidence), row.id)[4]).toBe(PAGE_TEXT.partialReference);
+      expect(rowOf(renderStricter({ ...evidence, steps: [{ ...row, complete: true }] }), row.id)[4]).toBe(PAGE_TEXT.partialReference);
+      expect(() => renderStricter(checked)).toThrow('run does not name this use case and run kind');
+      expect(() => renderStricter({ ...evidence, steps: checked.steps })).toThrow('steps is not a list');
       expect(() => parseEvidence(evidence, 'test', data)).toThrow('run does not name this use case and run kind');
     });
 
@@ -908,8 +917,7 @@ describe('the task results', () => {
       for (const run of ['clean', 'both'] as const) {
         const use = { ...data, evidenceSteps: [...data.evidenceSteps, { ...loose, run }] };
         expect(() => parseEvidence(evidence, CLEAN, use)).toThrow('id applies more than once');
-        const parsed = parseEvidence(evidence, CLEAN, data);
-        expect(() => renderPage({ header: HEADER, use, runs: [parsed] })).toThrow('id applies more than once');
+        expect(() => renderPage({ header: HEADER, use, sources: [evidenceSource(evidence, CLEAN)] })).toThrow('id applies more than once');
         const rig = await makeRig(use);
         rig.put('public', CLEAN, evidence);
         expect(await rig.run(...NO_ARGUMENTS(rig), '--submit')).toBe(2);
@@ -919,10 +927,10 @@ describe('the task results', () => {
 
       const disjoint: UseCase = { ...data, evidenceSteps: [...data.evidenceSteps, { ...loose, run: 'failure' }] };
       const clean = parseEvidence(evidence, CLEAN, disjoint);
-      const failure = parseEvidence(doc('failure', '2026-12-01', steps), FAILURE, disjoint);
+      const failure = doc('failure', '2026-12-01', steps);
       expect(clean.steps.get(original.id)?.complete).toBe(false);
-      expect(failure.steps.get(original.id)?.complete).toBe(true);
-      const page = renderPage({ header: HEADER, use: disjoint, runs: [failure] });
+      expect(parseEvidence(failure, FAILURE, disjoint).steps.get(original.id)?.complete).toBe(true);
+      const page = renderPage({ header: HEADER, use: disjoint, sources: [evidenceSource(failure, FAILURE)] });
       expect(page.split('\n').filter((line) => line.startsWith(`| ${original.id} |`))).toHaveLength(1);
       expect(rowOf(page, original.id)[1]).toBe(loose.what);
     });
