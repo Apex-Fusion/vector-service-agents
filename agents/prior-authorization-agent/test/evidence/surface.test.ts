@@ -3,7 +3,9 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { describe, expect, test } from 'vitest';
 import { DEFAULT_CONFIRMATION_WAIT_MS, DEFAULT_END_TIMEOUT_MS, DEFAULT_STEP_TIMEOUT_MS, GATEWAY_FAILURES, SUB_DELEGATION_FAILURES } from '@vsa/usecase-kit/access';
+import { MemoryLeftStore } from '@vsa/usecase-kit/janitor';
 import * as evidence from '../../src/evidence/index.ts';
+import type { InFlight, LeftSink } from '../../src/evidence/index.ts';
 import { BOOKKEEPING_TIMEOUT_MS, LIST_TIMEOUT_MS } from '../../src/evidence/bookkeeping.ts';
 import { CONFIRMATION_WAIT_MS, END_TIMEOUT_MS, JOB_TIMEOUT_MS, LEAST_READ_MS, MIN_CONFIRMATION_WAIT_MS, TOKEN_PATIENCE_MS, VALIDITY_SLACK_MS } from '../../src/evidence/subread.ts';
 
@@ -75,5 +77,16 @@ describe('the evidence folder', () => {
     expect(BOOKKEEPING_TIMEOUT_MS).toBe(DEFAULT_STEP_TIMEOUT_MS);
     expect(LIST_TIMEOUT_MS).toBe(20_000);
     expect(LIST_TIMEOUT_MS).toBeLessThan(DEFAULT_STEP_TIMEOUT_MS);
+  });
+
+  test('has a sink that the list of the kit fits and a set that a Set fits, so that the service gives one list and one set to the reads and to the janitor', async () => {
+    const sink: LeftSink = new MemoryLeftStore();
+    expect(await sink.list()).toStrictEqual([]);
+    const live = new Set<string>();
+    const inFlight: InFlight = live;
+    inFlight.add('a');
+    expect(live.has('a')).toBe(true);
+    inFlight.delete('a');
+    expect(live.size).toBe(0);
   });
 });

@@ -4,12 +4,13 @@
 // job is alive. A failed first read ends the evidence and the second sub-delegation is never made. A failed second read gives its code and none of the first evidence, and both sub-delegations are ended. Each
 // failure has its twin.
 import type { GatewayResult, IssuedToken } from '@vsa/id-kit/client';
+import { MemoryLeftStore } from '@vsa/usecase-kit/janitor';
 import { accepted } from '@vsa/usecase-kit/protocol';
 import { describe, expect, it } from 'vitest';
 import { EVIDENCE_FAILURES } from '../../src/evidence/subread.ts';
 import {
   DEADLINE_MS, DRAFTER_DID, GUIDELINES_RESOURCE, KINDS, KNEE_GUIDELINE, KNEE_RECORD_SET, NOW, ORDER_ID, PARENT_ID, READS, RECORDS_RESOURCE, RECORD_READER_DID, GUIDELINE, RECORD_SET, actionOf, expectFailed,
-  expectNoSecrets, expectRecordedAndEnded, failureLine, gatewayRefused, issued, janitorPass, json, opsOf, runEvidence, startEvidence, systemAnswer, world,
+  AGENT_KEY, expectNoSecrets, expectRecordedAndEnded, expectUntouched, failureLine, gatewayRefused, issued, janitorPass, json, opsOf, runEvidence, startEvidence, systemAnswer, world,
 } from './support.ts';
 import type { RunOptions, World } from './support.ts';
 
@@ -165,6 +166,17 @@ describe('a first read that fails', () => {
     const w = world();
     expect(await runEvidence(w, { request: { order_id: ORDER_ID } })).toStrictEqual(BOTH);
     expect(w.chain.builtDelegates).toHaveLength(2);
+  });
+
+  it.each([
+    ['an order id with a slash', { request: { order_id: 'a/b' } }],
+    ['an empty order id', { request: { order_id: '' } }],
+    ['a tenant that no route takes', { request: { tenant: '-run' } }],
+  ] as const)('gives internal and sends nothing when the request has %s', async (_name, over) => {
+    const w = world();
+    expectFailed(await runEvidence(w, over), 'internal');
+    expectUntouched(w);
+    expect(w.logs).toStrictEqual([failureLine(RECORDS, 'internal')]);
   });
 
   it('gives record_set_invalid and makes no second sub-delegation when the parser accepts a value that has no order with a service code', async () => {
@@ -386,5 +398,26 @@ describe('two runs of one wallet', () => {
     for (let index = 1; index < times.length; index += 1) expect(times[index]! - times[index - 1]!, `send ${index}`).toBeGreaterThanOrEqual(8_000);
     expect(w.sink.entries.size).toBe(0);
     expect(w.live.size).toBe(0);
+  });
+});
+
+describe('the list of left sub-delegations of the kit', () => {
+  it('takes the entries that the reads write, holds none after two good reads, and holds the entry of a read whose end does not land', async () => {
+    const clean = world();
+    const empty = new MemoryLeftStore();
+    expect(await runEvidence(clean, { deps: { leftSink: empty } })).toStrictEqual(BOTH);
+    expect(await empty.list()).toStrictEqual([]);
+    const left = world();
+    const build = left.chain.buildDelegate.bind(left.chain);
+    left.chain.buildDelegate = async (params) => {
+      if (left.chain.builtDelegates.length === 1) left.chain.faults.undelegateNeverLands = true;
+      return build(params);
+    };
+    const store = new MemoryLeftStore();
+    expect(await runEvidence(left, { deps: { leftSink: store } })).toStrictEqual(BOTH);
+    const [, second] = left.chain.builtDelegates;
+    const entries = await store.list();
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ signer_key_hash: AGENT_KEY, left: { id: second!.id, endTxHash: left.chain.builtUndelegates[1]!.txHash } });
   });
 });

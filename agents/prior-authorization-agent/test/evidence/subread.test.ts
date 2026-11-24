@@ -38,7 +38,7 @@ describe('the value of a read', () => {
 });
 
 describe('the form of a code', () => {
-  const BAD = ['Not a code', '', 'a'.repeat(65), 'record-set', 'UPPER', 'a b', 'ünï', 'a\n', 'order_not_found!'];
+  const BAD = ['Not a code', '', 'a'.repeat(65), 'record-set', 'UPPER', 'a b', '\u00fcn\u00ef', 'a\n', 'order_not_found!'];
   const GOOD = ['a', 'record_set_invalid', 'a1_b2', '0', 'a'.repeat(64)];
 
   it.each(BAD)('turns the invalid code %j into internal, in the result and in the log, and ends the sub-delegation', async (code) => {
