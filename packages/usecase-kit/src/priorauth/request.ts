@@ -41,7 +41,7 @@ export interface PriorAuthRequest {
   readonly guideline_refs: readonly string[];
   /** The identifiers of the records that the justification cites. */
   readonly record_refs: readonly string[];
-  /** The hash of the record set that the drafter was given: `recordSetSha256`. */
+  /** The hash of the record set that the model was given: `recordSetSha256`. */
   readonly record_set_sha256: Digest;
   /** The Insurer Intake Agent that the request is for. */
   readonly insurer_did: Did;

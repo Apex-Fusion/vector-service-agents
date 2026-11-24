@@ -43,7 +43,7 @@ import type { SupplierRow } from '../src/insurer/index.ts';
 import { ACCEPT_DECISION, acceptInput, justificationDecision, justificationInput, parseProposeFields } from '../src/model/index.ts';
 import { ID_RULE } from '../src/model/intake.ts';
 import { PROPOSE_DEADLINE_MS, PROPOSE_FAILURES } from '../src/propose/index.ts';
-import { CHALLENGE_GAP, KEYS_GAP, NOT_SHOWN_GAP, gapsFor } from '../src/serve/gaps.ts';
+import { CHALLENGE_GAP, KEYS_GAP, NOT_SHOWN_GAP, RECORD_SET_GAP, gapsFor } from '../src/serve/gaps.ts';
 import { REQUEST_SCHEMA, STATUS_SINCE_DEFAULT, TEMPLATE_ENV, manifestFromEnv } from '../src/serve/manifest.ts';
 import { RequestError, parseJob } from '../src/serve/server.ts';
 import {
@@ -907,6 +907,16 @@ describe('specs/prior-authorization-agent.md, the receipt, the claim and the fau
       expect(code, file).not.toContain('requestRouteToken');
       expect(code, file).not.toMatch(/holder:\s*'agent'/);
     }
+    // Statement S2: the hash in a request is the hash of the record set that the model was given. `record-reader` reads the set and `drafter` reads the guideline only, so the drafter is not the party of S2. The service hashes
+    // the set that it checked, and it gives that same set to the model: the data block of the decision `justification` holds each record of it.
+    expect(PRIORAUTH_CLAIM.statements[1].text).toBe('The record set hash in a request is the hash of the set that its model was given.');
+    expect(DOCUMENT.record_set_sha256).toBe(recordSetSha256(RECORD_SET));
+    const given = justificationInput(RECORD_SET, GUIDELINE) as JsonObject; // the data block of the decision: a JSON value with the members order, records and guideline
+    expect(given.records).toStrictEqual(RECORD_SET.records.map((record) => ({ record_id: record.record_id, type: record.type, recorded_at: record.recorded_at, summary: record.summary })));
+    expect(sourcesOf('agents/prior-authorization-agent/src/evidence/').filter(({ code }) => /subagent: deps\.subagents\.record_reader,/.test(code)).map(({ file }) => file)).toStrictEqual(['records.ts']);
+    expect(sourcesOf('agents/prior-authorization-agent/src/evidence/').filter(({ code }) => /subagent: deps\.subagents\.drafter,/.test(code)).map(({ file }) => file)).toStrictEqual(['guideline.ts']);
+    expect(text('agents/prior-authorization-agent/src/propose/propose.ts')).toContain('setSha256 = recordSetSha256(set.value);');
+    expect(text('agents/prior-authorization-agent/src/serve/wiring.ts')).toContain('justificationInput(set, guideline)');
   });
 
   test('the fault switch: the one value, what it changes, and the member fault_mode of every result', () => {
@@ -1033,6 +1043,9 @@ describe('specs/prior-authorization-agent.md, the operator, the data and the gap
     expect(lines[9]).toBe(`- ${faultGap('prior-authorization-agent')}`);
     // The fifth gap says when a delivery that the agent refuses can still be released: the window of the Accept.
     expect(CHALLENGE_GAP).toContain(`released to the Insurer Intake Agent ${ACCEPT_WINDOW_MS / 1000} s after its Submit`);
+    // The fourth gap names the party that is given the whole record set: the model, as the data block of the decision `justification` shows (see Claim statements, S2). The subagent drafter reads the guideline only.
+    expect(gapsFor()[3]).toBe(RECORD_SET_GAP);
+    expect(RECORD_SET_GAP.startsWith('The model is given the whole record set, but nothing forces the model to use all of it.')).toBe(true);
   });
 });
 
