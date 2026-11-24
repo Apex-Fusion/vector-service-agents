@@ -10,7 +10,7 @@ import { describe, expect, test } from 'vitest';
 import { parse } from 'yaml';
 import { ACCEPT_WINDOW_MS, ATT_TYPES, HIRE_ACTION } from '@vsa/buyer-core';
 import { STRANDED_FILE, isRuntimeRefusal } from '@vsa/hire-kit';
-import { MAX_BODY, RESERVATION_MS } from '@vsa/service-kit';
+import { RESERVATION_MS } from '@vsa/service-kit';
 import { CONFIRMATIONS_REQUIRED, GATEWAY_FAILURES, SUB_DELEGATION_FAILURES, tokenTarget } from '@vsa/usecase-kit/access';
 import {
   BAD_DOCUMENT, COUNTERPARTY_REFUSED, EARLIER_PAY_MAY_LAND, INCONSISTENT_OUTCOME, INTERRUPTION_REASONS, PAY_UNCONFIRMED, VAULT_REASON_MISSING, checkAuthority, checkRuntimeBody, checkWirePayload, completedResult,
@@ -29,8 +29,8 @@ import {
 } from '@vsa/usecase-kit/priorauth';
 import {
   AFTER_CLAIM_REFUSALS, APPROVAL_ATT_TYPE, APPROVAL_DEPOSIT_LOVELACE, COSIGN_ROUTE, COSIGN_RULE, COUNTERPARTY_REFUSALS, ERROR_STATUS, EXECUTE_OUTCOMES, EXIT_STATES, FAULT_MODES, MAX_REQUEST_BYTES, NO_OPEN_CLAIM,
-  PROPOSE_OUTCOMES, RECEIPT_CHECKS, RUNTIME_BODY_LIMIT_BYTES,
-  canonicalJson, canonicalSha256, checkRequestSize, exitStateOf, makeProposal, parseOutputRef, parseProposal, parseRequest,
+  PROPOSE_OUTCOMES, RECEIPT_CHECKS,
+  canonicalJson, canonicalSha256, exitStateOf, makeProposal, parseOutputRef, parseProposal, parseRequest,
 } from '@vsa/usecase-kit/protocol';
 import type { Decision, ExecuteOutcome, ExecuteRequest, ExecuteResult, HandoffRecord, JsonObject, ProtocolResult, ReceiptVerification, SubJob, WriteRecord } from '@vsa/usecase-kit/protocol';
 import { CLAIM_STAKE_LOVELACE, CLAIM_WINDOW_MS, RUN_APPROVAL_VALIDITY_MS } from '../../../scripts/operator/lib/claim-constants.ts';
@@ -200,7 +200,7 @@ describe('specs/prior-authorization-agent.md: the frame, the identity and the te
     const terms = section('Terms');
     const limits = manifest.terms.input_limits;
     expect(limits).toStrictEqual({ request_bytes: MAX_REQUEST_BYTES, order_id_chars: 64, tenant_chars: 48, justification_chars: MAX_JUSTIFICATION_CHARS });
-    expect(row(terms, 'Request')).toBe(`| Request | at most ${limits.request_bytes} bytes of request JSON; \`order_id\` 1 to ${limits.order_id_chars} characters; \`tenant\` 1 to ${limits.tenant_chars} characters |`);
+    expect(row(terms, 'Request')).toBe(`| Request | at most ${limits.request_bytes} bytes of wire payload; \`order_id\` 1 to ${limits.order_id_chars} characters; \`tenant\` 1 to ${limits.tenant_chars} characters |`);
     expect(MAX_JUSTIFICATION_CHARS).toBe(4_000);
     expect(row(terms, 'Justification')).toBe(`| Justification | at most ${MAX_JUSTIFICATION_CHARS} characters |`);
     expect(CONFIRMATIONS_REQUIRED).toBe(30);
@@ -212,32 +212,7 @@ describe('specs/prior-authorization-agent.md: the frame, the identity and the te
     expect(row(terms, 'Reservation')).toBe(`| Reservation | a go from \`POST /precheck\` reserves the job slot for ${RESERVATION_MS / 1000} s |`);
   });
 
-  test('the request limit is 900000 bytes of request JSON, it is safe only below the 1 MiB limit of the runtime on the escaped body, and the largest request of the agent is far below it', () => {
-    const terms = section('Terms');
-    expect([MAX_REQUEST_BYTES, RUNTIME_BODY_LIMIT_BYTES, MAX_BODY]).toStrictEqual([900_000, 1_048_576, 1_000_000]);
-    for (const part of [
-      'The service counts the request JSON in bytes of UTF-8, and it refuses a request JSON of more than 900000 bytes with `request_too_large` (400). It reads at most 1000000 bytes of wire payload.',
-      'The wire payload carries the request JSON as a string inside a one-message array (see Interface).',
-      'The limit of 900000 bytes is safe only below the 1 MiB limit of the runtime, 1048576 bytes, on the escaped body.',
-      'A request JSON under 900000 bytes can give a body above 1048576 bytes, and the runtime refuses that body. A sender keeps the body of its call at or below 1048576 bytes.',
-    ]) expect(terms, part).toContain(part);
-    // The service counts the request JSON: one byte over the limit is refused as too large, and the limit itself passes the size check and fails as a request that is no JSON.
-    const codeOf = (request: string): string => {
-      try {
-        parseJob(request);
-        return 'accepted';
-      } catch (error) {
-        return error instanceof RequestError ? error.code : 'other';
-      }
-    };
-    expect(codeOf('x'.repeat(MAX_REQUEST_BYTES + 1))).toBe('request_too_large');
-    expect(codeOf('x'.repeat(MAX_REQUEST_BYTES))).toBe('bad_shape');
-    expect(checkRequestSize('x'.repeat(MAX_REQUEST_BYTES)).ok).toBe(true);
-    // A request JSON of quote marks is 440000 bytes. Its wire payload is under the limit of 900000 bytes, and the body of the call to the runtime, which escapes it a second time, is over 1048576 bytes.
-    const quotes = '"'.repeat(440_000);
-    expect(quotes.length).toBeLessThan(MAX_REQUEST_BYTES);
-    expect(checkWirePayload(quotes).ok).toBe(true);
-    expect(checkRuntimeBody(quotes)).toMatchObject({ ok: false, code: 'request_too_large' });
+  test('an execute request with every authorization field at its limit fits the service and the runtime', () => {
     // The largest request of the agent is an `execute` request with every member of its authorization request at its limit: 4000 code points of four bytes each, 50 and 20 references of 64 characters, 8 diagnosis codes of 16.
     const ids = (count: number, tag: string): string[] => Array.from({ length: count }, (_, index) => `${tag}${String(index).padStart(2, '0')}${'r'.repeat(61)}`);
     const parsed = parsePriorAuthRequest({
@@ -252,10 +227,9 @@ describe('specs/prior-authorization-agent.md: the frame, the identity and the te
       op: 'execute', authority: { principal_did: `did:vector:${'e'.repeat(64)}`, delegation: 'f'.repeat(64) }, tenant: 't'.repeat(48), proposal: proposal.value,
       approval: { attestation: '1'.repeat(64), issuer_did: `did:vector:${'e'.repeat(64)}` },
     });
-    expect(codeOf(largest)).toBe('accepted');
-    expect(Buffer.byteLength(largest)).toBeGreaterThan(20_000);
-    expect(Buffer.byteLength(largest)).toBeLessThan(30_000);
-    expect(terms).toContain('The largest request of this agent is an `execute` request with every member of its authorization request at its limit, and it has under 30000 bytes. So a request of this agent stays far below both limits.');
+    expect(parseJob(largest).op).toBe('execute');
+    expect(checkWirePayload(largest).ok).toBe(true);
+    expect(checkRuntimeBody(largest).ok).toBe(true);
   });
 
   test('the economics: what the supplier receives, the window to accept, the vault of the hirer, the Insurer Intake Agent and the fees', () => {

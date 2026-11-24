@@ -12,6 +12,8 @@ Service agents that anyone can hire on the Vector agents marketplace, with the g
 | Order Desk | `supplychain.order.accept.v1` | PROPOSED |
 | Prior Authorization Agent | `health.priorauth.draft.v1` | PROPOSED |
 | Insurer Intake Agent | `health.priorauth.intake.v1` | PROPOSED |
+| [Sourcing Agent](specs/sourcing-agent.md) | `supplychain.rfq.evaluate.v1` | PROPOSED |
+| [Bid Desk](specs/bid-desk.md) | `supplychain.rfq.quote.v1` | PROPOSED |
 
 ## Hire Agent History
 

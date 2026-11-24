@@ -1,13 +1,12 @@
-// scripts/operator/tasks/env.ts - the task env: it makes the env files of the two agents of use case 1 (inventory reorder) from their examples, and it reconciles the files that exist.
-// An agent has one service env file, and one env file for each runtime (the Reorder Agent has one file for both). The task fills the lines that the pack knows: the key lines that the data names (the
-// secret, the key hash, the public key and the wallet address of each key), the token between the runtime and the service (made once, never changed), the DIDs and the ids of the records from the
-// facts, the reference of each advert from the facts, the contact, the two mock origins, the address of the identity script and the pinned Module-1 manifest. Every other line stays as the example has it.
+// scripts/operator/tasks/env.ts - make or reconcile the env files of the agents from their examples.
+// Each agent has a service env file and can share it with its runtime. The data names the files, the key lines and the optional mock and Module-1 lines. A foreign key supplies only its hash.
+// The task also fills the runtime token, the DIDs, the advert references, the operator contact and the identity address. It keeps all other lines.
 // A file that does not exist is made from its example. A file that exists is never overwritten: a managed line that is empty is set, a line that holds the value that the task would set is kept, and a line
 // that holds another value stops the run. The one exception is the reference of an advert, which `--replace-advert` may replace. The whole plan is made in memory and checked before any file is written.
 // This is the one task that reads a seed, and each seed goes into the one line of the one file that the data names. No text of this file holds a value: a message names a file, a line and a rule, and the
 // output shows the length of each value that it sets.
 import { randomBytes } from 'node:crypto';
-import { lstatSync, readFileSync } from 'node:fs';
+import { lstatSync } from 'node:fs';
 import type { Stats } from 'node:fs';
 import { join } from 'node:path';
 import { parseKeyText } from '../../checks/lib/keys.ts';
@@ -30,6 +29,7 @@ const FILE_MODE = 0o600;
 const COMMIT_MARK = '<commit>';
 const MANIFEST_LINE = 'VECTOR_MODULE1_MANIFEST';
 const ADVERT_LINE = 'ADVERT_REF';
+const FILE_NAME = /^(?!\.{1,2}$)[A-Za-z0-9_.-]+$/;
 
 /** Where the value of a managed line comes from. */
 type Source =
@@ -81,8 +81,10 @@ function agentFiles(agent: AgentSpec): { readonly all: readonly string[]; readon
   return { all: [agent.serviceEnvFile, ...runtimes.filter((file) => file !== agent.serviceEnvFile)], runtimes };
 }
 
-/** The keys of an agent that go into its env files: its own keys, and the keys of its subagents. */
-const keyUses = (use: UseCase, agent: AgentSpec): readonly KeyUse[] => [...agent.keys, ...use.subagents.filter((sub) => sub.parent === agent.id).flatMap((sub) => sub.keys)];
+/** Env lines from the agent's keys, its subagents' keys and the public hashes of other keys. */
+const keyUses = (use: UseCase, agent: AgentSpec): readonly Pick<KeyUse, 'key' | 'lines'>[] => [
+  ...agent.keys, ...use.subagents.filter((sub) => sub.parent === agent.id).flatMap((sub) => sub.keys), ...agent.publicKeyLines,
+];
 
 /** The lines that the task manages in one file of an agent. */
 function layoutOf(use: UseCase, agent: AgentSpec, file: string): Line[] {
@@ -94,30 +96,36 @@ function layoutOf(use: UseCase, agent: AgentSpec, file: string): Line[] {
     lines.push(
       { name: 'SERVICE_AUTH_HEADER', source: { from: 'token' } }, { name: 'OPERATOR_CONTACT', source: { from: 'contact' } }, { name: 'AGENT_DID', source: { from: 'did', id: agent.id } },
     );
-    // The variable of the DID of a subagent is its id in capitals: `stock-reader` has `STOCK_READER_DID`.
     for (const sub of use.subagents) if (sub.parent === agent.id) lines.push({ name: `${sub.id.toUpperCase().replace(/-/g, '_')}_DID`, source: { from: 'did', id: sub.id } });
-    lines.push(
-      { name: 'MOCK_PUBLIC_BASE', source: { from: 'mock-public' } }, { name: 'MOCK_MTLS_BASE', source: { from: 'mock-mtls' } },
-      { name: 'IDENTITY_ADDRESS', source: { from: 'identity-address' } }, { name: MANIFEST_LINE, source: { from: 'manifest' } },
-    );
+    if (agent.envManaged.mock) lines.push({ name: 'MOCK_PUBLIC_BASE', source: { from: 'mock-public' } }, { name: 'MOCK_MTLS_BASE', source: { from: 'mock-mtls' } });
+    lines.push({ name: 'IDENTITY_ADDRESS', source: { from: 'identity-address' } });
+    if (agent.envManaged.module1) lines.push({ name: MANIFEST_LINE, source: { from: 'manifest' } });
   }
   const advert = agent.adverts.find((one) => one.runtimeEnvFile === file);
   if (advert !== undefined) lines.push({ name: 'AGENT_ID', source: { from: 'agent-id' } }, { name: ADVERT_LINE, source: { from: 'advert', model: advert.model } });
   return lines;
 }
 
-/** The first rule that the data of an agent breaks, as one problem each: a line in a file that the agent does not have, and a key in a file that its kind may not be in. */
+/** Reject a key line that the agent must not write or that names a file outside its layout. */
 function placementProblems(use: UseCase, agent: AgentSpec): string[] {
   const problems: string[] = [];
   const { all, runtimes } = agentFiles(agent);
   const suppliers = new Set(agent.adverts.map((advert) => advert.supplierKey));
+  for (const file of [agent.folder, ...all, ...(agent.exampleEnvFile === null ? [] : [agent.exampleEnvFile])]) {
+    if (!FILE_NAME.test(file)) problems.push(`the data of ${agent.id} must use a single name for each folder, env file and example`);
+  }
   for (const file of runtimes) {
     if (agent.adverts.filter((advert) => advert.runtimeEnvFile === file).length !== 1) problems.push(`${agent.folder}/${file}: the data names more than one advert for this runtime file`);
   }
   for (const entry of keyUses(use, agent)) {
+    const foreign = agent.publicKeyLines.includes(entry);
     for (const line of entry.lines) {
       const where = `${agent.folder}/${line.file}: the data puts the line ${line.name} of the key ${entry.key} here`;
       if (!all.includes(line.file)) problems.push(`${where}, and the agent has no such file`);
+      if (foreign) {
+        if (line.of !== 'pkh') problems.push(`${where}: a foreign key supplies only a key hash`);
+        continue;
+      }
       if (line.of !== 'secret') continue;
       if (suppliers.has(entry.key)) {
         if (!runtimes.includes(line.file)) problems.push(`${where}: the supplier key goes into the file of a runtime, and never into a file that only a service reads`);
@@ -146,14 +154,18 @@ export function checkEnvFiles(use: UseCase, agent: AgentSpec, files: ReadonlyMap
   }
   const secrets = new Map<string, string>();
   const hashes = new Map<string, string>();
-  for (const entry of keyUses(use, agent)) {
+  const keys = keyUses(use, agent);
+  for (const entry of keys) {
+    const foreign = agent.publicKeyLines.includes(entry);
     const values = new Map<KeyLine, string>();
     for (const line of entry.lines) {
       const value = held(line.file, line.name);
       const where = `${label(line.file)}: the line ${line.name} of the key ${entry.key}`;
+      if (foreign && line.of !== 'pkh') { problems.push(`${where}: a foreign key supplies only a key hash`); continue; }
       if (value === undefined || value === '') { problems.push(`${where} is empty`); continue; }
       const shape = line.of === 'pkh' ? HEX_56 : line.of === 'address' ? ADDRESS : HEX_64;
       if (!shape.test(value)) { problems.push(`${where} does not have its form (${line.of === 'pkh' ? '56' : line.of === 'address' ? 'a wallet address' : '64'}${line.of === 'address' ? '' : ' lower-case hex characters'})`); continue; }
+      if (foreign && (!registry.has(entry.key) || value !== registry.hashOf(entry.key))) problems.push(`${label(line.file)}: the line ${line.name} is not the key hash of ${entry.key}`);
       values.set(line, value);
     }
     const secretLine = entry.lines.find((line) => line.of === 'secret');
@@ -179,7 +191,7 @@ export function checkEnvFiles(use: UseCase, agent: AgentSpec, files: ReadonlyMap
   }
   for (const name of registry.names()) {
     const seed = registry.secretHexForEnv(name);
-    const own = new Set(keyUses(use, agent).filter((entry) => entry.key === name).flatMap((entry) => entry.lines.filter((line) => line.of === 'secret').map((line) => `${line.file}\n${line.name}`)));
+    const own = new Set(keys.filter((entry) => entry.key === name && !agent.publicKeyLines.includes(entry)).flatMap((entry) => entry.lines.filter((line) => line.of === 'secret').map((line) => `${line.file}\n${line.name}`)));
     for (const [file, env] of files) {
       for (const line of env.names()) {
         if ((env.get(line) ?? '').toLowerCase().includes(seed) && !own.has(`${file}\n${line}`)) {
@@ -189,7 +201,9 @@ export function checkEnvFiles(use: UseCase, agent: AgentSpec, files: ReadonlyMap
     }
   }
   const serviceDid = held(agent.serviceEnvFile, 'AGENT_DID');
-  if (serviceDid !== undefined && !DID.test(serviceDid)) problems.push(`${label(agent.serviceEnvFile)}: the line AGENT_DID is not did:vector: and 64 lower-case hex characters`);
+  for (const { name, source } of layoutOf(use, agent, agent.serviceEnvFile)) {
+    if (source.from === 'did' && !DID.test(held(agent.serviceEnvFile, name) ?? '')) problems.push(`${label(agent.serviceEnvFile)}: the line ${name} is not did:vector: and 64 lower-case hex characters`);
+  }
   for (const file of agentFiles(agent).runtimes) {
     const id = held(file, 'AGENT_ID');
     if (id !== undefined && id !== '' && !HEX_64.test(id)) problems.push(`${label(file)}: the line AGENT_ID is not 64 lower-case hex characters`);
@@ -264,16 +278,16 @@ function lookAt(path: string, problem: (text: string) => void): Stats | undefine
 function planFile(ctx: Context, agent: AgentSpec, file: string, folder: string, problems: string[]): FilePlan | null {
   const label = `${agent.folder}/${file}`;
   const problem = (text: string): void => { problems.push(`${label}: ${text}`); };
-  // The example of the service file is `<file>.example`, and the one example of the runtime files serves each other file of the agent.
-  const exampleName = file === agent.serviceEnvFile ? `${file}.example` : `${agent.serviceEnvFile}-runtime.example`;
-  let exampleText: string;
-  try { exampleText = readFileSync(join(folder, exampleName), 'utf8'); } catch (err) {
-    problems.push(`${agent.folder}/${exampleName}: ${codeOf(err) === 'ENOENT' ? 'the example does not exist: the runbook puts it in the folder of the agent' : `the example could not be read (${codeOf(err)})`}`);
-    return null;
-  }
+  const exampleName = file === agent.serviceEnvFile ? agent.exampleEnvFile ?? `${file}.example` : `${agent.serviceEnvFile}-runtime.example`;
+  const examplePath = join(folder, exampleName);
+  const exampleProblem = (text: string): void => { problems.push(`${agent.folder}/${exampleName}: ${text}`); };
+  const exampleStat = lookAt(examplePath, exampleProblem);
+  if (exampleStat === 'failed') return null;
+  if (exampleStat === undefined) { exampleProblem('the example does not exist: the runbook puts it in the folder of the agent'); return null; }
+  if (!exampleStat.isFile()) { exampleProblem('the example is not a regular file'); return null; }
   let example: EnvFile;
-  try { example = EnvFile.fromExample(exampleText); } catch (err) {
-    problems.push(`${agent.folder}/${exampleName}: the example cannot be used (${reasonOf(err)})`);
+  try { example = EnvFile.open(examplePath); } catch (err) {
+    exampleProblem(`the example cannot be used (${reasonOf(err)})`);
     return null;
   }
   const path = join(folder, file);
@@ -283,7 +297,7 @@ function planFile(ctx: Context, agent: AgentSpec, file: string, folder: string, 
   let env: EnvFile;
   try {
     if (found === undefined) {
-      env = EnvFile.fromExample(exampleText);
+      env = example;
     } else {
       if (!found.isFile()) { problem('the path is not a regular file'); return null; }
       const mode = found.mode & 0o777;
@@ -300,9 +314,14 @@ function planFile(ctx: Context, agent: AgentSpec, file: string, folder: string, 
   for (const line of layoutOf(ctx.use, agent, file)) {
     const value = valueOf(ctx, agent, line, example, problems, label);
     const advert = line.source.from === 'advert';
-    if (value === null || (advert && value === '')) { failed = failed || value === null; continue; }
     const now = env.get(line.name);
-    if (now === undefined) { problem(`${existed ? 'the file' : 'the example'} has no line ${line.name}`); failed = true; continue; }
+    const missingFromExample = existed ? !example.has(line.name) : now === undefined;
+    if (missingFromExample || now === undefined) {
+      problem(`${missingFromExample ? 'the example' : 'the file'} has no line ${line.name}`);
+      failed = true;
+      continue;
+    }
+    if (value === null || (advert && value === '')) { failed = failed || value === null; continue; }
     let write = false;
     if (!existed) {
       if (now !== '' && !PLACEHOLDER.test(now)) { problem(`the example holds a value in the line ${line.name}, which the task sets: the example and the task differ`); failed = true; continue; }
@@ -341,19 +360,29 @@ function planFile(ctx: Context, agent: AgentSpec, file: string, folder: string, 
 function planAll(ctx: Context): { plans: FilePlan[]; problems: string[] } {
   const plans: FilePlan[] = [];
   const problems: string[] = [];
+  const destinations = new Map<string, string>();
   for (const agent of ctx.use.agents) {
     const before = problems.length;
     problems.push(...placementProblems(ctx.use, agent));
+    if (problems.length > before) continue;
     const folder = join(ctx.settings.agentsDir, agent.folder);
     const found = lookAt(folder, (text) => problems.push(`${agent.folder}: the folder of the agent ${text.replace(/^the file/, 'the folder')}`));
     if (found === 'failed') continue;
     if (found === undefined || !found.isDirectory()) { problems.push(`${agent.folder}: the folder of the agent is missing or is not a real folder (a link or a file is no folder): the runbook makes the folder before the env files`); continue; }
     const mine: FilePlan[] = [];
-    for (const file of agentFiles(agent).all) {
+    const files = agentFiles(agent).all;
+    for (const file of files) {
+      const destination = `${agent.folder}/${file}`;
+      const owner = destinations.get(destination);
+      if (owner !== undefined) {
+        problems.push(`${destination}: agents ${owner} and ${agent.id} name the same env destination`);
+        continue;
+      }
+      destinations.set(destination, agent.id);
       const plan = planFile(ctx, agent, file, folder, problems);
       if (plan !== null) mine.push(plan);
     }
-    if (problems.length === before && mine.length === agentFiles(agent).all.length) {
+    if (problems.length === before && mine.length === files.length) {
       problems.push(...checkEnvFiles(ctx.use, agent, new Map(mine.map((plan) => [plan.file, plan.env])), ctx.registry));
     }
     plans.push(...mine);
@@ -446,6 +475,8 @@ const task: TaskDefinition<Extra> = {
   async status(session) {
     const lines: string[] = [];
     for (const agent of session.use.agents) {
+      const placement = placementProblems(session.use, agent);
+      if (placement.length > 0) { lines.push(...placement); continue; }
       for (const file of agentFiles(agent).all) {
         const label = `${agent.folder}/${file}`;
         const path = join(session.settings.agentsDir, agent.folder, file);

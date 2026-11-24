@@ -1185,7 +1185,7 @@ function runbookProblems(text: string): string[] {
   // A restart waits 2 minutes first, then checks that the runtime says free, then runs its command at once, all in one line. A check before the wait leaves a gap in which a job can start and be cut.
   const guarded = /^sleep 120; if curl -s --max-time 5 http:\/\/127\.0\.0\.1:8107\/status \| grep -q '"status":"free"'; then docker compose -f docker-compose\.sourcing-agent\.yml [^;]+; else echo '[^']+'; fi$/;
   for (const line of code) {
-    if (/--force-recreate|\bdocker compose\b[^\n]* stop\b|\bdocker (?:restart|stop)\b|\bcompose restart\b/.test(line) && !guarded.test(line)) problems.push(`a restart waits 2 minutes, then checks that the runtime says free, then runs its command at once, in one line: ${line}`);
+    if (/--force-recreate|\bdocker (?:restart|stop)\b|\bcompose restart\b/.test(line) && !guarded.test(line)) problems.push(`a restart waits 2 minutes, then checks that the runtime says free, then runs its command at once, in one line: ${line}`);
   }
   const printing = [/\bcat\s+\S*\.env/, /\bprintenv\b/, /\bdocker inspect\b/, /\bdocker exec\b[^\n]*\b(?:env|printenv)\b/, /\becho\s+"?\$\{?[A-Z_]*PRIV_KEY/];
   for (const pattern of printing) if (code.some((line) => pattern.test(line))) problems.push(`a command prints an env file or an environment: ${pattern.source}`);
@@ -1360,7 +1360,6 @@ describe('deploy/server/RUNBOOK-sourcing-agent.md', () => {
     expect(command.indexOf('sleep 120')).toBeLessThan(command.indexOf('/status'));
     expect(command.indexOf('/status')).toBeLessThan(command.indexOf('up -d --no-deps --force-recreate'));
     expect(command, 'the command runs only when the runtime says free').toContain(`grep -q '"status":"free"'; then docker compose`);
-    expect(rule, 'the stop of the back out follows the same three steps').toContain('The stop of section "Back out" follows the same three steps');
   });
 
   test('the fault switch section gives the one value of the agent, says that it is for a failure run only, that the service is created again only when the runtime says free and never during a run, that an env change needs a new container, that the check reads the switch from the running container, and that the result carries the value', () => {
@@ -1465,16 +1464,19 @@ describe('deploy/server/RUNBOOK-sourcing-agent.md', () => {
     }
   });
 
-  test('back out retires the advert first, waits 2 minutes, checks that the runtime says free and stops the containers at once, then removes the Caddy block and keeps the volume', () => {
+  test('both rollback paths follow advert retirement and the shared ledger check', () => {
     const out = sectionOf(runbookText, 'Back out');
-    const at = (part: string): number => out.indexOf(part);
-    const order = ['Retire', 'Wait 2 minutes after the last job', 'check that the runtime says `free`, and stop the containers at once', 'Remove the Caddy block', 'volume'];
-    for (const part of order) expect(at(part), part).toBeGreaterThanOrEqual(0);
-    expect(order.map(at)).toStrictEqual([...order.map(at)].sort((a, b) => a - b));
+    const running = blockWith(out, '/status');
+    const order = [
+      '`vector_build_marketplace_advert_retire`', '`vector_await_transaction`',
+      'RUNBOOK.md#check-the-ledger-before-a-use-case-3-stop', running.split('\n')[0],
+      `\`docker compose -f ${FILES.compose} stop service\``,
+      'docker network disconnect', `docker compose -f ${FILES.compose} down`,
+    ].map((part) => out.indexOf(part));
+    expect(order[0]).toBeGreaterThanOrEqual(0);
+    for (let i = 1; i < order.length; i++) expect(order[i]).toBeGreaterThan(order[i - 1]);
+    expect(blocksOf(runbookText).filter((block) => /\bdocker compose\b[^\n]* stop\b/.test(block))).toStrictEqual([running]);
     expect(out).toContain(VOLUME);
-    expect(out).toContain('docker network disconnect');
-    expect(out, 'a job runs up to its deadline').toContain('up to 5,220,000 ms');
-    expect(blockWith(out, 'sleep 120').indexOf('sleep 120'), 'the wait comes first').toBe(0);
   });
 
   const faults: readonly Fault[] = [
@@ -1509,7 +1511,6 @@ describe('deploy/server/RUNBOOK-sourcing-agent.md', () => {
     ['the folder made by the set-up script', (t) => `${t}\n\`\`\`sh\nsudo ./setup.sh sourcing-agent\n\`\`\`\n`, 'the folder is made with install -d'],
     ['a recreate with no wait and no check', (t) => `${t}\n\`\`\`sh\ndocker compose -f docker-compose.sourcing-agent.yml up -d --no-deps --force-recreate service\n\`\`\`\n`, 'a restart waits 2 minutes, then checks'],
     ['a check, then a wait, then the command', (t) => `${t}\n\`\`\`sh\ncurl -s http://127.0.0.1:8107/status; sleep 120; docker compose -f docker-compose.sourcing-agent.yml up -d --no-deps --force-recreate service\n\`\`\`\n`, 'a restart waits 2 minutes, then checks'],
-    ['a stop with no wait and no check', (t) => `${t}\n\`\`\`sh\ndocker compose -f docker-compose.sourcing-agent.yml stop\n\`\`\`\n`, 'a restart waits 2 minutes, then checks'],
     ['a restart with docker restart', (t) => `${t}\n\`\`\`sh\ndocker restart sourcing-runtime\n\`\`\`\n`, 'a restart waits 2 minutes, then checks'],
     ['the check before the wait, in the line of the command', (t) => swap(t, `sleep 120; if curl -s --max-time 5 http://127.0.0.1:8107/status | grep -q '"status":"free"'; then docker compose -f docker-compose.sourcing-agent.yml up -d`, `if curl -s --max-time 5 http://127.0.0.1:8107/status | grep -q '"status":"free"'; then sleep 120; docker compose -f docker-compose.sourcing-agent.yml up -d`), 'a restart waits 2 minutes, then checks'],
   ];
@@ -1633,10 +1634,10 @@ describe('deploy/server/RUNBOOK-sourcing-agent.md', () => {
 
     /** The calls that the stand-ins record, in order. */
     const callsOf = (dir: string): string[] => readFileSync(join(dir, 'calls'), 'utf8').split('\n').filter((line) => line !== '');
-    /** Stand-ins for sleep, curl and docker: each writes its call to the file `calls`, and curl answers with the status word of the runtime. */
-    const standIns = (status: string): Record<string, string> => ({
+    /** Stand-ins record the commands. Curl can fail even when it returns a body. */
+    const standIns = (status: string, activeSessions = 0, curlExit = 0): Record<string, string> => ({
       sleep: 'echo "sleep $*" >> calls',
-      curl: `echo curl >> calls; echo '{"status":"${status}","last_seen":"2026-11-23T00:00:00.000Z"}'`,
+      curl: `echo "curl $*" >> calls; echo '{"status":"${status}","active_sessions":${activeSessions}}'; exit ${curlExit}`,
       docker: 'echo "docker $*" >> calls',
     });
 
@@ -1644,20 +1645,34 @@ describe('deploy/server/RUNBOOK-sourcing-agent.md', () => {
       const script = blockWith(sectionOf(runbookText, 'The restart rule'), 'sleep 120');
       const free = runInFolder(script, {}, standIns('free'));
       expect(free.status).toBe(0);
-      expect(callsOf(free.dir), 'wait, check, then the command').toStrictEqual(['sleep 120', 'curl', `docker compose -f ${FILES.compose} up -d --no-deps --force-recreate service`]);
+      expect(callsOf(free.dir), 'wait, check, then the command').toStrictEqual([
+        'sleep 120', `curl -s --max-time 5 http://127.0.0.1:${RUNTIME_HOST_PORT}/status`, `docker compose -f ${FILES.compose} up -d --no-deps --force-recreate service`,
+      ]);
       for (const status of ['working', 'offline']) {
         const held = runInFolder(script, {}, standIns(status));
-        expect(callsOf(held.dir), `the runtime says ${status}`).toStrictEqual(['sleep 120', 'curl']);
+        expect(callsOf(held.dir), `the runtime says ${status}`).toStrictEqual(['sleep 120', `curl -s --max-time 5 http://127.0.0.1:${RUNTIME_HOST_PORT}/status`]);
         expect(held.out).toContain('the runtime does not say free: nothing was restarted');
       }
     });
 
-    test('the stop command of the back out waits first, then checks that the runtime says free, and stops the containers only then', () => {
-      const script = blockWith(sectionOf(runbookText, 'Back out'), 'sleep 120');
-      expect(callsOf(runInFolder(script, {}, standIns('free')).dir)).toStrictEqual(['sleep 120', 'curl', `docker compose -f ${FILES.compose} stop`]);
-      const held = runInFolder(script, {}, standIns('working'));
-      expect(callsOf(held.dir)).toStrictEqual(['sleep 120', 'curl']);
-      expect(held.out).toContain('the runtime does not say free: nothing was stopped');
+    test('after the ledger check, the stop refuses an occupied or unreadable runtime and can stop only the service', () => {
+      const out = sectionOf(runbookText, 'Back out');
+      const script = blockWith(out, '/status');
+      const statusRead = `curl -fsS --max-time 5 http://127.0.0.1:${RUNTIME_HOST_PORT}/status`;
+      const stop = `docker compose -f ${FILES.compose} stop`;
+      const free = runInFolder(script, {}, standIns('free'));
+      expect(free.status).toBe(0);
+      expect(callsOf(free.dir)).toStrictEqual([statusRead, stop]);
+      for (const [status, activeSessions, curlExit] of [['working', 1, 0], ['offline', 0, 0], ['free', 1, 0], ['free', 0, 22]] as const) {
+        const held = runInFolder(script, {}, standIns(status, activeSessions, curlExit));
+        expect(held.status).not.toBe(0);
+        expect(callsOf(held.dir)).toStrictEqual([statusRead]);
+      }
+      const partial = out.match(/`(docker compose -f \S+ stop service)`/)?.[1];
+      expect(partial).toBeDefined();
+      const neverStarted = runInFolder(partial!, {}, standIns('offline'));
+      expect(neverStarted.status).toBe(0);
+      expect(callsOf(neverStarted.dir)).toStrictEqual([`${stop} service`]);
     });
 
     test('the command of the fault switch prints the value between brackets, and nothing else: empty in a clean run and the one value in a failure run', () => {

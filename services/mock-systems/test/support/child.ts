@@ -1,50 +1,51 @@
 // services/mock-systems/test/support/child.ts
-// A child process that runs a TypeScript entry of the service with node and tsx, the way the image runs it (`node --import tsx <entry>`), in the folder of the service. The tests that need a
-// real process (the production entry, the stop on a signal) use it. The child gets the environment that the test gives and nothing else but the search path, so that no setting of the machine
-// reaches it. A child that does not end in time is killed, and the test fails with what it wrote.
+// Use the child's output for readiness. Use independent watchdogs for startup, the operation under test, and cleanup.
 import { spawn } from 'node:child_process';
-import type { ChildProcess } from 'node:child_process';
+import type { ChildProcessByStdio } from 'node:child_process';
+import type { Readable } from 'node:stream';
+import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
-/** The folder of the service: the working folder of a child. */
-export const SERVICE_DIR = fileURLToPath(new URL('../../', import.meta.url));
+const SERVICE_DIR = fileURLToPath(new URL('../../', import.meta.url));
+export const CHILD_START_MS = 60_000;
+export const CHILD_PROBE_MS = 10_000;
+const CHILD_EXIT_MS = 10_000;
+export const CHILD_CLEANUP_MS = 5_000;
+export const CHILD_TEST_MS = CHILD_START_MS + CHILD_PROBE_MS + CHILD_EXIT_MS + CHILD_CLEANUP_MS + 5_000;
 
-export interface Exit {
+interface Exit {
   code: number | null;
   signal: NodeJS.Signals | null;
 }
 
-/** The environment of a child: the search path of the machine, and the settings that the test gives. */
-export const childEnvironment = (settings: NodeJS.ProcessEnv): NodeJS.ProcessEnv => ({ PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '', ...settings });
+interface ChildOptions {
+  cwd: string;
+  env?: NodeJS.ProcessEnv;
+  label: string;
+}
+
+export function mockChild(entry: string, settings: NodeJS.ProcessEnv): Child {
+  const env = { PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '', ...settings };
+  return new Child(process.execPath, ['--import', 'tsx', entry], { cwd: SERVICE_DIR, env, label: entry });
+}
 
 export class Child {
   private out = '';
   private err = '';
-  private readonly process: ChildProcess;
-  private readonly watchers = new Set<() => void>();
-  /** The end of the child. It rejects when the child does not end in `timeoutMs`. */
-  readonly exit: Promise<Exit>;
+  private readonly process: ChildProcessByStdio<null, Readable, Readable>;
+  private readonly closed: Promise<Exit>;
+  private failure?: Error;
+  private readonly label: string;
 
-  constructor(entry: string, env: NodeJS.ProcessEnv, timeoutMs = 45_000) {
-    this.process = spawn(process.execPath, ['--import', 'tsx', entry], { cwd: SERVICE_DIR, env, stdio: ['ignore', 'pipe', 'pipe'] });
-    this.process.stdout!.setEncoding('utf8').on('data', (text: string) => {
-      this.out += text;
-      for (const check of [...this.watchers]) check();
+  constructor(command: string, args: readonly string[], { cwd, env, label }: ChildOptions) {
+    this.label = label;
+    this.process = spawn(command, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
+    this.process.stdout.setEncoding('utf8').on('data', (text: string) => { this.out += text; });
+    this.process.stderr.setEncoding('utf8').on('data', (text: string) => { this.err += text; });
+    this.process.on('error', (error) => { this.failure = error; });
+    this.closed = new Promise<Exit>((resolve) => {
+      this.process.once('close', (code, signal) => { resolve({ code, signal }); });
     });
-    this.process.stderr!.setEncoding('utf8').on('data', (text: string) => { this.err += text; });
-    this.exit = new Promise<Exit>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.process.kill('SIGKILL');
-        reject(new Error(`the child did not end in ${timeoutMs} ms\nstdout: ${this.out}\nstderr: ${this.err}`));
-      }, timeoutMs);
-      this.process.once('error', reject);
-      this.process.once('close', (code, signal) => {
-        clearTimeout(timer);
-        resolve({ code, signal });
-      });
-    });
-    // A test that never reads `exit` must not fail with an error that nobody caught.
-    this.exit.catch(() => undefined);
   }
 
   get stdout(): string {
@@ -55,21 +56,52 @@ export class Child {
     return this.err;
   }
 
-  /** Resolves when the standard output holds `text`. Rejects when the child ends first. */
-  waitFor(text: string): Promise<void> {
-    return new Promise<void>((resolve, reject) => {
-      const check = (): void => {
-        if (!this.out.includes(text)) return;
-        this.watchers.delete(check);
-        resolve();
-      };
-      this.watchers.add(check);
-      check();
-      this.exit.then((ended) => reject(new Error(`the child ended (${JSON.stringify(ended)}) before it wrote ${text}\nstdout: ${this.out}\nstderr: ${this.err}`)), reject);
-    });
+  diagnostics(): string {
+    return `${this.label}\nstdout: ${this.out || '(empty)'}\nstderr: ${this.err || '(empty)'}`;
+  }
+
+  private async within<T>(work: Promise<T>, phase: string, ms: number): Promise<T> {
+    const cancel = new AbortController();
+    try {
+      const expired = delay(ms, undefined, { signal: cancel.signal }).then(() => {
+        throw new Error(`${phase} timed out after ${ms} ms\n${this.diagnostics()}`, { cause: this.failure });
+      });
+      return await Promise.race([work, expired]);
+    } finally {
+      cancel.abort();
+    }
+  }
+
+  /** Wait for a marker from this child. Do not count this time against its exit. */
+  async waitFor(pattern: RegExp, phase: string, ms = CHILD_START_MS): Promise<RegExpExecArray> {
+    let check!: () => void;
+    const ready = new Promise<RegExpExecArray>((resolve) => { check = () => {
+      const match = pattern.exec(this.out);
+      if (match !== null) resolve(match);
+    }; });
+    this.process.stdout.on('data', check);
+    check();
+    try {
+      const result = await this.within(Promise.race([ready, this.closed]), phase, ms);
+      if (Array.isArray(result)) return result;
+      throw new Error(`the child exited (${JSON.stringify(result)}) during ${phase}\n${this.diagnostics()}`, { cause: this.failure });
+    } finally {
+      this.process.stdout.off('data', check);
+    }
   }
 
   signal(name: NodeJS.Signals): void {
     this.process.kill(name);
+  }
+
+  async waitForExit(phase: string, ms = CHILD_EXIT_MS): Promise<Exit> {
+    const result = await this.within(this.closed, phase, ms);
+    if (this.failure !== undefined) throw new Error(`child process error during ${phase}\n${this.diagnostics()}`, { cause: this.failure });
+    return result;
+  }
+
+  async cleanup(): Promise<void> {
+    if (this.process.pid !== undefined && this.process.exitCode === null && this.process.signalCode === null) this.process.kill('SIGKILL');
+    await this.within(this.closed, 'child cleanup', CHILD_CLEANUP_MS);
   }
 }

@@ -1,4 +1,4 @@
-// Hold the supplier bid evaluation data to the kit, the public deployment files and the mock service. These tests start no service.
+// Hold the supplier bid evaluation data to the kit, the public specs and deployment files, and the mock service. These tests start no service.
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { afterAll, describe, expect, it } from 'vitest';
@@ -49,6 +49,11 @@ function need<T>(value: T | undefined | null, what: string): T {
   return value;
 }
 
+const PAGES = {
+  'bid-desk': read('specs/bid-desk.md'),
+  'sourcing-agent': read('specs/sourcing-agent.md'),
+};
+
 const agentOf = (id: string): AgentSpec => need(data.agents.find((agent) => agent.id === id), id);
 function advertOf(agent: AgentSpec): AdvertSpec {
   expect(agent.adverts, agent.id).toHaveLength(1);
@@ -93,6 +98,27 @@ function exampleOf(text: string): Record<string, string> {
 function tableRows(text: string): string[][] {
   return text.split('\n').filter((row) => row.startsWith('| ')).map((row) => row.split('|').slice(1, -1).map((cell) => cell.trim().replaceAll('`', '')));
 }
+
+function sectionOf(page: string, title: string): string {
+  return need(page.split(`\n## ${title}\n`)[1], `${title} section`).split('\n## ', 1)[0];
+}
+
+const fieldOf = (rows: readonly string[][], label: string): string => need(rows.find(([name]) => name === label)?.[1], `${label} row`);
+
+function purposesOf(row: string): string[] {
+  const clause = need(/\bin the record for (?:the )?([a-z, ]+?) purposes?\b/i.exec(row)?.[1], 'record key purpose list');
+  return sorted(clause.toLowerCase().split(/,\s*(?:and\s+)?|\s+and\s+/).map((purpose) => purpose.trim()));
+}
+
+function expectSigningPurposes(agent: AgentSpec, rows: readonly string[][]): void {
+  for (const [role, name] of [['Supplier key', advertOf(agent).supplierKey], ['Service key', agent.serviceKey]]) {
+    const key = need(agent.keys.find(({ key }) => key === name), `${agent.id} ${role}`);
+    expect(sorted(key.purposes), `${agent.id} ${role}`).toEqual(purposesOf(fieldOf(rows, role)));
+  }
+}
+
+const domainOf = (agent: AgentSpec): string => need(data.organisations.find(({ id }) => id === agent.organisation), `${agent.id} organisation`).domain;
+
 function readPack(project: string, kind: 'bid-desk' | 'sourcing-agent'): DeploymentPack {
   const exampleFile = `.env.${kind}.example`;
   const exampleText = read(`deploy/server/${exampleFile}`);
@@ -383,6 +409,56 @@ describe('the Sourcing Agent', () => {
   });
 });
 
+describe('the public identity pages', () => {
+  it('matches the Sourcing Agent key purposes, organisation and planned origin', () => {
+    const agent = agentOf(SOURCING_ID);
+    const rows = tableRows(sectionOf(PAGES['sourcing-agent'], 'Identity'));
+    expectSigningPurposes(agent, rows);
+    const delegation = fieldOf(rows, 'Delegation keys');
+    expect(delegation).toMatch(/\b(?:two|2) keys\b/i);
+    const supplier = advertOf(agent).supplierKey;
+    const keys = agent.keys.filter(({ key }) => key !== supplier && key !== agent.serviceKey);
+    expect(keys).toHaveLength(2);
+    for (const key of keys) expect(sorted(key.purposes), key.key).toEqual(purposesOf(delegation));
+    expect(fieldOf(rows, 'Organisation').match(/\b(?:[a-z0-9-]+\.)+[a-z]+\b/i)?.[0]).toBe(domainOf(agent));
+    expect(fieldOf(rows, 'Public URL').match(/https:\/\/[^\s,;]+/g)).toEqual([agent.endpoint]);
+  });
+
+  it('matches the published scorer lineage and key purposes', () => {
+    const rows = tableRows(sectionOf(PAGES['sourcing-agent'], 'Identity'));
+    const row = fieldOf(rows, 'Subagents');
+    expect(row).toMatch(/\bown record\b/i);
+    expect(row).toMatch(/\bthis agent as its parent\b/i);
+    const names = row.split(':', 1)[0].match(/\bscorer-\d+\b/g) ?? [];
+    const children = data.subagents.filter(({ parent }) => parent === SOURCING_ID);
+    expect(sorted(children.map(({ id }) => id))).toEqual(sorted(names));
+    expect(sorted(row.match(/\bSCORER_\d+_DID\b/g) ?? [])).toEqual(sorted(children.map(({ id }) => `${id.toUpperCase().replaceAll('-', '_')}_DID`)));
+    const stated = sorted(Array.from(row.matchAll(/\b(?:its own|one) ([a-z]+) key\b/gi), ([, purpose]) => purpose.toLowerCase()));
+    expect(stated).toHaveLength(2);
+    for (const child of children) {
+      expect(child.keys.map(({ purposes }) => purposes.length), child.id).toEqual([1, 1]);
+      expect(sorted(child.keys.flatMap(({ purposes }) => purposes)), child.id).toEqual(stated);
+    }
+  });
+
+  it('matches the three Bid Desk identities without assigning delegation keys or subagents', () => {
+    const rows = tableRows(sectionOf(PAGES['bid-desk'], 'Identity'));
+    const start = rows.findIndex(([label]) => label === 'Instance');
+    expect(rows[start]?.slice(0, 4)).toEqual(['Instance', 'Name', 'Organisation', 'Public URL (planned)']);
+    const instances = rows.slice(start + 1);
+    expect(sorted(instances.map(([instance]) => instance))).toEqual(sorted(DESKS.map(({ instance }) => instance)));
+    for (const label of ['Delegation keys', 'Subagents']) expect(fieldOf(rows, label)).toMatch(/^none\b/i);
+    for (const { instance } of DESKS) {
+      const agent = agentOf(`bid-desk-${instance}`);
+      expect(instances.find(([id]) => id === instance)?.slice(1, 4), instance).toEqual([agent.name, domainOf(agent), agent.endpoint]);
+      expectSigningPurposes(agent, rows);
+      expect(agent.keys.some(({ purposes }) => purposes.includes('delegation')), instance).toBe(false);
+      expect(agent.cosign, instance).toBe(false);
+      expect(data.subagents.some(({ parent }) => parent === agent.id), instance).toBe(false);
+    }
+  });
+});
+
 describe('the records and end states', () => {
   it('keeps the four organisations, agent parties and end states distinct', () => {
     expect(data.name).toBe('bid-evaluation');
@@ -530,12 +606,10 @@ describe('the tenant, vaults and funding', () => {
     expect(data.funding.reduce((sum, line) => sum + line.floatLovelace, 0n)).toBe(910n * UNIT);
   });
 
-  it('uses the CI checkout of the runtime and the Module-1 path of the Sourcing Agent example', () => {
-    const ci = parseYaml(read('.github/workflows/ci.yml')) as { jobs: Record<string, { steps?: { with?: { repository?: string; ref?: string } }[] }> };
-    const refs = Object.values(ci.jobs).flatMap((job) => job.steps ?? []).filter((step) => step.with?.repository === 'Apex-Fusion/vector-agent-template').map((step) => step.with?.ref);
-    expect(refs.length).toBeGreaterThan(0);
+  it('uses the runtime revision verified by CI and the Module-1 path of the Sourcing Agent example', () => {
+    const ci = parseYaml(read('.github/workflows/ci.yml')) as { env?: { AGENT_RUNTIME_TEMPLATE_COMMIT?: string } };
     expect(data.runtimeCommit).toMatch(/^[0-9a-f]{40}$/);
-    for (const ref of refs) expect(ref).toBe(data.runtimeCommit);
+    expect(data.runtimeCommit).toBe(ci.env?.AGENT_RUNTIME_TEMPLATE_COMMIT);
     expect(exampleOf(read('deploy/server/.env.sourcing-agent.example')).VECTOR_MODULE1_MANIFEST.split('<commit>/')[1]).toBe(data.moduleManifestPath);
   });
 });
@@ -574,7 +648,7 @@ describe('the evidence and its limits', () => {
     expect(textOf('l1-03')).toContain(`${need(data.lifecycle, 'lifecycle').waitMs / 86_400_000} days`);
   });
 
-  it('lists the gaps of both manifests and does not repeat an evidence step', () => {
+  it('lists the limits from both manifests and public pages without repeating an evidence step', () => {
     const { lead, items } = data.notCovered;
     expect(lead).toBe(`No run covers these ${items.length} items:`);
     expect(items).toHaveLength(4);
@@ -589,11 +663,13 @@ describe('the evidence and its limits', () => {
       'No run shows a relying party that refuses a live token after its authority ends.',
       'No run challenges a claim of the Sourcing Agent.',
     ]);
-    const fragments = items.slice(0, 2).map((item) => item.replace(/^No run covers /, '').slice(0, -1))
-      .concat(items[2].replace(/^No run shows /, '').slice(0, -1));
+    const fragments = items.slice(0, 3).map((item) => item.replace(/^No run (?:covers|shows) /, '').slice(0, -1));
     for (const [kind, gap] of [['bid-desk', BID_DESK_GAP], ['sourcing-agent', SOURCING_GAP]] as const) {
       expect(json<Template>(`agents/${kind}/agent.json.template`).gaps).toContain(gap);
       for (const fragment of fragments) expect(gap).toContain(fragment);
+      const page = sectionOf(PAGES[kind], 'Known gaps');
+      const stated = need(/^-\s+What this does not show:\s+no run (?:covers|shows)\s+([^\n.]+)\./im.exec(page)?.[1], `${kind} run limits`);
+      expect(sorted(stated.split(/,\s*(?:or\s+)?|\s+or\s+/i)), kind).toEqual(sorted(fragments));
     }
     expect(read('deploy/server/RUNBOOK-bid-desk.md')).toContain('The service has no claim code and no dispute code, and it never challenges.');
   });

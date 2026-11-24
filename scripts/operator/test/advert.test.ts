@@ -2,18 +2,27 @@
 // its retirement over the identity fixtures and answers in the format of the live tools, so the real guards judge real bytes. A fake `fetch` serves the manifests and the statuses of the runtimes. The task
 // runs through the real runner. Each refusal has an accepted twin. No test opens a connection.
 import { createHash } from 'node:crypto';
-import { rmSync } from 'node:fs';
+import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { iso } from '../../checks/lib/format.ts';
+import { StateFile } from '../../checks/lib/state.ts';
 import { factsOf } from '../../checks/lib/txfacts.ts';
 import { ADVERT_REF, DEPLOYMENT, keyOf } from '../../checks/test/support/world.ts';
+import { recordUtxo, rootRecord } from '../../../packages/buyer-core/test/fixtures/identity-world.ts';
+import { utf8Hex } from '../../../packages/vector-read/src/identity-codec.ts';
 import { decodeIdentityAdvertDatum } from '../../../packages/vector-read/src/index.ts';
 import type { IdentityAdvertDatum } from '../../../packages/vector-read/src/index.ts';
 import advert from '../tasks/advert.ts';
-import type { AdvertSpec, AgentSpec } from '../lib/contract.ts';
-import { ORDER_DESK, REORDER, USE, manifestOf, stakeAdvertWorld } from './support/stake-advert-builds.ts';
+import type { AdvertSpec, AgentSpec, UseCase } from '../lib/contract.ts';
+import { FactsFile } from '../lib/facts.ts';
+import { PURPOSE } from '../lib/platform.ts';
+import { runTask } from '../lib/runner.ts';
+import UC2 from '../usecases/prior-authorization.ts';
+import UC3 from '../usecases/bid-evaluation.ts';
+import { Net, ORDER_DESK, REORDER, StakeAdvertHosted, USE, manifestOf, stakeAdvertWorld } from './support/stake-advert-builds.ts';
 import type { Fixture } from './support/stake-advert-builds.ts';
-import { NOW } from './support/task-world.ts';
+import { NOW, USE_CASE, hashOf, taskWorld } from './support/task-world.ts';
 
 const POST = 'vector_build_marketplace_advert_post';
 const RETIRE = 'vector_build_marketplace_advert_retire';
@@ -262,6 +271,85 @@ describe('advert: the manifest', () => {
     serve(f, MEDIUM, bodyOf(f, ORDER_DESK));
     await land(f);
     expect(f.w.facts().adverts['order-desk']!['lot-medium']!.detailHash).toBe(f.w.facts().adverts['order-desk']!['lot-small']!.detailHash);
+  });
+});
+
+async function newAdvertWorld(use: UseCase) {
+  const suppliers = [...new Set(use.agents.flatMap(({ adverts }) => adverts.map(({ supplierKey }) => supplierKey)))];
+  const net = new Net();
+  const w = await taskWorld({
+    use, keys: ['run', 'controller', ...suppliers], shared: ['run', 'controller'],
+    wallets: Object.fromEntries(suppliers.map((name) => [name, [1_000_000_000n, 5_000_000n]])),
+    fetchImpl: net.fetchImpl, env: { OPERATOR_USE_CASE: USE_CASE },
+  });
+  const registry = w.keys.registry;
+  const facts = FactsFile.open(join(w.stateDir, 'facts.json'), { useCase: use.name, network: 'vector-mainnet' });
+  const manifests = new Map<string, ReorderManifest>();
+  for (const agent of use.agents) {
+    const id = hashOf(`record ${agent.id}`);
+    const did = `did:vector:${id}`;
+    const output = recordUtxo(id, rootRecord({
+      controller: registry.publicKeyOf('controller'),
+      keys: agent.adverts.map(({ supplierKey }) => ({ keyType: 'Ed25519', key: registry.publicKeyOf(supplierKey), purposes: PURPOSE.transaction, pop: null })),
+      capabilities: [utf8Hex(agent.capability)],
+    }));
+    w.world.chain.held.push(output);
+    facts.put('records', [agent.id], { did, id, tx: output.txHash, recordRef: `${output.txHash}#${output.outputIndex}`, depositLovelace: '10000000', registeredAt: iso(NOW) });
+    const template = new URL(`../../../agents/${agent.kind}/agent.json.template`, import.meta.url);
+    const manifest = JSON.parse(readFileSync(template, 'utf8')) as ReorderManifest;
+    manifest.identity.did = did;
+    manifest.keys.supplier_pkh = registry.hashOf(agent.adverts[0]!.supplierKey);
+    manifests.set(agent.id, manifest);
+    for (const advert of agent.adverts) {
+      net.manifests.set(advert.origin, () => Response.json(manifest));
+      net.statuses.set(advert.origin, () => Response.json({ status: 'free' }));
+    }
+  }
+  w.writeGo({ tasks: ['advert'], capUnits: 100 });
+  const running = (...containers: string[]): void => {
+    const images = Object.fromEntries(containers.map((name) => [name, `registry.example/agents/agent-runtime@sha256:${hashOf(name)}`]));
+    writeFileSync(join(w.stateDir, 'running-images.json'), JSON.stringify({ generated_at: iso(w.clock.now()), images }));
+  };
+  running();
+  const hosted = new StakeAdvertHosted(w.world, () => w.clock.now(), registry.hashOf('controller'));
+  net.retirement = (hash) => hosted.archivedRetirement(hash);
+  const deps = w.deps({ hosted });
+  return {
+    w, facts, net, hosted, running, manifests,
+    run: (...argv: string[]) => {
+      w.screen.lines.length = 0;
+      w.screen.errors.length = 0;
+      return runTask(advert, argv, deps);
+    },
+  };
+}
+
+describe('advert: direct and tiered terms', () => {
+  it.each([UC2, UC3])('posts the adverts for $name with each agent manifest', async (use) => {
+    const f = await newAdvertWorld(use);
+    expect(await f.run('--submit', '--all')).toBe(0);
+    for (const agent of use.agents) {
+      const model = agent.adverts[0]!.model;
+      const digest = sha(JSON.stringify(f.manifests.get(agent.id)));
+      expect(f.facts.read().manifests[agent.id]?.sha256).toBe(digest);
+      expect(f.facts.read().adverts[agent.id]?.[model]?.detailHash).toBe(digest);
+    }
+    expect(f.w.node.submitted).toHaveLength(use.agents.length);
+  });
+
+  it('treats a list of tiers as authoritative even for a Bid Desk with valid direct terms', async () => {
+    const agent = UC3.agents.find(({ id }) => id === 'bid-desk-bravo')!;
+    const f = await newAdvertWorld({ ...UC3, agents: [agent] });
+    const manifest = f.manifests.get(agent.id)!;
+    const { model } = agent.adverts[0]!;
+    const tier = { ...manifest.terms, supplier_pkh: manifest.keys.supplier_pkh };
+    manifest.terms.tiers = [{ ...tier, model: 'another-model' }];
+    expect(await f.run('--submit')).toBe(2);
+    expect(f.w.screen.errorText).toContain(`terms.tiers holds 0 tier(s) for the model ${model}`);
+    expect(f.hosted.calls).toEqual([]);
+    manifest.terms.tiers = [{ ...tier, model }];
+    expect(await f.run('--submit')).toBe(0);
+    expect(f.w.node.submitted).toHaveLength(1);
   });
 });
 
@@ -530,6 +618,99 @@ describe('advert: the cleanup', () => {
     expect(f.w.screen.lines).toContain('no advert that the facts file holds is on the node: there is nothing to retire');
     expect(f.hosted.calls).toEqual([]);
   });
+  it('retires just Bid Desk Bravo, checks every running runtime and leaves status unfiltered', async () => {
+    const f = await newAdvertWorld(UC3);
+    expect(await f.run('--submit', '--all')).toBe(0);
+    const before = f.facts.read().adverts;
+    const refOf = (agent: AgentSpec): string => before[agent.id]![agent.adverts[0]!.model]!.ref;
+    const bravo = UC3.agents.find(({ id }) => id === 'bid-desk-bravo')!;
+    const alfa = UC3.agents.find(({ id }) => id === 'bid-desk-alfa')!;
+    const charlie = UC3.agents.find(({ id }) => id === 'bid-desk-charlie')!.adverts[0]!;
+    const argv = ['cleanup', '--submit', '--all', '--agent', bravo.id];
+    f.hosted.calls.length = 0;
+    expect(await f.run('cleanup', '--submit', '--agent', 'bravo-successor')).toBe(2);
+    expect(f.w.screen.errorText).toContain('--agent is one of');
+
+    const bravoModel = bravo.adverts[0]!.model;
+    f.facts.put('adverts', [bravo.id, bravoModel], before[alfa.id]![bravoModel]!, { replace: true });
+    expect(await f.run(...argv)).toBe(2);
+    expect(f.w.screen.errorText).toContain('does not match its advert on the node');
+    expect(f.hosted.calls).toEqual([]);
+    f.facts.put('adverts', [bravo.id, bravoModel], before[bravo.id]![bravoModel]!, { replace: true });
+
+    f.running(charlie.runtimeContainer);
+    f.net.statuses.set(charlie.origin, () => Response.json({ status: 'working' }));
+    expect(await f.run(...argv)).toBe(2);
+    expect(f.w.screen.errorText).toContain(`the runtime ${charlie.runtimeContainer} says working`);
+    expect(f.hosted.calls).toEqual([]);
+    f.net.statuses.set(charlie.origin, () => Response.json({ status: 'free' }));
+    expect(await f.run(...argv)).toBe(0);
+    expect(f.hosted.calls.filter(({ name }) => name === RETIRE).map(({ args }) => args.advert_ref)).toEqual([refOf(bravo)]);
+    expect(f.w.world.chain.find(refOf(bravo))).toBeUndefined();
+    const others = UC3.agents.filter(({ id }) => id !== bravo.id);
+    for (const agent of others) expect(f.w.world.chain.find(refOf(agent))).toBeDefined();
+    expect(f.facts.read().adverts).toEqual(before);
+    expect(await f.run('status')).toBe(0);
+    for (const agent of UC3.agents) expect(f.w.screen.text).toContain(`${agent.id}:${agent.adverts[0]!.model}`);
+    expect(await f.run('cleanup', '--submit', '--all')).toBe(0);
+    expect(f.hosted.calls.filter(({ name }) => name === RETIRE).map(({ args }) => args.advert_ref)).toEqual([refOf(bravo), ...others.map(refOf)]);
+  });
+
+  it('resends only in the same approved cleanup, after every running runtime is free', async () => {
+    const f = await newAdvertWorld(UC3);
+    expect(await f.run('--submit', '--all')).toBe(0);
+    const submit = f.w.node.submit.bind(f.w.node);
+    let attempts = 0;
+    let accepts = false;
+    f.w.node.submit = async (signed) => {
+      attempts += 1;
+      if (!accepts) throw new Error('the fake node could not accept the submit');
+      return submit(signed);
+    };
+    const scope = ['cleanup', '--submit', '--agent', 'bid-desk-alfa'];
+    expect(await f.run(...scope)).not.toBe(0);
+    const flight = f.w.state('advert').in_flight!;
+    const reserve = f.w.exposure();
+    expect(attempts).toBe(1);
+    expect(flight.step).toBe('retire:bid-desk-alfa:bid-desk-v1');
+    expect(await f.run('run', '--submit', '--agent', 'bid-desk-alfa')).toBe(2);
+    expect(f.w.screen.errorText).toContain('--agent goes with advert cleanup');
+    expect(await f.run('run', '--submit')).toBe(2);
+    expect(f.w.screen.errorText).toContain('in flight for cleanup');
+    expect(await f.run('cleanup', '--submit', '--agent', 'bid-desk-bravo')).toBe(2);
+    expect(f.w.screen.errorText).toContain('in flight outside --agent');
+    expect(await f.run(...scope, '--run', 'other')).toBe(2);
+    expect(f.w.screen.errorText).toContain('another advert run has a transaction in flight');
+    f.w.writeGo({ tasks: ['advert'], capUnits: 100, session: 'other' });
+    expect(await f.run(...scope)).toBe(2);
+    expect(f.w.screen.errorText).toContain('not the approval of the recorded retirement');
+    f.w.writeGo({ tasks: ['advert'], capUnits: 100 });
+
+    const runtime = UC3.agents.find(({ id }) => id === 'bid-desk-charlie')!.adverts[0]!;
+    f.running(runtime.runtimeContainer);
+    f.net.statuses.set(runtime.origin, () => Response.json({ status: 'working' }));
+    expect(await f.run(...scope)).toBe(2);
+    expect(f.w.screen.errorText).toContain(`the runtime ${runtime.runtimeContainer} says working`);
+    expect(await f.run('status')).toBe(0);
+    expect(attempts).toBe(1);
+    expect(f.w.state('advert').in_flight).toEqual(flight);
+    expect(f.w.exposure()).toEqual(reserve);
+
+    const state = StateFile.open(join(f.w.stateDir, 'advert.state.json'), { check: 'advert', network: 'vector-mainnet', record: UC3.name });
+    state.clearInFlight();
+    state.setInFlight({ ...flight, tx_hash: hashOf('wrong hash') });
+    expect(await f.run(...scope)).toBe(2);
+    expect(f.w.screen.errorText).toContain('in-flight bytes do not match the recorded transaction hash');
+    expect(attempts).toBe(1);
+    state.clearInFlight();
+    state.setInFlight(flight);
+    f.net.statuses.set(runtime.origin, () => Response.json({ status: 'free' }));
+    accepts = true;
+    expect(await f.run(...scope)).toBe(0);
+    expect(attempts).toBe(2);
+    expect(f.w.state('advert').in_flight).toBeNull();
+    expect(f.w.state('advert').notes[`part.${flight.step}`]).toMatchObject({ tx_hash: flight.tx_hash, verified_at: expect.any(String) });
+  });
   it('shows the retirement in a dry run, and signs nothing; and it needs an approval that lists the task', async () => {
     const f = await stakeAdvertWorld();
     await land(f);
@@ -553,10 +734,43 @@ describe('advert: the cleanup', () => {
     f.hosted.twist.retire = { address: OUTSIDE };
     expect(await f.run(advert, 'cleanup', '--submit')).toBe(2);
     expect(refusedBy(errors(f))).toContain('destinations');
+    f.hosted.twist.retire = { extra: { address: f.w.keys.registry.addressOf('order-small-supplier'), lovelace: 2_000_000n } };
+    expect(await f.run(advert, 'cleanup', '--submit')).toBe(2);
+    expect(refusedBy(errors(f))).toContain('destinations');
+    f.hosted.twist.retire = { retireRedeemer: 'd87a80' };
+    expect(await f.run(advert, 'cleanup', '--submit')).toBe(2);
+    expect(refusedBy(errors(f))).toContain('body');
+    expect(errors(f)).toContain('only RetireAdvert');
     expect(f.world.chain.applied).toHaveLength(1);
     expect(f.signs).toHaveLength(1);
     delete f.hosted.twist.retire;
     expect(await f.run(advert, 'cleanup', '--submit')).toBe(0);
+  });
+  it.each(['short credit', 'failed phase two', 'wrong spend anchor', 'missing archive'] as const)('does not verify a confirmed retirement with %s', async (problem) => {
+    const f = await stakeAdvertWorld();
+    await land(f);
+    const ref = f.w.facts().adverts[REORDER.id]![REORDER_ADVERT.model]!.ref;
+    const supplierAddress = f.w.keys.registry.addressOf(REORDER_ADVERT.supplierKey);
+    const step = `retire:${REORDER.id}:${REORDER_ADVERT.model}`;
+    f.hosted.rewriteRetirement = (row) => {
+      if (problem === 'missing archive') return null;
+      if (problem === 'short credit') row.outputs[0]!.value = String(BigInt(row.outputs[0]!.value) - 1n);
+      if (problem === 'failed phase two') row.plutus_contracts[0]!.valid_contract = false;
+      if (problem === 'wrong spend anchor') row.plutus_contracts[0]!.spends_input = row.inputs.find(({ payment_addr }) => payment_addr.bech32 === supplierAddress)!;
+      return row;
+    };
+    expect(await f.run(advert, 'cleanup', '--submit')).toBe(1);
+    expect(f.w.state('advert').notes[`part.${step}`]).not.toHaveProperty('verified_at');
+    expect(f.w.evidence('advert').filter(({ step: name, status }) => name === step && status === 'info')).toEqual([]);
+    const length = f.signs.length;
+    f.hosted.rewriteRetirement = (row) => row;
+    expect(await f.run(advert, 'cleanup', '--submit')).toBe(0);
+    expect(f.signs).toHaveLength(length);
+    expect(f.w.state('advert').notes[`part.${step}`]).toMatchObject({
+      refs: { retiredRef: ref }, verified_at: expect.any(String),
+      facts: { phase: 'retire', supplierAddress, depositLovelace: '2500000', feeLovelace: '250000', creditLovelace: '2250000' },
+    });
+    expect(f.w.evidence('advert')).toContainEqual(expect.objectContaining({ step, status: 'info', shows: expect.objectContaining({ refundVerified: true, creditLovelace: '2250000' }) }));
   });
   it('lets a new advert replace a retired one: the facts of the advert and of the manifest are replaced, and the new hash is the hash of the new manifest', async () => {
     const f = await stakeAdvertWorld();
