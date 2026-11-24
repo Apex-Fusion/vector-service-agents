@@ -1,7 +1,7 @@
 // An offline world for the real end-state task. The ledger, hosted tools, DNS and HTTP reads take only fixture data.
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { vi } from 'vitest';
+import { expect, vi } from 'vitest';
 import { AUDITOR_ID, CLAIMER_ID, MODULE1_MANIFEST, agentRecord, recordUtxo } from '../../../../packages/buyer-core/test/fixtures/jury-world.ts';
 import { MAINNET, attestation, attestationUtxo, recordUtxo as registryUtxo } from '../../../../packages/buyer-core/test/fixtures/ledger-read-world.ts';
 import { koiosOf, ledgerWorld } from '../../../../packages/usecase-kit/test/dispute/ledger.ts';
@@ -14,7 +14,6 @@ import type { ChainAccess } from '../../../checks/lib/session.ts';
 import { StateFile } from '../../../checks/lib/state.ts';
 import type { UseCase } from '../../lib/contract.ts';
 import { FactsFile } from '../../lib/facts.ts';
-import { LoadError } from '../../lib/load.ts';
 import { ATT_TYPES, PURPOSE, blake2b256Hex, calculateMinLovelaceFromUTxO } from '../../lib/platform.ts';
 import { loadRegistry, publicManifestFile, writePublicManifest } from '../../lib/registry.ts';
 import { runTask } from '../../lib/runner.ts';
@@ -420,13 +419,7 @@ export async function makeRig(options: RigOptions = {}, use: UseCase = data): Pr
   };
   writeRunning();
 
-  const deps = world.deps({
-    chain, hosted, fetchImpl: web,
-    async loadUseCase(name) {
-      if (name !== use.name) throw new LoadError('mismatch', 'the case selector does not match this offline end-state world');
-      return world.use;
-    },
-  });
+  const deps = world.deps({ chain, hosted, fetchImpl: web, loadUseCase: undefined });
   // Select the fixture case without changing which defaults the production settings allow.
   const selector = ['--use-case', use.name];
   const observe: EndStateWorld['observe'] = async (command) => {
@@ -438,9 +431,9 @@ export async function makeRig(options: RigOptions = {}, use: UseCase = data): Pr
     const nodeSubmit = vi.spyOn(world.node, 'submit').mockImplementation(refuseSubmit);
     const providerSubmit = vi.spyOn(ledger, 'submitTx').mockImplementation(refuseSubmit);
     try {
-      const exit = await runTask(endState, [command, ...selector], {
+      const observedDeps = {
         ...deps,
-        readRegistry(selection) {
+        readRegistry(selection: Parameters<typeof loadRegistry>[0]) {
           const registry = loadRegistry(selection);
           for (const name of registry.names()) {
             const key = registry.key(name);
@@ -450,7 +443,9 @@ export async function makeRig(options: RigOptions = {}, use: UseCase = data): Pr
           }
           return registry;
         },
-      });
+      };
+      expect(observedDeps.loadUseCase, 'the matrix must use the runner case loader').toBeUndefined();
+      const exit = await runTask(endState, [command, ...selector], observedDeps);
       return {
         exit, machine: world.machine(), errors: world.screen.errors.slice(start.errors).join('\n'), signatures, submissions,
         lines: world.screen.lines.slice(start.lines),

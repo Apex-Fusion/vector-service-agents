@@ -13,6 +13,7 @@ import type { AgentSpec, TaskDefinition, UseCase } from '../lib/contract.ts';
 import { EVIDENCE_MODULES, evidenceModuleOf } from '../lib/evidence/index.ts';
 import { loadTask, loadUseCase, PACK_URL } from '../lib/load.ts';
 import { parseArguments, usageLines } from '../lib/runner.ts';
+import { trialOf } from '../lib/trials/index.ts';
 import { TASK_NAMES } from '../tasks/names.ts';
 import type { TaskName } from '../tasks/names.ts';
 import { USE_CASE_NAMES } from '../usecases/names.ts';
@@ -235,9 +236,8 @@ function assertBoundary(w: MatrixWorld, task: TaskName, command: 'run' | 'status
   expect(seen.machine).toMatchObject({ task, command, mode: 'dry', exit: seen.exit });
   const keys = w.use.keys.map(({ name }) => name);
   for (const loaded of seen.loaded) for (const key of loaded) expect(keys).toContain(key);
-  const foreign = caseWords(CASES.filter((use) => use.name !== w.use.name)).filter((word) => !caseWords([w.use]).includes(word));
   const outputs = [...seen.out, ...seen.errors, ...seen.changed.flatMap((file) => /\.(?:json|txt)$/.test(file) ? [readFileSync(join(w.dir, file), 'utf8')] : [])];
-  const names = wordsFound(outputs.join('\n'), foreign);
+  const names = wordsFound(outputs.join('\n'), w.use.name);
   expect(names, 'names from a different use case').toEqual([]);
 }
 
@@ -487,28 +487,69 @@ async function checkEndState(def: TaskDefinition, use: UseCase, command: 'run' |
   ]);
   expect(seen.reads.tools).toContain('vector_marketplace_list_suppliers');
   expect(seen.reads.tools).toContain('vector_resolve_did');
-  const foreign = caseWords(CASES.filter((data) => data.name !== use.name)).filter((word) => !caseWords([use]).includes(word));
-  expect(wordsFound(seen.lines.join('\n'), foreign)).toEqual([]);
+  expect(wordsFound(seen.lines.join('\n'), use.name)).toEqual([]);
 }
 
-const CASE_TABLES: readonly string[] = [
-  'lib/claim-constants.ts', 'lib/trials/index.ts', 'lib/trials/inventory.ts', 'lib/trials/priorauth.ts', 'lib/trials/bids.ts',
-  'lib/evidence/index.ts', 'lib/evidence/inventory.ts', 'lib/evidence/prior-authorization.ts', 'lib/evidence/bid-evaluation.ts',
+const EXCLUDED_CASE_MODULES: readonly string[] = [
+  'lib/evidence/index.ts', // Selects the evidence writer by the enrolled case name.
+  'lib/trials/index.ts', // Selects the trial builder by the enrolled case name.
+  'lib/evidence/inventory.ts', // Proves inventory evidence.
+  'lib/evidence/prior-authorization.ts', // Proves prior authorization evidence.
+  'lib/evidence/bid-evaluation.ts', // Proves bid evaluation evidence.
+  'lib/evidence/lifecycle.ts', // Proves the lifecycle run of bid evaluation.
+  'lib/trials/inventory.ts', // Builds the inventory trial.
+  'lib/trials/priorauth.ts', // Builds the prior authorization trial.
+  'lib/trials/bids.ts', // Builds the bid evaluation trial.
 ];
 const DEFAULTS: Readonly<Record<string, readonly [symbol: string, value: string]>> = {
-  'lib/settings.ts': ['DEFAULT_USE_CASE', CASES[0]!.name],
-  'tasks/hold.ts': ['DEFAULT_AGENT', CASES[0]!.agents[1]!.id],
-  'tasks/probe.ts': ['DEFAULT_AGENT', CASES[0]!.agents[0]!.id],
+  'lib/settings.ts': ['DEFAULT_USE_CASE', CASES[0]!.name], // Keeps the released default selector.
+  'tasks/hold.ts': ['DEFAULT_AGENT', CASES[0]!.agents[1]!.id], // Keeps the released hold command target.
+  'tasks/probe.ts': ['DEFAULT_AGENT', CASES[0]!.agents[0]!.id], // Keeps the released probe command target.
 };
-function caseWords(cases: readonly UseCase[]): readonly string[] {
-  return unique(cases.flatMap((use) => [use.name, ...[...use.subagents, ...use.records].flatMap(({ id, name }) => [id, name]), ...use.agents.flatMap((a) => [
-    a.id, a.kind, a.name, a.capability, a.folder, a.serviceContainer, a.serviceEnvFile, ...(a.exampleEnvFile === null ? [] : [a.exampleEnvFile]),
-    ...a.adverts.flatMap((advert) => [advert.model, advert.runtimeContainer, advert.runtimeEnvFile]),
-  ])]).map((word) => word.toLowerCase()));
+function wordsOf(use: UseCase): ReadonlySet<string> {
+  const words = new Set<string>([use.name, use.moduleManifestPath, ...use.keys.map(({ name }) => name),
+    ...use.organisations.flatMap(({ id, domain }) => [id, domain]), ...Object.values(use.tenantOrganisations), ...envFiles(use)]);
+  const add = (...values: string[]): void => { for (const value of values) words.add(value); };
+  const addUrl = (value: string): void => {
+    const url = new URL(value);
+    add(value, url.origin, url.host, url.hostname);
+    if (url.pathname !== '/') add(url.pathname);
+  };
+  for (const subject of [...use.agents, ...use.subagents, ...use.records]) {
+    add(subject.id, subject.name);
+    for (const { key, lines } of subject.keys) add(key, ...lines.map(({ file }) => file));
+  }
+  for (const agent of use.agents) {
+    const example = agent.exampleEnvFile ?? `${agent.serviceEnvFile}.example`;
+    add(agent.kind, agent.capability, agent.claim.claimType, agent.folder, agent.serviceContainer, agent.serviceEnvFile, example, `${agent.folder}/${example}`);
+    for (const { key, lines } of agent.publicKeyLines) add(key, ...lines.map(({ file }) => file));
+    for (const url of [agent.endpoint, ...agent.statusUrls]) addUrl(url);
+    for (const advert of agent.adverts) {
+      add(advert.model, advert.runtimeContainer, advert.runtimeEnvFile);
+      addUrl(advert.origin);
+      if (advert.runtimeEnvFile !== agent.serviceEnvFile) {
+        const example = `${agent.serviceEnvFile}-runtime.example`;
+        add(example, `${agent.folder}/${example}`);
+      }
+    }
+  }
+  return new Set([...words].filter(Boolean).map((word) => word.toLowerCase()));
 }
+
+const CASE_OWNER = new Map<string, string | null>();
+for (const use of CASES) for (const word of wordsOf(use)) CASE_OWNER.set(word, CASE_OWNER.has(word) ? null : use.name);
+
 const escaped = (word: string): string => word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-function wordsFound(text: string, terms: readonly string[]): readonly string[] {
-  return terms.filter((term) => new RegExp(`(?:^|[^a-z0-9])${escaped(term)}(?![a-z0-9])`, 'i').test(text));
+// Match the longest known word at each position. A shared domain stays shared even if its first label names one organisation.
+const CASE_WORD = new RegExp(`(?<![a-z0-9])(?:${[...CASE_OWNER.keys()].sort((a, b) => b.length - a.length).map(escaped).join('|')})(?![a-z0-9])`, 'gi');
+function wordsFound(text: string, permittedCase?: string): readonly string[] {
+  const found = new Set<string>();
+  for (const match of text.matchAll(CASE_WORD)) {
+    const word = match[0].toLowerCase();
+    const owner = CASE_OWNER.get(word);
+    if (owner != null && owner !== permittedCase) found.add(word);
+  }
+  return [...found];
 }
 
 // Use the parser already installed by Vitest/Vite. Node removes only TypeScript syntax and preserves line offsets.
@@ -523,32 +564,59 @@ const fromVite = createRequire(fromVitest.resolve('vite/package.json'));
 // `rollup/parseAst` exports the ESTree parser. Narrow its generic node values as the scanner reads them.
 const rollup: { parseAst(text: string): Ast } = fromVite('rollup/parseAst');
 
+function parseSource(source: string): Ast {
+  const stripped = stripTypeScriptTypes(source, { mode: 'strip' });
+  // Keep static type-only module paths in the scan. Blank only the erased import or export modifier.
+  const trivia = String.raw`(?:\s|//[^\r\n]*|/\*[\s\S]*?\*/)+`;
+  const declaration = new RegExp(`(\\bimport${trivia})type\\b|(?:\\b(export${trivia})type\\b(?=${trivia}[{*]))`, 'g');
+  const withTypePaths = source.replace(declaration, (text: string, importing: string | undefined, exporting: string | undefined, start: number) =>
+    stripped.slice(start, start + 6).trim() === '' ? `${importing ?? exporting}    ` : text);
+  return rollup.parseAst(withTypePaths === source ? stripped : stripTypeScriptTypes(withTypePaths, { mode: 'strip' }));
+}
+
+const astNodes = (value: unknown): Ast[] => Array.isArray(value) ? value.filter(isAst) : [];
+const symbolOf = (node: unknown): string | undefined => isAst(node) && node.type === 'Identifier' && typeof node.name === 'string' ? node.name : undefined;
+
+const CLAIM_FILE = 'lib/claim-constants.ts';
+const PLATFORM_FILE = 'lib/platform.ts';
+const KIT_EXPORTS: Readonly<Record<string, readonly string[]>> = {
+  '../../../packages/usecase-kit/src/inventory/index.ts': ['ORDER_DESK_CLAIM', 'REORDER_CLAIM'],
+  '../../../packages/usecase-kit/src/bids/index.ts': ['BID_DESK_CLAIM', 'SOURCING_CLAIM'],
+  '../../../packages/usecase-kit/src/priorauth/index.ts': ['INTAKE_CLAIM', 'PRIORAUTH_CLAIM'],
+};
+const CLAIM_BINDINGS = Object.values(KIT_EXPORTS).flat();
+
 function scan(path: string, source: string): { forbidden: readonly string[]; defaults: readonly string[] } {
   const forbidden = new Set<string>();
   const defaults: string[] = [];
-  const terms = caseWords(CASES);
+  const claimFile = path === CLAIM_FILE;
   const declared = DEFAULTS[path];
-  function kitExport(node: Ast): boolean {
-    if (path !== 'lib/platform.ts' || node.type !== 'ExportNamedDeclaration' || !isAst(node.source) || !Array.isArray(node.specifiers)) return false;
-    const symbols: Readonly<Record<string, readonly string[]>> = {
-      '../../../packages/usecase-kit/src/inventory/index.ts': ['ORDER_DESK_CLAIM', 'REORDER_CLAIM'],
-      '../../../packages/usecase-kit/src/bids/index.ts': ['BID_DESK_CLAIM', 'SOURCING_CLAIM'],
-      '../../../packages/usecase-kit/src/priorauth/index.ts': ['INTAKE_CLAIM', 'PRIORAUTH_CLAIM'],
-    };
-    const spec = typeof node.source.value === 'string' ? symbols[node.source.value] : undefined;
-    if (spec === undefined) return false;
-    // Keep checking the source and all other specifiers. Do not exempt a local name or alias.
+  function add(node: Ast, word: string): void {
+    forbidden.add(`${path}:${source.slice(0, node.start).split('\n').length}: ${word}`);
+  }
+  function namedBindings(node: Ast): boolean {
+    if (!isAst(node.source) || typeof node.source.value !== 'string') return false;
+    const children = astNodes(node.specifiers);
+    const importClaim = claimFile && node.type === 'ImportDeclaration' && node.source.value === './platform.ts'
+      && children.some(({ imported, local }) => [symbolOf(imported), symbolOf(local)].some((name) => name !== undefined && CLAIM_BINDINGS.includes(name)));
+    const exportKit = path === PLATFORM_FILE && node.type === 'ExportNamedDeclaration' ? KIT_EXPORTS[node.source.value] : undefined;
+    if (!importClaim && exportKit === undefined) return false;
     walk(node.source, node, 'source');
-    for (const child of node.specifiers) {
-      if (!isAst(child)) throw new Error('the kit re-export has no specifier');
-      if (isAst(child.local) && isAst(child.exported) && child.local.name === child.exported.name && spec.includes(String(child.local.name))) continue;
-      walk(child, node, 'specifiers');
+    for (const specifier of children) {
+      const symbol = symbolOf(importClaim ? specifier.imported : specifier.exported);
+      const local = symbolOf(specifier.local);
+      // Only exact unaliased claim bindings may supply the kind table or cross the kit re-export.
+      if (symbol !== undefined && symbol === local && (importClaim ? CLAIM_BINDINGS : exportKit!).includes(symbol)) continue;
+      if (importClaim) add(specifier, `unexpected claim import ${symbol ?? local ?? 'specifier'}`);
+      else walk(specifier, node, 'specifiers');
     }
     return true;
   }
   function walk(node: Ast, parent: Ast | null, field: string): void {
-    if (kitExport(node)) return;
+    if (namedBindings(node)) return;
     const init = field === 'init' && parent?.type === 'VariableDeclarator' && isAst(parent.id) ? parent.id.name : undefined;
+    // This initializer maps all kit agent kinds to their claim constants. Scan the rest of the file.
+    if (claimFile && init === 'CLAIM_OF_KIND') return;
     if (declared !== undefined && init === declared[0] && node.type === 'Literal' && node.value === declared[1]) {
       defaults.push(`${path}:${declared[0]}=${declared[1]}`);
       return;
@@ -558,13 +626,15 @@ function scan(path: string, source: string): { forbidden: readonly string[]; def
       : node.type === 'TemplateElement' && value !== null && typeof value === 'object' && 'cooked' in value && typeof value.cooked === 'string' ? value.cooked
       : node.type === 'Literal' || node.type === 'TemplateElement' ? source.slice(node.start, node.end)
       : node.type === 'Identifier' ? String(node.name).replace(/([a-z0-9])([A-Z])/g, '$1-$2').replaceAll('_', '-') : '';
-    for (const word of wordsFound(text, terms)) forbidden.add(`${path}:${source.slice(0, node.start).split('\n').length}: ${word}`);
+    const symbol = symbolOf(node);
+    if (symbol !== undefined && CLAIM_BINDINGS.includes(symbol)) add(node, symbol);
+    else for (const word of wordsFound(text)) add(node, word);
     for (const [key, child] of Object.entries(node)) {
       if (isAst(child)) walk(child, node, key);
       else if (Array.isArray(child)) for (const member of child) if (isAst(member)) walk(member, node, key);
     }
   }
-  walk(rollup.parseAst(stripTypeScriptTypes(source, { mode: 'strip' })), null, '');
+  walk(parseSource(source), null, '');
   return { forbidden: [...forbidden], defaults };
 }
 
@@ -572,12 +642,13 @@ function sourcePaths(root: string, folder: string): string[] {
   return readdirSync(join(root, folder), { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name)).flatMap((member) => {
     const path = `${folder}/${member.name}`;
     if (member.isDirectory()) return sourcePaths(root, path);
-    return member.isFile() && member.name.endsWith('.ts') && !CASE_TABLES.includes(path) ? [path] : [];
+    return member.isFile() && member.name.endsWith('.ts') && !EXCLUDED_CASE_MODULES.includes(path) ? [path] : [];
   });
 }
 
 it('keeps case names, ids, kinds and paths out of generic task and library source', () => {
   const root = fileURLToPath(PACK_URL);
+  // `usecases/*.ts` contains the case data, its shared fields, and the enrolled names.
   const findings = [...sourcePaths(root, 'tasks'), ...sourcePaths(root, 'lib')].map((path) => scan(path, readFileSync(join(root, path), 'utf8')));
   expect(findings.flatMap(({ forbidden }) => forbidden)).toEqual([]);
   expect(findings.flatMap(({ defaults }) => defaults).sort()).toEqual(Object.entries(DEFAULTS).map(([path, [name, value]]) => `${path}:${name}=${value}`).sort());
@@ -592,13 +663,55 @@ it('allows only the actual default initializer, not another key or a template ex
   expect(scan('tasks/other.ts', `const DEFAULT_AGENT = '${id}';`).forbidden).toEqual([`tasks/other.ts:1: ${id}`]);
   const kit = "export { BID_DESK_CLAIM } from '../../../packages/usecase-kit/src/bids/index.ts';";
   expect(scan('lib/platform.ts', kit).forbidden).toEqual([]);
-  expect(scan('tasks/other.ts', kit).forbidden).toEqual(['tasks/other.ts:1: bid-desk']);
-  expect(scan('lib/platform.ts', kit.replace('BID_DESK_CLAIM }', 'BID_DESK_CLAIM as another }')).forbidden).toEqual(['lib/platform.ts:1: bid-desk']);
-  expect(scan('lib/platform.ts', `${kit}\nconst claim = BID_DESK_CLAIM;`).forbidden).toEqual(['lib/platform.ts:2: bid-desk']);
+  expect(scan('tasks/other.ts', kit).forbidden).toEqual(['tasks/other.ts:1: BID_DESK_CLAIM']);
+  expect(scan(PLATFORM_FILE, kit.replace('BID_DESK_CLAIM }', 'BID_DESK_CLAIM as another }')).forbidden).toEqual([`${PLATFORM_FILE}:1: BID_DESK_CLAIM`]);
+  expect(scan(PLATFORM_FILE, `${kit}\nconst claim = BID_DESK_CLAIM;`).forbidden).toEqual([`${PLATFORM_FILE}:2: BID_DESK_CLAIM`]);
 });
 
-it('has one registered evidence module for each source data file', () => {
-  expect(Object.keys(EVIDENCE_MODULES).sort()).toEqual(CASES.map(({ name }) => name).sort());
+it('allows only the six claim imports and the claim table initializer', () => {
+  const imports = `import { ${CLAIM_BINDINGS.join(', ')} } from './platform.ts';`;
+  const table = `export const CLAIM_OF_KIND = Object.freeze({ '${CASES[1]!.agents[1]!.kind}': INTAKE_CLAIM });`;
+  expect(scan(CLAIM_FILE, `${imports}\n${table}`).forbidden).toEqual([]);
+  expect(scan(CLAIM_FILE, imports.replace(' }', ', unrelated }')).forbidden).toEqual([`${CLAIM_FILE}:1: unexpected claim import unrelated`]);
+  expect(scan(CLAIM_FILE, "import { INTAKE_CLAIM } from './another.ts';").forbidden).toEqual([`${CLAIM_FILE}:1: INTAKE_CLAIM`]);
+  expect(scan(CLAIM_FILE, `${imports}\n${table}\nconst misuse = INTAKE_CLAIM;`).forbidden).toEqual([`${CLAIM_FILE}:3: INTAKE_CLAIM`]);
+});
+
+it('detects each type of case-only word and permits a word shared between cases', () => {
+  const use = CASES[2]!;
+  const agent = use.agents[1]!;
+  const advert = agent.adverts[0]!;
+  const organisation = use.organisations[2]!;
+  const file = 'tasks/example.ts';
+  for (const word of unique([use.name, use.compliance!.issuerKey, organisation.id, organisation.domain, agent.id, agent.name, agent.kind,
+    use.subagents[0]!.id, use.records[0]!.id, agent.endpoint, new URL(advert.origin).host, agent.statusUrls[0]!, agent.folder, agent.serviceEnvFile,
+    `${agent.folder}/${agent.serviceEnvFile}`, agent.exampleEnvFile!, agent.serviceContainer, advert.runtimeContainer,
+    advert.model, agent.capability, agent.claim.claimType])) {
+    expect(scan(file, `const fixed = ${JSON.stringify(word)};`).forbidden).toEqual([`${file}:1: ${word.toLowerCase()}`]);
+  }
+  const shared = CASES[0]!.tenantOrganisations.insurer;
+  expect(scan(file, `const shared = '${shared}';`).forbidden).toEqual([]);
+  const typePath = `import /* type path */ type { Shape } from './${agent.id}.ts';`;
+  expect(scan(file, typePath).forbidden).toEqual([`${file}:1: ${agent.id}`]);
+});
+
+it('enrolls exactly the case data names in the evidence and trial registries', () => {
+  const names = CASES.map(({ name }) => name).sort();
+  expect(Object.keys(EVIDENCE_MODULES).sort()).toEqual(names);
+  // The trial table is not exported. Read its literal keys so an extra entry fails the check too.
+  const program = parseSource(readFileSync(new URL('lib/trials/index.ts', PACK_URL), 'utf8'));
+  const table = astNodes(program.body).flatMap(({ declarations }) => astNodes(declarations))
+    .find(({ id }) => isAst(id) && id.name === 'TRIALS')?.init;
+  if (!isAst(table) || table.type !== 'ObjectExpression') throw new Error('the trial registry must declare its case keys');
+  const registered = astNodes(table.properties).map((property) => {
+    if (property.type !== 'Property' || property.computed || !isAst(property.key) || typeof property.key.value !== 'string') {
+      throw new Error('the trial registry must use a literal case name');
+    }
+    return property.key.value;
+  });
+  expect(registered.sort()).toEqual(names);
+  for (const name of names) expect(trialOf(name)).toEqual(expect.any(Function));
+  expect(() => trialOf('no-registered-case')).toThrow('this use case has no claim trial');
 });
 
 it('loads the real data for every supported use case through the public selector', async () => {

@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-import { vi } from 'vitest';
+import { expect, vi } from 'vitest';
 import { iso } from '../../../checks/lib/format.ts';
 import { checkArguments, HostedError } from '../../../checks/lib/hosted.ts';
 import { KeyRing, LoadedKey } from '../../../checks/lib/keys.ts';
@@ -231,15 +231,17 @@ export async function matrixWorld(use: UseCase, { omit, liveEnv = false }: { omi
     ];
     let exit: number;
     try {
-      exit = await runTask(def, argv, w.deps({ loadUseCase: async (name) => {
-        if (name !== use.name) throw new Error('the runner selected another matrix case');
-        return use;
-      }, readRegistry: (options) => {
-        if (options.dir !== w.keys.root || options.useCase !== use.name || options.specs !== use.keys) forbid('a registry read outside the selected case')();
-        const registry = loadRegistry(options);
-        loaded.push(registry.names());
-        return registry;
-      } }));
+      const deps = w.deps({
+        loadUseCase: undefined,
+        readRegistry(options) {
+          if (options.dir !== w.keys.root || options.useCase !== use.name || !isDeepStrictEqual(options.specs, use.keys)) forbid('a registry read outside the selected case')();
+          const registry = loadRegistry(options);
+          loaded.push(registry.names());
+          return registry;
+        },
+      });
+      expect(deps.loadUseCase, 'the matrix must use the runner case loader').toBeUndefined();
+      exit = await runTask(def, argv, deps);
     } finally {
       for (const spy of spies) spy.mockRestore();
     }
