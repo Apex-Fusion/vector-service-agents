@@ -6,7 +6,7 @@ Three rules hold for every step:
 
 - A runtime keeps its jobs in memory, and the service keeps the record of the checks of a job in memory. Never restart a container of the Order Desk while a job runs (section "The restart rule").
 - No command in this runbook prints a key or the token. Never add one that does.
-- The host builds no image. CI builds the images, and the compose file names each one by its digest.
+- The host builds no image. CI publishes the images. The compose file names each one by its digest.
 
 ## What it is
 
@@ -204,7 +204,7 @@ No two runtimes may share a key. This command prints a key hash that stands twic
 
 ## The images
 
-The compose file names two images. CI builds both, and it pushes each one under `:latest` and under `:<full git commit sha>`. Use the tag of the commit that was reviewed. The service image is `ghcr.io/apex-fusion/vector-service-agents/order-desk`. The runtime image is `ghcr.io/apex-fusion/vector-service-agents/agent-runtime`. The three runtimes use one image, so they get one digest.
+CI builds the service image and reuses [the pinned runtime image](README.md#the-runtime-image). CI publishes both under `:latest` and `:<full git commit sha>`. Use the tag of a reviewed commit with a successful `publish` job. The service image is `ghcr.io/apex-fusion/vector-service-agents/order-desk`. The runtime image is `ghcr.io/apex-fusion/vector-service-agents/agent-runtime`. The three runtimes use one image, so they get one digest.
 
 The pull needs no login when the package is public. If the answer says `denied`, the package is private: make it public in the settings of the package, or log in to `ghcr.io` with a token that has the scope `read:packages`. RUNBOOK.md (step 5, "Run the mock service") does the same for the mock service.
 

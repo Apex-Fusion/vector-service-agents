@@ -7,8 +7,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { GATEWAY_DEFAULT, KOIOS_DEFAULT, OGMIOS_DEFAULT } from '../src/config.ts';
 import { STOP_WAIT_MS, startService } from '../src/start.ts';
 import type { StartOptions, Started } from '../src/start.ts';
-import { Child, childEnvironment } from './support/child.ts';
-import { freePort, listening, send } from './support/net.ts';
+import { CHILD_PROBE_MS, CHILD_TEST_MS } from './support/child.ts';
+import { freePort, listening, send, startChild } from './support/net.ts';
 import { purchaseOrder } from './support/scenario.ts';
 import { INSURER_ORG, MTLS_BASE, OPERATOR_TOKEN, PUBLIC_BASE, SUPPLIER_ORG, T0, World, resourceOf, serviceEnvironment } from './support/world.ts';
 
@@ -162,13 +162,17 @@ describe('the stop', () => {
 
 describe('the stop on a signal', () => {
   it.each(['SIGTERM', 'SIGINT'] as const)('%s stops the process: it writes the line of the stop, closes the port and exits with 0', async (name) => {
-    const port = await freePort();
-    const child = new Child('test/support/serve.ts', childEnvironment(serviceEnvironment(port)));
-    await child.waitFor('"event":"listening"');
-    expect((await send(port, { path: '/healthz' })).status).toBe(200);
-    child.signal(name);
-    expect(await child.exit).toEqual({ code: 0, signal: null });
-    expect(child.stdout).toContain(`{"event":"stopping","signal":"${name}"}`);
-    expect(await listening(port)).toBe(false);
-  });
+    const { child, port } = await startChild('test/support/serve.ts', serviceEnvironment);
+    try {
+      // A request is handled after the entry sets its signal handlers.
+      const health = await send(port, { path: '/healthz', signal: AbortSignal.timeout(CHILD_PROBE_MS) });
+      expect(health.status, child.diagnostics()).toBe(200);
+      child.signal(name);
+      expect(await child.waitForExit(`exit after ${name}`), child.diagnostics()).toEqual({ code: 0, signal: null });
+      expect(child.stdout).toContain(`{"event":"stopping","signal":"${name}"}`);
+      expect(await listening(port)).toBe(false);
+    } finally {
+      await child.cleanup();
+    }
+  }, CHILD_TEST_MS);
 });
