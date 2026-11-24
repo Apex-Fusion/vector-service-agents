@@ -32,6 +32,7 @@ import { scriptTxInfoOf, txInfoOf } from '../run-record.ts';
 import type { RunKind, ScriptTxInfo, TxInfo } from '../run-record.ts';
 import data from '../../usecases/bid-evaluation.ts';
 import { historicalReceiptKey } from './historical-receipt-keys.ts';
+import { lifecycleEvidence } from './lifecycle.ts';
 import { isObject, lastHire, ref, txOf } from './types.ts';
 import type {
   ApprovalRead, Assembly, Challenge, EvidenceModule, EvidenceReadSession, HistoricalHoldCandidate, Obj, PublicResultProjection, PublicRouteEvidence, Ref, ReportedHire, Shown, TerminalSpend,
@@ -1160,7 +1161,7 @@ export interface BidEvidencePart {
 }
 
 const RUNS: BidEvidencePart = { runKinds: ['clean', 'failure'], rules: RULES, hosted: [RESOLVE], prepare: prepareBids, moduleDocument };
-const PARTS: readonly BidEvidencePart[] = [RUNS];
+const PARTS: readonly BidEvidencePart[] = [RUNS, lifecycleEvidence];
 function partFor(a: Assembly): BidEvidencePart {
   const part = single(PARTS, (candidate) => candidate.runKinds.includes(a.loaded.record.kind));
   need(part, 'the evidence module has no unique part for this run');

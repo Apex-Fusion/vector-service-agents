@@ -22,9 +22,11 @@ function checkGolden(kind: 'clean' | 'failure', actual: string): void {
 }
 
 describe('bid evidence module', () => {
-  it('covers only the clean and failure steps and uses the role and schema contracts from the data and kit', () => {
-    expect(bidEvaluation.runKinds).toEqual(['clean', 'failure']);
-    expect(Object.keys(bidEvaluation.rules)).toEqual([...ids('clean'), ...ids('failure')]);
+  it('covers all three run kinds and uses the role and schema contracts from the data and kit', () => {
+    expect(bidEvaluation.runKinds).toEqual(['clean', 'failure', 'lifecycle']);
+    const lifecycle = data.evidenceSteps.filter(({ run }) => run === 'lifecycle').map(({ id }) => id);
+    expect(lifecycle).toHaveLength(7);
+    expect(Object.keys(bidEvaluation.rules)).toEqual([...ids('clean'), ...ids('failure'), ...lifecycle]);
     const sourcing = data.agents.filter(({ kind }) => kind === 'sourcing-agent').map(({ id }) => id);
     expect(bidEvaluation.agentOf('propose')).toEqual(sourcing);
     expect(bidEvaluation.agentOf('execute')).toEqual(sourcing);
