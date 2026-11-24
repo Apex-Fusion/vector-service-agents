@@ -1,7 +1,7 @@
 // scripts/operator/test/end-state.test.ts - the task `end-state` through the real runner, over a fixture ledger (the records, the delegations, the Module-1 claims and the wallets of the kit tests), a fake
 // hosted server (the gateway and the indexer of the marketplace), and a fake `fetch` for the manifest of Module-1 and the status of the four runtimes. A state in which all is well gives exit 0. Each
 // check fails alone, with its exit and its line. The task signs nothing. No test uses the network or DNS.
-import { chmodSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { setImmediate as nextTurn } from 'node:timers/promises';
 import { describe, expect, it, vi } from 'vitest';
@@ -9,12 +9,14 @@ import { testKey } from '../../../packages/buyer-core/test/fixtures/identity-wor
 import { AUDITOR_ID, CLAIMER_ID, MODULE1, MODULE1_MANIFEST, agentRecord, claimUtxo, recordUtxo } from '../../../packages/buyer-core/test/fixtures/jury-world.ts';
 import { MAINNET, attestation, attestationUtxo, delegation, delegationUtxo, recordUtxo as registryUtxo } from '../../../packages/buyer-core/test/fixtures/ledger-read-world.ts';
 import { LedgerProvider, koiosOf, ledgerWorld } from '../../../packages/usecase-kit/test/dispute/ledger.ts';
+import { decodeIdentityAdvertDatum, encodeIdentityAdvertDatum } from '../../../packages/vector-read/src/index.ts';
+import { decodeIdentityDatum, encodeIdentityDatum } from '../../../packages/vector-read/src/identity-codec.ts';
 import { HostedError } from '../../checks/lib/hosted.ts';
 import { iso } from '../../checks/lib/format.ts';
 import type { ChainAccess } from '../../checks/lib/session.ts';
 import type { UseCase } from '../lib/contract.ts';
 import { FactsFile } from '../lib/facts.ts';
-import { ATT_TYPES, calculateMinLovelaceFromUTxO } from '../lib/platform.ts';
+import { ATT_TYPES, PURPOSE, calculateMinLovelaceFromUTxO } from '../lib/platform.ts';
 import { LEGACY_PUBLIC_MANIFEST, publicManifestFile, writePublicManifest } from '../lib/registry.ts';
 import { runTask } from '../lib/runner.ts';
 import endState from '../tasks/end-state.ts';
@@ -46,6 +48,7 @@ const FAIR_FLOAT = 1_000_000_000n;
 const NODE_URL = 'https://ogmios.test';
 const COINS_PER_BYTE = 5_003;
 const RECLAIM_TX = hashOf('end-state reclaim Bravo');
+const HISTORY_FEE = 220_000n;
 const LIFE_STEPS = [
   ['change-controller', 15], ['recovery-start', 13], ['recovery-wait', 12], ['recovery-complete', 6],
   ['retire', 5], ['set-successor', 4], ['reclaim', 3],
@@ -74,11 +77,21 @@ const ALL_CHECKS = [
   'attestations', 'runtimes', 'subagents:reorder-agent',
 ];
 
-interface Row { advert_ref: string; capability_id: string; model: string; agent_id: string; did: string; status: string }
+interface Row { advert_ref: string; capability_id: string; model: string; agent_id: string; did: string; supplier_pkh: string; status: string }
 interface Gateway {
-  verified: boolean; listed: string[]; parties: boolean; domain?: string; effective?: 'active' | 'revoked';
+  verified: boolean; listed: string[]; parties: boolean; domain?: string; effective?: 'active' | 'revoked' | 'suspended';
   parent?: { parent: string; parentEpoch: number; depth: number };
 }
+
+interface HistoryOutput {
+  tx_hash: string; tx_index: number; payment_addr: { bech32: string }; value: string;
+  inline_datum: { bytes: string } | null; asset_list: { policy_id: string; asset_name: string; quantity: string }[];
+}
+interface HistoryTx {
+  tx_hash: string; fee: string; valid_contract?: boolean; plutus_contracts: { valid_contract: boolean }[]; inputs: HistoryOutput[]; outputs: HistoryOutput[];
+}
+interface CapturedHistory { payment: { tx: Pick<HistoryTx, 'plutus_contracts'> } }
+const capturedHistory: CapturedHistory = JSON.parse(readFileSync(new URL('../../../packages/buyer-core/test/fixtures/ledger-read-mainnet.json', import.meta.url), 'utf8'));
 
 interface Rig {
   readonly world: TaskWorld;
@@ -92,6 +105,8 @@ interface Rig {
   readonly statuses: Map<string, string | number>;
   readonly webCalls: string[];
   readonly protocolRequests: unknown[];
+  readonly history: Map<string, HistoryTx>;
+  readonly unconfirmed: Set<string>;
   idOf(name: string): string;
   /** Puts a record on the ledger in place of the record of the same agent. */
   setRecord(id: string, utxo: LedgerProvider['live'][number]): void;
@@ -114,6 +129,10 @@ interface RigOptions {
 async function makeRig(options: RigOptions = {}, use: UseCase = data): Promise<Rig> {
   const names = use.funding.map((line) => line.wallet);
   if (use.compliance !== null) names.push(use.compliance.issuerKey, 'provider');
+  if (use.lifecycle !== null) names.push(use.lifecycle.controllers[1]);
+  for (const agent of use.agents.filter(({ end }) => end.record === 'revoked')) {
+    names.push(use.organisations.find(({ id }) => id === agent.organisation)!.accountableKey);
+  }
   const world = await taskWorld({
     keys: names, shared: names.filter((name) => use.keys.some((key) => key.name === name && key.scope === 'shared')),
     env: { OPERATOR_USE_CASE: USE_CASE, OPERATOR_MODULE1_COMMIT: COMMIT, VECTOR_OGMIOS_URL: NODE_URL, ...options.env },
@@ -125,6 +144,26 @@ async function makeRig(options: RigOptions = {}, use: UseCase = data): Promise<R
   writePublicManifest(join(world.keys.root, publicManifestFile(use.name)), world.keys.registry, factsId);
   const ledger = ledgerWorld([], []);
   const facts = FactsFile.open(join(world.stateDir, 'facts.json'), factsId);
+  const history = new Map<string, HistoryTx>();
+  const unconfirmed = new Set<string>();
+  const txStatus = world.node.txStatus.bind(world.node);
+  vi.spyOn(world.node, 'txStatus').mockImplementation((hash) => history.has(hash) ? Promise.resolve({ confirmations: unconfirmed.has(hash) ? null : 5 }) : txStatus(hash));
+  const feeAddress = world.keys.registry.addressOf('fee');
+  const historicalShape = ({ txHash: tx_hash, outputIndex: tx_index, address, assets, datum }: LedgerProvider['live'][number]): HistoryOutput => ({
+    tx_hash, tx_index, payment_addr: { bech32: address }, value: String(assets.lovelace),
+    inline_datum: datum == null ? null : { bytes: datum },
+    asset_list: Object.entries(assets).filter(([unit]) => unit !== 'lovelace').map(([unit, quantity]) => ({
+      policy_id: unit.slice(0, 56), asset_name: unit.slice(56), quantity: String(quantity),
+    })),
+  });
+  const archive = (tx: string, before: LedgerProvider['live'][number], after: LedgerProvider['live'][number]): void => {
+    const walletIn = { txHash: hash(`funding ${tx}`), outputIndex: 0, address: feeAddress, assets: { lovelace: 15_000_000n } };
+    const walletOut = { txHash: tx, outputIndex: 1, address: feeAddress, assets: { lovelace: walletIn.assets.lovelace + before.assets.lovelace! - after.assets.lovelace! - HISTORY_FEE } };
+    history.set(tx, {
+      tx_hash: tx, fee: String(HISTORY_FEE), inputs: [before, walletIn].map(historicalShape), outputs: [after, walletOut].map(historicalShape),
+      plutus_contracts: capturedHistory.payment.tx.plutus_contracts.map(({ valid_contract }) => ({ valid_contract })),
+    });
+  };
   const statuses = new Map<string, string | number>();
   const webCalls: string[] = [];
   const protocolRequests: unknown[] = [];
@@ -132,6 +171,16 @@ async function makeRig(options: RigOptions = {}, use: UseCase = data): Promise<R
   const legacyIds: Readonly<Partial<Record<string, string>>> = { 'reorder-agent': REORDER_ID, 'order-desk': ORDER_ID, 'stock-reader': READER_ID };
   const ids = new Map(all.map(({ id }) => [id, legacyIds[id] ?? hash(`identity ${id}`)]));
   const idOf = (name: string): string => ids.get(name)!;
+  const withAuthority = (id: string, output: LedgerProvider['live'][number]): LedgerProvider['live'][number] => {
+    const agent = use.agents.find((one) => idOf(one.id) === id);
+    if (agent === undefined || output.datum == null) return output;
+    const datum = decodeIdentityDatum(output.datum);
+    if (datum.status.type === 'Revoked' || datum.status.type === 'Retired') return output;
+    const keys = agent.adverts.map(({ supplierKey }) => ({
+      keyType: 'Ed25519' as const, key: world.keys.registry.publicKeyOf(supplierKey), purposes: PURPOSE.transaction, pop: null,
+    }));
+    return { ...output, datum: encodeIdentityDatum({ ...datum, keys, capabilities: [Buffer.from(agent.capability, 'utf8').toString('hex')] }) };
+  };
   const gateway = new Map<string, Gateway>();
   const listing: Row[] = [];
   const web: typeof fetch = async (input, init) => {
@@ -150,8 +199,15 @@ async function makeRig(options: RigOptions = {}, use: UseCase = data): Promise<R
     if (typeof status === 'number') return new Response('{}', { status });
     throw new Error('the network was touched');
   };
+  const koios = koiosOf(ledger);
+  const readHistory: typeof fetch = async (input, init) => {
+    if (!new URL(String(input)).pathname.endsWith('/tx_info')) return koios(input, init);
+    const args = JSON.parse(String(init?.body)) as { _tx_hashes: string[]; _inputs: boolean; _assets: boolean; _scripts: boolean };
+    if (!args._inputs || !args._assets || !args._scripts) throw new Error('the read did not request the transaction detail');
+    return Response.json(args._tx_hashes.flatMap((tx) => history.has(tx) ? [history.get(tx)] : []));
+  };
   const chain: ChainAccess = {
-    provider: ledger, deployment: MAINNET, koiosUrl: 'https://koios.test', fetchImpl: koiosOf(ledger),
+    provider: ledger, deployment: MAINNET, koiosUrl: 'https://koios.test', fetchImpl: readHistory,
     context: async () => { throw new Error('the end-state check builds nothing'); }, liveVaultsOf: async () => [],
   };
   const hosted = new PackHosted({
@@ -163,7 +219,7 @@ async function makeRig(options: RigOptions = {}, use: UseCase = data): Promise<R
       const deactivated = effective === 'revoked';
       const metadata = {
         canonicalId, ...(deactivated ? { deactivated } : {}),
-        vectorStatus: { status: 'active', effective, ...(deactivated ? { effectiveReason: 'parentRevoked' } : {}) },
+        vectorStatus: { status: 'active', effective, ...(deactivated ? { effectiveReason: 'parentRevoked' } : effective === 'suspended' ? { effectiveReason: 'parentSuspended' } : {}) },
         ...(state.parent === undefined ? {} : { vectorParent: state.parent }),
         vectorParties: state.parties ? [{ role: 'accountable', signer: 'controller', organisation: state.domain, ...(state.verified ? { organisationVerified: true } : {}), rights: ['suspend', 'revoke'], notBefore: '2026-10-16T12:00:00Z' }] : [],
         vectorProvenance: { attestations: state.listed.map((id) => ({ id, type: 'provenance', issuer: 'did:key:z6Mk', issuedAt: '2026-11-01T10:00:00Z', solicited: true, digest: hash('digest') })) },
@@ -200,25 +256,43 @@ async function makeRig(options: RigOptions = {}, use: UseCase = data): Promise<R
     if (ended && !options.skipSubagentEnd) facts.put('subagentEnds', [agent.id], { tx: hash(`end ${agent.id}`), at: iso(NOW - DAY), epochBefore: 0, epochAfter: 1 });
     const successor = agent.end.successor === null ? null : idOf(agent.end.successor);
     if (agent.end.record === 'retired') {
-      const output = registryUtxo(id, agentRecord({ keys: [], parties: [], status: { type: 'Retired', at: NOW - 5 * DAY, successor } }));
+      const controller = world.keys.registry.publicKeyOf(use.lifecycle!.controllers[1]);
+      const output = registryUtxo(id, agentRecord({ controller, subagentEpoch: 2, keys: [], parties: [], status: { type: 'Retired', at: NOW - 5 * DAY, successor } }));
       const minimum = calculateMinLovelaceFromUTxO(BigInt(COINS_PER_BYTE), { ...output, assets: { ...output.assets, lovelace: 0n } });
-      ledger.live.push({ ...output, txHash: RECLAIM_TX, assets: { ...output.assets, lovelace: minimum } });
+      const reclaimed = { ...output, txHash: RECLAIM_TX, assets: { ...output.assets, lovelace: minimum } };
+      ledger.live.push(reclaimed);
+      archive(RECLAIM_TX, { ...output, txHash: hash('set-successor') }, reclaimed);
     } else if (agent.end.record === 'revoked') {
-      const status = { type: 'Revoked', by: { type: 'KeyHash', hash: testKey(3).keyHash }, reason: 9, invalidFrom: NOW - 2 * DAY, at: NOW - DAY, successor } as const;
+      const party = use.organisations.find(({ id: name }) => name === agent.organisation)!.accountableKey;
+      const status = { type: 'Revoked', by: { type: 'KeyHash', hash: world.keys.registry.hashOf(party) }, reason: 9, invalidFrom: NOW - 2 * DAY, at: NOW - DAY, successor } as const;
       ledger.live.push(registryUtxo(id, agentRecord({ keys: [], parties: [], status })));
       facts.put('revocations', [agent.id], { tx: hash(`revoke ${agent.id}`), reason: status.reason, invalidFrom: iso(status.invalidFrom), revokedAt: iso(status.at) });
     } else {
-      ledger.live.push(agent === REORDER ? ACTIVE_REORDER : agent === ORDER ? ACTIVE_ORDER : registryUtxo(id, agentRecord({ subagentEpoch: ended ? 1 : 0 })));
+      const output = agent === REORDER ? ACTIVE_REORDER : agent === ORDER ? ACTIVE_ORDER : registryUtxo(id, agentRecord({ subagentEpoch: ended ? 1 : 0 }));
+      ledger.live.push(withAuthority(id, output));
     }
     for (const advert of agent.adverts) {
       const tx = hash(use === data ? `advert ${advert.model}` : `advert ${agent.id} ${advert.model}`);
       const ref = `${tx}#0`;
-      facts.put('adverts', [agent.id, advert.model], { ref, tx, detailUri: `${advert.origin}/agent.json`, detailHash: hash('detail'), endpoint: advert.origin, postedAt: iso(NOW - 10 * DAY) });
+      const detailUri = `${advert.origin}/agent.json`;
+      const detailHash = hash('detail');
+      const supplier = world.keys.registry.hashOf(advert.supplierKey);
+      facts.put('adverts', [agent.id, advert.model], { ref, tx, detailUri, detailHash, endpoint: advert.origin, postedAt: iso(NOW - 10 * DAY) });
+      const output = {
+        txHash: tx, outputIndex: 0, address: MAINNET.advert.address, assets: { lovelace: advert.depositLovelace },
+        datum: encodeIdentityAdvertDatum({
+          agent_id: id, supplier_pkh: supplier, capability_id: agent.capability, model: advert.model, max_output_tokens: advert.maxOutputTokens,
+          max_processing_ms: advert.windowMs, price_lovelace: advert.priceLovelace, supplier_bond_lovelace: advert.supplierBondLovelace,
+          buyer_bond_lovelace: advert.buyerBondLovelace, endpoint_url: advert.origin, detail_uri: detailUri, detail_hash: detailHash,
+          advertised_at: NOW - 10 * DAY, status: 'Active',
+        }),
+      };
       if (agent.end.advert === 'listed') {
-        listing.push({ advert_ref: ref, capability_id: agent.capability, model: advert.model, agent_id: id, did: did(id), status: 'free' });
+        ledger.live.push(output);
+        listing.push({ advert_ref: ref, capability_id: agent.capability, model: advert.model, agent_id: id, did: did(id), supplier_pkh: supplier, status: 'free' });
         expectedRunning.push(advert.runtimeContainer);
         statuses.set(`${advert.origin}/status`, 'free');
-      }
+      } else ledger.koiosSpent.push(output);
     }
     const listed: string[] = [];
     const spec = use.attestations.find(({ agent: name }) => name === agent.id)!;
@@ -265,11 +339,16 @@ async function makeRig(options: RigOptions = {}, use: UseCase = data): Promise<R
       const replySha256 = revoked ? hash('reply') : null;
       const replyUri = revoked ? 'https://example.test/reply' : null;
       facts.put('compliance', [subject], { id, tx, digest, locator, issuedAt: iso(issuedAt), validUntil: iso(validUntil), revokeTx, contestTx, replySha256, replyUri });
-      ledger.live.push(attestationUtxo(id, attestation({
-        subject: idOf(subject), issuer, attType: ATT_TYPES.identity, format: compliance.format, digest, locator: locatorHex, issuedAt, validUntil,
-        status: revoked ? { type: 'AttRevoked', at: NOW - 2 * DAY, reason: 9 } : { type: 'AttActive' },
-        contested: replyUri === null || replySha256 === null ? null : { uri: Buffer.from(replyUri, 'utf8').toString('hex'), sha256: replySha256 },
-      }), { txHash: contestTx ?? tx }));
+      const issue = attestation({ subject: idOf(subject), issuer, attType: ATT_TYPES.identity, format: compliance.format, digest, locator: locatorHex, issuedAt, validUntil });
+      const earlier = attestationUtxo(id, issue, { txHash: tx });
+      if (revokeTx !== null && contestTx !== null && replyUri !== null && replySha256 !== null) {
+        const revoked = { ...issue, status: { type: 'AttRevoked' as const, at: NOW - 2 * DAY, reason: 9 } };
+        const during = attestationUtxo(id, revoked, { txHash: revokeTx });
+        const now = attestationUtxo(id, { ...revoked, contested: { uri: Buffer.from(replyUri, 'utf8').toString('hex'), sha256: replySha256 } }, { txHash: contestTx });
+        archive(revokeTx, earlier, during);
+        archive(contestTx, during, now);
+        ledger.live.push(now);
+      } else ledger.live.push(earlier);
     }
   }
   if (use.lifecycle !== null) for (const [step, days] of LIFE_STEPS) {
@@ -285,10 +364,10 @@ async function makeRig(options: RigOptions = {}, use: UseCase = data): Promise<R
   writeRunning();
 
   const rig: Rig = {
-    world, ledger, hosted, facts, gateway, statuses, webCalls, protocolRequests, idOf,
+    world, ledger, hosted, facts, gateway, statuses, webCalls, protocolRequests, history, unconfirmed, idOf,
     get listing() { return listing; },
     set listing(rows) { listing.splice(0, listing.length, ...rows); },
-    setRecord: (id, utxo) => { ledger.live = [...ledger.live.filter((candidate) => candidate.assets[`${MAINNET.identity.hash}${id}`] === undefined), utxo]; },
+    setRecord: (id, utxo) => { ledger.live = [...ledger.live.filter((candidate) => candidate.assets[`${MAINNET.identity.hash}${id}`] === undefined), withAuthority(id, utxo)]; },
     setWallet, writeRunning,
     run: (...argv) => runTask(endState, [...argv, '--use-case', use.name], world.deps({ chain, hosted, fetchImpl: web })),
     checks: () => {
@@ -414,6 +493,16 @@ describe('the task end-state', () => {
       await expectFailure(missing, name, 'the facts hold no end of the subagents');
     }, SLOW);
 
+    it('does not credit an end operation for children from an older epoch', async () => {
+      const rig = await makeRig({}, priorAuthorization);
+      const parent = 'prior-authorization-agent';
+      const id = rig.idOf(parent);
+      rig.setRecord(id, registryUtxo(id, agentRecord({ subagentEpoch: 2 })));
+      const fact = rig.facts.read().subagentEnds[parent]!;
+      rig.facts.put('subagentEnds', [parent], { ...fact, epochBefore: 1, epochAfter: 2 }, { replace: true });
+      await expectFailure(rig, `subagents:${parent}`, 'at epoch 1');
+    }, SLOW);
+
     it('refuses a retired advert runtime that is still running and a live outgoing child delegation', async () => {
       const rig = await makeRig({}, priorAuthorization);
       rig.writeRunning(['intake-runtime', 'priorauth-runtime']);
@@ -469,19 +558,60 @@ describe('the task end-state', () => {
       await expectFailure(rig, 'adverts', 'the node still holds an unspent output for a retired advert');
     }, SLOW);
 
-    it('fails closed if the node cannot read a retired advert', async () => {
+    it('fails closed if the node cannot read the live advert address', async () => {
       const rig = await makeRig({}, bidEvaluation);
-      const { tx } = rig.facts.read().adverts['bid-desk-bravo']!['bid-desk-v1']!;
-      const read = rig.ledger.getUtxosByOutRef.bind(rig.ledger);
-      vi.spyOn(rig.ledger, 'getUtxosByOutRef').mockImplementation(async (refs) => {
-        if (refs.some(({ txHash }) => txHash === tx)) throw new Error('the advert output lookup failed');
-        return read(refs);
+      const read = rig.ledger.getUtxos.bind(rig.ledger);
+      vi.spyOn(rig.ledger, 'getUtxos').mockImplementation(async (address) => {
+        if (address === MAINNET.advert.address) throw new Error('the advert output lookup failed');
+        return read(address);
       });
       await expectFailure(rig, 'adverts', 'cannot tell: the advert output lookup failed');
       expect(rig.checks().get('lifecycle')!.result).toBe('ok');
       expect(await rig.run('status')).toBe(1);
       expect(rig.world.machine()).toMatchObject({ command: 'status', outcome: 'failed', exit: 1 });
       expect(rig.world.screen.text).not.toContain('end state: DONE');
+    }, SLOW);
+
+    it('requires the spent original and refuses an unlisted replacement at the advert address', async () => {
+      const rig = await makeRig({}, bidEvaluation);
+      const original = rig.facts.read().adverts['bid-desk-bravo']!['bid-desk-v1']!;
+      const prior = rig.ledger.koiosSpent.find(({ txHash }) => txHash === original.tx)!;
+      const live = { ...prior, txHash: hash('replacement Bravo') };
+      rig.ledger.live.push(live);
+      await expectFailure(rig, 'adverts', 'the node holds an unexpected Active advert for bid-desk-bravo');
+      expect(rig.listing.some(({ advert_ref }) => advert_ref === `${live.txHash}#0`)).toBe(false);
+      rig.ledger.live.pop();
+      rig.ledger.koiosBehind.add(prior.txHash);
+      await expectFailure(rig, 'adverts', 'the history does not show the spent advert of bid-desk-bravo/bid-desk-v1');
+      rig.ledger.koiosBehind.delete(prior.txHash);
+      expect(await rig.run('status')).toBe(0);
+    }, SLOW);
+
+    it('requires the listed reference, supplier, datum and pure deposit to agree across the two sources', async () => {
+      const rig = await makeRig({}, bidEvaluation);
+      const id = rig.idOf('bid-desk-alfa');
+      const row = rig.listing.find(({ agent_id }) => agent_id === id)!;
+      const output = rig.ledger.at(row.advert_ref)!;
+      const datum = decodeIdentityAdvertDatum(output.datum!);
+      const otherSupplier = testKey(5).keyHash;
+      row.supplier_pkh = otherSupplier;
+      await expectFailure(rig, 'adverts', 'the indexer lists');
+      expect(rig.checks().get('adverts')!.text).toContain('for another supplier');
+      row.supplier_pkh = datum.supplier_pkh;
+      const rest = rig.ledger.live.filter((one) => one !== output);
+      rig.ledger.live = rest;
+      await expectFailure(rig, 'adverts', 'the node does not hold the listed advert bid-desk-alfa');
+      for (const altered of [
+        { ...output, datum: encodeIdentityAdvertDatum({ ...datum, supplier_pkh: otherSupplier }) },
+        { ...output, datum: encodeIdentityAdvertDatum({ ...datum, model: 'other-model' }) },
+        { ...output, datum: encodeIdentityAdvertDatum({ ...datum, status: 'Retired' }) },
+        { ...output, assets: { ...output.assets, [MAINNET.attestation.hash + hash('other asset')]: 1n } },
+      ]) {
+        rig.ledger.live = [...rest, altered];
+        await expectFailure(rig, 'adverts', 'does not match the advert of bid-desk-alfa/bid-desk-v1');
+      }
+      rig.ledger.live = [...rest, output];
+      expect(await rig.run('status')).toBe(0);
     }, SLOW);
 
     it('requires the exact terminal status, successor and revocation facts', async () => {
@@ -505,6 +635,21 @@ describe('the task end-state', () => {
       await expectFailure(rig, 'record:bid-desk-charlie', 'on the node does not match the facts');
     }, SLOW);
 
+    it('requires the Accountable author and a recorded invalidation time for the revoked desk', async () => {
+      const rig = await makeRig({}, bidEvaluation);
+      const subject = 'bid-desk-charlie';
+      const id = rig.idOf(subject);
+      const out = rig.ledger.live.find(({ assets }) => assets[MAINNET.identity.hash + id] === 1n)!;
+      const datum = decodeIdentityDatum(out.datum!);
+      if (datum.status.type !== 'Revoked') throw new Error('the fixture needs a revoked datum');
+      rig.setRecord(id, { ...out, datum: encodeIdentityDatum({ ...datum, status: { ...datum.status, by: { type: 'ControllerSet' } } }) });
+      await expectFailure(rig, `record:${subject}`, 'is not from the Accountable key');
+      rig.setRecord(id, { ...out, datum: encodeIdentityDatum({ ...datum, status: { ...datum.status, invalidFrom: null } }) });
+      const fact = rig.facts.read().revocations[subject]!;
+      rig.facts.put('revocations', [subject], { ...fact, invalidFrom: null }, { replace: true });
+      await expectFailure(rig, `record:${subject}`, 'has no usable invalidation time');
+    }, SLOW);
+
     it('requires the compliance contest transaction and verifies the reply and the Provider output on the node', async () => {
       const rig = await makeRig({}, bidEvaluation);
       const charlie = 'bid-desk-charlie';
@@ -514,6 +659,13 @@ describe('the task end-state', () => {
       rig.facts.put('compliance', [charlie], { ...original, replySha256: hash('other reply') }, { replace: true });
       await expectFailure(rig, 'compliance', 'the reply to the compliance attestation of bid-desk-charlie does not match the facts on the node');
       rig.facts.put('compliance', [charlie], original, { replace: true });
+      const revokeTx = original.revokeTx!;
+      const revoke = rig.history.get(revokeTx)!;
+      const history = revoke.outputs[0]!;
+      history.asset_list = [...rig.history.get(RECLAIM_TX)!.outputs[0]!.asset_list];
+      await expectFailure(rig, 'compliance', 'do not spend the expected attestation');
+      history.asset_list = [...revoke.inputs[0]!.asset_list];
+      expect(await rig.run('status')).toBe(0);
       const { tx } = rig.facts.read().attestations[charlie]!.software!;
       rig.ledger.live = rig.ledger.live.filter(({ txHash }) => txHash !== tx);
       await expectFailure(rig, 'attestations', 'bid-desk-charlie/software does not match the facts on the node');
@@ -523,6 +675,9 @@ describe('the task end-state', () => {
       const rig = await makeRig({}, bidEvaluation);
       const bravo = rig.idOf('bid-desk-bravo');
       const output = rig.ledger.at(`${RECLAIM_TX}#0`)!;
+      rig.setRecord(bravo, { ...output, assets: { ...output.assets, lovelace: output.assets.lovelace! - 1n } });
+      await expectFailure(rig, 'lifecycle', 'the tombstone holds less lovelace than the ledger minimum');
+      expect(rig.checks().get('record:bid-desk-bravo')!.result).toBe('fail');
       rig.setRecord(bravo, { ...output, assets: { ...output.assets, lovelace: output.assets.lovelace! + 1n } });
       await expectFailure(rig, 'lifecycle', 'the deposit above the ledger minimum was not reclaimed: 0.000001 units remain');
       expect(rig.checks().get('record:bid-desk-bravo')).toMatchObject({ result: 'ok', text: expect.stringContaining('the controller can still reclaim 0.000001 units') });
@@ -532,6 +687,36 @@ describe('the task end-state', () => {
       await expectFailure(rig, 'record:bid-desk-bravo', 'the tombstone must hold just its identity token');
       const missing = await makeRig({ skipStep: 'recovery-wait' }, bidEvaluation);
       await expectFailure(missing, 'lifecycle', 'no usable lifecycle step(s): recovery-wait');
+    }, SLOW);
+
+    it('requires the recovered controller and complete, confirmed credit to the fee wallet', async () => {
+      const rig = await makeRig({}, bidEvaluation);
+      const bravo = rig.idOf('bid-desk-bravo');
+      const output = rig.ledger.at(`${RECLAIM_TX}#0`)!;
+      const datum = decodeIdentityDatum(output.datum!);
+      rig.setRecord(bravo, { ...output, datum: encodeIdentityDatum({ ...datum, controller: testKey(5).publicKey }) });
+      await expectFailure(rig, 'lifecycle', 'does not retain the recovered controller');
+      rig.setRecord(bravo, output);
+      const tx = rig.history.get(RECLAIM_TX)!;
+      tx.valid_contract = false;
+      await expectFailure(rig, 'lifecycle', 'does not confirm the exact record spend as applied');
+      delete tx.valid_contract;
+      tx.plutus_contracts[0]!.valid_contract = false;
+      await expectFailure(rig, 'lifecycle', 'does not confirm valid script execution');
+      tx.plutus_contracts[0]!.valid_contract = true;
+      rig.unconfirmed.add(RECLAIM_TX);
+      await expectFailure(rig, 'lifecycle', 'does not confirm the exact record spend as applied');
+      rig.unconfirmed.delete(RECLAIM_TX);
+      const fee = tx.fee;
+      tx.fee = '';
+      await expectFailure(rig, 'lifecycle', 'has no actual fee');
+      tx.fee = fee;
+      const wallet = tx.outputs[1]!;
+      const amount = wallet.value;
+      wallet.value = String(BigInt(amount) - 1n);
+      await expectFailure(rig, 'lifecycle', 'did not receive the reclaimed deposit less the transaction fee');
+      wallet.value = amount;
+      expect(await rig.run('status')).toBe(0);
     }, SLOW);
 
     it('does not substitute a default for missing, invalid or conflicting protocol parameters', async () => {
@@ -559,7 +744,7 @@ describe('the task end-state', () => {
       const rig = await makeRig();
       rig.ledger.live = rig.ledger.live.filter((utxo) => utxo.assets[`${MAINNET.identity.hash}${ORDER_ID}`] === undefined);
       expect(await rig.run()).toBe(1);
-      expectChecks(rig, { 'record_active:order-desk': 'fail', 'holds': 'fail' });
+      expectChecks(rig, { 'record_active:order-desk': 'fail', adverts: 'fail', 'holds': 'fail' });
       expect(rig.checks().get('record_active:order-desk')!.text).toContain('is not in the identity registry');
     }, SLOW);
 
@@ -573,6 +758,18 @@ describe('the task end-state', () => {
       expect(text).toContain('on hold from the jury (reason 64)');
       expect(rig.world.screen.lines).toContain(`WAIT: the end state is not reached yet: 1 check(s) wait (record_active:order-desk). The lines above say what is still to do (until ${iso(JURY_UNTIL)})`);
       expect(rig.world.machine()).toMatchObject({ outcome: 'wait', exit: 4, result: { verdict: 'wait' } });
+    }, SLOW);
+
+    it('reports an inherited jury hold as a wait until the verified parent deadline', async () => {
+      const rig = await makeRig();
+      rig.setRecord(REORDER_ID, registryUtxo(REORDER_ID, agentRecord({
+        status: { type: 'Suspended', holds: [holdOf({ type: 'Script', hash: MODULE1.claim.hash }, 64, JURY_UNTIL)] },
+      })));
+      rig.gateway.get(did(READER_ID))!.effective = 'suspended';
+      expect(await rig.run()).toBe(4);
+      expectChecks(rig, { 'record_active:reorder-agent': 'wait', 'subagents:reorder-agent': 'wait' });
+      expect(rig.checks().get('subagents:reorder-agent')!.text).toContain(`inherit the jury hold until ${iso(JURY_UNTIL)}`);
+      expect(rig.world.machine()).toMatchObject({ outcome: 'wait', exit: 4 });
     }, SLOW);
 
     it('a hold of another author, a hold that the jury shares with another author, and an Active record twin: fail, fail, ok', async () => {
@@ -614,7 +811,7 @@ describe('the task end-state', () => {
       expectChecks(missing, { adverts: 'fail' });
       expect(missing.checks().get('adverts')!.text).toContain(`does not list the advert order-desk/lot-medium (${ref('advert lot-medium')})`);
       const extra = await makeRig();
-      extra.listing = [...extra.listing, { advert_ref: ref('stray'), capability_id: ORDER.capability, model: 'lot-huge', agent_id: ORDER_ID, did: did(ORDER_ID), status: 'free' }];
+      extra.listing = [...extra.listing, { advert_ref: ref('stray'), capability_id: ORDER.capability, model: 'lot-huge', agent_id: ORDER_ID, did: did(ORDER_ID), supplier_pkh: testKey(5).keyHash, status: 'free' }];
       expect(await extra.run()).toBe(1);
       expectChecks(extra, { adverts: 'fail' });
       expect(extra.checks().get('adverts')!.text).toContain(`lists an advert of the capability ${ORDER.capability} that the facts do not hold (${ref('stray')})`);

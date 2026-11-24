@@ -9,13 +9,18 @@
 // nothing: the claims are read through the read methods of a chain port whose signature throws.
 import { readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
+import { koiosPostList } from '../../../packages/buyer-core/src/vendored/mcp/marketplace-indexer.ts';
+// The identity advert codec is at the entry of vector-read, as in the task advert.
+import { advertTextFieldsRoundTrip, decodeIdentityAdvertDatum } from '../../../packages/vector-read/src/index.ts';
+import type { IdentityAdvertDatum } from '../../../packages/vector-read/src/index.ts';
+import { decodeAttestationDatum } from '../../../packages/vector-read/src/identity-codec.ts';
 import { collateralAdvice, isCollateralOutput } from '../../checks/lib/collateral.ts';
 import { duration, iso, units } from '../../checks/lib/format.ts';
-import type { AgentSpec, AttestationFact, Facts, LifecycleSpec, StepOutcome, SubagentSpec, TaskDefinition, TaskSession } from '../lib/contract.ts';
+import type { AdvertFact, AdvertSpec, AgentSpec, AttestationFact, Facts, LifecycleSpec, StepOutcome, SubagentSpec, TaskDefinition, TaskSession } from '../lib/contract.ts';
 import { readRunning, readRuntimeStatus, runtimesOf } from '../lib/free.ts';
 import {
-  ATT_TYPES, attestationState, calculateMinLovelaceFromUTxO, createModule1Port, effectiveStatus, findRecord, formatOutRef, liveDelegations, module1FromManifest, parseOutRef, readAttestation,
-  readManifest, withdrawableFrom,
+  ATT_TYPES, PURPOSE, attestationState, calculateMinLovelaceFromUTxO, createModule1Port, effectiveStatus, findRecord, formatOutRef, keyHashOf, koiosUtxoInfo, liveDelegations, module1FromManifest,
+  parseOutRef, readAttestation, readManifest, withdrawableFrom,
 } from '../lib/platform.ts';
 import type { AttestationView, RecordUtxo } from '../lib/platform.ts';
 import { codeOf, findPublicManifest } from '../lib/registry.ts';
@@ -192,7 +197,8 @@ function makeContext(session: TaskSession<EndStateExtra>): Context {
       throw new Error('the tombstone must hold just its identity token, lovelace and an inline datum at the identity address');
     }
     const minimum = calculateMinLovelaceFromUTxO(await (coinsPerByte ??= readCoinsPerByte(session)), { ...utxo, assets: { lovelace: 0n, [unit]: 1n } });
-    return utxo.assets.lovelace > minimum ? utxo.assets.lovelace - minimum : 0n;
+    if (utxo.assets.lovelace < minimum) throw new Error('the tombstone holds less lovelace than the ledger minimum');
+    return utxo.assets.lovelace - minimum;
   };
   return {
     session, now, facts,
@@ -241,8 +247,14 @@ async function agentRecord(ctx: Context, agent: AgentSpec): Promise<Check> {
   if (status.type === 'Revoked') {
     const fact = ctx.facts.revocations[agent.id];
     if (fact === undefined) return failed(name, `the facts hold no revocation of ${agent.id}`);
+    const organisation = ctx.session.use.organisations.find(({ id }) => id === agent.organisation);
+    const authority = organisation === undefined ? null : ctx.publicKeys().get(organisation.accountableKey)?.publicKey;
+    if (authority == null || status.by.type !== 'KeyHash' || status.by.hash !== keyHashOf(authority)) {
+      return failed(name, `the revocation of ${did} is not from the Accountable key of its organisation`);
+    }
     const invalidFrom = fact.invalidFrom === null ? null : timeOf(fact.invalidFrom);
-    if (!ID.test(fact.tx) || fact.reason !== status.reason || timeOf(fact.revokedAt) !== status.at || invalidFrom !== status.invalidFrom || (fact.invalidFrom !== null && invalidFrom === null)) {
+    if (invalidFrom === null || status.invalidFrom === null) return failed(name, `the revocation of ${did} has no usable invalidation time`);
+    if (!ID.test(fact.tx) || fact.reason !== status.reason || timeOf(fact.revokedAt) !== status.at || invalidFrom !== status.invalidFrom) {
       return failed(name, `the revocation of ${did} on the node does not match the facts`);
     }
   }
@@ -293,7 +305,8 @@ function lastJsonValue(text: string): unknown {
   try { return JSON.parse(block[1]!); } catch { return undefined; }
 }
 
-interface ListedAdvert { readonly agent: string | null; readonly model: string }
+const KEY_HASH = /^[0-9a-f]{56}$/;
+interface ListedAdvert { readonly agent: string | null; readonly model: string; readonly supplier: string }
 
 /** All references of one capability, whether free or working. A truncated listing cannot prove the expected set. */
 async function listedRefs(session: TaskSession<EndStateExtra>, capability: string): Promise<Map<string, ListedAdvert>> {
@@ -305,12 +318,13 @@ async function listedRefs(session: TaskSession<EndStateExtra>, capability: strin
   const listed = new Map<string, ListedAdvert>();
   for (const row of rows as unknown[]) {
     if (!isObject(row) || typeof row.advert_ref !== 'string' || row.capability_id !== capability || typeof row.model !== 'string'
-        || (row.agent_id !== null && (typeof row.agent_id !== 'string' || !ID.test(row.agent_id)))) {
+        || typeof row.supplier_pkh !== 'string' || !KEY_HASH.test(row.supplier_pkh)
+        || (row.agent_id === null ? row.did !== null : typeof row.agent_id !== 'string' || !ID.test(row.agent_id) || row.did !== `did:vector:${row.agent_id}`)) {
       throw new Error('a row of the answer of vector_marketplace_list_suppliers is no advert of the requested capability');
     }
     const ref = advertRef(row.advert_ref);
     if (listed.has(ref)) throw new Error('the advert listing gives the same reference twice');
-    listed.set(ref, { agent: row.agent_id, model: row.model });
+    listed.set(ref, { agent: row.agent_id as string | null, model: row.model, supplier: row.supplier_pkh });
   }
   return listed;
 }
@@ -321,7 +335,23 @@ function advertRef(ref: string): string {
   return formatOutRef(parsed.txHash, parsed.outputIndex);
 }
 
-interface ExpectedAdvert { readonly agent: AgentSpec; readonly model: string; readonly didId: string }
+interface ExpectedAdvert {
+  readonly agent: AgentSpec; readonly spec: AdvertSpec; readonly fact: AdvertFact; readonly didId: string; readonly supplier: string;
+}
+
+/** The immutable terms of the advert that the fact names. The advert has no token; its output holds the exact deposit in lovelace only. */
+function matchesAdvert(datum: IdentityAdvertDatum, { agent, spec, fact, didId, supplier }: ExpectedAdvert): boolean {
+  return datum.status === 'Active' && datum.agent_id === didId && datum.supplier_pkh === supplier
+    && datum.capability_id === agent.capability && datum.model === spec.model && datum.max_output_tokens === spec.maxOutputTokens
+    && datum.max_processing_ms === spec.windowMs && datum.price_lovelace === spec.priceLovelace
+    && datum.supplier_bond_lovelace === spec.supplierBondLovelace && datum.buyer_bond_lovelace === spec.buyerBondLovelace
+    && datum.endpoint_url === fact.endpoint && datum.detail_uri === fact.detailUri && datum.detail_hash === fact.detailHash;
+}
+
+function advertDatum(bytes: string | null | undefined): IdentityAdvertDatum | null {
+  if (!bytes) return null;
+  try { return decodeIdentityAdvertDatum(bytes); } catch { return null; }
+}
 
 async function adverts(ctx: Context): Promise<Check> {
   const name = 'adverts';
@@ -329,50 +359,131 @@ async function adverts(ctx: Context): Promise<Check> {
   const waits: string[] = [];
   const retired: string[] = [];
   const groups = new Map<string, Map<string, ExpectedAdvert>>();
-  const known = new Set<string>();
+  const known = new Map<string, ExpectedAdvert>();
+  const owners = new Map<string, string>();
+  const suppliers = new Map<string, string>();
+  const lookup = ctx.publicKeys();
   for (const agent of ctx.session.use.agents) {
     const group = groups.get(agent.capability) ?? new Map<string, ExpectedAdvert>();
     groups.set(agent.capability, group);
     const record = ctx.facts.records[agent.id];
-    if (record === undefined) {
-      problems.push(`the facts hold no record of ${agent.id}, so its adverts cannot be checked`);
+    if (record === undefined || !ID.test(record.id) || record.did !== `did:vector:${record.id}`) {
+      problems.push(`the facts hold no usable record of ${agent.id}, so its adverts cannot be checked`);
       continue;
     }
+    if (owners.has(record.id)) throw new Error('two agents have the same record identifier in the facts');
+    owners.set(record.id, agent.id);
     const held = ctx.facts.adverts[agent.id] ?? {};
-    for (const { model } of agent.adverts) {
-      if (held[model] === undefined) problems.push(`the facts hold no reference for the advert ${agent.id}/${model}: run the task advert first`);
-    }
-    for (const [model, fact] of Object.entries(held)) {
+    for (const spec of agent.adverts) {
+      const { model } = spec;
+      const key = lookup.get(spec.supplierKey)?.publicKey;
+      if (key == null) {
+        problems.push(`the public key file lists no supplier key for ${agent.id}/${model}`);
+        continue;
+      }
+      const supplier = keyHashOf(key);
+      suppliers.set(supplier, agent.id);
+      const fact = held[model];
+      if (fact === undefined) {
+        problems.push(`the facts hold no reference for the advert ${agent.id}/${model}: run the task advert first`);
+        continue;
+      }
       const ref = advertRef(fact.ref);
       if (known.has(ref)) {
         problems.push(`more than one advert fact names ${ref}`);
         continue;
       }
-      known.add(ref);
-      group.set(ref, { agent, model, didId: record.id });
+      const origin = spec.origin.replace(/\/+$/, '');
+      if (parseOutRef(ref).txHash !== fact.tx || !ID.test(fact.detailHash) || fact.endpoint !== origin || fact.detailUri !== `${origin}/agent.json`) {
+        problems.push(`the advert fact of ${agent.id}/${model} does not name its post transaction and manifest`);
+        continue;
+      }
+      const entry = { agent, spec, fact, didId: record.id, supplier };
+      known.set(ref, entry);
+      group.set(ref, entry);
+    }
+    for (const model of Object.keys(held)) {
       if (!agent.adverts.some((spec) => spec.model === model)) problems.push(`the facts hold an advert ${agent.id}/${model} that the data do not name`);
+    }
+  }
+  const { provider, deployment, fetchImpl, koiosUrl } = ctx.session.chain;
+  const address = deployment.advert.address;
+  // The full address query is not filtered by an indexer, a capability or the recorded references. It includes hidden replacements.
+  const unspent = await provider.getUtxos(address);
+  const live = new Set<string>();
+  for (const output of unspent) {
+    if (output.address !== address) throw new Error('the node returned an output at another address in the advert scan');
+    const ref = advertRef(formatOutRef(output.txHash, output.outputIndex));
+    if (live.has(ref)) throw new Error('the node returned the same advert output twice');
+    live.add(ref);
+    const datum = advertDatum(output.datum);
+    const expected = known.get(ref);
+    if (expected !== undefined) {
+      if (expected.agent.end.advert === 'retired') problems.push(`the node still holds an unspent output for a retired advert (${ref})`);
+      else if (datum === null || !advertTextFieldsRoundTrip(output.datum!) || !matchesAdvert(datum, expected)
+          || output.assets.lovelace !== expected.spec.depositLovelace || Object.keys(output.assets).length !== 1 || output.scriptRef != null) {
+        problems.push(`the node output ${ref} does not match the advert of ${expected.agent.id}/${expected.spec.model}`);
+      }
+      continue;
+    }
+    if (datum?.status !== 'Active') continue;
+    const owner = owners.get(datum.agent_id) ?? suppliers.get(datum.supplier_pkh);
+    if (owner !== undefined) problems.push(`the node holds an unexpected Active advert for ${owner} (${ref})`);
+  }
+
+  const retiredRefs = new Set<string>();
+  for (const [ref, want] of known) if (want.agent.end.advert === 'retired' && !live.has(ref)) retiredRefs.add(ref);
+  const historical = new Set<string>();
+  const spent = new Set<string>();
+  if (retiredRefs.size !== 0) for (const output of await koiosUtxoInfo(koiosUrl, [...retiredRefs], fetchImpl)) {
+    const ref = advertRef(formatOutRef(output.tx_hash, output.tx_index));
+    if (!retiredRefs.has(ref) || historical.has(ref)) throw new Error('the advert history gave another output or gave one twice');
+    historical.add(ref);
+    const want = known.get(ref)!;
+    const bytes = output.inline_datum?.bytes;
+    const datum = advertDatum(bytes);
+    if (output.address === address && output.is_spent === true && Array.isArray(output.asset_list) && output.asset_list.length === 0
+        && output.value === String(want.spec.depositLovelace) && output.reference_script == null && datum !== null
+        && advertTextFieldsRoundTrip(bytes!) && matchesAdvert(datum, want)) {
+      spent.add(ref);
     }
   }
   let until = 0;
   const counts = new Map<string, number>();
   for (const [capability, expected] of groups) {
     const listed = await listedRefs(ctx.session, capability);
-    const retiredRefs: string[] = [];
-    for (const [ref, { agent, model, didId }] of expected) {
+    for (const [ref, want] of expected) {
+      const { agent, spec: { model }, didId, supplier } = want;
       const listing = listed.get(ref);
       if (agent.end.advert === 'retired') {
-        retiredRefs.push(ref);
         if (listing !== undefined) problems.push(`the indexer still lists the retired advert ${agent.id}/${model} (${ref})`);
+        if (live.has(ref)) continue;
+        if (!spent.has(ref)) problems.push(`the history does not show the spent advert of ${agent.id}/${model} (${ref})`);
         else retired.push(`${agent.id}/${model} (${ref})`);
         continue;
       }
-      if (listing !== undefined) {
-        if (listing.agent !== didId || listing.model !== model) problems.push(`the indexer lists ${ref} for another record or model, not ${agent.id}/${model}`);
-        else counts.set(agent.id, (counts.get(agent.id) ?? 0) + 1);
+      if (!live.has(ref)) {
+        problems.push(`the node does not hold the listed advert ${agent.id}/${model} (${ref})`);
         continue;
       }
       const record = await ctx.record(agent.id);
-      const held = record.kind === 'read' ? juryHoldEnd(record.read) : null;
+      if (record.kind !== 'read') {
+        problems.push(record.line);
+        continue;
+      }
+      const current = record.read.output.record;
+      if (current.status.type !== 'Revoked' && current.status.type !== 'Retired'
+          && (!current.keys.some((key) => key.keyType === 'Ed25519' && keyHashOf(key.key) === supplier && (key.purposes & PURPOSE.transaction) !== 0)
+            || !current.capabilities.includes(Buffer.from(capability, 'utf8').toString('hex')))) {
+        problems.push(`the record of ${agent.id} does not authorize the supplier and capability of ${model}`);
+      }
+      if (listing !== undefined) {
+        if (listing.agent !== didId || listing.model !== model) problems.push(`the indexer lists ${ref} for another record or model, not ${agent.id}/${model}`);
+        else if (listing.supplier !== supplier) problems.push(`the indexer lists ${ref} for another supplier, not ${agent.id}/${model}`);
+        else counts.set(agent.id, (counts.get(agent.id) ?? 0) + 1);
+        continue;
+      }
+      const held = juryHoldEnd(record.read);
       if (held === null) problems.push(`the indexer does not list the advert ${agent.id}/${model} (${ref})`);
       else {
         waits.push(`the advert ${agent.id}/${model} is not listed while the record is on hold until ${iso(held)}`);
@@ -382,19 +493,12 @@ async function adverts(ctx: Context): Promise<Check> {
     for (const ref of listed.keys()) {
       if (!expected.has(ref)) problems.push(`the indexer lists an advert of the capability ${capability} that the facts do not hold (${ref})`);
     }
-    if (retiredRefs.length !== 0) {
-      const unspent = await ctx.session.chain.provider.getUtxosByOutRef(retiredRefs.map(parseOutRef));
-      for (const output of unspent) {
-        const ref = formatOutRef(output.txHash, output.outputIndex);
-        problems.push(`the node still holds an unspent output for a retired advert (${ref})`);
-      }
-    }
   }
-  if (problems.length > 0) return failed(name, `${[...problems, ...waits].join('; ')}: the indexer must list exactly the adverts of the data`);
+  if (problems.length > 0) return failed(name, `${[...problems, ...waits].join('; ')}: the node and indexer must show exactly the adverts of the data`);
   if (waits.length > 0) return waiting(name, `${waits.join('; ')}: the adverts return when the hold ends`, until);
   const active = [...counts].map(([agent, count]) => `${agent} ${count}`).join(', ');
-  return passed(name, `the indexer lists exactly the adverts of the data (${active}), each with its reference in the facts`
-    + (retired.length === 0 ? '' : `; the retired adverts are not listed and their outputs are spent (${retired.join(', ')})`));
+  return passed(name, `the indexer lists exactly the adverts of the data (${active}), with matching node outputs`
+    + (retired.length === 0 ? '' : `; these advert outputs are spent, and no replacement is live or listed (${retired.join(', ')})`));
 }
 
 // ---- 4. the claims ----
@@ -642,6 +746,105 @@ async function attestations(ctx: Context): Promise<Check> {
   return passed(name, lines.length === 0 ? 'the facts hold no attestation' : lines.join('; '));
 }
 
+interface RecordSpendValueRow {
+  readonly ref: string;
+  readonly address: string;
+  readonly lovelace: bigint;
+  readonly inline_datum?: unknown;
+  readonly asset_list?: unknown;
+}
+
+interface RecordSpendValueFlow { fee: bigint; inputs: RecordSpendValueRow[]; outputs: RecordSpendValueRow[] }
+
+function lovelaceOf(value: unknown): bigint | null {
+  if (typeof value === 'string' && /^[0-9]{1,20}$/.test(value)) return BigInt(value);
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? BigInt(value) : null;
+}
+
+function archivedRows(value: unknown, withDetails: boolean, txHash?: string): RecordSpendValueRow[] {
+  if (!Array.isArray(value) || value.length === 0) throw new Error('the confirmed transaction has no complete input and output lists');
+  const seen = new Set<string>();
+  return value.map((item: unknown) => {
+    if (!isObject(item)) throw new Error('the confirmed transaction has an unreadable output reference');
+    const { tx_hash: origin, tx_index: index, payment_addr: payment } = item;
+    const amount = lovelaceOf(item.value);
+    const address = isObject(payment) ? payment.bech32 : null;
+    if (typeof origin !== 'string' || !ID.test(origin) || (txHash !== undefined && origin !== txHash)
+        || typeof index !== 'number' || !Number.isSafeInteger(index) || index < 0 || index > 0xffff_ffff || typeof address !== 'string' || address.length === 0 || amount === null || amount <= 0n) {
+      throw new Error('the confirmed transaction has an unreadable output reference, address or amount');
+    }
+    const ref = formatOutRef(origin, index);
+    if (seen.has(ref)) throw new Error('the confirmed transaction lists the same output reference more than once');
+    seen.add(ref);
+    return { ref, address, lovelace: amount, ...(withDetails ? { inline_datum: item.inline_datum, asset_list: item.asset_list } : {}) };
+  });
+}
+
+/** Read the actual fee and regular value flow of an applied transaction. Callers match the output to the node's current state. */
+async function readConfirmedRecordSpend(
+  session: Pick<TaskSession, 'chain' | 'node'>, txHash: string, { withDetails = false }: { withDetails?: boolean } = {},
+): Promise<RecordSpendValueFlow> {
+  if (!ID.test(txHash)) throw new Error('the record spend has no usable transaction hash');
+  const { koiosUrl, fetchImpl } = session.chain;
+  const [rows, status] = await Promise.all([
+    koiosPostList(koiosUrl, 'tx_info', { _tx_hashes: [txHash], _inputs: true, ...(withDetails ? { _assets: true, _scripts: true } : {}) }, fetchImpl, '', 512 * 1024),
+    session.node.txStatus(txHash),
+  ]).catch(() => { throw new Error('the confirmed record spend could not be read'); });
+  const { confirmations } = status;
+  const row = rows[0];
+  if (rows.length !== 1 || !isObject(row) || row.tx_hash !== txHash || (row.valid_contract !== undefined && row.valid_contract !== true)
+      || confirmations === null || !Number.isSafeInteger(confirmations) || confirmations < 1) {
+    throw new Error('the indexer does not confirm the exact record spend as applied');
+  }
+  const scripts: unknown[] | null = Array.isArray(row.plutus_contracts) ? row.plutus_contracts : null;
+  if ((scripts !== null && scripts.some((script) => !isObject(script) || script.valid_contract !== true))
+      || (withDetails && row.valid_contract !== true && (scripts === null || scripts.length === 0))) {
+    throw new Error('the transaction history does not confirm valid script execution');
+  }
+  const fee = lovelaceOf(row.fee);
+  if (fee === null) throw new Error('the confirmed record spend has no actual fee');
+  return { fee, inputs: archivedRows(row.inputs, withDetails), outputs: archivedRows(row.outputs, withDetails, txHash) };
+}
+
+interface TokenOutput { readonly ref: string; readonly lovelace: bigint; readonly datum: string }
+
+function tokenOutput(outputs: readonly RecordSpendValueRow[], script: { address: string; hash: string }, id: string): TokenOutput | null {
+  let found: TokenOutput | null = null;
+  for (const { ref, address, lovelace, asset_list: assets, inline_datum: datum } of outputs) {
+    if (address !== script.address) continue;
+    if (!Array.isArray(assets)) return null;
+    const matching = assets.find((asset: unknown) => isObject(asset) && asset.policy_id === script.hash && asset.asset_name === id) as Record<string, unknown> | undefined;
+    if (matching === undefined) continue;
+    if (found !== null || assets.length !== 1 || (matching.quantity !== '1' && matching.quantity !== 1) || !isObject(datum)
+        || typeof datum.bytes !== 'string' || datum.bytes === '') return null;
+    found = { ref, lovelace, datum: datum.bytes };
+  }
+  return found;
+}
+
+/** The issue output became revoked in the named spend. The contest spends that revoked output and leaves the current one. */
+async function complianceLineage(ctx: Context, fact: Facts['compliance'][string], view: AttestationView, revokeTx: string, contestTx: string): Promise<boolean> {
+  const script = ctx.session.chain.deployment.attestation;
+  const [revoke, contest] = await Promise.all([
+    readConfirmedRecordSpend(ctx.session, revokeTx, { withDetails: true }), readConfirmedRecordSpend(ctx.session, contestTx, { withDetails: true }),
+  ]);
+  const issued = tokenOutput(revoke.inputs, script, view.id);
+  const revoked = tokenOutput(revoke.outputs, script, view.id);
+  const contested = tokenOutput(contest.inputs, script, view.id);
+  const current = tokenOutput(contest.outputs, script, view.id);
+  if (issued?.datum == null || revoked?.datum == null || contested?.ref !== revoked.ref || contested.datum !== revoked.datum
+      || parseOutRef(issued.ref).txHash !== fact.tx || current?.ref !== formatOutRef(view.utxo.txHash, view.utxo.outputIndex)
+      || current.datum !== view.utxo.datum || current.lovelace !== view.utxo.assets.lovelace
+      || revoked.lovelace !== issued.lovelace || contested.lovelace !== revoked.lovelace || current.lovelace !== contested.lovelace) return false;
+  const before = decodeAttestationDatum(issued.datum);
+  const after = decodeAttestationDatum(revoked.datum);
+  const latest = view.attestation;
+  return before.status.type === 'AttActive' && before.contested === null && after.status.type === 'AttRevoked' && after.contested === null
+    && latest.status.type === 'AttRevoked' && after.status.at === latest.status.at && after.status.reason === latest.status.reason
+    && before.subject === latest.subject && before.issuer === latest.issuer && before.digest === latest.digest
+    && after.subject === latest.subject && after.issuer === latest.issuer && after.digest === latest.digest;
+}
+
 async function compliance(ctx: Context, spec: NonNullable<TaskSession['use']['compliance']>): Promise<Check> {
   const name = 'compliance';
   const issuer = ctx.publicKeys().get(spec.issuerKey)?.publicKey;
@@ -676,6 +879,10 @@ async function compliance(ctx: Context, spec: NonNullable<TaskSession['use']['co
       const reply = view.attestation.contested;
       if (view.utxo.txHash !== fact.contestTx || reply === null || reply.sha256 !== fact.replySha256 || reply.uri !== Buffer.from(fact.replyUri, 'utf8').toString('hex')) {
         problems.push(`the reply to the compliance attestation of ${subject} does not match the facts on the node`);
+        continue;
+      }
+      if (!(await complianceLineage(ctx, fact, view, fact.revokeTx, fact.contestTx))) {
+        problems.push(`the recorded revoke and contest do not spend the expected attestation of ${subject}`);
         continue;
       }
       lines.push(`${subject} ${fact.id} is revoked with reply ${fact.replySha256}, ${depositDate(view)}`);
@@ -718,21 +925,22 @@ async function runtimes(ctx: Context): Promise<Check> {
 async function subagents(ctx: Context, agent: AgentSpec, children: readonly SubagentSpec[]): Promise<Check> {
   const name = `subagents:${agent.id}`;
   const ended = agent.end.subagents === 'ended';
-  const parentFact = ctx.facts.records[agent.id];
-  if (parentFact === undefined) return failed(name, `the facts hold no parent record of ${agent.id}`);
-  let epochAfter: number | null = null;
+  const parent = await ctx.record(agent.id);
+  if (parent.kind === 'problem') return failed(name, parent.line);
+  const parentEpoch = parent.read.output.record.subagentEpoch;
+  let expectedEpoch = parentEpoch;
+  const holdEnd = ended ? null : juryHoldEnd(parent.read);
   if (ended) {
     const fact = ctx.facts.subagentEnds[agent.id];
     if (fact === undefined) return failed(name, `the facts hold no end of the subagents of ${agent.id}`);
-    const parent = await ctx.record(agent.id);
-    if (parent.kind === 'problem') return failed(name, parent.line);
     if (!ID.test(fact.tx) || timeOf(fact.at) === null || !Number.isSafeInteger(fact.epochBefore) || fact.epochBefore < 0
-        || !Number.isSafeInteger(fact.epochAfter) || fact.epochAfter !== fact.epochBefore + 1 || parent.read.output.record.subagentEpoch < fact.epochAfter) {
+        || !Number.isSafeInteger(fact.epochAfter) || fact.epochAfter !== fact.epochBefore + 1 || parentEpoch < fact.epochAfter) {
       return failed(name, `the epoch of ${agent.id} on the node does not support the end of its subagents in the facts`);
     }
-    epochAfter = fact.epochAfter;
+    expectedEpoch = fact.epochBefore;
   }
   const problems: string[] = [];
+  const inherited: string[] = [];
   for (const child of children) {
     const resolved = await ctx.resolution(child.id);
     if (resolved.kind !== 'read') {
@@ -740,20 +948,24 @@ async function subagents(ctx: Context, agent: AgentSpec, children: readonly Suba
       continue;
     }
     const status = resolved.metadata.vectorStatus;
+    const lineage = resolved.metadata.vectorParent;
+    if (!isObject(lineage) || lineage.parent !== parent.read.did || lineage.depth !== 1 || lineage.parentEpoch !== expectedEpoch) {
+      problems.push(`the gateway does not show ${child.id} as a direct child of the expected parent at epoch ${expectedEpoch}`);
+      continue;
+    }
     const deactivated = resolved.metadata.deactivated === true;
-    if (!isObject(status) || (ended
+    if (!ended && holdEnd !== null && isObject(status) && status.status === 'active' && status.effective === 'suspended'
+        && status.effectiveReason === 'parentSuspended' && !deactivated) {
+      inherited.push(child.id);
+    } else if (!isObject(status) || (ended
       ? status.effective !== 'revoked' || status.effectiveReason !== 'parentRevoked' || !deactivated
       : status.effective !== 'active' || deactivated)) {
       problems.push(`the gateway does not show ${child.id} as ${ended ? 'revoked by the end of its parent authority' : 'Active'}`);
-      continue;
-    }
-    const parent = resolved.metadata.vectorParent;
-    if (!isObject(parent) || parent.parent !== parentFact.did || parent.depth !== 1 || typeof parent.parentEpoch !== 'number'
-        || !Number.isSafeInteger(parent.parentEpoch) || parent.parentEpoch < 0 || (epochAfter !== null && parent.parentEpoch >= epochAfter)) {
-      problems.push(`the gateway does not show ${child.id} as a direct child of the expected parent${ended ? ' before the recorded end' : ''}`);
     }
   }
-  return problems.length > 0 ? failed(name, problems.join('; ')) : passed(name, `the gateway shows each subagent as ${ended ? 'revoked' : 'Active'} (${children.map(({ id }) => id).join(', ')})`);
+  if (problems.length > 0) return failed(name, problems.join('; '));
+  if (inherited.length !== 0 && holdEnd !== null) return waiting(name, `the subagents ${inherited.join(', ')} inherit the jury hold until ${iso(holdEnd)}`, holdEnd);
+  return passed(name, `the gateway shows each subagent as ${ended ? 'revoked' : 'Active'} (${children.map(({ id }) => id).join(', ')})`);
 }
 
 async function lifecycle(ctx: Context, spec: LifecycleSpec): Promise<Check> {
@@ -769,10 +981,34 @@ async function lifecycle(ctx: Context, spec: LifecycleSpec): Promise<Check> {
   if (status.type !== 'Retired' || successor === undefined || status.successor !== successor.id) {
     return failed(name, `the lifecycle record ${record.read.did} is not Retired with the expected successor`);
   }
+  const { output } = record.read;
+  const keys = ctx.publicKeys();
+  const controller = keys.get(spec.controllers[1])?.publicKey;
+  if (controller == null || output.record.controller !== controller) return failed(name, 'the lifecycle tombstone does not retain the recovered controller');
   const excess = await ctx.reclaimable(record.read);
   if (excess > 0n) return failed(name, `the deposit above the ledger minimum was not reclaimed: ${units(excess)} remain`);
-  if (record.read.output.utxo.txHash !== facts.reclaim!.tx) return failed(name, 'the tombstone output does not match the reclaim transaction in the facts');
-  return passed(name, `all lifecycle steps are recorded; ${record.read.did} is Retired and names ${successor.did}; the deposit above the ledger minimum was reclaimed`);
+  const reclaimTx = facts.reclaim!.tx;
+  if (output.utxo.txHash !== reclaimTx) return failed(name, 'the tombstone output does not match the reclaim transaction in the facts');
+  const feeWallet = keys.get('fee')?.address;
+  if (feeWallet == null) return failed(name, 'the public key file lists no fee wallet');
+  const reclaim = await readConfirmedRecordSpend(ctx.session, reclaimTx, { withDetails: true });
+  const identity = ctx.session.chain.deployment.identity;
+  const before = tokenOutput(reclaim.inputs, identity, output.id);
+  const after = tokenOutput(reclaim.outputs, identity, output.id);
+  if (before === null || after === null || parseOutRef(before.ref).txHash !== facts['set-successor']!.tx
+      || after.ref !== formatOutRef(reclaimTx, output.utxo.outputIndex) || after.datum !== output.utxo.datum
+      || before.datum !== after.datum || after.lovelace !== output.utxo.assets.lovelace) {
+    return failed(name, 'the reclaim transaction does not spend the recorded predecessor and leave the tombstone that the node holds');
+  }
+  const incoming = reclaim.inputs.filter(({ ref }) => ref !== before.ref);
+  const outgoing = reclaim.outputs.filter(({ ref }) => ref !== after.ref);
+  if (incoming.length === 0 || outgoing.length === 0 || [...incoming, ...outgoing].some(({ address }) => address !== feeWallet)) {
+    return failed(name, 'the reclaim transaction has an input or payment outside the fee wallet and identity output');
+  }
+  const received = outgoing.reduce((total, coin) => total + coin.lovelace, 0n) - incoming.reduce((total, coin) => total + coin.lovelace, 0n);
+  const release = before.lovelace - after.lovelace;
+  if (received <= 0n || received !== release - reclaim.fee) return failed(name, 'the fee wallet did not receive the reclaimed deposit less the transaction fee');
+  return passed(name, `all lifecycle steps are recorded; ${record.read.did} is Retired and names ${successor.did}; the deposit above the ledger minimum was reclaimed, and the fee wallet received ${units(received)}`);
 }
 
 // ---- the read and the report ----
