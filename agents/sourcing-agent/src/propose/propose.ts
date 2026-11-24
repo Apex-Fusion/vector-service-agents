@@ -46,8 +46,11 @@ import type { HeldQuote, RankedBidder } from './ranking.ts';
 import { failedSourcing, proposedSourcing } from './result.ts';
 import type { Held, SourcingFailed, SourcingResult } from './result.ts';
 
-/** The job deadline of the Sourcing Agent: the time from the arrival of a job to the end of every wait of `propose`, in milliseconds. It is the window of 3,600,000 ms less 180,000 ms. */
-export const PROPOSE_DEADLINE_MS = 3_420_000;
+/**
+ * The job deadline of the Sourcing Agent: the time from the arrival of a job to the end of every wait of `propose`, in milliseconds. It is the Sourcing window of 5,400,000 ms less 180,000 ms, and it is the one
+ * source of that number: the wiring takes the job deadline of the service from it, and the window of the manifest is this value plus 180,000 ms.
+ */
+export const PROPOSE_DEADLINE_MS = 5_220_000;
 
 /** The time that the job keeps for the ranking decision and the build of the document, in milliseconds. */
 export const RANKING_RESERVE_MS = 120_000;

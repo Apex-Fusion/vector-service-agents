@@ -3,7 +3,7 @@
 import { describe, expect, it } from 'vitest';
 import { ERROR_STATUS } from '@vsa/usecase-kit/protocol';
 import type { JsonValue } from '@vsa/usecase-kit/protocol';
-import { ProposeRefusal } from '../../src/propose/index.ts';
+import { PROPOSE_DEADLINE_MS, ProposeRefusal } from '../../src/propose/index.ts';
 import {
   ALFA, BRAVO, CHARLIE, DELEGATION, DELTA, KEY, KEY_HASH, PRINCIPAL_DID, RFQ, TENANT, WEIGHTS, arrivedWith, candidates, decisionOf, expectFailed, failure, fileOf, shortlistAnswer, thrownBy, viewOf, world,
 } from './support.ts';
@@ -251,7 +251,7 @@ describe('the shortlist', () => {
   it('fails with deadline when the discovery ends after the deadline, and the model is not asked', async () => {
     const w = world();
     w.script.discover = async () => {
-      w.clock.ms += 3_420_000;
+      w.clock.ms += PROPOSE_DEADLINE_MS;
       return { ok: true, value: { bidders: candidates() } };
     };
     const result = failure(await w.front(), 'deadline');

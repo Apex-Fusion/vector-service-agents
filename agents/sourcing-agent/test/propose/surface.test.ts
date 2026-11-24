@@ -22,7 +22,8 @@ describe('the propose folder', () => {
   });
 
   test('has the deadline of the job and the two reserves that the quote fan-out and the scoring keep', () => {
-    expect(propose.PROPOSE_DEADLINE_MS).toBe(3_420_000);
+    expect(propose.PROPOSE_DEADLINE_MS).toBe(5_220_000);
+    expect(propose.PROPOSE_DEADLINE_MS + 180_000).toBe(5_400_000);
     expect(propose.RANKING_RESERVE_MS).toBe(120_000);
     expect(propose.SCORING_RESERVE_MS).toBe(720_000 + propose.RANKING_RESERVE_MS);
     expect(propose.SCORING_RESERVE_MS).toBe(840_000);
