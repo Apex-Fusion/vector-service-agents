@@ -7,7 +7,7 @@
 //
 // The file form. A write goes to a temporary file in the same folder. The file is synced, it is renamed over the counter file, and then the folder is synced. `next` gives the number out only after the sync
 // of the folder. A write that fails before the rename leaves the old file whole. Every call reads the file again, so the file is the one source of truth: a call whose sync of the folder failed rejects, the
-// file may already hold its number, and the next call then goes on from that number. That is a gap and never a reuse. Calls of one counter run one at a time in the order of the calls. One process owns the file.
+// file may already hold its number, and the next call then goes on from that number. That is a gap and never a reuse. Calls of one counter run one at a time in the order of the calls. One counter object owns the file: the service builds one `FileRequestCounter` for each file.
 //
 // A file that cannot be read is an error, and a file that is damaged is an error: neither is taken as "no number yet", because a new start at 1 would give out numbers that were used. Only a file that does
 // not exist is an empty counter. The message of an error that this file writes never repeats the path or what the file holds. An error of the file system keeps its own message. A temporary file that a crash
