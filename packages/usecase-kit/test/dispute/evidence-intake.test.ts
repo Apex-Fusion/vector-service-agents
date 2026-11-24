@@ -40,7 +40,7 @@ describe('the evidence document about an intake record', () => {
     const document = documentOf(input());
     expect(document.text).toBe(golden);
     expect(document.bytes.toString('utf8')).toBe(document.text);
-    expect(document.hash).toBe('808df5dfb307f60c43eef6b9fc469ab7b5f61529ea6cf88564e534781fb654fa');
+    expect(document.hash).toBe('45f6992551cc88a762763544979969673c6aebc2699884cd37d58ba1a513159f');
     expect(document.hash).toBe(documentHash(document.bytes));
     expect(document.type).toBe('evidence');
     expect(document.media_type).toBe('text/plain');

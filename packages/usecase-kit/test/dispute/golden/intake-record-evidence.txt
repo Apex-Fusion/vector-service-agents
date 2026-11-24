@@ -6,7 +6,7 @@ The SHA-256 of the request that the challenger sent is 939daf0ab21ca3cc1477ba4a7
 The insurer intake agent signed an intake record for the request number "run1-0001". The intake record names the SHA-256 cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd for the request that it received.
 The two SHA-256 hashes differ. So the intake record does not name the hash of the request that the challenger sent.
 The challenger did not accept the intake record.
-This evidence has no text of the request.
+This evidence has no other text of the request.
 References
 Claim: cacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacaca#0
 Claim token: 636c6d5f0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a

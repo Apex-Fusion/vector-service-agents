@@ -515,7 +515,7 @@ function intakeEvidence(parties: EvidenceParties, root: JsonObject): ProtocolRes
     `The SHA-256 of the request that the challenger sent is ${sentSha.value}.`,
     ...recordRows,
     'The challenger did not accept the intake record.',
-    'This evidence has no text of the request.',
+    'This evidence has no other text of the request.',
     ...references(parties, [`SHA-256 of the intake record: ${recordSha.value}`]),
   ]);
 }
