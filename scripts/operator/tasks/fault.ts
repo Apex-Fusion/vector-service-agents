@@ -7,7 +7,8 @@
 // The file must be at most 10 minutes old, and it must have exactly the shape that the script writes, and it must show each service of the use case once. A file that does not is a precondition
 // that fails (exit 2): no check passes without a fresh and whole reading of the services. A refusal of the guard is exit 1 with its code. With --submit the result is written into the evidence file of
 // the run as an entry `fault_check`, with the start time of each service: a run is checked before its first hire and again after its last, and the two entries must show one start time for each service.
-import { readFileSync } from 'node:fs';
+import { lstatSync, readFileSync } from 'node:fs';
+import type { Stats } from 'node:fs';
 import { join } from 'node:path';
 import { PreconditionError } from '../../checks/lib/session.ts';
 import type { AgentSpec, TaskDefinition, TaskSession, UseCase } from '../lib/contract.ts';
@@ -24,8 +25,8 @@ const MAX_AHEAD_MS = 60_000;
 const MAX_FILE_CHARS = 262_144;
 const ISO_TIME = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:\d{2})$/;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
-/** What a fault value looks like: lower-case words with underscores. Any other value is shown as a phrase, so that the evidence and the output never hold a text of the file that is no fault name. */
-const FAULT_NAME = /^[a-z][a-z0-9_]{0,63}$/;
+/** What a fault value looks like: lower-case letters and underscores, at most 24 characters. It has no digit and it is short, so a key in hex never passes (the kit shows a value by the same rule). Any other value is shown as a phrase, so that the evidence and the output never hold a text of a file that is no fault name. */
+const FAULT_NAME = /^[a-z][a-z_]{0,23}$/;
 
 /** What the task keeps for the machine line. */
 interface Extra { result: Readonly<Record<string, unknown>> | null }
@@ -175,7 +176,11 @@ async function setSwitch(session: TaskSession<Extra>, value: string): Promise<En
   const changes: Array<{ label: string; path: string; env: EnvFile }> = [];
   for (const agent of agents) {
     const label = `${agent.folder}/${agent.serviceEnvFile}`;
-    const path = join(session.settings.agentsDir, agent.folder, agent.serviceEnvFile);
+    const folder = join(session.settings.agentsDir, agent.folder);
+    let found: Stats | undefined;
+    try { found = lstatSync(folder, { throwIfNoEntry: false }); } catch (err) { throw new PreconditionError(`${agent.folder}: the folder of the agent could not be looked at (${codeOf(err)})`); }
+    if (found === undefined || !found.isDirectory()) throw new PreconditionError(`${agent.folder}: the folder of the agent is missing or is not a real folder (a link or a file is no folder): the task writes only into a real folder`);
+    const path = join(folder, agent.serviceEnvFile);
     let env: EnvFile;
     try { env = EnvFile.open(path); } catch (err) { throw new PreconditionError(`${label}: the service env file cannot be used (${reasonOf(err)})`); }
     const now = env.get(FAULT_MODE_VARIABLE);
@@ -190,7 +195,7 @@ async function setSwitch(session: TaskSession<Extra>, value: string): Promise<En
   }
   if (!dry) {
     for (const change of changes) {
-      try { change.env.write(change.path); } catch (err) { throw new PreconditionError(`${change.label}: the file could not be written (${reasonOf(err)}), and the old file is as it was`); }
+      try { change.env.write(change.path); } catch (err) { throw new PreconditionError(`${change.label}: ${err instanceof EnvFileError ? err.message : `the file could not be written (${codeOf(err)}), and the old file is as it was`}`); }
     }
   }
   for (const line of lines) session.out.out(line);

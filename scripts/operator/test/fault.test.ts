@@ -1,6 +1,6 @@
 // The task fault, run through the real runner over the real examples of the two service env files (read from deploy/server at test time) and a `seen-services.json` that the tests write the way the
 // script that runs the pack does. The guards are the guards of the kit. A check never passes without a fresh and whole reading of every service of the use case.
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,7 +10,7 @@ import { EnvFile } from '../lib/envfile.ts';
 import { loadTask } from '../lib/load.ts';
 import task from '../tasks/fault.ts';
 import USE from '../usecases/inventory-reorder.ts';
-import { NOW, taskWorld } from './support/task-world.ts';
+import { NOW, hashOf, taskWorld } from './support/task-world.ts';
 import type { TaskWorld } from './support/task-world.ts';
 
 const SERVER = fileURLToPath(new URL('../../../deploy/server/', import.meta.url));
@@ -353,6 +353,83 @@ describe('--check with the fault that a run needs', () => {
       { check: FAULT, services: [{ started_at: REORDER_STARTED }, { started_at: DESK_STARTED }] },
       { check: 'clean', services: [{ started_at: REORDER_STARTED }, { started_at: '2026-11-15T11:30:00Z' }] },
     ]);
+  });
+});
+
+describe('a value that has the form of a key', () => {
+  // 64 hex characters that start with a letter: the form of a key in hex. It must never reach a stream, the evidence or the result line.
+  const KEY = `a${hashOf('fault key').slice(1)}`;
+
+  it('is shown as a phrase by a check, in the output, the entry of the evidence and the result line', async () => {
+    const f = await faultWorld({ seen: seenDoc((_doc, services) => { services[0]!.env = { FAULT_MODE: KEY }; }) });
+    expect(await submit(f, '--run', 'r1', '--check', 'clean')).toBe(1);
+    expect([...f.w.screen.lines, ...f.w.screen.errors, JSON.stringify(entries(f))].join('\n')).not.toContain(KEY);
+    expect(entries(f)[0]!.shows).toEqual(shows('clean', null, false, '', PHRASE));
+    expect(f.w.machine().result).toEqual({ ...shows('clean', null, false, '', PHRASE), code: 'fault_set' });
+  });
+
+  it('is shown as a phrase by status and by --set, and --set= clears it', async () => {
+    const f = await faultWorld();
+    const file = EnvFile.open(f.path(SERVICE));
+    file.set('FAULT_MODE', KEY);
+    file.write();
+    expect(await f.w.run(task, 'status')).toBe(0);
+    expect(f.w.screen.lines).toContain(`fault: order-desk: ${SERVICE}: FAULT_MODE in the file is ${PHRASE}, in the running service orders-service it is empty (started at ${DESK_STARTED})`);
+    f.w.screen.lines.length = 0;
+    expect(await submit(f, '--agent', 'order-desk', '--set=')).toBe(0);
+    expect(f.w.screen.lines).toContain(`set FAULT_MODE in ${SERVICE} to empty (it holds ${PHRASE} now)`);
+    expect(f.value(SERVICE)).toBe('');
+    expect([...f.w.screen.lines, ...f.w.screen.errors].join('\n')).not.toContain(KEY);
+  });
+
+  it('is no fault name, and a value with the form of a fault name is shown as it is: lower-case letters and underscores, at most 24 characters', async () => {
+    const f = await faultWorld();
+    const table: ReadonlyArray<readonly [string, string]> = [
+      [FAULT, FAULT], ['a'.repeat(24), 'a'.repeat(24)], ['a'.repeat(25), PHRASE], ['abc1', PHRASE], ['Confirm', PHRASE], ['_x', PHRASE], ['x-y', PHRASE],
+    ];
+    for (const [value, shownAs] of table) {
+      f.seen(seenDoc((_doc, services) => { services[0]!.env = { FAULT_MODE: value }; }));
+      expect(await submit(f, '--run', 'r1', '--check', 'clean'), value).toBe(1);
+      expect(entries(f).at(-1)!.shows, value).toMatchObject({ services: [{ service: 'reorder-service', value: shownAs }, { service: 'orders-service', value: '' }] });
+    }
+  });
+});
+
+describe('--set with a folder or a file that is a link or is missing', () => {
+  const outside = (): string => {
+    const folder = mkdtempSync(join(tmpdir(), 'operator-outside-'));
+    roots.push(folder);
+    return folder;
+  };
+
+  it('refuses the folder of an agent that is a link or is missing, and writes nothing through it', async () => {
+    const linked = await faultWorld();
+    const real = outside();
+    copyFileSync(linked.path(SERVICE), join(real, '.env.order-desk'));
+    chmodSync(join(real, '.env.order-desk'), 0o600);
+    const before = readFileSync(join(real, '.env.order-desk'), 'utf8');
+    rmSync(linked.path('order-desk'), { recursive: true });
+    symlinkSync(real, linked.path('order-desk'));
+    expect(await submit(linked, '--agent', 'order-desk', '--set', FAULT)).toBe(2);
+    expect(linked.w.screen.errorText).toContain('order-desk: the folder of the agent is missing or is not a real folder');
+    expect(readFileSync(join(real, '.env.order-desk'), 'utf8')).toBe(before);
+    const missing = await faultWorld();
+    rmSync(missing.path('order-desk'), { recursive: true });
+    expect(await submit(missing, '--agent', 'order-desk', '--set', FAULT)).toBe(2);
+    expect(missing.w.screen.errorText).toContain('order-desk: the folder of the agent is missing or is not a real folder');
+  });
+
+  it('refuses an env file that is a link, and does not follow it', async () => {
+    const f = await faultWorld();
+    const target = join(outside(), 'target.env');
+    copyFileSync(f.path(SERVICE), target);
+    chmodSync(target, 0o600);
+    const before = readFileSync(target, 'utf8');
+    rmSync(f.path(SERVICE));
+    symlinkSync(target, f.path(SERVICE));
+    expect(await submit(f, '--agent', 'order-desk', '--set', FAULT)).toBe(2);
+    expect(f.w.screen.errorText).toContain(`${SERVICE}: the path of the env file is not a regular file`);
+    expect(readFileSync(target, 'utf8')).toBe(before);
   });
 });
 
