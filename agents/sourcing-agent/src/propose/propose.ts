@@ -16,10 +16,11 @@
 //      stopped is `failed` with its code. An answer must be the fan-out of the bidders that were invited: one outcome for each, in the order of the invitation, and each accepted quote the job of one bidder. No
 //      accepted quote is `no_quotes`. The decisions, the quote jobs and the records stay in every failed result after this step. Before it pays for a scorer, the job builds a trial of the ranking with stand-in
 //      scores: a document that the kit refuses is `ranking_invalid`, and it is found while the scorers are still unpaid.
-//   6. The scoring. It starts only with `SCORING_RESERVE_MS` left, else `failed` `deadline`. One scorer reads each accepted quote. A failed scoring is `failed` with its code, and its decisions stay. The scores
-//      must be one for each accepted quote, in its order, each the score of its own bidder, and the kit must take each number.
-//   7. The ranking decision. The signal is read before it. The order must be a permutation of the scored bidders (`ranking_invalid`), and the job reads the recorded copy of the decision, as it does for the
-//      shortlist.
+//   6. The scoring. It starts only with `SCORING_RESERVE_MS` left, else `failed` `deadline`. It gets `deadline_ms`, the deadline of the job less `RANKING_RESERVE_MS`, so that no scorer uses the time of the
+//      ranking. One scorer reads each accepted quote. A failed scoring is `failed` with its code, and its decisions stay. The scores must be one for each accepted quote, in its order, each the score of its own
+//      bidder, and the kit must take each number.
+//   7. The ranking decision. The signal is read before it. It starts only with `RANKING_RESERVE_MS` left, else `failed` `deadline`, and what was paid for stays. The order must be a permutation of the scored
+//      bidders (`ranking_invalid`), and the job reads the recorded copy of the decision, as it does for the shortlist.
 //   8. The ranking. The entries come in the order of the model. Each entry takes its score and its components from the scorer of its own bidder, its organisation from its file when the gateway verified it, and
 //      its quote from the quote that the agent holds and accepted: the escrow, the hash of its signed receipt, and its total and lead time. The model never writes the quote. Every candidate that is not ranked is
 //      excluded, with `not_invited` or with the reason and the code of its outcome.
@@ -533,7 +534,9 @@ export async function runPropose<K>(deps: ProposeDeps<K>, request: ProposeReques
     const file = files.get(held.did)!;
     return { did: held.did, organisation: verifiedOrganisation(file), quote: structuredClone(held.quote), file: structuredClone(file) };
   });
-  const scoringInput: ScoringInput = { tenant: job.tenant, delegation: job.delegation, today, weights: structuredClone(job.weights), rfq: structuredClone(job.rfq), subjects };
+  const scoringInput: ScoringInput = {
+    tenant: job.tenant, delegation: job.delegation, today, weights: structuredClone(job.weights), rfq: structuredClone(job.rfq), deadline_ms: job.deadline - RANKING_RESERVE_MS, subjects,
+  };
   const scoring = await job.attempt(() => deps.scoring(scoringInput, key, signal));
   if (scoring.state !== 'value') return job.lost('scoring', scoring, 'internal');
   const taken = takeScores(job, scoring.value, fan.held);
@@ -543,6 +546,8 @@ export async function runPropose<K>(deps: ProposeDeps<K>, request: ProposeReques
   // 7. The ranking decision.
   const beforeRanking = job.stopped('ranking');
   if (beforeRanking !== null) return beforeRanking;
+  const rankingStart = timeOf(deps.clock);
+  if (rankingStart === null || !(job.deadline - rankingStart >= RANKING_RESERVE_MS)) return job.failed('ranking', 'deadline');
   const rankInput: RankInput = {
     weights: structuredClone(job.weights),
     scored: scored.map((entry) => ({ desk_did: entry.held.did, score: entry.score, components: { ...entry.components }, total: entry.held.ranked.total, lead_time_days: entry.held.ranked.lead_time_days })),

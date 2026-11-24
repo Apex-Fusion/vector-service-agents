@@ -4,7 +4,7 @@
 import { describe, expect, it } from 'vitest';
 import { parseQuote, parseRanking } from '@vsa/usecase-kit/bids';
 import { PROPOSAL_SCHEMA, parseProposal, proposalDigest } from '@vsa/usecase-kit/protocol';
-import { PROPOSE_DEADLINE_MS, SCORING_RESERVE_MS } from '../../src/propose/index.ts';
+import { PROPOSE_DEADLINE_MS, RANKING_RESERVE_MS, SCORING_RESERVE_MS } from '../../src/propose/index.ts';
 import {
   AGENT_DID, ALFA, BRAVO, CHARLIE, DELEGATION, KEY, NOW, REQUEST, RFQ, TENANT, WEIGHTS, acceptedOf, candidates, namesOf, proposed, rankingOf, readGolden, receiptHash, recordOf, rfqHash, scoredOf, shortlistAnswer,
   world,
@@ -103,7 +103,7 @@ describe('the golden run', () => {
     proposed(await w.run({ signal: controller.signal }));
     expect(w.calls.scoring).toHaveLength(1);
     const call = w.calls.scoring[0]!;
-    expect(call.input).toMatchObject({ tenant: TENANT, delegation: DELEGATION, today: '2026-11-24', weights: WEIGHTS, rfq: RFQ });
+    expect(call.input).toMatchObject({ tenant: TENANT, delegation: DELEGATION, today: '2026-11-24', weights: WEIGHTS, rfq: RFQ, deadline_ms: NOW + PROPOSE_DEADLINE_MS - RANKING_RESERVE_MS });
     expect(call.input.subjects.map((subject) => subject.did)).toStrictEqual([ALFA, BRAVO, CHARLIE]);
     expect(call.input.subjects.map((subject) => subject.quote)).toStrictEqual([ALFA, BRAVO, CHARLIE].map((did, index) => acceptedOf(did, index + 1, ['alfa', 'bravo', 'charlie'][index]!).quote));
     expect(call.input.subjects.map((subject) => subject.file)).toStrictEqual(candidates().map((view) => view.file));

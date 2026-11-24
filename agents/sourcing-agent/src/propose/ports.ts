@@ -189,6 +189,11 @@ export interface ScoringInput {
   readonly today: string;
   readonly weights: Weights;
   readonly rfq: RfqDocument;
+  /**
+   * The time by which every scorer must end, as a POSIX time in milliseconds by the clock of the job: the deadline of the job less the time that the ranking decision keeps (`RANKING_RESERVE_MS`). The wiring gives
+   * it to the scorers as their deadline, so no scorer uses the time of the ranking.
+   */
+  readonly deadline_ms: number;
   readonly subjects: readonly ScoreSubject[];
 }
 
@@ -212,8 +217,8 @@ export type ScoringResult = { readonly ok: true; readonly scores: readonly Score
  *   this agent with that hash, or `null`.
  * - `discover` reads the bidders: a file for each candidate, and the price list of those that have a valid one. It sends nothing.
  * - `shortlist` is the decision `shortlist`, and `rank` is the decision `ranking`. Each is one model hire. The job never gives the signal of the caller to a decision.
- * - `quotes` hires the invited bidders for their quotes, one after the other, and `scoring` scores the accepted quotes. Both get the signal of the caller as the third argument, because each of them reads it
- *   before each commitment of its own (a Pay, a Delegate, a decision) and never gives it to a hire.
+ * - `quotes` hires the invited bidders for their quotes, one after the other, and `scoring` scores the accepted quotes and ends by `deadline_ms` of its input. Both get the signal of the caller as the third
+ *   argument, because each of them reads it before each commitment of its own (a Pay, a Delegate, a decision) and never gives it to a hire.
  * - `clock` gives the time in milliseconds. Every wait of the job ends at `arrivedAt + PROPOSE_DEADLINE_MS` by this clock.
  * - `log` gets one line for each job that stops, with the step and the code. A line has codes and counts, and no key, token or part of a quote. A function that throws changes no result.
  */

@@ -3,7 +3,7 @@
 // job gave in this file equal to `PROPOSE_FAILURES`, in both directions.
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Decision, JsonValue } from '@vsa/usecase-kit/protocol';
-import { PROPOSE_DEADLINE_MS, PROPOSE_FAILURES, SCORING_RESERVE_MS } from '../../src/propose/index.ts';
+import { PROPOSE_DEADLINE_MS, PROPOSE_FAILURES, RANKING_RESERVE_MS, SCORING_RESERVE_MS } from '../../src/propose/index.ts';
 import type { QuotesInput, QuoteOutcome, SourcingFailed, SourcingResult } from '../../src/propose/index.ts';
 import { failedSourcing, proposedSourcing } from '../../src/propose/result.ts';
 import {
@@ -407,15 +407,32 @@ describe('the ranking decision', () => {
     expectFailed(thrown, 'internal');
     expectQuotesKept(thrown, scoreDecisions());
     const silent = world();
-    silent.script.scoring = async (input) => {
-      const given = goldenScoring(input);
-      silent.clock.ms = NOW + PROPOSE_DEADLINE_MS - 30;
-      return given;
-    };
     silent.script.rank = () => new Promise(() => undefined);
-    const late = await silent.run();
+    const late = await pastDeadline(silent);
     expectFailed(late, 'deadline');
     expectQuotesKept(late, scoreDecisions());
+  });
+
+  it('starts only when the time that is left is at least the ranking reserve: with one millisecond less, the job fails with deadline, asks the model nothing, and keeps every paid answer', async () => {
+    const w = world();
+    w.script.scoring = async (input) => {
+      w.clock.ms = NOW + PROPOSE_DEADLINE_MS - RANKING_RESERVE_MS + 1;
+      return goldenScoring(input);
+    };
+    const result = await w.run();
+    expectFailed(result, 'deadline');
+    expect(w.trace).not.toContain('rank');
+    expectQuotesKept(result, scoreDecisions());
+  });
+
+  it('asks the model with exactly the ranking reserve left: the twin of the failure above', async () => {
+    const w = world();
+    w.script.scoring = async (input) => {
+      w.clock.ms = NOW + PROPOSE_DEADLINE_MS - RANKING_RESERVE_MS;
+      return goldenScoring(input);
+    };
+    proposed(await w.run());
+    expect(w.trace).toContain('rank');
   });
 });
 
