@@ -16,7 +16,7 @@ import {
   parseRanking, priceFor,
   priceListSha256, quoteTotals, receiptSha256, rfqSha256,
 } from '@vsa/usecase-kit/bids';
-import type { PriceList, Quote } from '@vsa/usecase-kit/bids';
+import type { ExcludedEntry, PriceList, Quote, RankedEntry } from '@vsa/usecase-kit/bids';
 import { COUNTERPARTY_REFUSED, EARLIER_PAY_MAY_LAND, INCONSISTENT_OUTCOME, INTERRUPTION_REASONS, PAY_UNCONFIRMED, checkRuntimeBody, checkWirePayload } from '@vsa/usecase-kit/buyer';
 import type { VerifiedDelivery } from '@vsa/usecase-kit/buyer';
 import { readAnswer } from '../../../packages/usecase-kit/src/decision/answer.ts';
@@ -38,6 +38,7 @@ import { bidderFacts } from '../src/model/bidder.ts';
 import { EFFECTIVE_REASONS } from '../src/bidders/lineage.ts';
 import { PROPOSE_DEADLINE_MS, PROPOSE_FAILURES, ProposeRefusal, RANKING_RESERVE_MS, SCORING_RESERVE_MS, runPropose } from '../src/propose/index.ts';
 import type { ProposeDeps, ProposeRequest, QuoteRecord } from '../src/propose/index.ts';
+import { rankingOf } from '../src/propose/ranking.ts';
 import { BID_DESK_REFUSALS, CHALLENGE_CODES, CODE, NOT_ACTIVE_STATUSES } from '../src/quotes/ports.ts';
 import { judgeQuote } from '../src/quotes/decide.ts';
 import { QUOTE_CODES, QUOTE_HIRE_RESERVE_MS } from '../src/quotes/index.ts';
@@ -51,9 +52,9 @@ import {
 } from '../src/serve/settings.ts';
 import { SETTINGS } from '../src/serve/start.ts';
 import { STATE_FILES } from '../src/serve/wiring.ts';
-import { DESKS, addDesk, advertOf, deskOf, extraDesk, goldenWorld, manifestText, ok, priceListText, revokedCompliance, revokedOf, rowOf, stubOf } from './bidders/support.ts';
+import { ACCOUNTABLE, DESKS, PARTY_SINCE, addDesk, advertOf, deskOf, extraDesk, goldenWorld, manifestText, metadataOf, ok, priceListText, resolvedOf, revokedCompliance, revokedOf, rowOf, stubOf } from './bidders/support.ts';
 import type { Desk } from './bidders/support.ts';
-import { ALFA as GOLDEN_ALFA, BRAVO as GOLDEN_BRAVO, CHARLIE as GOLDEN_CHARLIE, NOW as PROPOSE_NOW, acceptedOf, excludedOf, fanOf, proposed, rankAnswer, shortlistAnswer, world } from './propose/support.ts';
+import { ALFA as GOLDEN_ALFA, BRAVO as GOLDEN_BRAVO, CHARLIE as GOLDEN_CHARLIE, NOW as PROPOSE_NOW, acceptedOf, excludedOf, fanOf, fileOf as goldenFileOf, proposed, rankAnswer, shortlistAnswer, viewOf as goldenViewOf, world } from './propose/support.ts';
 import * as quoteSupport from './quotes/support.ts';
 import * as quoteWorld from './quotes/world.ts';
 import { NOW as SCORING_NOW } from './scoring/support.ts';
@@ -659,6 +660,18 @@ describe('specs/sourcing-agent.md, Interface, Request', () => {
     expect(Object.keys(ranked.scored[0])).toStrictEqual(['desk_did', 'score', 'components', 'total', 'lead_time_days']);
     expect([RANKING_DECISION.parse({ order: [ALFA], tie_break: '' }).ok, RANKING_DECISION.parse({ order: [], tie_break: '' }).ok, RANKING_DECISION.parse({ order: [ALFA], tie_break: 'x'.repeat(301) }).ok]).toStrictEqual([true, false, false]);
   });
+
+  test('each name in backticks in the two lists of steps is a code that a job writes, a word of the protocol, or a name that the test lists as no code', () => {
+    const { propose, execute, protocol } = reasonsOfJobs();
+    const codes = new Set<string>([...propose, ...execute, ...protocol, ...SCORING_FAILURES, ...QUOTE_CODES, ...EXCLUDED_REASONS, ...EXECUTE_OUTCOMES, ...Object.keys(ERROR_STATUS)]);
+    // The names of the steps that are no code: the four decisions, the member `document`, the word `null`, the list `mismatch` of SKUs, and the name of the second job.
+    const noCode = new Set<string>([SHORTLIST_DECISION.name, ACCEPT_QUOTE_DECISION.name, SCORE_DECISION.name, RANKING_DECISION.name, 'document', 'mismatch', 'null', 'execute']);
+    const steps = request.split('What `propose` does, in this order, under its deadline:')[1] ?? '';
+    const names = [...new Set([...steps.matchAll(/`([a-z][a-z0-9_]*)`/g)].map((hit) => hit[1]))];
+    expect(names).toEqual(expect.arrayContaining(['delegation_not_mine', 'delivery_not_recordable', 'model_output_invalid', 'ranking_not_for_tenant', 'approval_not_found', 'refused_by_system', 'mock_system_failed']));
+    expect(names.filter((name) => !noCode.has(name) && !codes.has(name))).toStrictEqual([]);
+    expect(names.filter((name) => noCode.has(name))).toHaveLength(noCode.size);
+  });
 });
 
 describe('specs/sourcing-agent.md, the delegation of the hirer and a decision that fails', () => {
@@ -1063,6 +1076,14 @@ describe('specs/sourcing-agent.md, Interface, The bidder file', () => {
     expect(body).toContain('No free text of a bidder reaches a file. A member is a word of a closed list, a number, a boolean, a hash, a domain, a DID or a time. A time is written as `YYYY-MM-DDTHH:MM:SSZ`.');
     expect(body).toContain('A fact is data and never a filter in code. The file holds no verdict.');
   });
+
+  test('the words of the status and of the reason of a file are the words of the code, in both directions', () => {
+    const cellOf = (line: string): string => line.split(' | ')[1] ?? '';
+    expect(namesOf([cellOf(row(body, '`status`'))])).toStrictEqual(unionOf('agents/sourcing-agent/src/bidders/types.ts', 'BidderStatus'));
+    const reasons = [...cellOf(row(body, '`status_reason`')).matchAll(/`([A-Za-z]+)`/g)].map((hit) => hit[1]).filter((word) => word !== 'active' && word !== 'null');
+    expect([...reasons].sort()).toStrictEqual([...EFFECTIVE_REASONS].sort());
+    expect(EFFECTIVE_REASONS).toHaveLength(7);
+  });
 });
 
 describe('specs/sourcing-agent.md, Interface, The ranking', () => {
@@ -1130,6 +1151,91 @@ describe('specs/sourcing-agent.md, Interface, The ranking', () => {
       'The score is not worked out again from the components and the weights: the model decides the numbers, and the job holds only that each number is from 0 to 100.',
       'It is a member only when the gateway verified the organisation: the sourcing record refuses the value `null`, so the member is left out when there is none |',
     ]) expect(ranking, part).toContain(part);
+  });
+});
+
+describe('specs/sourcing-agent.md, the limits of the ranking, the order of the model and an organisation that is not verified', () => {
+  const ranking = sub('The ranking');
+  const entry = (did: Did, over: { score?: number; total?: number; organisation?: string } = {}): Omit<RankedEntry, 'rank'> => {
+    const score = over.score ?? 50;
+    return {
+      desk_did: did, ...(over.organisation === undefined ? {} : { organisation: over.organisation }), score, components: { price: score, lead_time: score, reliability: score, compliance: score },
+      quote: { escrow_ref: refOf(`the escrow of ${did}`), receipt_sha256: made(`the receipt of ${did}`), total: over.total ?? 1, lead_time_days: 1 },
+    };
+  };
+  const built = (entries: readonly Omit<RankedEntry, 'rank'>[], excluded: readonly ExcludedEntry[] = []): boolean => buildRanking({ rfq: RFQ, tenant: TENANT, weights: WEIGHTS, entries, excluded }).ok;
+
+  test('the ranked list and the excluded list have the limits that the kit takes, and the page gives those limits', () => {
+    const some = (count: number, label: string): Did[] => Array.from({ length: count }, (_, index) => didOf(`${label} ${index}`));
+    const rankedOk = (count: number): boolean => built(some(count, 'ranked').map((did) => entry(did)));
+    const excludedOk = (count: number): boolean => built([entry(ALFA)], some(count, 'left out').map((did) => ({ desk_did: did, reason: 'not_invited' as const, code: null })));
+    // The kit does not export its limits, so the most that it takes is found by trying.
+    const most = (ok: (count: number) => boolean, from: number): number => {
+      let count = from;
+      while (count < 100 && ok(count + 1)) count += 1;
+      return count;
+    };
+    expect([rankedOk(0), rankedOk(1), excludedOk(0), excludedOk(1)]).toStrictEqual([false, true, true, true]);
+    const [mostRanked, mostExcluded] = [most(rankedOk, 1), most(excludedOk, 0)];
+    expect([mostRanked, mostExcluded]).toStrictEqual([20, 20]);
+    expect(row(ranking, '`ranked`')).toBe(`| \`ranked\` | the ranked bidders, 1 to ${mostRanked} entries, in the order that the model gave |`);
+    expect(row(ranking, '`excluded`')).toBe(`| \`excluded\` | every candidate that is not ranked, with the reason: 0 to ${mostExcluded} entries |`);
+  });
+
+  test('the domain of an organisation, the score, the components and the total have the limits that the kit takes, and the page gives them', () => {
+    const domain = (length: number): string => `${'a'.repeat(30)}.${'b'.repeat(length - 31)}`;
+    const organisationOk = (organisation: string): boolean => built([entry(ALFA, { organisation })]);
+    expect([organisationOk(domain(64)), organisationOk(domain(65)), organisationOk('a.b'), organisationOk('one-label'), organisationOk('Upper.example')]).toStrictEqual([true, false, true, false, false]);
+    expect(row(ranking, '`organisation`')).toContain('as a lower-case domain of at least two labels and at most 64 characters.');
+    const scoreOk = (score: number): boolean => built([entry(ALFA, { score })]);
+    expect([scoreOk(0), scoreOk(100), scoreOk(40.5), scoreOk(-0.1), scoreOk(100.1)]).toStrictEqual([true, true, true, false, false]);
+    expect(row(ranking, '`score`')).toBe('| `score` | the score of the quote, a number from 0 to 100 |');
+    expect(row(ranking, '`components`')).toBe('| `components` | the four component scores `price`, `lead_time`, `reliability` and `compliance`, each a number from 0 to 100 |');
+    const totalOk = (total: number): boolean => built([entry(ALFA, { total })]);
+    expect([totalOk(0), totalOk(19_500), totalOk(1.5), totalOk(-1)]).toStrictEqual([true, true, false, false]);
+    expect(row(ranking, '`total`')).toBe('| `total` | the total of the quote: a whole number |');
+  });
+
+  test('the agent builds the ranking in the order of the model: two bidders whose order is not the order of their scores keep that order, and the ranks are the positions', async () => {
+    const bidder = (did: Did, score: number) => ({
+      did, organisation: null, score, components: { price: score, lead_time: score, reliability: score, compliance: score },
+      quote: { escrow_ref: refOf(`the escrow of ${did}`), receipt_sha256: made(`the receipt of ${did}`), total: 1, lead_time_days: 1 },
+    });
+    const byAgent = must(rankingOf({ rfq: RFQ, tenant: TENANT, weights: WEIGHTS, bidders: [bidder(BRAVO, 40), bidder(ALFA, 90)], excluded: [] }));
+    expect(byAgent.ranked.map((item) => [item.rank, item.desk_did, item.score])).toStrictEqual([[1, BRAVO, 40], [2, ALFA, 90]]);
+    // The whole job: the golden scores are 90 for Alfa and 70 for Bravo, and the model puts Bravo first.
+    const w = world();
+    w.script.shortlist = async () => shortlistAnswer([GOLDEN_ALFA, GOLDEN_BRAVO]);
+    w.script.rank = async () => rankAnswer([GOLDEN_BRAVO, GOLDEN_ALFA]);
+    const ranked = must(parseRanking(proposed(await w.run()).document)).ranked;
+    expect(ranked.map((item) => [item.rank, item.desk_did, item.score])).toStrictEqual([[1, GOLDEN_BRAVO, 70], [2, GOLDEN_ALFA, 90]]);
+    expect(ranked[0]!.score).toBeLessThan(ranked[1]!.score);
+  });
+
+  test('an organisation that the gateway did not verify is not shown: the file has none, the job passes none on, and the ranking has no organisation member for that bidder', async () => {
+    // The reader: the Accountable Party of Bid Desk Bravo has an organisation that the gateway did not verify.
+    const golden = goldenWorld();
+    const bravo = deskOf('bravo');
+    const party = { role: 'accountable', signer: ACCOUNTABLE.bravo, organisation: 'bravo.example.org', organisationVerified: false, rights: ['suspend', 'revoke'], notBefore: PARTY_SINCE };
+    golden.resolutions[bravo.did] = resolvedOf(bravo, { ...metadataOf(bravo), vectorParties: [party] });
+    const files = must(await readBidders(stubOf(golden).deps)).bidders.map((view) => view.file);
+    expect(files.map((file) => [file.organisation, file.organisation_verified])).toStrictEqual([['alfa.example.org', true], [null, false], ['charlie.example.org', true]]);
+    // The job: a file with an organisation and no verification gives no organisation to the hire, to the scorer or to the ranking.
+    const w = world();
+    const alfaFile = goldenFileOf(GOLDEN_ALFA, 1, 'alfa');
+    const bravoFile = goldenFileOf(GOLDEN_BRAVO, 2, 'bravo', { organisation: 'bravo.example', organisation_verified: false });
+    w.script.discover = async () => ({ ok: true, value: { bidders: [goldenViewOf(alfaFile, 1), goldenViewOf(bravoFile, 2)] } });
+    w.script.shortlist = async () => shortlistAnswer([GOLDEN_ALFA, GOLDEN_BRAVO]);
+    const proposal = proposed(await w.run());
+    expect(w.calls.quotes[0]?.input.invited.map((invited) => invited.organisation)).toStrictEqual(['alfa.example', null]);
+    expect(w.calls.scoring[0]?.input.subjects.map((subject) => subject.organisation)).toStrictEqual(['alfa.example', null]);
+    const ranked = must(parseRanking(proposal.document)).ranked;
+    expect(ranked.map((item) => item.desk_did)).toStrictEqual([GOLDEN_ALFA, GOLDEN_BRAVO]);
+    expect([ranked[0]!.organisation, Object.hasOwn(ranked[1]!, 'organisation')]).toStrictEqual(['alfa.example', false]);
+    const files2 = sub('The bidder file');
+    expect(row(files2, '`organisation`')).toContain('It is shown only when the gateway verified it, because the bidder chooses its text');
+    expect(row(files2, '`organisation_verified`')).toContain('`true` exactly when `organisation` is shown. It is never inferred');
+    expect(ranking).toContain('It is a member only when the gateway verified the organisation');
   });
 });
 
