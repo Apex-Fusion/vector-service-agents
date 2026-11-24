@@ -26,7 +26,7 @@ import { DryStop, guardedSign, recordKitLanding, recordingProvider } from '../li
 import { planOf } from '../lib/plan.ts';
 import {
   Dispute, INVENTORY_CAPABILITIES, ORDER_DESK_CLAIM, PURPOSE, REORDER_CLAIM, canonicalJson, canonicalSha256, claimDocument, createModule1Port, effectiveStatus, evidenceDocument, findRecord, keyHashOf,
-  module1FromManifest, parseOrderConfirmation, parsePurchaseOrder, readManifest, withdrawableFrom,
+  module1FromManifest, parseOrderConfirmation, parseOutRef, parsePurchaseOrder, readManifest, withdrawableFrom,
 } from '../lib/platform.ts';
 import { FlagError, runSteps } from '../lib/runner.ts';
 import type { StepHandler } from '../lib/runner.ts';
@@ -409,9 +409,25 @@ function withdrawFailure(agent: AgentSpec, result: WithdrawNotDone, stops: reado
   );
 }
 
-type Withdrawal = { readonly kind: 'withdrawn' | 'not_open' | 'dry' } | { readonly kind: 'wait'; readonly untilMs: number | null };
+type Withdrawal = { readonly kind: 'withdrawn' | 'not_open' | 'not_seen' | 'dry' } | { readonly kind: 'wait'; readonly untilMs: number | null };
 
-/** Withdraws the claim of one agent. The window is checked from the facts first: the kit checks it again from the chain. */
+/**
+ * The claim is not open only when its output is gone from the node. An output that is still unspent, and that the Module-1 manifest of this run does not read as an open claim, is the output of another
+ * claim script: the commit of the manifest is wrong, and the claim is open all the same. The task stops, and records nothing.
+ */
+async function requireOutputSpent(session: TaskSession<ClaimExtra>, agent: AgentSpec, fact: ClaimFact): Promise<void> {
+  const { txHash, outputIndex } = parseOutRef(fact.claimRef);
+  const unspent = await session.chain.provider.getUtxosByOutRef([{ txHash, outputIndex }]);
+  if (unspent.length > 0) {
+    throw new PreconditionError(`the output ${fact.claimRef} of the claim of the agent ${agent.id} is unspent on the chain, and the Module-1 manifest of this run does not read it as an open claim: check OPERATOR_MODULE1_COMMIT. The claim is not recorded as not open`);
+  }
+}
+
+/**
+ * Withdraws the claim of one agent. The window is checked from the facts first: the kit checks it again from the chain. A claim that the chain shows as not open is recorded as `not open` only by a submit
+ * run whose network guard passed, and only after the node agrees that its output is gone: the fact ends the claim for good, because the next cleanup skips it. A dry run, and a run whose guard failed (a
+ * node of another network shows no claim), say what they saw and record nothing.
+ */
 async function withdrawOne(session: TaskSession<ClaimExtra>, agent: AgentSpec, run: string, fact: ClaimFact, module1: Module1Deployment): Promise<Withdrawal> {
   const known = factsOf(session, agent);
   const { dispute, stops } = kitOf(session, agent, module1, known.id, withdrawRequest(session, agent, module1, run, fact));
@@ -427,8 +443,12 @@ async function withdrawOne(session: TaskSession<ClaimExtra>, agent: AgentSpec, r
   }
   if (stops[0] instanceof DryStop) return { kind: 'dry' };
   if (result.code === 'claim_not_open') {
-    session.facts.put('claims', [run, agent.id, 'withdrawTx'], NOT_OPEN);
-    return { kind: 'not_open' };
+    if (session.mode === 'submit' && session.networkResult()?.ok === true) {
+      await requireOutputSpent(session, agent, fact);
+      session.facts.put('claims', [run, agent.id, 'withdrawTx'], NOT_OPEN);
+      return { kind: 'not_open' };
+    }
+    return { kind: 'not_seen' };
   }
   if (result.code === 'window_not_ended') {
     const due = Date.parse(fact.withdrawableFrom);
@@ -449,6 +469,7 @@ async function cleanup(session: TaskSession<ClaimExtra>): Promise<StepOutcome> {
   const module1 = await module1Of(session);
   const out = session.out;
   let dry = false;
+  const unseen: string[] = [];
   const waits: number[] = [];
   let waiting = false;
   const lines: string[] = [];
@@ -484,16 +505,22 @@ async function cleanup(session: TaskSession<ClaimExtra>): Promise<StepOutcome> {
       lines.push(`the chain says that the window of the claim of the agent ${agent.id} has not ended`);
     } else if (done.kind === 'not_open') {
       lines.push(`the claim of the agent ${agent.id} is not open (it is challenged, resolved or withdrawn): recorded as ${NOT_OPEN}`);
+    } else if (done.kind === 'not_seen') {
+      unseen.push(agent.id);
+      lines.push(`the chain shows no open claim for the agent ${agent.id}, and ${session.mode === 'dry' ? 'a dry run' : 'a run whose network guard did not pass'} records nothing: the facts keep the claim as it is`);
     } else {
       lines.push(`the claim of the agent ${agent.id} is withdrawn`);
     }
   }
   for (const line of lines) out.out(line);
+  if (unseen.length > 0 && session.mode === 'submit') {
+    throw new PreconditionError(`the network guard did not pass, so the node cannot say that a claim is not open: nothing is recorded for ${unseen.join(' and ')}, and the claims stay as the facts hold them. Fix the settings of the node, and run cleanup again`);
+  }
   if (waiting) {
     const until = waits.length === 0 ? null : Math.min(...waits);
     return { kind: 'wait', message: `a claim of the run ${run} cannot be withdrawn yet${until === null ? '' : `: the earliest window ends at ${iso(until)}`}`, untilMs: until };
   }
-  if (dry) return { kind: 'dry' };
+  if (dry || unseen.length > 0) return { kind: 'dry' };
   return { kind: 'done', message: `every claim of the run ${run} is settled` };
 }
 

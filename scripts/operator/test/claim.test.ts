@@ -10,6 +10,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { ensureSlotConfig } from '../../../packages/buyer-core/src/index.ts';
 import { DEPLOYMENT, testKey } from '../../../packages/buyer-core/test/fixtures/identity-world.ts';
 import { AUDITOR_ID, CLAIMER_ID, IDENTITY_ADDRESS, IDENTITY_HASH, MODULE1, MODULE1_MANIFEST, agentRecord, recordUtxo } from '../../../packages/buyer-core/test/fixtures/jury-world.ts';
+import { scriptAddress } from '../../../packages/buyer-core/src/vendored/mcp/jury-deployment.ts';
 import { createSerialQueue } from '../../../packages/usecase-kit/src/access/index.ts';
 import { Dispute } from '../../../packages/usecase-kit/src/dispute/index.ts';
 import type { ClaimView, JurorDocument } from '../../../packages/usecase-kit/src/dispute/index.ts';
@@ -96,10 +97,14 @@ const held = (ledger: LedgerProvider, address: string): bigint => ledger.atAddre
 class Web {
   readonly statuses = new Map<string, string>();
   readonly calls: string[] = [];
+  /** The manifests that a commit other than the pinned one serves, by URL. */
+  readonly manifests = new Map<string, unknown>();
   readonly fetch: typeof fetch = async (input) => {
     const url = String(input);
     this.calls.push(url);
     if (url === MANIFEST_URL) return new Response(JSON.stringify(MODULE1_MANIFEST), { status: 200 });
+    const other = this.manifests.get(url);
+    if (other !== undefined) return new Response(JSON.stringify(other), { status: 200 });
     const status = this.statuses.get(url);
     if (status !== undefined) return new Response(JSON.stringify({ status }), { status: 200 });
     throw new Error('the network was touched');
@@ -724,6 +729,77 @@ describe('claim cleanup', () => {
     expect(claimOf(rig).withdrawTx).toBe(rig.ledger.accepted[4]);
     expect(rig.ledger.accepted).toHaveLength(5);
     expect(rig.text()).toMatch(/the claim of the agent order-desk is not open .*recorded as not open/);
+  }, SLOW);
+
+  it('records nothing in a dry run that cannot see a claim output, and withdraws both claims at the next submit run when the output is there', async () => {
+    const rig = await staged();
+    const order = claimOf(rig, ORDER);
+    // The node does not show the claim output of the Order Desk. A dry run says so, and writes nothing.
+    const hidden = rig.ledger.live.filter((utxo) => utxo.txHash === order.claimTx);
+    expect(hidden.length).toBeGreaterThan(0);
+    rig.ledger.live = rig.ledger.live.filter((utxo) => utxo.txHash !== order.claimTx);
+    later(rig, 25);
+    expect(await rig.run('cleanup', '--run', RUN)).toBe(0);
+    expect(rig.world.machine()).toMatchObject({ mode: 'dry', outcome: 'dry', exit: 0 });
+    expect(rig.text()).toMatch(/the chain shows no open claim for the agent order-desk, and a dry run records nothing/);
+    expect(claimOf(rig, ORDER).withdrawTx).toBeNull();
+    expect(claimOf(rig).withdrawTx).toBeNull();
+    expect(rig.ledger.accepted).toHaveLength(4);
+    // The output is there again: a submit run withdraws both claims, and no claim stays locked.
+    rig.ledger.live.push(...hidden);
+    approve(rig, 10, 's2');
+    expect(await cleanup(rig)).toBe(0);
+    expect(claimOf(rig).withdrawTx).toBe(rig.ledger.accepted[4]);
+    expect(claimOf(rig, ORDER).withdrawTx).toBe(rig.ledger.accepted[5]);
+    expect(await openClaims(rig, AUDITOR_ID)).toEqual([]);
+  }, SLOW);
+
+  it('records nothing when the network guard failed, stops with exit 2, and withdraws both claims when the node is on the right network', async () => {
+    const rig = await staged();
+    const claimTxs = [claimOf(rig).claimTx, claimOf(rig, ORDER).claimTx];
+    const hidden = rig.ledger.live.filter((utxo) => claimTxs.includes(utxo.txHash));
+    rig.ledger.live = rig.ledger.live.filter((utxo) => !claimTxs.includes(utxo.txHash));
+    // A node of another network: its network guard fails, and it shows no claim output.
+    const right = rig.world.node.facts;
+    rig.world.node.facts = { ...right, magic: right.magic + 1 };
+    later(rig, 25);
+    approve(rig, 10, 's2');
+    expect(await cleanup(rig)).toBe(2);
+    expect(rig.world.machine()).toMatchObject({ outcome: 'stopped', exit: 2 });
+    expect(rig.errors()).toMatch(/network guard: FAIL/);
+    expect(rig.errors()).toMatch(/the network guard did not pass, so the node cannot say that a claim is not open: nothing is recorded for reorder-agent and order-desk/);
+    expect(claimOf(rig).withdrawTx).toBeNull();
+    expect(claimOf(rig, ORDER).withdrawTx).toBeNull();
+    expect(rig.ledger.accepted).toHaveLength(4);
+    // The node is on the right network again and shows the outputs: both claims are withdrawn.
+    rig.ledger.live.push(...hidden);
+    rig.world.node.facts = right;
+    approve(rig, 10, 's3');
+    expect(await cleanup(rig)).toBe(0);
+    expect(rig.ledger.accepted).toHaveLength(6);
+    expect(await openClaims(rig, CLAIMER_ID)).toEqual([]);
+    expect(await openClaims(rig, AUDITOR_ID)).toEqual([]);
+  }, SLOW);
+
+  it('stops with exit 2 and records nothing when the manifest of another claim script reads no claim although its output is unspent, and withdraws with the right commit', async () => {
+    const rig = await staged();
+    later(rig, 25);
+    approve(rig, 10, 's2');
+    // The commit of the manifest is wrong: it names another claim script, so the claim outputs of the run are no open claims for it. They are unspent all the same.
+    const wrong = 'b'.repeat(40);
+    const script = 'ab'.repeat(28);
+    rig.web.manifests.set(MANIFEST_URL.replace(COMMIT, wrong), { ...MODULE1_MANIFEST, hashes: { ...MODULE1_MANIFEST.hashes, claim: script }, addresses: { ...MODULE1_MANIFEST.addresses, claim: scriptAddress(script) } });
+    rig.world.env.OPERATOR_MODULE1_COMMIT = wrong;
+    expect(await cleanup(rig)).toBe(2);
+    expect(rig.errors()).toMatch(/is unspent on the chain, and the Module-1 manifest of this run does not read it as an open claim: check OPERATOR_MODULE1_COMMIT/);
+    expect(claimOf(rig).withdrawTx).toBeNull();
+    expect(claimOf(rig, ORDER).withdrawTx).toBeNull();
+    expect(rig.ledger.accepted).toHaveLength(4);
+    rig.world.env.OPERATOR_MODULE1_COMMIT = COMMIT;
+    approve(rig, 10, 's3');
+    expect(await cleanup(rig)).toBe(0);
+    expect(rig.ledger.accepted).toHaveLength(6);
+    expect(await openClaims(rig, CLAIMER_ID)).toEqual([]);
   }, SLOW);
 
   it('touches nothing for another run label, and for a run that the facts do not hold', async () => {
