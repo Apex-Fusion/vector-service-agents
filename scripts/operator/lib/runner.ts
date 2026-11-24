@@ -734,23 +734,28 @@ async function execute<Extra>(def: TaskDefinition<Extra>, argv: readonly string[
   const factsIdentity = { useCase: use.name, network: settings.network.name };
   if (inspect !== undefined) {
     if (args.run === null) throw new FlagError(`${def.name} needs --run <label>`);
-    const lines = await inspect({
-      run: args.run, use, clock,
-      readFacts: () => initialized ? FactsFile.open(factsPath, factsIdentity).read() : null,
-      readState: () => {
-        const path = `${base}.state.json`;
-        const snapshot = initialized ? StateFile.peek(path, identity) : null;
-        const steps = snapshot?.steps ?? {};
-        return { steps, lines: statusStateLines(path, def.steps(use, args.flags), snapshot, (step) => steps[step]) };
-      },
-      readEvidence: () => initialized ? EvidenceFile.peek(`${base}.evidence.json`, identity) ?? [] : [],
-      async readChain() {
-        const connections = ctx.connections ??= connect(def, settings, deps);
-        const gate = await connections.network.guard();
-        if (!gate.ok) throw new PreconditionError(`the node is not shown to be on the network of the run (${gate.message})`);
-        return connections.chain;
-      },
-    });
+    const path = `${base}.state.json`;
+    const peek = () => initialized ? StateFile.peek(path, identity) : null;
+    const saved = def.needs.approval === 'never' ? peek() : undefined;
+    // A task that cannot submit must show a saved flight before it reads any other source.
+    const lines = saved?.in_flight != null
+      ? statusStateLines(path, def.steps(use, args.flags), saved, (step) => saved.steps[step])
+      : await inspect({
+        run: args.run, use, clock,
+        readFacts: () => initialized ? FactsFile.open(factsPath, factsIdentity).read() : null,
+        readState: () => {
+          const snapshot = saved === undefined ? peek() : saved;
+          const steps = snapshot?.steps ?? {};
+          return { steps, lines: statusStateLines(path, def.steps(use, args.flags), snapshot, (step) => steps[step]) };
+        },
+        readEvidence: () => initialized ? EvidenceFile.peek(`${base}.evidence.json`, identity) ?? [] : [],
+        async readChain() {
+          const connections = ctx.connections ??= connect(def, settings, deps);
+          const gate = await connections.network.guard();
+          if (!gate.ok) throw new PreconditionError(`the node is not shown to be on the network of the run (${gate.message})`);
+          return connections.chain;
+        },
+      });
     out.out(`task ${def.name}: ${def.title}`);
     out.out(`use case ${use.name}, network ${settings.network.name}`);
     if (!initialized) out.out('the state folder is not initialized; there are no saved observations');

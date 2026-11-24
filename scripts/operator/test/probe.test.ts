@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { EvidenceFile } from '../../checks/lib/evidence.ts';
 import { iso } from '../../checks/lib/format.ts';
+import { StateFile } from '../../checks/lib/state.ts';
 import { factsOf } from '../../checks/lib/txfacts.ts';
 import { buildEndSubagents } from '../../../packages/buyer-core/src/vendored/mcp/identity-build.ts';
 import { delegation, delegationUtxo } from '../../../packages/buyer-core/test/fixtures/escrow-identity.fixture.ts';
@@ -682,16 +683,48 @@ describe('the arguments', () => {
 });
 
 describe('status and cleanup', () => {
+  it('shows the saved flight before reading any probe observations', async () => {
+    const w = await taskWorld({ keys: [], use: UC2, env: { OPERATOR_USE_CASE: USE.name, OPERATOR_KEYS_DIR: undefined } });
+    mkdirSync(w.stateDir, { mode: 0o700 });
+    const path = join(w.stateDir, 'probe.r1.state.json');
+    const state = StateFile.open(path, { check: 'probe', network: 'vector-mainnet', record: `${w.use.name}:r1` });
+    const tx = hashOf('saved probe flight');
+    const bytes = 'ab'.repeat(32);
+    state.setInFlight({ step: 'run', tx_hash: tx, signed_cbor: bytes, signed_at: NOW, valid_to: NOW + 60_000, refs: {}, facts: {} });
+    writeFileSync(join(w.stateDir, 'probe.r1.evidence.json'), 'not JSON', { mode: 0o600 });
+    writeFileSync(join(w.stateDir, 'facts.json'), 'not JSON', { mode: 0o600 });
+    const saved = () => readdirSync(w.stateDir).sort().map((name) => [name, readFileSync(join(w.stateDir, name), 'utf8')]);
+    const before = saved();
+    const forbidden = vi.fn(async () => { throw new Error('status must not make a request'); });
+    const noKeys = vi.fn(() => { throw new Error('status must not load a key'); });
+    const node = { networkFacts: forbidden, networkTip: forbidden, resolveInputs: forbidden, txStatus: forbidden, submit: forbidden };
+    const exit = await runTask(probe, ['status', '--run', 'r1', '--use-case', w.use.name],
+      w.deps({ node, readRegistry: noKeys, fetchImpl: forbidden, hosted: { call: forbidden } }));
+
+    expect(exit).toBe(0);
+    expect(w.screen.errors).toEqual([]);
+    expect(w.screen.lines).toContain(`state file ${path}`);
+    expect(w.screen.lines).toContain(`in flight: the step run, transaction ${tx}, signed at ${iso(NOW)}, may land until ${iso(NOW + 60_000)}`);
+    expect(w.screen.text).not.toContain(bytes);
+    expect(w.screen.text).not.toContain('requests that the evidence holds');
+    expect(forbidden).not.toHaveBeenCalled();
+    expect(noKeys).not.toHaveBeenCalled();
+    expect(saved()).toEqual(before);
+  });
+
   it.each([USE, UC2, UC3])('shows only the saved probe observations on $name, without keys, a node or a gateway', async (use) => {
     const w = await taskWorld({ keys: [], use, env: { OPERATOR_USE_CASE: USE.name, OPERATOR_KEYS_DIR: undefined } });
     mkdirSync(w.stateDir, { mode: 0o700 });
     const path = join(w.stateDir, 'probe.r1.evidence.json');
-    const evidence = EvidenceFile.open(path, { check: 'probe', network: 'vector-mainnet', record: `${use.name}:r1` });
+    const identity = { check: 'probe', network: 'vector-mainnet', record: `${use.name}:r1` };
+    const evidence = EvidenceFile.open(path, identity);
     evidence.add({ step: 'run', status: 'info', at: iso(NOW), shows: {
       summary: 'private text that status must not repeat', observation: { kind: 'refused', status: 401, text: 'private gateway reply' },
       verdict: { expected: 'refused', observed: 'refused', ok: true, reason: 'private reason' },
     } });
-    writeFileSync(join(w.stateDir, 'probe.r1.state.json'), 'not JSON', { mode: 0o600 });
+    const statePath = join(w.stateDir, 'probe.r1.state.json');
+    StateFile.open(statePath, identity);
+    const savedState = readFileSync(statePath, 'utf8');
     writeFileSync(join(w.stateDir, 'facts.json'), 'not JSON', { mode: 0o600 });
     const saved = readFileSync(path, 'utf8');
     const files = readdirSync(w.stateDir).sort();
@@ -705,6 +738,7 @@ describe('status and cleanup', () => {
     const out = w.screen.lines.join('\n');
     expect(out).toContain('requests that the evidence holds: 1');
     expect(out).toContain(`request 1 at ${iso(NOW)}: expected refused, observed refused (status 401): as expected`);
+    expect(out).not.toContain('in flight:');
     expect(out).not.toContain('private');
     expect(w.machine()).toMatchObject({ task: 'probe', command: 'status', mode: 'dry', outcome: 'done', exit: 0, step: null, result: {} });
     expect(noKeys).not.toHaveBeenCalled();
@@ -713,6 +747,7 @@ describe('status and cleanup', () => {
     expect(noHosted).not.toHaveBeenCalled();
     expect(w.node.submitted).toEqual([]);
     expect(readFileSync(path, 'utf8')).toBe(saved);
+    expect(readFileSync(statePath, 'utf8')).toBe(savedState);
     expect(readdirSync(w.stateDir).sort()).toEqual(files);
   });
 
