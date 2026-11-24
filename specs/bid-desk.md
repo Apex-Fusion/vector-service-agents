@@ -1,6 +1,6 @@
 # Bid Desk
 
-Capability `supplychain.rfq.quote.v1`. For a supplier: takes a request for quotation from a buyer's agent, checks who sent it, prices it from the supplier's published price list and returns a quote. The signed receipt of the job is the signed quote.
+Capability `supplychain.rfq.quote.v1`. For a supplier: takes a request for quotation from a buyer's agent, checks who sent it, and asks a model to price it using the supplier's published list. The runtime signs a receipt that commits to the exact quote bytes.
 
 One code base serves three Bid Desks: Bid Desk Alfa, Bid Desk Bravo and Bid Desk Charlie. Each has its own record, keys, advert, organisation and price list. This page covers all three.
 
@@ -95,6 +95,8 @@ Amounts are `lovelace` fields. The last column is the same amount divided by 1,0
 
 **The request limit.** The manifest asks the buyer to keep the full wire payload at or below 900000 UTF-8 bytes (`terms.input_limits.request_bytes`). This counts the one-message array and all escapes. The runtime limits the whole request body to 1048576 bytes. The buyer puts the wire payload inside that body as a JSON string. Escaping the payload again can put the body above the runtime limit even if the payload fits. On `POST /` and `POST /precheck` the Bid Desk's HTTP reader has a separate limit of 1000000 bytes. It refuses more with `request_too_large` (400).
 
+A buyer that uses `vector_marketplace_send_job` must also keep the whole serialized body sent to `/v1/job` at or below 1000000 UTF-8 bytes. Check the size before you sign and submit the escrow Post. See [Terms of the Sourcing Agent](sourcing-agent.md#terms) for the body to measure.
+
 **The money.** A hire of an advert locks its price and both bonds: 3 units at the listed terms. The buyer pays the lock from a vault of its delegation, and the value limit of the delegation caps that payment. On Accept the Bid Desk receives the price and the supplier bond. The buyer bond goes to a separate `Returned` vault output that only the vault owner can close. If the buyer does not accept within 600 s of the Submit, the Bid Desk may Release the escrow and take the price and both bonds. Reclaim applies only to an Open or Claimed escrow. After `deliver_by` it returns the full lock to a `Returned` output, not to the caller's wallet. Neither return restores the spending allowance of the Live vault. See [Terms of the Sourcing Agent](sourcing-agent.md#terms) for the full settlement rules. The service pays for its one model call from the service key.
 
 ## Interface
@@ -109,9 +111,11 @@ Two things are named apart on this page. The **request JSON** is what the buyer'
 | `POST /` | the runtime, after the Claim | the job: the quote, or an error |
 | `GET /price-list.json` | anyone | the price list of the Bid Desk |
 | `GET /agent.json` | anyone | the manifest |
-| `GET /healthz` | anyone | `{"ok":true}` while the service runs |
+| `GET /healthz` | on the service port, for operators | `{"ok":true}` when the Bid Desk service can answer HTTP |
 
 `POST /` and `POST /precheck` need the token that only the runtime holds. A call without it gets 401 `{"error":"unauthorized"}`, before the body is read. `GET /price-list.json`, `GET /agent.json` and `GET /healthz` need no token. Any other route gets 404 `{"error":"not_found"}`. A buyer sends its job to the runtime of its advert, on the runtime route `/v1/job` of the manifest, and never to the service.
+
+Public `/healthz` is different. Caddy sends it to the runtime, which can return `{"ok":true}` when the Bid Desk service is down. Caddy sends public `/agent.json` and `/price-list.json` to the service. A successful response there shows that the service answers on that path. None of these responses proves that the service can take or finish a job. Operators can check the service port separately (see [The checks](../deploy/server/RUNBOOK-bid-desk.md#the-checks)).
 
 ### Request
 
@@ -204,7 +208,7 @@ After the Claim the runtime posts the job to the service. The job runs these ste
 7. It builds the quote and checks it with the parser of the kit. A quote that the parser refuses ends the job with `internal` (500).
 8. It checks the time. With less than 30000 ms left before `deliver_by`, the job ends with `deadline` (422) and records nothing. Otherwise it writes the book: the sender, the `rfq_id` and the hash of the quote. A book that cannot be written ends the job with `store_write_failed` (500). Then the job answers with the quote.
 
-The model sets the prices and the code does not check them. The code checks the SKU and the quantity of each line against the request, and it does not check a unit price against the price list. So a quote can hold a price that is not on the list. The buyer's agent must check it: the list and its hash are public, and the quote names the hash of the list that it was priced from. The Sourcing Agent asks its model to compare the unit price of each line of a quote with the price of the list before it accepts the quote. The one price off the list that this Bid Desk makes on purpose is the fault `quote_off_price_list`.
+The model sets the prices and the code does not check them. The code checks the SKU and the quantity of each line against the request, and it does not check a unit price against the price list. So a quote can hold a price that is not on the list. The buyer can compare each unit price with the public list for its SKU and quantity. The quote names the hash of that list. The Sourcing Agent checks this hash in code and asks its model to compare unit prices. It can accept a quote with an off-list price if the model reports no mismatch. The one price off the list that this Bid Desk makes on purpose is the fault `quote_off_price_list`.
 
 A request none of whose SKUs the price list carries passes the hook and the Claim. The instruction to the model says to leave an item that the list does not carry out of the lines, and to name it in the notes. When no line is left, the job ends with `model_output_invalid` (502) after the Claim, and the service has paid for the model hire. A request with some SKUs on the list gets a quote with a line for each item that the model priced.
 
@@ -212,7 +216,7 @@ A job whose caller hangs up before the decision, or before the book records the 
 
 ### Response
 
-`schema` is `vector.usecase.quote.v1`. A job that makes the quote answers with it, as the body of the answer, serialised once, with its members in the order of the table below. The signed receipt of the job is the signed quote: the receipt commits to the text of the quote. A job that does not make a quote answers with an error (see Errors) and no quote.
+`schema` is `vector.usecase.quote.v1`. A job that makes the quote answers with it, as the body of the answer, serialised once, with its members in the order of the table below. The signed receipt commits to the exact quote bytes. A job that does not make a quote answers with an error (see Errors) and no quote.
 
 Example. The test of the job gives exactly this quote for the request above, with the price list file of Bid Desk Alfa, the organisation of Bid Desk Alfa and stand-ins for the identity gateway, the book and the model supplier. It is an illustration and not a recorded run. Its desk DID, sender, credential, references, hashes and signature are made up, so none of them is of a real agent, escrow or key. Only the price list hash and the prices are those of the file of Bid Desk Alfa.
 
@@ -435,7 +439,9 @@ The service signs no receipt. The runtime builds and signs the receipt, and subm
 | `prompt_tokens`, `completion_tokens` | 0 and 0, the runtime counts none. The token counts of the model hire are in the sub-receipt under `decisions[0].inference.sub_job` |
 | `wallclock_ms` | how long the service call took |
 
-The signed receipt of the job is the signed quote, and the quote is the committed output. So the receipt commits every line with its unit price and its lead time, the hash of the request that the Bid Desk received, the hash of the price list that it priced from, its credential, who sent the request, the 7 checks, and the pricing decision with its reasoning and the sub-receipt of the model supplier. It does not hold the Bid Desk to the quote: a quote is not a binding offer (see Known gaps).
+The quote is the committed output. The receipt commits to every line with its unit price and its lead time, the hash of the request that the Bid Desk received, the hash of the price list it names, its credential, who sent the request, the 7 checks, and the pricing decision with its reasoning and the sub-receipt of the model supplier. It does not hold the Bid Desk to the quote: a quote is not a binding offer (see Known gaps).
+
+Keep the exact result bytes, the receipt and the signature if you need to verify the quote later. Check the SHA-256 of those bytes against `receipt.response_hash`, and verify the signature with the Bid Desk supplier key. Parsed or re-serialized JSON is not a substitute for the original bytes.
 
 The sha256 of the quote text is what a challenge uses. The evidence of a challenge on S1 names that hash as `quote_sha256`, with the hash of the price list (`price_list_sha256`), the SKU and the quantity of the line, the unit price that the quote gives and the unit price that the list gives.
 
@@ -451,13 +457,13 @@ The service stakes no claim: no code of the service calls the staking. No comman
 | S2 | A quote names the hash of the request for quotation it answers. |
 | S3 | This agent gives one quote per request for quotation and sender. |
 
-S1 is the statement that the fault `quote_off_price_list` breaks. A buyer's agent that finds a unit price that differs from the published list declines the quote and challenges the claim of the Bid Desk on S1. The Sourcing Agent does this. S2 is held by the member `rfq_sha256` of the quote, and S3 by the book of the Bid Desk (see What it checks before the Claim).
+S1 is the statement that the fault `quote_off_price_list` breaks. When the Sourcing Agent's model reports a mismatch, the agent declines the quote. It challenges S1 only if there is an open claim and it can show that a line the model named has a different unit price. If the model misses a mismatch, the quote can be accepted. S2 is held by the member `rfq_sha256` of the quote, and S3 by the book of the Bid Desk (see What it checks before the Claim).
 
 ## Fault switch
 
 `FAULT_MODE=quote_off_price_list`: the unit price of the first line that the price list prices is lowered by a fifth of the listed price, rounded up, and every check of the hook still passes. The new price is `listed - ceil(listed / 5)`, where `listed` is the price of the list for the SKU and the quantity of that line. The totals follow the changed line. The new price is below the listed price and at least 1, because no price of the three files is below 10. For the request of the example under Request and the price list of Bid Desk Alfa, the quote of a fault run has the unit price 100 on its first line (the listed price is 125), the line total 10000 and the total 19400, and its `fault_mode` is `quote_off_price_list`. The decision on record stays what the model said.
 
-When no line can take the new price, the job ends with `internal` (500): a run never says that a fault was on when it changed nothing. The planned failure run sets the switch on one Bid Desk only, Bid Desk Charlie, to show that the Sourcing Agent catches a quote that is below the published price list. No command of this repository runs use case 3 yet. The switch of one Bid Desk never changes another: each Bid Desk reads an env file of its own.
+When no line can take the new price, the job ends with `internal` (500): a run never says that a fault was on when it changed nothing. The planned failure run sets the switch on one Bid Desk only, Bid Desk Charlie, to test whether the Sourcing Agent's model identifies the off-list price. No command of this repository runs use case 3 yet. The switch of one Bid Desk never changes another: each Bid Desk reads an env file of its own.
 
 The switch is empty in a clean run. Any other value stops the start of the service. The switch changes what the job writes and never a check: the hook does not know that it exists. It is declared in the manifest, in `behaviour.fault_modes`, and the manifest is the same for every value. Each quote returns the active value as `fault_mode`, its last member.
 

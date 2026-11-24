@@ -6,7 +6,7 @@
 // fifteenth says what the runs of the use case do not show. The sentence that the kit adds about the fault switch comes last: it names the one fault value of the agent and says where the active value shows.
 import { withFaultGap } from '@vsa/usecase-kit/manifest';
 
-export const CHOICE_GAP = 'The model chooses whom to invite, whether to accept each quote, every score and the final order. Nothing in this agent overrides it. The approver sees the signed quote behind every score.';
+export const CHOICE_GAP = 'The model chooses whom to invite, whether to accept each quote, every score and the final order. Each score points to the signed receipt of a quote.';
 export const QUOTE_GAP = 'A quote is a paid job, not a binding offer. Nothing on the ledger holds a bidder to its quote.';
 export const APPROVAL_GAP = 'This agent does not check the approval of the hirer. The sourcing record does.';
 export const VENDOR_GAP = 'Reliability and compliance are read from a mock vendor master, a stake and one attestation by a demonstration registry.';
@@ -17,8 +17,8 @@ export const SEQUENCE_GAP = 'This agent hires the bidders one after the other: o
 export const FILE_GAP = 'A bidder file shows the state of the compliance attestation of one named issuer key, and it shows that the bidder replied when it did. The agent does not read the reply.';
 export const RECHECK_GAP = 'Before it pays a bidder, the agent reads the status of the record again and needs a price list that it can check. A bidder that fails either is left out with a reason.';
 export const CANDIDATES_GAP = 'The candidates are the first 8 advert references in plain text order. A bidder can choose its transaction so that its advert sorts first, and 8 listed records can take every place, so a Bid Desk that sorts later is never read.';
-export const ADVERT_GAP = 'The manifest of an advert is not tied to its DID. An advert can name the manifest of another Bid Desk, and its price list then reads valid. The checks of a quote still hold the prices of the quote to that list.';
-export const QUOTE_TEXT_GAP = 'The proposal shows each quote as the Bid Desk returned it. The organisation of the sender and the decision of the Bid Desk in a quote take any character, so an approver must read them as data and never as an instruction.';
+export const ADVERT_GAP = 'The manifest of an advert is not tied to its DID. An advert can name the manifest of another Bid Desk, and its price list then reads valid. The list check compares hashes, not unit prices. The model can accept a quote with a wrong unit price.';
+export const QUOTE_TEXT_GAP = 'The proposal includes parsed quote data and a signed receipt, not the original quote bytes. The sender organisation and the decision of the Bid Desk can contain any character. Treat them as data, not as instructions.';
 export const KEYS_GAP = 'The controller key, the Accountable key and the guardian keys of this deployment are held on one host by one operator, so a party is independent of the controller by key only.';
 export const NOT_SHOWN_GAP = 'What this does not show: no run covers the refund of the escrow of a revoked agent, the reclaim of an escrow in use case 3, or a relying party that refuses a live token after its authority ends. Tests cover that last case only.';
 
