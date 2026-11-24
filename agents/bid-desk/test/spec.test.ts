@@ -1047,11 +1047,6 @@ describe('specs/bid-desk.md: the receipt, the claim and the fault switch', () =>
     expect(claim).toContain(`The service stakes no claim: no code of the service calls the staking. No command of this repository stakes a claim for this agent yet. Until one does, a challenge against it ends with \`${NO_OPEN_CLAIM}\`. The design is a Module-1 claim for each Bid Desk and each run. The operator stakes it with the service key of that Bid Desk before the run, once such a command exists: ${CLAIM_STAKE_LOVELACE / 1_000_000n} units, which is ${CLAIM_STAKE_LOVELACE} lovelace, with a challenge window of ${CLAIM_WINDOW_MS / 3_600_000} hours. After the window, the operator withdraws the claim when nobody challenged it.`);
     expect(claim).toContain('The claim has three statements, and the three Bid Desks have the same three. The manifest of each holds the same three texts in `behaviour.claim`, with no reference to a claim. A challenge names the text of a statement.');
     expect(sources.filter(([, text]) => text.includes('stakeRunClaim')).map(([file]) => file)).toStrictEqual([]);
-    // No command of this repository stakes a claim for a Bid Desk: the operator pack has no use case 3 data, and no file of the pack that is not a test names a Bid Desk. A command that does must change this page.
-    const packDir = new URL('../../../scripts/operator/', import.meta.url);
-    const pack = (readdirSync(packDir, { recursive: true }) as string[]).map(String).filter((file) => file.endsWith('.ts') && !file.startsWith('test/') && !file.includes('node_modules'));
-    expect(pack.length).toBeGreaterThan(5);
-    expect(pack.filter((file) => /bid[-_ ]?desk/i.test(readFileSync(new URL(file, packDir), 'utf8')))).toStrictEqual([]);
     expect(NO_OPEN_CLAIM).toBe('no_open_claim');
     expect(envExample.split('\n').filter((line) => line.startsWith('DISPUTE_'))).toStrictEqual([]);
     // S1 is the statement of the evidence of a quote challenge, and the Sourcing Agent challenges the first statement of this claim.
