@@ -229,6 +229,14 @@ describe('the insurer', () => {
     expectNothingPaid(w);
   });
 
+  it.each([['a text', 'true'], ['a number', 1], ['nothing', undefined]])('does not read success from %s: an answer whose ok is not the boolean true is internal, and no port is called after the reader', async (_name, ok) => {
+    const w = world();
+    w.script.readInsurer = async () => ({ ok, value: { advert_ref: ADVERT_REF } }) as never;
+    expectFailed(await w.run(), 'internal');
+    expect(calledPorts(w)).toStrictEqual(['delegation', 'key', 'insurer']);
+    expectNothingPaid(w);
+  });
+
   it('puts the advert of the reader into the request: the twin of every failure above', async () => {
     const w = world();
     w.script.readInsurer = async () => accepted({ advert_ref: `${'9d'.repeat(32)}#7` });

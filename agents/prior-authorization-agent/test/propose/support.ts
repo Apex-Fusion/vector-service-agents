@@ -16,6 +16,49 @@ import type { DelegationKey, EvidenceRequest, EvidenceResult, EvidenceRun, Justi
 const goldenText = (name: string): string => readFileSync(new URL(`./golden/${name}.json`, import.meta.url), 'utf8');
 export const golden = (name: string): Record<string, unknown> => JSON.parse(goldenText(name)) as Record<string, unknown>; // a golden file is an object
 
+export type Json = Record<string, unknown>;
+
+/**
+ * A deep copy of `value` with the value at `path` set to `to`. The path must exist up to its last step: a copy of a path that does not exist is an error of the test. A test uses it to make a variant of a
+ * golden file, and the sample does not change.
+ */
+export function changed(value: unknown, path: readonly (string | number)[], to: unknown): Json {
+  const copy = JSON.parse(JSON.stringify(value)) as Json; // a golden value is JSON data
+  let holder: unknown = copy;
+  for (const step of path.slice(0, -1)) {
+    if (typeof holder !== 'object' || holder === null) throw new Error(`the sample has no value at ${path.join('.')}`);
+    holder = Reflect.get(holder, step);
+  }
+  const last = path[path.length - 1];
+  if (typeof holder !== 'object' || holder === null || last === undefined) throw new Error(`the sample has no member at ${path.join('.')}`);
+  Reflect.set(holder, last, to);
+  return copy;
+}
+
+/** The value at `path` of `value`. A path that does not exist is an error of the test. */
+function valueAt(value: unknown, path: readonly (string | number)[]): unknown {
+  let at: unknown = value;
+  for (const step of path) {
+    if (typeof at !== 'object' || at === null) throw new Error(`the sample has no value at ${path.join('.')}`);
+    at = Reflect.get(at, step);
+  }
+  return at;
+}
+
+/** The object at `path` of `value`, for a test that plays a port that changes the object in place. A path that does not give an object is an error of the test. */
+export function objectAt(value: unknown, path: readonly (string | number)[]): Json {
+  const found = valueAt(value, path);
+  if (typeof found !== 'object' || found === null || Array.isArray(found)) throw new Error(`the sample has no object at ${path.join('.')}`);
+  return found as Json; // the guard above says that it is an object
+}
+
+/** The list at `path` of `value`, for a test that plays a port that changes the list in place. A path that does not give a list is an error of the test. */
+export function listAt(value: unknown, path: readonly (string | number)[]): unknown[] {
+  const found = valueAt(value, path);
+  if (!Array.isArray(found)) throw new Error(`the sample has no list at ${path.join('.')}`);
+  return found;
+}
+
 /** A value that a parser of the kit must take: the golden files pass their parsers, and a file that does not is an error of the test. */
 function must<T>(result: ProtocolResult<T, string>): T {
   if (!result.ok) throw new Error(`a golden file must pass its parser: ${result.detail}`);

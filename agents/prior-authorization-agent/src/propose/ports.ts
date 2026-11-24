@@ -45,8 +45,10 @@ export interface JustificationChoice {
 }
 
 /**
- * The decision `justification`: the decision with its receipt and the choice that it holds, or the code of the failure. A failure holds no decision. `choice` must be the choice that `decision.choice` records,
- * with the same members and the same values: `runPropose` builds the request from `choice` only when the two are equal, and it fails with `decision_mismatch` when they differ.
+ * The decision `justification`: the decision with its receipt and the choice that it holds, or the code of the failure. A failure holds no decision. The code of a failure is the reason of the failed decision,
+ * for example `llm_out_of_time`, `model_output_invalid`, or `bad_input` for a prompt that is too large: a decision that fails before it hires the model, as `bad_input` does, paid nothing. `choice` must be the
+ * choice that `decision.choice` records, with the same members and the same values: `runPropose` builds the request from `choice` only when the two are equal, and it fails with `decision_mismatch` when they
+ * differ.
  */
 export type JustifyAnswer = { readonly ok: true; readonly decision: Decision; readonly choice: JustificationChoice } | { readonly ok: false; readonly code: string };
 
