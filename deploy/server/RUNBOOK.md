@@ -310,7 +310,7 @@ docker compose -f docker-compose.mock-systems.yml down
 
 The deploy pack of an agent has its compose file, its env example, its snippet and its own runbook. The packs of use case 1 (inventory reorder) are the Reorder Agent, with `RUNBOOK-reorder-agent.md`, and the Order Desk, with `RUNBOOK-order-desk.md`. The packs of use case 2 (prior authorization) are the Prior Authorization Agent, with `RUNBOOK-prior-authorization-agent.md`, and the Insurer Intake Agent, with `RUNBOOK-insurer-intake-agent.md`. The packs of use case 3 (supplier bid evaluation) are the Sourcing Agent, with `RUNBOOK-sourcing-agent.md`, and the three Bid Desks, with `RUNBOOK-bid-desk.md`. They fit the marker block only: their upstreams are container names, and Caddy on the host cannot resolve them. The runbook of each pack of use case 1 says which tasks of the operator pack make the keys, the records, the stakes, the env files and the advert. README.md, section "The operator image", describes the pack. The runbooks of the other packs give the keys, the registration and the advert. These steps are only for the host.
 
-For every pack listed above, follow "The start order" in its runbook in place of steps 4 to 6 below. Start the runtime last. It needs the advert reference in `ADVERT_REF`.
+For each pack listed above, use its own runbook from the first DNS and folder steps through the public checks. Do not run `setup.sh` on its existing host. Install its files and pin its images as that runbook says. Follow "The start order": put the confirmed advert reference in `ADVERT_REF` before the runtime starts. The numbered steps below apply only to other packs.
 
 1. Make the DNS record of each host name of the agent (step 5). Wait until it resolves to `<host address>`.
 2. Make the folder of the agent. Use the name of the agent:
@@ -330,7 +330,7 @@ For every pack listed above, follow "The start order" in its runbook in place of
    ```
 
    Fill the env file as the runbook of the agent says. Make each key as the section "Keys" says.
-4. If the pack is listed above, follow its start order and then go to step 7. For other packs, start the containers as the runbook says: the service first, then the runtime. Run `docker compose` as the service user, in the folder of the agent.
+4. Start the containers as the runbook of the agent says: the service first, then the runtime. Run `docker compose` as the service user, in the folder of the agent.
 5. Check each container on the loopback address. The runtime port is in the range 8101 to 8110, and the service port is in the range 9101 to 9108:
 
    ```sh

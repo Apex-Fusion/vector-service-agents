@@ -283,7 +283,7 @@ Start the Bid Desks one after the other, `alfa` first, then `bravo`, then `charl
 
 3. Join the Caddy container to the network of this Bid Desk, and add its block (section "The Caddy block"). Its DNS record must resolve to the host first.
 4. Check the public names of this Bid Desk, and take the hash of its manifest (section "The checks"). It is the `detail_hash` of its advert.
-5. Post the advert of this Bid Desk (section "The adverts"). Write its reference into `ADVERT_REF` of its env file.
+5. Post the advert of this Bid Desk (section "The adverts"). Keep the Post transaction hash in the deployment record. Verify its output on the ledger. If confirmation is unknown, check the same hash and stop; do not post again. Write its confirmed reference into the existing `ADVERT_REF` entry of this desk's env file. Do not append a second entry or print the file.
 6. Start the runtime. Pass the memory gate first. After the start, wait 30 seconds, and check that the runtime is up and says `free`. Write the port of its runtime in place of `<runtime port>`:
 
    ```sh
@@ -293,6 +293,7 @@ Start the Bid Desks one after the other, `alfa` first, then `bravo`, then `charl
    ```
 
    The option `--no-deps` keeps compose from touching the service: a start of the runtime never creates the service again.
+   Read `GET /capability` on the runtime port of this desk. Require HTTP 200 and an `advert_ref` equal to the confirmed output reference from step 5. A reference for another desk is not ready for a hire.
 7. Run the other checks of section "The checks" for this Bid Desk.
 
 ## The checks
@@ -534,7 +535,7 @@ A Bid Desk is the hired side. A job that fails answers with its HTTP status and 
 
 To take one Bid Desk out of service. The order matters: the advert goes first, so that nobody can post an escrow against an agent that goes away. The other two Bid Desks, their containers and their blocks stay. To take all three out, run the steps for each Bid Desk in turn.
 
-1. Retire the advert of that Bid Desk. The operator does it with the hosted tools, signed with the supplier key of its runtime. Skip this step when `ADVERT_REF` is empty in its env file: nothing was posted.
+1. Retire the active advert of this Bid Desk before stopping it. Use the hosted tools and the supplier key of its runtime. An empty `ADVERT_REF` does not prove that no Post landed. Check each recorded Post transaction and the current ledger outputs for this desk's agent ID, supplier and model. If a Post may still land, or the ledger read fails, stop here. Skip retirement only when no matching advert is active and no Post can still land. If an advert was active, confirm its retirement before continuing.
 2. Wait 2 minutes after the last job. Then check that its runtime says `free`, and stop its containers at once. Never check first and then wait. The command does the three steps without a gap. A job that was claimed before the retire still runs: when the runtime says `working`, nothing is stopped. Let the job end, and run the command again. Compose waits up to 330 seconds for the service. Run the command of the Bid Desk in its folder:
 
    ```sh
@@ -544,6 +545,7 @@ To take one Bid Desk out of service. The order matters: the advert goes first, s
    ```
 
    Run one of the three lines. Each line is the whole command of one Bid Desk: its port and its compose file.
+   If the runtime never started, use this desk's deployment record and container history to establish that fact. Check that no escrow for its advert has work outstanding. Only then may you stop the service alone with `docker compose -f docker-compose.bid-desk-<name>.yml stop service`. A missing container or a failed `/status` request is not proof. If any result is unknown, leave this desk and its Caddy block in place.
 3. Remove the Caddy block of that Bid Desk, with its own pair of markers, as section "The Caddy block" says. The blocks of the other two stay. Validate and reload Caddy.
 4. Leave the network of the project before the `down` command, because the Caddy container is on it. Do not use `-v`:
 
