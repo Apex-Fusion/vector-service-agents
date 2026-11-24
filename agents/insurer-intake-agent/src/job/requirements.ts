@@ -5,7 +5,8 @@
 // Every failure of this step is `mock_system_failed`: a refusal of the portal (401 or 403), a failure (any other status, an answer that is not JSON, no answer within the time of the call), an answer that is no
 // requirement set, a set for another service code than the one that was asked for, and a call that the kit refuses to send (a target that cannot be made, a JWT-SVID for another tenant or one that has ended). A
 // code of the portal is never a code of this job: the code, the status and the way of the failure go to the log, and the text that the buyer reads is fixed. The log never holds the body of an answer: a body can
-// repeat what was sent, and a refusal that the kit makes before it sends gives its own fixed reason. The longest time of the call is `calls.timeoutMs`.
+// repeat what was sent. The detail of the parser names a member of the body, so a body that is no requirement set gets a fixed reason and no detail. A refusal that the kit makes before it sends gives its own
+// fixed reason. The longest time of the call is `calls.timeoutMs`.
 import { callWithJwtSvid, jwtSvidTarget } from '@vsa/usecase-kit/access';
 import type { JwtSvidCredential, SystemFailed, SystemRefused } from '@vsa/usecase-kit/access';
 import { parseRequirementSet } from '@vsa/usecase-kit/priorauth';
@@ -36,7 +37,7 @@ export async function readRequirements(deps: Pick<IntakeDeps, 'calls' | 'log'>, 
   const answer = await callWithJwtSvid(deps.calls, svid, target.value);
   if (!answer.ok) throw fail(`the read of the requirements ${describeFailure(answer)}`);
   const set = parseRequirementSet(answer.body);
-  if (!set.ok) throw fail(`the answer of the portal is no requirement set: ${set.detail}`);
+  if (!set.ok) throw fail('the answer of the portal is no requirement set');
   if (set.value.service_code !== serviceCode) throw fail('the requirement set is for another service code than the one that was asked for');
   return set.value;
 }

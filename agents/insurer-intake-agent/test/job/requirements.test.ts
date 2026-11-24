@@ -169,22 +169,27 @@ describe('an answer that is no requirement set', () => {
     ['a set with requirements that are a text', { ...good, requirements: MARKER }],
     ['a set with a requirement that has no text', { ...good, requirements: [{ id: 'R1' }] }],
     ['a set with a requirement that has a member that is not listed', { ...good, requirements: [{ id: 'R1', text: 'A requirement.', weight: 1 }] }],
+    ['a set with a member that is not listed, and the name of the member is a text of the body', { ...good, [MARKER]: 'x' }],
+    ['a requirement with a member that is not listed, and the name of the member is a text of the body', { ...good, requirements: [{ id: 'R1', text: 'A requirement.', [MARKER]: 1 }] }],
+    ['a set with a member that is not listed, and the name of the member looks like a token', { ...good, 'Bearer eyJhbGciOiJFUzI1NiIsImtpZCI6ImRpZ': 1 }],
     ['a set with two requirements of one id', { ...good, requirements: [requirement, requirement] }],
     ['a set with 21 requirements', { ...good, requirements: Array.from({ length: 21 }, (_unused, index) => ({ id: `R${index + 1}`, text: 'A requirement.' })) }],
     ['a set with a requirement text of 501 characters', { ...good, requirements: [{ id: 'R1', text: 'x'.repeat(501) }] }],
     ['a set with a service code that is no identifier', { ...good, service_code: 'SYN MRI' }],
   ];
 
-  it.each(unusable)('%s ends the step with mock_system_failed (status 502), and the log names the set and no value of the body', async (_what, body) => {
+  it.each(unusable)('%s ends the step with mock_system_failed (status 502), and the log holds the fixed reason and nothing of the body', async (_what, body) => {
     const rig = makeRig();
     rig.portal.requirements = json(200, body);
     const refusal = await refusalOf(() => read(rig));
     expect(refusal).toMatchObject({ code: 'mock_system_failed', status: 502, message: PORTAL_REFUSAL });
     expectNothingAfterRead(rig);
     expect(rig.logs).toHaveLength(1);
-    expect(rig.logs[0]).toContain('requirement set');
+    expect(rig.logs[0]).toBe('insurer intake: mock_system_failed: the answer of the portal is no requirement set');
     expect(rig.logs[0]).not.toContain(MARKER);
     expect(rig.logs[0]).not.toContain('x'.repeat(20));
+    expect(rig.logs[0]).not.toContain('Bearer');
+    expectNoSecrets(rig, rig.logs);
   });
 
   it('twin: a set with one requirement, and a set with 20, are requirement sets', async () => {

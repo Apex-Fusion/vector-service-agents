@@ -213,7 +213,6 @@ export function makeRig(options: RigOptions = {}): Rig {
   const viaGateway: typeof fetch = async (input, init) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
     const svid = new URL(url).pathname === '/spiffe/jwt-svid';
-    if (svid) events.push('svid');
     const response = await gateway.fetch(input, init);
     if (svid && response.status === 200) {
       const answer: unknown = await response.clone().json();
@@ -237,7 +236,8 @@ export function makeRig(options: RigOptions = {}): Rig {
     expireWaits: options.expireWaits === true,
     deps: {
       agent: { did: agent.did, authenticationKey: agent.authentication.privateKey },
-      svid: { client },
+      // The event is noted when the job calls the client, and not when the request reaches the gateway: a call that nobody awaits is in the order of the events at once.
+      svid: { client: { ...client, jwtSvid: (request) => { events.push('svid'); return client.jwtSvid(request); } } },
       calls: { fetch: portal.fetch, clock: clockOf(gateway, sleeps, () => rig.expireWaits), bases: BASES, timeoutMs: options.timeoutMs ?? 20_000 },
       takeChecks: (escrowRef) => {
         events.push('take');
