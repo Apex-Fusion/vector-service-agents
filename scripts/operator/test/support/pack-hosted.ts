@@ -10,6 +10,8 @@ import { iso } from '../../../checks/lib/format.ts';
 import type { Handler } from '../../../checks/test/support/hosted-fake.ts';
 
 export type { Handler };
+/** What a handler gives: the text of an answer (with the error flag of the tool when it failed), or an object that is written as the fenced JSON block of the answer. */
+export type HandlerAnswer = Record<string, unknown> | { text: string; isError?: boolean };
 
 interface Captured { date: string; server: string; tools_listed: number; note: string }
 
