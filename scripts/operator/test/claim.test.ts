@@ -51,7 +51,8 @@ const SLOW = 240_000;
 const HOUR = 3_600_000;
 const RUN = 'run-a';
 const COMMIT = 'a4bc735c48d9d280374637b7e071a01f0086e7aa';
-const MANIFEST_URL = `https://raw.githubusercontent.com/Apex-Fusion/vector-agent-modules/${COMMIT}/${data.moduleManifestPath}`;
+const MANIFEST_BASE = 'https://raw.githubusercontent.com/Apex-Fusion/vector-agent-modules';
+const MANIFEST_URL = `${MANIFEST_BASE}/${COMMIT}/${data.moduleManifestPath}`;
 const REORDER = data.agents[0]!;
 const ORDER = data.agents[1]!;
 const SEEDS = { 'reorder-service': '0b'.repeat(32), 'order-desk-service': '0d'.repeat(32) } as const;
@@ -650,6 +651,30 @@ describe('claim run: a run that stops after the claim landed', () => {
     expect(rig.ledger.accepted).toHaveLength(2);
     expect(rig.world.facts().claims).toEqual({});
   }, SLOW);
+
+  it('stakes a new claim for the run when the state file holds only a claim document that no open claim names, also when another open claim of the agent exists: the claim of another run is not the claim of this run', async () => {
+    const rig = await makeRig();
+    approve(rig);
+    // The claim of run-b is open, and the facts hold it.
+    expect(await rig.run('run', '--run', 'run-b', '--kind', 'clean', '--submit')).toBe(0);
+    expect(rig.ledger.accepted).toHaveLength(2);
+    // The claim document of run-a lands, and the cap stops the claim: no claim was made from that document.
+    approve(rig, 1, 's2');
+    expect(await rig.run('run', '--run', RUN, '--kind', 'clean', '--submit')).toBe(1);
+    expect(rig.ledger.accepted).toHaveLength(3);
+    // The next run settles the document as a part. The open claim of run-b does not name it, so a new claim is staked with a new document.
+    approve(rig, 200, 's3');
+    rig.world.node.script.push({ confirmations: 3 });
+    expect(await rig.run('run', '--run', RUN, '--kind', 'clean', '--submit')).toBe(0);
+    expect(stateOf(rig).notes['part.claim:reorder-agent:document']).toMatchObject({ tx_hash: rig.ledger.accepted[3] });
+    expect(rig.ledger.accepted).toHaveLength(5);
+    const a = claimOf(rig);
+    const b = claimOf(rig, REORDER, 'run-b');
+    expect(a).toMatchObject({ documentTx: rig.ledger.accepted[3], claimTx: rig.ledger.accepted[4] });
+    expect(b.claimTx).toBe(rig.ledger.accepted[1]);
+    expect(a.claimRef).not.toBe(b.claimRef);
+    expect(await openClaims(rig, CLAIMER_ID)).toHaveLength(2);
+  }, SLOW);
 });
 
 describe('claim cleanup', () => {
@@ -720,8 +745,10 @@ describe('claim cleanup', () => {
   it('records a claim that is no longer open as not open and fails nothing, and withdraws the other claim', async () => {
     const rig = await staged();
     const order = claimOf(rig, ORDER);
-    // A challenge moved the claim of the Order Desk: its output is spent.
+    // A challenge moved the claim of the Order Desk: its output is spent, and the indexer shows it as spent.
+    const spent = rig.ledger.live.filter((utxo) => utxo.txHash === order.claimTx);
     rig.ledger.live = rig.ledger.live.filter((utxo) => utxo.txHash !== order.claimTx);
+    rig.ledger.koiosSpent.push(...spent);
     later(rig, 25);
     approve(rig, 10, 's2');
     expect(await cleanup(rig)).toBe(0);
@@ -788,10 +815,10 @@ describe('claim cleanup', () => {
     // The commit of the manifest is wrong: it names another claim script, so the claim outputs of the run are no open claims for it. They are unspent all the same.
     const wrong = 'b'.repeat(40);
     const script = 'ab'.repeat(28);
-    rig.web.manifests.set(MANIFEST_URL.replace(COMMIT, wrong), { ...MODULE1_MANIFEST, hashes: { ...MODULE1_MANIFEST.hashes, claim: script }, addresses: { ...MODULE1_MANIFEST.addresses, claim: scriptAddress(script) } });
+    rig.web.manifests.set(`${MANIFEST_BASE}/${wrong}/${data.moduleManifestPath}`, { ...MODULE1_MANIFEST, hashes: { ...MODULE1_MANIFEST.hashes, claim: script }, addresses: { ...MODULE1_MANIFEST.addresses, claim: scriptAddress(script) } });
     rig.world.env.OPERATOR_MODULE1_COMMIT = wrong;
     expect(await cleanup(rig)).toBe(2);
-    expect(rig.errors()).toMatch(/is unspent on the chain, and the Module-1 manifest of this run does not read it as an open claim: check OPERATOR_MODULE1_COMMIT/);
+    expect(rig.errors()).toMatch(/the indexer shows the claim output \S+ of the agent reorder-agent as unspent, while the node and the Module-1 manifest of this run read no open claim in it/);
     expect(claimOf(rig).withdrawTx).toBeNull();
     expect(claimOf(rig, ORDER).withdrawTx).toBeNull();
     expect(rig.ledger.accepted).toHaveLength(4);
@@ -800,6 +827,44 @@ describe('claim cleanup', () => {
     expect(await cleanup(rig)).toBe(0);
     expect(rig.ledger.accepted).toHaveLength(6);
     expect(await openClaims(rig, CLAIMER_ID)).toEqual([]);
+  }, SLOW);
+
+  it('records nothing when the node is behind: it passes the network guard and shows no claim output, the indexer cannot say that the output is spent, and the run stops with exit 2', async () => {
+    const rig = await staged();
+    const order = claimOf(rig, ORDER);
+    // The node is behind: it does not show the claim output of the Order Desk yet. The indexer shows the output as unspent.
+    const behind = rig.ledger.live.filter((utxo) => utxo.txHash === order.claimTx);
+    expect(behind.length).toBeGreaterThan(0);
+    rig.ledger.live = rig.ledger.live.filter((utxo) => utxo.txHash !== order.claimTx);
+    rig.ledger.koiosOnly.push(...behind);
+    later(rig, 25);
+    approve(rig, 10, 's2');
+    // The claim of the Reorder Agent comes first and is withdrawn in this run, so the runner calls the end a failure (exit 1): a transaction landed. The run ends at the Order Desk claim.
+    expect(await cleanup(rig)).toBe(1);
+    expect(rig.world.machine()).toMatchObject({ outcome: 'failed', exit: 1 });
+    expect(rig.errors()).toMatch(/the indexer shows the claim output \S+ of the agent order-desk as unspent/);
+    expect(claimOf(rig, ORDER).withdrawTx).toBeNull();
+    // The claim of the Reorder Agent came first, and it is withdrawn: the stop is for the claim that the indexer does not show as spent.
+    expect(claimOf(rig).withdrawTx).toBe(rig.ledger.accepted[4]);
+    expect(rig.ledger.accepted).toHaveLength(5);
+    // An indexer that does not know the output yet, and an indexer that cannot be read, stop the run in the same way.
+    rig.ledger.koiosBehind.add(order.claimTx);
+    expect(await cleanup(rig)).toBe(2);
+    expect(rig.errors()).toMatch(/the indexer does not know the claim output \S+ of the agent order-desk/);
+    rig.ledger.koiosBehind.delete(order.claimTx);
+    rig.ledger.koiosStatus = 503;
+    expect(await cleanup(rig)).toBe(2);
+    expect(rig.errors()).toMatch(/the indexer cannot be read \(Koios utxo_info answered 503\)/);
+    rig.ledger.koiosStatus = null;
+    expect(claimOf(rig, ORDER).withdrawTx).toBeNull();
+    expect(rig.ledger.accepted).toHaveLength(5);
+    // The node has caught up: it shows the output, and the claim is withdrawn.
+    rig.ledger.koiosOnly.splice(0, rig.ledger.koiosOnly.length);
+    rig.ledger.live.push(...behind);
+    approve(rig, 10, 's3');
+    expect(await cleanup(rig)).toBe(0);
+    expect(claimOf(rig, ORDER).withdrawTx).toBe(rig.ledger.accepted[5]);
+    expect(await openClaims(rig, AUDITOR_ID)).toEqual([]);
   }, SLOW);
 
   it('touches nothing for another run label, and for a run that the facts do not hold', async () => {

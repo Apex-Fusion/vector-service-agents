@@ -26,7 +26,7 @@ import { DryStop, guardedSign, recordKitLanding, recordingProvider } from '../li
 import { planOf } from '../lib/plan.ts';
 import {
   Dispute, INVENTORY_CAPABILITIES, ORDER_DESK_CLAIM, PURPOSE, REORDER_CLAIM, canonicalJson, canonicalSha256, claimDocument, createModule1Port, effectiveStatus, evidenceDocument, findRecord, keyHashOf,
-  module1FromManifest, parseOrderConfirmation, parseOutRef, parsePurchaseOrder, readManifest, withdrawableFrom,
+  koiosUtxoInfo, module1FromManifest, parseOrderConfirmation, parseOutRef, parsePurchaseOrder, readManifest, withdrawableFrom,
 } from '../lib/platform.ts';
 import { FlagError, runSteps } from '../lib/runner.ts';
 import type { StepHandler } from '../lib/runner.ts';
@@ -412,21 +412,35 @@ function withdrawFailure(agent: AgentSpec, result: WithdrawNotDone, stops: reado
 type Withdrawal = { readonly kind: 'withdrawn' | 'not_open' | 'not_seen' | 'dry' } | { readonly kind: 'wait'; readonly untilMs: number | null };
 
 /**
- * The claim is not open only when its output is gone from the node. An output that is still unspent, and that the Module-1 manifest of this run does not read as an open claim, is the output of another
- * claim script: the commit of the manifest is wrong, and the claim is open all the same. The task stops, and records nothing.
+ * A claim is recorded as not open only when the indexer shows its output as spent. The node cannot tell "spent" from "not seen yet": a node that is behind passes the network guard and shows no output, and
+ * the output of another claim script, which the Module-1 manifest of a wrong commit does not read as a claim, shows no open claim either. So the task asks Koios `utxo_info` for the output, and only a row
+ * that says `is_spent` lets the claim be recorded. A row that says unspent, a row that says nothing about it, no row (the indexer does not know the output yet) and an indexer that cannot be read stop the
+ * task with exit 2, and nothing is recorded.
  */
 async function requireOutputSpent(session: TaskSession<ClaimExtra>, agent: AgentSpec, fact: ClaimFact): Promise<void> {
   const { txHash, outputIndex } = parseOutRef(fact.claimRef);
-  const unspent = await session.chain.provider.getUtxosByOutRef([{ txHash, outputIndex }]);
-  if (unspent.length > 0) {
-    throw new PreconditionError(`the output ${fact.claimRef} of the claim of the agent ${agent.id} is unspent on the chain, and the Module-1 manifest of this run does not read it as an open claim: check OPERATOR_MODULE1_COMMIT. The claim is not recorded as not open`);
+  const named = `the claim output ${fact.claimRef} of the agent ${agent.id}`;
+  let row: { readonly is_spent?: boolean } | undefined;
+  try {
+    row = (await koiosUtxoInfo(session.chain.koiosUrl, [fact.claimRef], session.chain.fetchImpl)).find((entry) => entry.tx_hash === txHash && entry.tx_index === outputIndex);
+  } catch (err) {
+    throw new PreconditionError(`the indexer cannot be read (${errorText(err)}), so nothing says that ${named} is spent, and it is not recorded as not open. Run cleanup again when the indexer answers`);
   }
+  if (row === undefined) {
+    throw new PreconditionError(`the indexer does not know ${named}, so nothing says that it is spent: the indexer may be behind, and the claim is not recorded as not open. Run cleanup again later`);
+  }
+  if (row.is_spent === false) {
+    throw new PreconditionError(
+      `the indexer shows ${named} as unspent, while the node and the Module-1 manifest of this run read no open claim in it: the node may be behind, or the commit of the manifest (OPERATOR_MODULE1_COMMIT) names another claim script. The claim is not recorded as not open`,
+    );
+  }
+  if (row.is_spent !== true) throw new PreconditionError(`the indexer does not say whether ${named} is spent, and it is not recorded as not open`);
 }
 
 /**
  * Withdraws the claim of one agent. The window is checked from the facts first: the kit checks it again from the chain. A claim that the chain shows as not open is recorded as `not open` only by a submit
- * run whose network guard passed, and only after the node agrees that its output is gone: the fact ends the claim for good, because the next cleanup skips it. A dry run, and a run whose guard failed (a
- * node of another network shows no claim), say what they saw and record nothing.
+ * run whose network guard passed, and only when the indexer shows its output as spent (`requireOutputSpent`): the fact ends the claim for good, because the next cleanup skips it. A dry run, and a run
+ * whose guard failed (a node of another network shows no claim), say what they saw and record nothing.
  */
 async function withdrawOne(session: TaskSession<ClaimExtra>, agent: AgentSpec, run: string, fact: ClaimFact, module1: Module1Deployment): Promise<Withdrawal> {
   const known = factsOf(session, agent);
