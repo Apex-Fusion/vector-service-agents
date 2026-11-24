@@ -6,7 +6,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, 
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { attestation, attestationUtxo, CAPTURE_MS, DAY, delegation, delegationUtxo, koiosRow, ledgerKoios, ledgerWorld, liveRecord, MAINNET, recordUtxo, vaultUtxo } from '../../../packages/buyer-core/test/fixtures/ledger-read-world.ts';
+import { attestation, attestationUtxo, CAPTURE_MS, DAY, delegation, delegationUtxo, koiosRow, ledgerWorld, liveRecord, MAINNET, recordUtxo, vaultUtxo } from '../../../packages/buyer-core/test/fixtures/ledger-read-world.ts';
 import type { Row, TxIo, TxRow } from '../../../packages/buyer-core/test/fixtures/ledger-read-world.ts';
 import type { Utxo } from '../../checks/lib/platform.ts';
 import { escrowUtxo, identityEscrow } from '../../../packages/buyer-core/test/fixtures/escrow-identity.fixture.ts';
@@ -167,8 +167,8 @@ function caseRow(over: Obj = {}): Obj {
 
 interface Outcome { exit: number; out: string; err: string; machine: MachineLine; stateDir: string; world: TaskWorld; read(name: string): string | null; calls: Array<{ url: string; headers: Record<string, string> }> }
 
-async function go(s: Scenario, argv: string[] = ['run', '--run', s.label, '--number', '1'], over: { cases?: Obj[]; clockMs?: number; world?: TaskWorld } = {}): Promise<Outcome> {
-  const w = over.world ?? await taskWorld({ keys: ['run', 'fee'], use: { title: data.title, runs: data.runs, evidenceSteps: data.evidenceSteps, agents: data.agents }, env: { VECTOR_KOIOS_URL: KOIOS } });
+async function go(s: Scenario, argv: string[] = ['run', '--run', s.label, '--number', '1'], over: { cases?: Obj[]; clockMs?: number; world?: TaskWorld; runs?: typeof data.runs } = {}): Promise<Outcome> {
+  const w = over.world ?? await taskWorld({ keys: ['run', 'fee'], use: { title: data.title, runs: over.runs ?? data.runs, evidenceSteps: data.evidenceSteps, agents: data.agents }, env: { VECTOR_KOIOS_URL: KOIOS } });
   mkdirSync(w.stateDir, { recursive: true, mode: 0o700 });
   chmodSync(w.stateDir, 0o700);
   const dir = join(w.stateDir, 'runs');
@@ -424,9 +424,10 @@ describe('check 1: the record', () => {
     await refuses(Object.assign(scenario('clean'), { record: { label: 'other' } }), ['label']);
   });
   it('refuses a record whose kind is not a run of the data, and takes it when the data has the run', async () => {
-    const w = await taskWorld({ keys: ['run', 'fee'], use: { title: data.title, runs: data.runs.filter((run) => run.id === 'failure'), evidenceSteps: data.evidenceSteps, agents: data.agents } });
-    expect(w.use.runs.map((run) => run.id)).toEqual(['failure']);
-    expect((await go(scenario('clean'))).exit).toBe(0);
+    const refused = await go(scenario('clean'), undefined, { runs: data.runs.filter((run) => run.id === 'failure') });
+    expect(refused.exit).toBe(2);
+    expect(refused.err).toContain('kind: clean is not a run of the data of the use case');
+    expect((await go(scenario('clean'), undefined, { runs: data.runs.filter((run) => run.id === 'clean') })).exit).toBe(0);
   });
   it('refuses a record that breaks its own rules, and names the member', async () => {
     await refuses(Object.assign(scenario('clean'), { record: { tenant: 'A Bad Tenant' } }), ['tenant']);
