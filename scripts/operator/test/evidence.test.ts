@@ -59,6 +59,7 @@ interface Scenario {
   log: Obj[]; dropped: number; poOrders: number; supplierOrders: number; mockStatus: number;
   faultEntries: Obj[] | null; cases: Obj[]; deskHold: 'held' | 'none'; juryFailed: boolean; unconfirmed: Set<string>; extraRows: TxRow[]; skipKoiosTx: Set<string>; eventualDeskFault: string;
   challengeKnown: boolean; spendOverride: Map<string, string>; indexed: Obj[]; indexerStatus: number; indexerBody: unknown; holdSince?: number; payFromWallet: boolean; recordsHoldKeys: boolean;
+  challengeMint: Obj[];
 }
 
 const txOf = (step: string, what: 'post' | 'claim' | 'submit' | 'accept' | 'reclaim'): string => h(`${what} of ${step}`);
@@ -103,6 +104,8 @@ const confirmation = (n: number, mode = ''): Obj => ({ schema: CONFIRMATION_SCHE
 const hire = (step: string, role: Hire['role'], minute: number, result: Obj, accepted = true): Hire => ({ step, role, minute, result, accepted, reportOver: {}, receiptOver: {}, entryOver: {} });
 
 const CHALLENGE = { evidence: h('evidence document tx'), challenge: ref('challenge output') };
+/** The token of the challenge: the one token that the challenge transaction mints, with a name that starts with chl_ in hex. */
+const CHALLENGE_TOKEN = `63686c5f${h('challenge token').slice(0, 56)}`;
 
 const logLine = (route: string, credential: string, act: string[]): Obj => ({
   at: stamp(S0 + 600), tenant: 'tenant-1', route, method: route.split(' ')[0], path: route.split(' ')[1], host: credential === 'x509-svid' ? 'mtls' : 'token', credential,
@@ -144,6 +147,7 @@ function scenario(kind: 'clean' | 'failure'): Scenario {
     log: [logLine('GET /erp/stock/{sku}', 'token', ['did:vector:one', 'did:vector:two']), logLine('POST /supplier/orders', 'x509-svid', []), logLine('POST /po', 'token', ['did:vector:one'])],
     dropped: 0, poOrders: 1, supplierOrders: 1, mockStatus: 200, faultEntries: null, cases: [], deskHold: 'none', juryFailed: false, unconfirmed: new Set(), extraRows: [], skipKoiosTx: new Set(),
     eventualDeskFault: '', challengeKnown: true, spendOverride: new Map(), indexed: [], indexerStatus: 200, indexerBody: undefined, payFromWallet: false, recordsHoldKeys: true,
+    challengeMint: [{ policy_id: 'ac'.repeat(28), asset_name: CHALLENGE_TOKEN, quantity: '1' }],
   };
 }
 
@@ -166,7 +170,7 @@ function goodFaultEntries(kind: 'clean' | 'failure'): Obj[] {
 
 function caseRow(over: Obj = {}): Obj {
   return {
-    jury: h('jury'), case_token: h('case token'), utxo: ref('case output'), lovelace: 5_000_000, canonical: true, canonical_note: null, claim: CLAIM_TOKEN('order-desk'), challenge: h('challenge token'),
+    jury: h('jury'), case_token: h('case token'), utxo: ref('case output'), lovelace: 5_000_000, canonical: true, canonical_note: null, claim: CLAIM_TOKEN('order-desk'), challenge: CHALLENGE_TOKEN,
     claim_out: `${h('claim tx order-desk')}#0`, challenge_out: CHALLENGE.challenge, phase: 'settling', state: 'Settling', tally: { claimer: 0, auditor: 3, inconclusive: 0 }, revealed: 3, outcome: 'AuditorWins', ...over,
   };
 }
@@ -261,7 +265,7 @@ async function go(s: Scenario, argv: string[] = ['run', '--run', s.label, '--num
   utxos.push({ ...recordUtxo(AGENTS['reorder-agent'], liveRecord({}, listed('reorder-agent'))), txHash: h('reorder agent record output') });
   if (kind(s) === 'failure') {
     const challengeTx = CHALLENGE.challenge.slice(0, 64);
-    row(challengeTx, 45, []);
+    row(challengeTx, 45, [], { assets_minted: s.challengeMint });
     confirmed.add(CHALLENGE.evidence); confirmed.add(challengeTx);
   }
   // -- the record, the facts, the fault entries
@@ -310,15 +314,16 @@ async function go(s: Scenario, argv: string[] = ['run', '--run', s.label, '--num
     if (url.endsWith('/log')) return new Response(JSON.stringify({ tenant: s.tenant, dropped: s.dropped, lines: s.log }), { status: 200 });
     return new Response(JSON.stringify({ tenant: s.tenant, po_store: { orders: Array.from({ length: s.poOrders }, (_, i) => ({ record_id: `r${i}` })) }, supplier: { catalogue: [], orders: Array.from({ length: s.supplierOrders }, (_, i) => ({ order_id: `o${i}` })) } }), { status: 200 });
   };
-  const indexer = (): Response => {
+  const indexer = (url: string): Response => {
     if (s.indexerStatus !== 200) return new Response('{"error":"internal"}', { status: s.indexerStatus });
-    const body = s.indexerBody ?? { chain_time: stamp(S0 + 3 * 3600), cases: s.indexed };
+    const wanted = new URL(url).searchParams.get('challenge');
+    const body = s.indexerBody ?? { chain_time: stamp(S0 + 3 * 3600), cases: s.indexed.filter((one) => wanted === null || one.challenge === wanted) };
     return new Response(typeof body === 'string' ? body : JSON.stringify(body), { status: 200 });
   };
   const fetchImpl = (async (url: string, init?: RequestInit) => {
     calls.push({ url, headers: Object.fromEntries(Object.entries((init?.headers ?? {}) as Record<string, string>)) });
     if (url.startsWith(MOCK_PUBLIC_BASE)) return mock(url);
-    if (url.endsWith('/jury/cases')) return indexer();
+    if (url.includes('/jury/cases')) return indexer(url);
     if (url.startsWith(KOIOS)) return ledger.koios.f(url, init);
     throw new Error('an unexpected request');
   }) as typeof fetch;
@@ -358,7 +363,7 @@ const TALLIES: Record<string, Obj> = {
 function indexedRow(result = 'AuditorWins', over: Obj = {}): Obj {
   const final = { slot: 200, height: 20, time: stamp(S0 + 5 * 3600) };
   return {
-    deployment: 'jury', script_hash: 'ab'.repeat(28), case: h('case token'), canonical: true, challenge: h('challenge token'), claim: CLAIM_TOKEN('order-desk'),
+    deployment: 'jury', script_hash: 'ab'.repeat(28), case: h('case token'), canonical: true, challenge: CHALLENGE_TOKEN, claim: CLAIM_TOKEN('order-desk'),
     challenge_out: CHALLENGE.challenge, claim_out: `${CHALLENGE.challenge.slice(0, 64)}#1`, genuine_challenge: true, window: 'ended', state: 'closed', fee_lovelace: '0', share_lovelace: null,
     tally: TALLIES[result], revealed: 3, result, opened: { tx: h('case open tx'), slot: 100, height: 10, time: stamp(S0 + 50 * 60) },
     finalized: { tx: h('case finalize tx'), ...final, result }, closed: { tx: h('case finalize tx'), ...final }, ref: null, ...over,
@@ -1089,14 +1094,30 @@ describe('check 7: the claims, the challenge and the case', () => {
   it('reads the list of the indexer at the URL of VECTOR_MARKETPLACE_INDEXER_URL with no credential, and refuses a URL that is not https', async () => {
     const named = await go(closedCase(), undefined, { env: { VECTOR_MARKETPLACE_INDEXER_URL: 'https://indexer.example/' } });
     expect(named.exit).toBe(0);
-    const called = named.calls.filter((call) => call.url.endsWith('/jury/cases'));
-    expect(called.map((call) => call.url)).toEqual(['https://indexer.example/jury/cases']);
+    const called = named.calls.filter((call) => call.url.includes('/jury/cases'));
+    expect(called.map((call) => call.url)).toEqual([`https://indexer.example/jury/cases?challenge=${CHALLENGE_TOKEN}`]);
     expect(Object.keys(called[0]!.headers).map((name) => name.toLowerCase())).toEqual(['accept']);
     const plain = await go(closedCase());
-    expect(plain.calls.filter((call) => call.url.endsWith('/jury/cases')).map((call) => call.url)).toEqual([`${MARKETPLACE_INDEXER}/jury/cases`]);
+    expect(plain.calls.filter((call) => call.url.includes('/jury/cases')).map((call) => call.url)).toEqual([`${MARKETPLACE_INDEXER}/jury/cases?challenge=${CHALLENGE_TOKEN}`]);
     const bad = await go(closedCase(), undefined, { env: { VECTOR_MARKETPLACE_INDEXER_URL: 'http://indexer.example' } });
     expect(bad.exit).toBe(2);
     expect(bad.err).toContain('VECTOR_MARKETPLACE_INDEXER_URL must be an https URL');
+  });
+  it('asks the indexer for the cases of the challenge token alone, so a long list of other cases is never read', async () => {
+    const s = closedCase();
+    s.indexed.push(...Array.from({ length: 300 }, (_, i) => indexedRow('ClaimerWins', { case: h(`filler case ${i}`), challenge: `63686c5f${h(`filler ${i}`).slice(0, 56)}`, claim: h(`filler claim ${i}`) })));
+    const r = await go(s);
+    expect(r.exit).toBe(0);
+    expect(r.calls.filter((call) => call.url.includes('/jury/cases')).map((call) => call.url)).toEqual([`${MARKETPLACE_INDEXER}/jury/cases?challenge=${CHALLENGE_TOKEN}`]);
+  });
+  it('refuses a challenge transaction that mints no token of the challenge, two of them, a burn, or a token of another kind', async () => {
+    const token = (name: string, quantity: string): Obj => ({ policy_id: 'ac'.repeat(28), asset_name: name, quantity });
+    const second = `63686c5f${h('second challenge token').slice(0, 56)}`;
+    for (const minted of [[], [token(CHALLENGE_TOKEN, '1'), token(second, '1')], [token(CHALLENGE_TOKEN, '-1')], [token(CHALLENGE_TOKEN, '2')], [token(`6a72725f${h('juror token').slice(0, 56)}`, '1')]]) {
+      const s = closedCase();
+      s.challengeMint = minted;
+      await refuses(s, ['case', 'the transaction of the challenge minted']);
+    }
   });
   it('refuses a challenge against another claim than the claim of the Order Desk in the facts', async () => {
     const s = decided();

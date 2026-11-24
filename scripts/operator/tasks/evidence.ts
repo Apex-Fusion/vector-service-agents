@@ -23,7 +23,7 @@ import { checkAttestation, escrowPaidFromVault, findRecord, isFaultSetting, keyH
 import type { LedgerEnv } from '../lib/platform.ts';
 import { FlagError } from '../lib/runner.ts';
 import { hireRoleOf, parseReport, parseRunRecord, readJsonFile, txInfoOf, txTimeOf } from '../lib/run-record.ts';
-import type { HireEntry, HireRole, Report, RunRecord } from '../lib/run-record.ts';
+import type { HireEntry, HireRole, Report, RunRecord, TxInfo } from '../lib/run-record.ts';
 import { holdsSecret } from '../lib/secrets.ts';
 
 /** A transaction on the explorer of the network: this text and the hash. */
@@ -629,11 +629,11 @@ function indexedCaseOf(row: Obj): IndexedRow | null {
   };
 }
 
-/** The list of the cases that the marketplace indexer follows (GET /jury/cases). The read sends no header but the accept header, and the list holds no secret. */
-async function indexerCases(session: TaskSession<Extra>): Promise<readonly unknown[]> {
+/** The cases of one challenge that the marketplace indexer follows (GET /jury/cases?challenge=<token>). The read sends no header but the accept header, and the list holds no secret. */
+async function indexerCases(session: TaskSession<Extra>, token: string): Promise<readonly unknown[]> {
   let body: string;
   try {
-    const response = await session.fetchImpl(`${session.extra.indexer}/jury/cases`, { method: 'GET', headers: { accept: 'application/json' }, redirect: 'error', signal: AbortSignal.timeout(INDEXER_TIMEOUT_MS) });
+    const response = await session.fetchImpl(`${session.extra.indexer}/jury/cases?challenge=${token}`, { method: 'GET', headers: { accept: 'application/json' }, redirect: 'error', signal: AbortSignal.timeout(INDEXER_TIMEOUT_MS) });
     if (response.status !== 200) throw new HostedError('unreachable', `the marketplace indexer answered HTTP ${response.status}`);
     body = await response.text();
   } catch (err) {
@@ -648,11 +648,11 @@ async function indexerCases(session: TaskSession<Extra>): Promise<readonly unkno
 }
 
 /**
- * The canonical case of the challenge in the list of the indexer, or null. It names the claim token that the facts hold and the challenge output that the result holds: the file of a run holds no token of the
- * challenge. A case that is not canonical is not the case of the dispute, because the relay resolves the dispute with its canonical case only.
+ * The canonical case of the challenge in the list of the indexer, or null. The list is the one of the challenge token, and a case in it must name the claim token that the facts hold and the challenge output that the
+ * result holds. A case that is not canonical is not the case of the dispute, because the relay resolves the dispute with its canonical case only.
  */
-async function readIndexed(session: TaskSession<Extra>, claim: ClaimFact, challenge: { readonly challenge: string }): Promise<IndexedCase | null> {
-  const rows = (await indexerCases(session)).filter((row): row is Obj => isObject(row) && row.claim === claim.claimToken && row.challenge_out === challenge.challenge);
+async function readIndexed(session: TaskSession<Extra>, claim: ClaimFact, challenge: { readonly challenge: string }, token: string): Promise<IndexedCase | null> {
+  const rows = (await indexerCases(session, token)).filter((row): row is Obj => isObject(row) && row.challenge === token && row.claim === claim.claimToken && row.challenge_out === challenge.challenge);
   const parsed = rows.map(indexedCaseOf);
   if (parsed.includes(null)) throw new HostedError('protocol', 'a case in the answer of the marketplace indexer has not the form that the indexer documents');
   const canonical = (parsed as IndexedRow[]).filter((one) => one.canonical);
@@ -695,6 +695,15 @@ async function readHold(session: TaskSession<Extra>, facts: Readonly<Facts>, cha
   return { reason: hold.reason, since: hold.since, until: hold.until, record_output: `${found.utxo.txHash}#${found.utxo.outputIndex}`, gateway_status: effective };
 }
 
+const CHALLENGE_TOKEN = /^63686c5f[0-9a-f]{56}$/;
+
+/** The token of a challenge: the one asset with the quantity 1 and a name that starts with chl_ (63686c5f in hex) that the transaction of the challenge minted. */
+function challengeToken(minted: TxInfo['minted']): string {
+  const found = minted.filter((one) => one.quantity === 1n && CHALLENGE_TOKEN.test(one.name));
+  if (found.length !== 1) throw new PreconditionError(`challenge.challenge: the transaction of the challenge minted ${found.length} tokens of the challenge, and it must mint exactly one (the quantity 1, a name that starts with 63686c5f)`);
+  return found[0]!.name;
+}
+
 async function readCase(session: TaskSession<Extra>, loaded: Loaded, facts: Readonly<Facts>, nowMs: number): Promise<CaseRead> {
   const challenge = challengeOf(loaded);
   const desk = agentOf(session.use, 'order-desk');
@@ -713,13 +722,17 @@ async function readCase(session: TaskSession<Extra>, loaded: Loaded, facts: Read
   const canonical = eligible.filter((view) => view.canonical === true);
   const listed = eligible.length === 1 ? eligible[0]! : canonical.length === 1 ? canonical[0]! : null;
   if (eligible.length > 1 && listed === null) throw new HostedError('protocol', 'the answer of vector_get_jury_cases lists more than one case of the challenge, and none is the canonical case');
-  const indexed = await readIndexed(session, claim, challenge);
-  let known: Promise<number> | undefined;
+  let known: Promise<TxInfo> | undefined;
+  const challengeInfo = (): Promise<TxInfo> => (known ??= txInfoOf(session.fetchImpl, session.settings.urls.koios, txOf(challenge.challenge)));
   const blockTime = async (): Promise<number> => {
-    try { return await (known ??= txTimeOf(session.fetchImpl, session.settings.urls.koios, txOf(challenge.challenge))); } catch (err) {
+    try { return (await challengeInfo()).timeMs; } catch (err) {
       throw new PreconditionError(`challenge.challenge: the block time of the challenge cannot be read (${shown(err)})`);
     }
   };
+  // The indexer lists the cases of one challenge by its token, which is in the transaction that made the challenge. When Koios cannot give that transaction yet, the task asks no indexer and the case waits.
+  let token: string | null = null;
+  try { token = challengeToken((await challengeInfo()).minted); } catch (err) { if (err instanceof PreconditionError) throw err; }
+  const indexed = token === null ? null : await readIndexed(session, claim, challenge, token);
   const hold = await readHold(session, facts, blockTime);
   // The result of a case that is final: the Finalize transaction of the indexer, or a live case that is Settling (the Finalize left it so). The two are one datum of the chain and must agree.
   const fromTool = listed !== null && listed.state === 'Settling' ? listed.outcome : null;
