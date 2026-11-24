@@ -2,27 +2,42 @@
 // specs/bid-desk.md is the public page of the three Bid Desks, and the manifest of each links to its Response heading. These tests hold the page to the code, to the manifest of each instance, to the three price list
 // files and to the deploy pack, table by table, so that they cannot part: the opening line, the status line and the changelog; the identity rows of the three instances; the terms, the times and the limits; the 7 checks
 // of the hook with their refusal codes; the steps of the job; the quote; the price list tables; the errors; the claim; the gaps word for word; the data that leaves the service; and the links. No test here uses the network.
-import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test } from 'vitest';
 import { parse as parseYaml } from 'yaml';
 import { ACCEPT_WINDOW_MS } from '@vsa/buyer-core';
-import { BID_CAPABILITIES, BID_DESK_MODEL } from '@vsa/usecase-kit/bids';
-import { MAX_BODY, RESERVATION_MS } from '@vsa/service-kit';
-import { MAX_REQUEST_BYTES, RUNTIME_BODY_LIMIT_BYTES } from '@vsa/usecase-kit/protocol';
+import { STRANDED_FILE } from '@vsa/hire-kit';
+import { BUSY_TEXT, CONTEXT_HEADERS, HEARTBEAT_MS, JobSlot, MAX_BODY, RESERVATION_MS, STOPPING_TEXT, operatorsText, parseWire } from '@vsa/service-kit';
+import { BID_CAPABILITIES, BID_DESK_MODEL, MAX_RFQ_ITEMS, QUOTE_CHECKS, checkQuoteFromList, parseQuote, parseRfqDocument, priceFor, quoteTotals, rfqSha256 } from '@vsa/usecase-kit/bids';
+import type { PriceList, Quote } from '@vsa/usecase-kit/bids';
+import { CheckUnavailableError, SHARED_CHECK_NAMES } from '@vsa/usecase-kit/checks';
+import { HIRE_MIN_MS } from '@vsa/usecase-kit/decision';
+import { COUNTERPARTY_REFUSALS, ERROR_STATUS, MAX_REQUEST_BYTES, RFQ_SCHEMA, RUNTIME_BODY_LIMIT_BYTES, accepted, isPlainObject } from '@vsa/usecase-kit/protocol';
+import type { FaultSetting, ProtocolResult } from '@vsa/usecase-kit/protocol';
 import { blake2b224Hex } from '@vsa/vector-read';
 import { CLAIM_STAKE_LOVELACE, CLAIM_WINDOW_MS } from '../../../scripts/operator/lib/claim-constants.ts';
-import { QUOTE_DECISION } from '../src/job/index.ts';
+import { MemoryRfqBook, PASSED_CHECKS_TTL_MS, PassedChecks, createPrecheck, loadPriceList, rfqChecks } from '../src/checks/index.ts';
+import { QUOTE_DECISION, QUOTE_REFUSAL_STATUS, RUNTIME_MARGIN_MS, runQuote } from '../src/job/index.ts';
+import type { QuoteChoice } from '../src/job/index.ts';
+import { QUOTE_TEXT } from '../src/job/refusal.ts';
+import { keyClashOf } from '../src/serve/keys.ts';
 import { TEMPLATE_ENV, TEMPLATE_PRICE_LIST, manifestFromEnv } from '../src/serve/manifest.ts';
 import type { BidDeskManifest } from '../src/serve/manifest.ts';
-import { keyClashOf } from '../src/serve/keys.ts';
+import { RequestRefusal, parseRfqRequest } from '../src/serve/server.ts';
 import {
-  BOND_LOVELACE, CHECKS_READ_BUDGET_DEFAULT_MS, CHECKS_READ_BUDGET_MAX_MS, CHECKS_READ_BUDGET_MIN_MS, HOOK_READS, HOOK_READS_LIMIT_MS, INSTANCES, INSTANCE_NAMES, JOB_DEADLINE_MS, MIN_PROCESSING_WINDOW_MS,
-  PRICE_LIST_ROUTE, PRICE_LOVELACE, RUNTIME_PRECHECK_WAIT_MS, CALL_TIMEOUT_MS, organisationOf, priceListFileOf, publicOriginOf, supplierKeyOf,
+  BOND_LOVELACE, CALL_TIMEOUT_MS, CHECKS_READ_BUDGET_DEFAULT_MS, CHECKS_READ_BUDGET_MAX_MS, CHECKS_READ_BUDGET_MIN_MS, HOOK_READS, HOOK_READS_LIMIT_MS, INSTANCES, INSTANCE_NAMES, JOB_DEADLINE_MS,
+  MIN_PROCESSING_WINDOW_MS, PRICE_LIST_ROUTE, PRICE_LOVELACE, RUNTIME_PRECHECK_WAIT_MS, organisationOf, priceListFileOf, publicOriginOf, supplierKeyOf,
 } from '../src/serve/settings.ts';
 import type { Instance } from '../src/serve/settings.ts';
 import { SETTINGS } from '../src/serve/start.ts';
-import { SERVICE, envOf, priceListOf } from './serve/support.ts';
+import { T as HOOK_T, makeWorld as makeHookWorld } from './checks/support.ts';
+import { gatewayFailure, makeRig, refusalOf } from './job/rig.ts';
+import { CHECKS, DESK_DID, RFQ_VALUE, SENDER_DID, T0, choiceOf, decisionOf, messageOf, recordFor } from './job/samples.ts';
+import { PRICE_LIST_SHA256, SERVICE, envOf, priceListOf } from './serve/support.ts';
+import { serve } from './serve/serve.ts';
+import { cleanDirs, makeWorld as makeServiceWorld } from './serve/world.ts';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 const page = readFileSync(new URL('../../../specs/bid-desk.md', import.meta.url), 'utf8');
@@ -45,7 +60,6 @@ const STATUS_LINE = `PROPOSED (built, not deployed). Since ${PAGE_DATE}.`;
 
 /** The manifest of the template, and the manifest of each instance as its settings give it. */
 const template = manifestFromEnv(TEMPLATE_ENV, TEMPLATE_PRICE_LIST);
-const manifests = Object.fromEntries(INSTANCES.map((instance) => [instance, manifestFromEnv(envOf(instance, { BID_DESK_SERVICE_PKH: SERVICE.pkh }), priceListOf(instance))])) as Record<Instance, BidDeskManifest>;
 
 /** The compose file of each Bid Desk: one runtime in front of one service, in a project of its own. */
 interface ComposeService {
@@ -64,12 +78,68 @@ const runtimeEnv = (instance: Instance): Readonly<Record<string, string>> => com
 const serviceEnv = (instance: Instance): Readonly<Record<string, string>> => composes[instance].services.service.environment ?? {};
 const envExample = readFileSync(`${root}deploy/server/.env.bid-desk.example`, 'utf8');
 
+/** The manifest of each Bid Desk as the settings of its deployment give it: the organisation and the public origin of its compose file, its own price list file and its own key hash. */
+const manifests = Object.fromEntries(
+  INSTANCES.map((instance) => [instance, manifestFromEnv(envOf(instance, { BID_DESK_SERVICE_PKH: SERVICE.pkh, BID_DESK_ORGANISATION: serviceEnv(instance).BID_DESK_ORGANISATION, BID_DESK_PUBLIC_ORIGIN: serviceEnv(instance).BID_DESK_PUBLIC_ORIGIN }), priceListOf(instance))]),
+) as Record<Instance, BidDeskManifest>;
+/** The status that the protocol gives a code, or undefined for a code that it does not list. */
+const statusOf = (code: string): number | undefined => (Object.hasOwn(ERROR_STATUS, code) ? Reflect.get(ERROR_STATUS, code) : undefined);
+/** The members of an object that a test reads by name, or a failure of the test for any other value. */
+function membersOf(value: unknown): Record<string, unknown> {
+  if (!isPlainObject(value)) throw new Error('the value is no object');
+  return value;
+}
+
 /** What the page says of each Bid Desk in the runs that the plan holds. No code backs these words: the plan of the runs does. */
 const ROLES: Readonly<Record<Instance, string>> = {
   alfa: 'quotes in every run',
   bravo: 'quotes in every run, and is the agent of the lifecycle run: its record changes its controller, recovers and is retired with a successor. The successor record is not an agent: it has no advert and no stake',
   charlie: 'is the bidder of the failure run, with the fault switch set',
 };
+
+/** The SHA-256 of a text, as `node:crypto` makes it. */
+const sha256 = (text: string): string => createHash('sha256').update(text).digest('hex');
+/** The value of a result that the kit gave, or the error that says why there is none. */
+function must<T, C extends string>(result: ProtocolResult<T, C>): T {
+  if (!result.ok) throw new Error(result.detail);
+  return result.value;
+}
+/** The rows of the table whose header line is `header`, each as its cells. The header and its rule line are not in the result. */
+function tableRows(text: string, header: string): string[][] {
+  const lines = text.split('\n');
+  const start = lines.indexOf(header);
+  if (start < 0) return [];
+  const rows: string[][] = [];
+  for (const line of lines.slice(start + 2)) {
+    if (!line.startsWith('| ')) break;
+    rows.push(line.slice(2, -2).split(' | '));
+  }
+  return rows;
+}
+/** The JSON block that stands first in a part of the page. */
+const jsonBlock = (text: string): string => /```json\n([\s\S]*?)\n```/.exec(text)?.[1] ?? '';
+/** The source files of the service, each with its text. */
+const sourceDir = new URL('../src/', import.meta.url);
+const sources = (readdirSync(sourceDir, { recursive: true }) as string[]).map(String).filter((file) => file.endsWith('.ts')).map((file) => [file, readFileSync(new URL(file, sourceDir), 'utf8')] as const);
+
+/** What the model says in the example of the page: it prices each item from the list of Bid Desk Alfa. */
+const ALFA_REASONING = 'The list gives 125 for 100 gloves, 28 for 250 syringes and 60 for 40 masks, so each line takes the unit price of its break and the lead time of its SKU.';
+/**
+ * The quote that the real job makes for the request of the page over scripted ports: the price list file and the organisation of Bid Desk Alfa, a model that prices each item from that list, and the stand-ins
+ * of the rig for the record of the hook, the book, the identity gateway and the model supplier.
+ */
+async function alfaQuote(mode: FaultSetting<'bid-desk'>): Promise<Quote> {
+  const loaded = loadPriceList(priceListFileOf('alfa'));
+  const items = must(parseRfqDocument(RFQ_VALUE)).items;
+  const lines = items.map(({ sku, quantity }) => {
+    const priced = priceFor(loaded.list, sku, quantity);
+    if (priced === null) throw new Error(`the price list of Bid Desk Alfa has no price for ${sku}`);
+    return { sku, quantity, unit_price: priced.unit_price, lead_time_days: priced.lead_time_days };
+  });
+  const rig = makeRig({ mode });
+  rig.decision = accepted({ ...decisionOf(choiceOf({ lines })), reasoning: ALFA_REASONING });
+  return runQuote({ ...rig.deps, priceList: { list: loaded.list, sha256: loaded.sha256 }, agent: { did: DESK_DID, organisation: serviceEnv('alfa').BID_DESK_ORGANISATION } }, rig.request, rig.context, T0);
+}
 
 describe('specs/bid-desk.md: the frame, the identity and the capability', () => {
   test("the opening line, the capability, the model string and the status line are the manifest's, and the page says that the agent has no record", () => {
@@ -290,5 +360,531 @@ describe('specs/bid-desk.md: the Terms', () => {
     for (const instance of INSTANCES) expect(runtimeEnv(instance).RELEASE_WATCHER, instance).toBe('1');
     expect(terms).toContain('If the Bid Desk never submits, the buyer reclaims after `deliver_by`. A request that the hook refuses, and a job that fails after the Claim, end that way: neither is paid.');
     expect(terms).toContain('The service pays for its one model call from the service key.');
+  });
+});
+
+describe('specs/bid-desk.md: the routes of the Interface', () => {
+  afterEach(cleanDirs);
+  const interfaceText = section('Interface');
+
+  test('the Interface names the routes of the service and the token that two of them need, and the buyer reaches the service through a runtime only', async () => {
+    expect(PRICE_LIST_ROUTE).toBe('/price-list.json');
+    for (const instance of INSTANCES) expect(manifests[instance].interface.routes, instance).toStrictEqual({ job: '/v1/job', status: '/status', capability: '/capability', price_list: PRICE_LIST_ROUTE });
+    for (const route of ['`POST /precheck`', '`POST /`', '`GET /price-list.json`', '`GET /agent.json`', '`GET /healthz`']) expect(row(interfaceText, route), route).not.toBe('');
+    expect(interfaceText).toContain('`POST /` and `POST /precheck` need the token that only the runtime holds. A call without it gets 401 `{"error":"unauthorized"}`, before the body is read.');
+    expect(interfaceText).toContain('`GET /price-list.json`, `GET /agent.json` and `GET /healthz` need no token. Any other route gets 404 `{"error":"not_found"}`.');
+    expect(interfaceText).toContain('A buyer sends its job to the runtime of its advert, on the runtime route `/v1/job` of the manifest, and never to the service.');
+    expect(ERROR_STATUS.unauthorized).toBe(401);
+    expect(readme).toContain('Without it, 401 `{"error":"unauthorized"}`');
+    expect(readme).toContain('| any other route | 404 `{"error":"not_found"}` |');
+    // The real service over HTTP: the two calls that need the token get 401 without it, the three public routes need none, and any other route is a 404.
+    await serve(makeServiceWorld(), async (api) => {
+      for (const path of ['/', '/precheck']) {
+        const refused = await api.request('POST', path, { body: '[]', headers: { authorization: null } });
+        expect([refused.status, refused.json], path).toStrictEqual([401, { error: 'unauthorized' }]);
+      }
+      expect((await api.request('GET', '/healthz', { headers: { authorization: null } })).json).toStrictEqual({ ok: true });
+      for (const path of ['/agent.json', '/price-list.json']) expect((await api.request('GET', path, { headers: { authorization: null } })).status, path).toBe(200);
+      const missing = await api.request('GET', '/quote', { headers: { authorization: null } });
+      expect([missing.status, missing.json]).toStrictEqual([404, { error: 'not_found' }]);
+    });
+  });
+
+  test('the Interface names the two things apart: the request JSON that the buyer writes, and the wire payload that the runtime posts, which the service reads as a one-message array', () => {
+    expect(interfaceText).toContain("The **request JSON** is what the buyer's agent writes: the message under Request below.");
+    expect(interfaceText).toContain('The **wire payload** is the request JSON written as a string inside a one-message array: `[{"content": "<request JSON as a string>", "role": "user"}]`.');
+    expect(interfaceText).toContain("The buyer's agent commits to the wire payload in the escrow, and a runtime posts it to the service as the body of `POST /` and of `POST /precheck`.");
+    // The service reads exactly this array and gives back the request JSON as a string. It refuses any other body.
+    expect(parseWire(JSON.stringify([{ content: 'request JSON', role: 'user' }]))).toBe('request JSON');
+    expect(() => parseWire(JSON.stringify({ content: 'request JSON', role: 'user' }))).toThrow(/one-element message array/);
+    expect(() => parseWire(JSON.stringify([{ content: 'request JSON', role: 'assistant' }]))).toThrow(/role must be/);
+  });
+});
+
+describe('specs/bid-desk.md: the request', () => {
+  const request = sub('Request');
+
+  test('the example is the message of the sample of the job, and the service takes it', () => {
+    const shown = jsonBlock(request);
+    expect(shown).toBe(JSON.stringify(messageOf(), null, 2));
+    expect(parseRfqRequest(shown)).toStrictEqual(messageOf());
+    expect(parseWire(JSON.stringify([{ content: shown, role: 'user' }]))).toBe(shown);
+    expect(request).toContain('The request JSON is the request for quotation of use case 3 (supplier bid evaluation). It is one object with exactly the members of the first table.');
+    expect(request).toContain('Its `rfq` is the request for quotation, and it has exactly the members of the second table. Each item of `items` has exactly the members of the third table. The order of the members does not matter.');
+    expect(request).toContain('A request that breaks a rule is refused with `bad_shape` (400), before any check.');
+    expect(() => parseRfqRequest('{}')).toThrow(RequestRefusal);
+    expect(new RequestRefusal('bad_shape', 'x').status).toBe(400);
+    expect(ERROR_STATUS.bad_shape).toBe(400);
+  });
+
+  test('the members of the message, of the request for quotation and of an item are the members of the parsers, in their order, and the page states the rules of the parsers', () => {
+    const rows = request.split('\n').filter((line) => /^\| `/.test(line));
+    expect(rows).toHaveLength(9);
+    const names = rows.map((line) => /^\| `([a-z_]+)` \|/.exec(line)?.[1] ?? '');
+    expect(names.slice(0, 4)).toStrictEqual(Object.keys(messageOf()));
+    expect(names.slice(4, 7)).toStrictEqual(Object.keys(RFQ_VALUE));
+    expect(names.slice(7)).toStrictEqual(Object.keys(must(parseRfqDocument(RFQ_VALUE)).items[0]));
+    expect(rows).toStrictEqual([
+      `| \`schema\` | \`${RFQ_SCHEMA}\` |`,
+      "| `sender_did` | the DID of the buyer's agent: `did:vector:` and 64 lower-case hex characters |",
+      '| `delegation` | the identifier of the delegation that names the sender as its delegate and paid for the job: 64 lower-case hex characters |',
+      '| `rfq` | the request for quotation, with the members of the second table |',
+      '| `rfq_id` | 1 to 64 characters: letters, digits, dots, hyphens and underscores, starting with a letter or a digit. The service counts it as written, so `RFQ-7` and `rfq-7` are two requests |',
+      '| `items` | 1 to 20 items, with the members of the third table, and each SKU once |',
+      '| `needed_by` | a date that exists, as `YYYY-MM-DD`, in the year 0100 or later |',
+      '| `sku` | the same form as `rfq_id` |',
+      '| `quantity` | a whole number from 1 to 1000000 |',
+    ]);
+    // The rules of the request for quotation are the rules of its parser.
+    const accepts = (over: Record<string, unknown>): boolean => parseRfqDocument({ ...RFQ_VALUE, ...over }).ok;
+    const item = (sku: string, quantity: number): { sku: string; quantity: number } => ({ sku, quantity });
+    const itemsOf = (count: number): Array<{ sku: string; quantity: number }> => Array.from({ length: count }, (_, at) => item(`SKU-${at}`, 1));
+    expect([accepts({}), accepts({ rfq_id: 'a'.repeat(64) }), accepts({ rfq_id: 'a'.repeat(65) }), accepts({ rfq_id: '-a' }), accepts({ rfq_id: 'a b' }), accepts({ rfq_id: 'a.b_c-d' })]).toStrictEqual([true, true, false, false, false, true]);
+    expect(MAX_RFQ_ITEMS).toBe(20);
+    expect([accepts({ items: itemsOf(1) }), accepts({ items: itemsOf(MAX_RFQ_ITEMS) }), accepts({ items: [] }), accepts({ items: itemsOf(MAX_RFQ_ITEMS + 1) }), accepts({ items: [item('A', 1), item('A', 2)] })]).toStrictEqual([true, true, false, false, false]);
+    expect([accepts({ needed_by: '2026-12-31' }), accepts({ needed_by: '2026-02-30' }), accepts({ needed_by: '0100-01-01' }), accepts({ needed_by: '0099-12-31' }), accepts({ needed_by: '2026-1-1' })]).toStrictEqual([true, false, true, false, false]);
+    expect([accepts({ items: [item('a'.repeat(64), 1)] }), accepts({ items: [item('a'.repeat(65), 1)] })]).toStrictEqual([true, false]);
+    expect([accepts({ items: [item('A', 1)] }), accepts({ items: [item('A', 1_000_000)] }), accepts({ items: [item('A', 0)] }), accepts({ items: [item('A', 1_000_001)] }), accepts({ items: [item('A', 1.5)] })]).toStrictEqual([true, true, false, false, false]);
+    expect(accepts({ extra: 1 })).toBe(false);
+    // The rules of the message: the schema, the two hex forms, and no member that the table does not list. The Bid Desk takes no approval. The order of the members does not matter.
+    const refused = (over: Record<string, unknown>): void => expect(() => parseRfqRequest(JSON.stringify({ ...messageOf(), ...over }))).toThrow(RequestRefusal);
+    refused({ schema: 'vector.usecase.handoff.v1' });
+    refused({ sender_did: `did:vector:${'A1'.repeat(32)}` });
+    refused({ delegation: '5E'.repeat(32) });
+    refused({ approval: null });
+    expect(parseRfqRequest(JSON.stringify(Object.fromEntries(Object.entries(messageOf()).reverse())))).toStrictEqual(messageOf());
+    // The service reads each text as it was written: the Kelvin sign is no letter K.
+    expect(() => parseRfqRequest(JSON.stringify({ ...messageOf(), rfq: { ...RFQ_VALUE, items: [item('\u212aIT-1', 1)] } }))).toThrow(RequestRefusal);
+    expect(request).toContain('The service reads each text as it was written. An identifier or a SKU that is valid only after Unicode normalisation, such as the Kelvin sign in place of the letter K, is refused with `bad_shape`.');
+    expect(request).toContain('The Bid Desk takes no approval, so a member that the tables do not list, `approval` included, is refused too.');
+  });
+});
+
+describe('specs/bid-desk.md: what the hook checks before the Claim', () => {
+  const hook = sub('What it checks before the Claim');
+  const checks = tableRows(hook, '| # | Check | Refusal code | Status | The rule |');
+  /** The refusal codes of one row of the table, in the order of the row. */
+  const codesOf = (cells: string[]): string[] => [...cells[2].matchAll(/`([a-z_]+)`/g)].map((hit) => hit[1]);
+
+  test('the 7 checks are the checks of the quote in their order, with the 7 refusal codes of the kit in their order, each with its status, and the table is the table of the README', () => {
+    expect(QUOTE_CHECKS).toHaveLength(7);
+    expect(checks).toHaveLength(QUOTE_CHECKS.length);
+    expect(checks.map((cells) => Number(cells[0]))).toStrictEqual(QUOTE_CHECKS.map((_, at) => at + 1));
+    expect(checks.map((cells) => cells[1])).toStrictEqual(QUOTE_CHECKS.map((name) => `\`${name}\``));
+    expect(COUNTERPARTY_REFUSALS['bid-desk']).toHaveLength(7);
+    expect(checks.flatMap(codesOf)).toStrictEqual([...COUNTERPARTY_REFUSALS['bid-desk']]);
+    // Every code of a row has the status of that row, and the status is the one of the protocol.
+    for (const cells of checks) for (const code of codesOf(cells)) expect(cells[3], code).toBe(String(statusOf(code)));
+    expect(checks.every((cells) => cells[3] === '403')).toBe(true);
+    // The first 6 checks are the shared checks of the kit, and the last is the check of the Bid Desk. The README holds the same codes, statuses and checks.
+    expect([...SHARED_CHECK_NAMES['bid-desk']]).toStrictEqual(QUOTE_CHECKS.slice(0, 6));
+    expect(QUOTE_CHECKS[6]).toBe('not_duplicate');
+    const own = tableRows(readme.split('\n## The hook\n')[1] ?? '', '| Code | Status | Check | The rule |').slice(0, 7);
+    expect(own.map(([code, status, check]) => [code, status, check])).toStrictEqual(checks.map((cells) => [`\`${cells[2].replaceAll('`', '')}\``, cells[3], cells[1]]));
+    expect(checks[6][4].startsWith('the rfq book holds no answer to this `rfq_id` from this sender.')).toBe(true);
+    expect(own[6][3]).toBe('the rfq book holds no answer to this `rfq_id` from this sender');
+    expect(hook).toContain('The hook makes 7 checks, one after the other, in the order of the table. The first 6 are the shared checks of the use-case kit: the sender, the delegation and the payment from a vault. The last is the check of the Bid Desk.');
+    expect(hook).toContain('The Bid Desk takes no approval, so it has no check of one. The first check that fails ends the hook. Its answer is the refusal code of that check, with the status 403.');
+    expect(hook).toContain('A refusal comes before the Claim: the escrow stays open, nothing is claimed, nothing is paid, and the buyer reclaims the escrow after `deliver_by`.');
+  });
+
+  test('the check of the Bid Desk refuses a request that the book holds, takes the identifier as it was written, and never reads a book that cannot answer as a pass', async () => {
+    const world = makeHookWorld();
+    const book = new MemoryRfqBook();
+    const [own] = rfqChecks({ book });
+    expect(own.names).toStrictEqual(['not_duplicate']);
+    expect(await own.run(world.rfq, world.context)).toMatchObject({ ok: true });
+    const id = must(parseRfqDocument(world.rfq.rfq)).rfq_id;
+    await book.record(world.rfq.sender_did, id, 'ab'.repeat(32));
+    expect(await own.run(world.rfq, world.context)).toMatchObject({ ok: false, code: 'duplicate_rfq' });
+    // The identifier counts as it was written, and the sender is a part of the key.
+    expect(id).not.toBe(id.toUpperCase());
+    expect(await own.run({ ...world.rfq, rfq: { ...world.rfq.rfq, rfq_id: id.toUpperCase() } }, world.context)).toMatchObject({ ok: true });
+    expect(await book.has(SENDER_DID, id)).toBe(false);
+    // A book that cannot answer is never a pass: the check gives CheckUnavailableError, which the hook answers with 503 check_unavailable.
+    const unread = (has: () => Promise<boolean>) => rfqChecks({ book: { has, record: async () => undefined } })[0].run(world.rfq, world.context);
+    await expect(unread(async () => { throw new Error('the file is gone'); })).rejects.toBeInstanceOf(CheckUnavailableError);
+    await expect(unread(async () => 'yes' as unknown as boolean)).rejects.toBeInstanceOf(CheckUnavailableError);
+    expect(hook).toContain('The check `not_duplicate` and the job both read the book of the Bid Desk. The book holds one entry for each request that the Bid Desk answered, by the DID of the sender and the `rfq_id` as it was written.');
+  });
+
+  test('the book never drops an entry and holds at most 10000: a request that it lacks gets check_unavailable from a full book, and a request that it holds still gets duplicate_rfq', async () => {
+    const book = new MemoryRfqBook();
+    for (let at = 0; at < 10_000; at += 1) await book.record(SENDER_DID, `rfq-${at}`, 'ab'.repeat(32));
+    await expect(book.has(SENDER_DID, 'rfq-new')).rejects.toBeInstanceOf(RangeError);
+    expect(await book.has(SENDER_DID, 'rfq-0')).toBe(true);
+    expect(await book.has(SENDER_DID, 'rfq-9999')).toBe(true);
+    await expect(book.record(SENDER_DID, 'rfq-new', 'ab'.repeat(32))).rejects.toBeInstanceOf(RangeError);
+    expect(hook).toContain('It never drops an entry, so a Bid Desk refuses a repeated `rfq_id` of the same sender for ever. It holds at most 10000 entries.');
+    expect(hook).toContain('A book that is full cannot take a new entry: for a request that it lacks, the hook then answers 503 `check_unavailable` and the escrow stays open, and for a request that it holds, the hook still answers 403 `duplicate_rfq`.');
+    expect(readme).toContain('It holds at most 10000 entries and never drops one');
+  });
+
+  test('a go keeps the record for 300 s and reserves the job slot for 120 s, the hook answers 503 for a source that it cannot read, and the runtime waits 10000 ms', () => {
+    expect(hook).toContain(`When every check passes, the hook answers 200 \`{"go":true,"reserved_ms":${RESERVATION_MS}}\`.`);
+    expect(hook).toContain(`The service keeps the record of the checks for ${PASSED_CHECKS_TTL_MS / 1000} s, and it reserves the job slot for that escrow for ${RESERVATION_MS / 1000} s.`);
+    expect([RESERVATION_MS, PASSED_CHECKS_TTL_MS]).toStrictEqual([120_000, 300_000]);
+    expect(hook).toContain('A source that the hook cannot read (the identity gateway, the ledger or the rfq book) is never a pass: the hook answers 503 `check_unavailable`.');
+    expect(ERROR_STATUS.check_unavailable).toBe(503);
+    expect(hook).toContain(`The runtime waits ${RUNTIME_PRECHECK_WAIT_MS} ms for the hook, and reads silence as a refusal.`);
+    expect(readme).toContain('it waits 10000 ms for the answer');
+    expect(hook).toContain('The hook makes 4 timed reads, one after the other: the identity gateway once, for the DID of the sender, and the ledger three times (the delegation, its use and the payment from a vault).');
+    expect(hook).toContain('The read of the rfq book is local and has no budget. The hook reads the record of the sender and never the record of the Bid Desk itself.');
+  });
+
+  test('the six headers of the context carry the escrow and the key of the escrow, and the body never does', () => {
+    const headers = Object.values(CONTEXT_HEADERS);
+    expect(headers).toHaveLength(6);
+    const named = `${headers.slice(0, -1).map((name) => `\`${name}\``).join(', ')} and \`${headers.at(-1)}\``;
+    expect(hook).toContain(`The runtime sends six headers of context with each call: ${named}.`);
+    expect(hook).toContain('The hook needs all six, and a call with none, with some, or with a bad one gets 400 `bad_context`.');
+    expect(hook).toContain('The key that posted the escrow and the reference of the escrow come from these headers and never from the body: the checks `sender_key`, `delegation` and `vault_paid` read them there.');
+    expect(readme).toContain('a call with none, with some, or with a bad one gets 400 `bad_context`');
+    expect(new RequestRefusal('bad_context', 'x').status).toBe(400);
+    // The body cannot carry the key of the escrow: a member that the message does not list is refused.
+    expect(() => parseRfqRequest(JSON.stringify({ ...messageOf(), buyer_pkh: '0b'.repeat(28) }))).toThrow(RequestRefusal);
+  });
+
+  test('the Bid Desk files no challenge: no source of the service uses the dispute code or stakes a claim, and no setting names a dispute, a Module-1 manifest or a mock system', () => {
+    expect(sources.length).toBeGreaterThan(10);
+    expect(sources.filter(([, text]) => /@vsa\/usecase-kit\/dispute|stakeRunClaim|challengeDelivery|challengeApproval/.test(text)).map(([file]) => file)).toStrictEqual([]);
+    expect(SETTINGS.filter((name) => /DISPUTE|MODULE1|MOCK_|COSIGN/.test(name))).toStrictEqual([]);
+    expect(template.behaviour.relying_on.mock_systems).toStrictEqual([]);
+    expect(hook).toContain('The Bid Desk files no challenge. It takes no approval, so a request has no digest that the hook could refuse, and the service has no dispute code and no dispute setting.');
+    expect(hook).toContain('A refusal of the hook is the answer to the runtime and nothing more.');
+  });
+
+  test('the hook checks no SKU against the price list: a request none of whose SKUs a list carries gets a go, and the hook keeps the record of the 7 checks for the job', async () => {
+    const world = makeHookWorld({ rfq: { items: [{ sku: 'NO-SUCH-SKU', quantity: 3 }] } });
+    for (const instance of INSTANCES) expect(priceFor(loadPriceList(priceListFileOf(instance)).list, 'NO-SUCH-SKU', 3), instance).toBeNull();
+    const passed = new PassedChecks();
+    const go = createPrecheck({ ports: world.ports, book: new MemoryRfqBook(), passed, clock: () => HOOK_T, log: () => undefined });
+    expect(await go(world.rfq, world.context)).toStrictEqual({ go: true });
+    expect(Object.keys(passed.take(world.context.escrowRef, HOOK_T)?.record.checks ?? {})).toStrictEqual([...QUOTE_CHECKS]);
+    expect(hook).toContain('The hook does not check the SKUs of the request against the price list. A request none of whose SKUs the list carries passes the hook and the Claim.');
+    expect(hook).toContain('The job then hires the model, and it ends with `model_output_invalid` (502), because a quote needs at least one line (see What it does).');
+  });
+});
+
+describe('specs/bid-desk.md: what the job does', () => {
+  const does = sub('What it does');
+  const steps = does.split('\n').filter((line) => /^\d\. /.test(line));
+  const lines = choiceOf().lines;
+
+  test('the job takes its eight steps in the order of the page, and the model gets the date, the items and the entries of the list for them, and nothing else of the request', async () => {
+    const rig = makeRig();
+    await rig.run();
+    expect(rig.events).toStrictEqual(['take', 'decide', 'has', 'credential', 'record']);
+    expect(rig.takes).toStrictEqual([rig.context.escrowRef]);
+    const phrases = ['takes the record of the checks', 'Decision `quote`', 'checks the choice against the request', 'When the fault switch is set', 'reads the book again', 'credential of the Bid Desk', 'builds the quote', 'checks the time'];
+    expect(steps).toHaveLength(phrases.length);
+    phrases.forEach((phrase, at) => expect(steps[at], phrase).toContain(phrase));
+    expect(does).toContain(`The job has a deadline of ${JOB_DEADLINE_MS} ms after its request arrives, and it runs these steps in this order. A failure ends the job with an error, and no later step runs.`);
+    // The input of the decision: the date of today, the items and the date of the request, and the entries of the list for the SKUs of the items. The identifier of the request, the sender and the delegation stay out.
+    const input = membersOf(rig.decideInputs[0]);
+    expect(Object.keys(input)).toStrictEqual(['today', 'request', 'price_list']);
+    expect(Object.keys(membersOf(input.request))).toStrictEqual(['items', 'needed_by']);
+    expect(Array.isArray(input.price_list) ? input.price_list.map((entry) => membersOf(entry).sku) : []).toStrictEqual(['GLV-NIT-M', 'SYR-10ML', 'MSK-N95']);
+    for (const text of ['run1-rfq-1', SENDER_DID, rig.request.delegation]) expect(JSON.stringify(input), text).not.toContain(text);
+    expect(steps[1]).toContain('The model gets a fixed instruction, the date of today, the items and the date of the request, and the entries of the price list for the SKUs of the items.');
+    expect(steps[1]).toContain('It answers `{ "lines": [ { "sku", "quantity", "unit_price", "lead_time_days" } ], "valid_until": "<date>", "notes": "..." }`, and its reasons.');
+    expect(QUOTE_DECISION.parse(choiceOf()).ok).toBe(true);
+    expect(QUOTE_DECISION.parse({ ...choiceOf(), extra: 1 }).ok).toBe(false);
+    // The hire ends at the job deadline, or 50000 ms before deliver_by when that is earlier, and it does not start with less than 60000 ms left for it.
+    expect(readFileSync(new URL('../src/serve/wiring.ts', import.meta.url), 'utf8')).toContain('deadlineMs: Math.min(arrivedAt + JOB_DEADLINE_MS, context.deliverByMs - RUNTIME_MARGIN_MS - CALL_TIMEOUT_MS)');
+    expect([RUNTIME_MARGIN_MS + CALL_TIMEOUT_MS, HIRE_MIN_MS]).toStrictEqual([50_000, 60_000]);
+    expect(steps[1]).toContain('The hire ends at the job deadline, or 50000 ms before `deliver_by` when that is earlier, and it does not start with less than 60000 ms left for it.');
+    expect(steps[0]).toContain('A job with no record, with the record of another body, with a record that lacks one of the 7 checks, or with a fact in the record that it cannot read, fails with `precheck_missing` and makes no quote.');
+  });
+
+  test('a job with no record, with the record of another body, with a record that lacks a check, or with a fact that it cannot read, fails with precheck_missing and makes no quote', async () => {
+    const none = makeRig();
+    none.entry = null;
+    const other = makeRig();
+    other.entry = recordFor(other.request, { request_sha256: 'ab'.repeat(32) });
+    const lacking = makeRig();
+    lacking.entry = recordFor(lacking.request, { checks: Object.fromEntries(Object.entries(CHECKS).filter(([name]) => name !== 'vault_paid')) });
+    const unreadable = makeRig();
+    unreadable.entry = recordFor(unreadable.request, { facts: { organisation: 7, organisation_verified: true } });
+    for (const rig of [none, other, lacking, unreadable]) {
+      expect(await refusalOf(rig.run())).toMatchObject({ code: 'precheck_missing', status: 500 });
+      expect(rig.events).toStrictEqual(['take']);
+      expect(rig.booked).toHaveLength(0);
+    }
+    expect(QUOTE_REFUSAL_STATUS.precheck_missing).toBe(500);
+  });
+
+  test('a choice with no line, a line that is not an item of the request, or a SKU two times ends the job with model_output_invalid, and a choice with fewer lines than items is a quote', async () => {
+    const chosen = async (choice: QuoteChoice) => {
+      const rig = makeRig();
+      rig.decision = accepted(decisionOf(choice));
+      return rig;
+    };
+    const bad = [
+      choiceOf({ lines: [] }),
+      choiceOf({ lines: [{ ...lines[0], quantity: 99 }, lines[1], lines[2]] }),
+      choiceOf({ lines: [{ sku: 'XYZ-1', quantity: 1, unit_price: 50, lead_time_days: 3 }] }),
+      choiceOf({ lines: [lines[0], lines[0]] }),
+    ];
+    for (const choice of bad) {
+      const rig = await chosen(choice);
+      expect(await refusalOf(rig.run())).toMatchObject({ code: 'model_output_invalid', status: 502, kind: 'job' });
+      expect(rig.events).toStrictEqual(['take', 'decide']);
+      expect(rig.booked).toHaveLength(0);
+    }
+    expect(QUOTE_REFUSAL_STATUS.model_output_invalid).toBe(502);
+    // The twin: a choice with 2 of the 3 items is a quote with 2 lines. The code never adds a line.
+    const fewer = await chosen(choiceOf({ lines: lines.slice(0, 2) }));
+    const quote = await fewer.run();
+    expect(quote.lines.map((line) => line.sku)).toStrictEqual(['GLV-NIT-M', 'SYR-10ML']);
+    expect(steps[2]).toContain('The job does not check that every item has a line, and it never adds, removes or changes a line.');
+    expect(steps[2]).toContain('A choice that breaks this rule ends the job with `model_output_invalid` (502). The decision is on record and no quote is made.');
+  });
+
+  test('the code checks no unit price against the price list: a line at a price that is not on the list is in the quote, and the instruction to the model says what to do with an item that the list lacks', async () => {
+    const rig = makeRig();
+    rig.decision = accepted(decisionOf(choiceOf({ lines: [{ ...lines[0], unit_price: 1 }, lines[1], lines[2]] })));
+    const quote = await rig.run();
+    expect(quote.lines[0]).toMatchObject({ sku: 'GLV-NIT-M', quantity: 100, unit_price: 1, line_total: 100 });
+    expect(priceFor(rig.deps.priceList.list, 'GLV-NIT-M', 100)?.unit_price).toBe(125);
+    expect(quote.fault_mode).toBe('');
+    expect(does).toContain('The model sets the prices and the code does not check them. The code checks the SKU and the quantity of each line against the request, and it does not check a unit price against the price list. So a quote can hold a price that is not on the list.');
+    // The buyer can check each price, because the quote names the list: a price that differs from the list is found by the rule of the kit, and the Sourcing Agent compares the prices of the quote with the list.
+    expect(checkQuoteFromList(quote, rig.deps.priceList.sha256)).toStrictEqual({ ok: true, value: null });
+    expect(readFileSync(new URL('../../sourcing-agent/src/model/accept.ts', import.meta.url), 'utf8')).toContain('For each line, compare its "unit_price" with its listed price.');
+    expect(does).toContain('The Sourcing Agent asks its model to compare the unit price of each line of a quote with the price of the list before it accepts the quote. The one price off the list that this Bid Desk makes on purpose is the fault `quote_off_price_list`.');
+    // A request none of whose SKUs the list carries: the model gets no entry, the instruction says to leave the item out, and a choice with no line is model_output_invalid after the Claim.
+    expect(QUOTE_DECISION.instruction).toContain('Leave an item that the price list does not carry out of "lines", and name it in "notes".');
+    const unlisted = makeRig({ rfq: { items: [{ sku: 'NO-SUCH-SKU', quantity: 3 }] } });
+    unlisted.decision = accepted(decisionOf(choiceOf({ lines: [], notes: 'No SKU of the request is on the price list.' })));
+    expect(await refusalOf(unlisted.run())).toMatchObject({ code: 'model_output_invalid', status: 502 });
+    expect(membersOf(unlisted.decideInputs[0]).price_list).toStrictEqual([]);
+    expect(unlisted.events).toStrictEqual(['take', 'decide']);
+    expect(does).toContain('The instruction to the model says to leave an item that the list does not carry out of the lines, and to name it in the notes. When no line is left, the job ends with `model_output_invalid` (502) after the Claim, and the service has paid for the model hire.');
+  });
+
+  test('the book is read again, the credential is asked from the gateway, a draft that the parser refuses is internal, and a quote that cannot be written is store_write_failed', async () => {
+    // Step 5: a request that the book holds ends the job with duplicate_rfq after the Claim, with a fixed text.
+    const held = makeRig();
+    await held.memory.record(SENDER_DID, 'run1-rfq-1', 'ab'.repeat(32));
+    const duplicate = await refusalOf(held.run());
+    expect(duplicate).toMatchObject({ code: 'duplicate_rfq', status: 403, message: QUOTE_TEXT.duplicate_rfq });
+    expect(duplicate.message).not.toContain('run1-rfq-1');
+    expect(held.events).toStrictEqual(['take', 'decide', 'has']);
+    // Step 6: no credential, and an answer that is no compact JWS.
+    const down = makeRig();
+    down.issued = gatewayFailure('gateway.unavailable', 503);
+    const garbled = makeRig();
+    garbled.issued = { ok: true, value: 'not a compact JWS' };
+    for (const rig of [down, garbled]) {
+      expect(await refusalOf(rig.run())).toMatchObject({ code: 'credential_failed', status: 502 });
+      expect(rig.events).toStrictEqual(['take', 'decide', 'has', 'credential']);
+      expect(rig.booked).toHaveLength(0);
+    }
+    expect(manifests.alfa.behaviour.relying_on.gateway_routes).toStrictEqual(['GET /1.0/identifiers/{did}', 'GET /agents/{id}/credential']);
+    // Step 7: a draft that the parser of the kit refuses.
+    const draft = makeRig();
+    const refused = await refusalOf(runQuote({ ...draft.deps, agent: { did: DESK_DID, organisation: 'Supplier Alfa' } }, draft.request, draft.context, T0));
+    expect(refused).toMatchObject({ code: 'internal', status: 500 });
+    expect(draft.booked).toHaveLength(0);
+    // Step 8: a book that cannot be written.
+    const full = makeRig();
+    full.bookError = new Error('the disk is full');
+    expect(await refusalOf(full.run())).toMatchObject({ code: 'store_write_failed', status: 500 });
+    expect(full.events).toStrictEqual(['take', 'decide', 'has', 'credential', 'record']);
+    for (const code of ['duplicate_rfq', 'credential_failed', 'internal', 'store_write_failed'] as const) expect(QUOTE_REFUSAL_STATUS[code], code).toBe(ERROR_STATUS[code]);
+    expect(steps[4]).toContain('A request that the book holds ends the job with `duplicate_rfq` (403) after the Claim.');
+    expect(steps[5]).toContain('A failure of the gateway, and an answer that is not a compact JWS, end the job with `credential_failed` (502).');
+    expect(steps[6]).toContain('A quote that the parser refuses ends the job with `internal` (500).');
+    expect(steps[7]).toContain('A book that cannot be written ends the job with `store_write_failed` (500).');
+  });
+
+  test('the limits of the job: less than 30000 ms before deliver_by gives deadline and records nothing, a caller that hangs up before the decision or the record gets deadline, and a hang-up after the record changes nothing', async () => {
+    expect(RUNTIME_MARGIN_MS).toBe(30_000);
+    const late = makeRig({ deliverInMs: RUNTIME_MARGIN_MS - 1 });
+    expect(await refusalOf(late.run())).toMatchObject({ code: 'deadline', status: 422, message: QUOTE_TEXT.no_time });
+    expect(late.booked).toHaveLength(0);
+    expect(late.events).toStrictEqual(['take', 'decide', 'has', 'credential']);
+    const edge = makeRig({ deliverInMs: RUNTIME_MARGIN_MS });
+    expect((await edge.run()).rfq_id).toBe('run1-rfq-1');
+    const gone = new AbortController();
+    gone.abort();
+    const before = makeRig();
+    expect(await refusalOf(before.run({ signal: gone.signal }))).toMatchObject({ code: 'deadline', status: 422, message: QUOTE_TEXT.deadline });
+    expect(before.events).toStrictEqual(['take']);
+    // The caller hangs up during the record: the quote is booked, the job gives it, and the log says that the caller hung up.
+    const during = new AbortController();
+    const rig = makeRig();
+    const book = { has: rig.deps.book.has, record: async (...args: Parameters<typeof rig.deps.book.record>) => { during.abort(); await rig.deps.book.record(...args); } };
+    const quote = await runQuote({ ...rig.deps, book }, rig.request, rig.context, T0, during.signal);
+    expect(rig.booked).toHaveLength(1);
+    expect(quote.rfq_id).toBe('run1-rfq-1');
+    expect(rig.logs.some((line) => line.includes('the caller hung up while the quote was booked'))).toBe(true);
+    expect(ERROR_STATUS.deadline).toBe(422);
+    expect(steps[7]).toContain('With less than 30000 ms left before `deliver_by`, the job ends with `deadline` (422) and records nothing.');
+    expect(does).toContain('A job whose caller hangs up before the decision, or before the book records the quote, stops there with `deadline` (422) and records nothing. A hire that has started is not stopped.');
+    expect(does).toContain('A hang-up after the record does not stop the job: the quote is booked, the job gives it, and its log says that the caller hung up. The job calls no mock system, takes no approval and files no challenge.');
+  });
+});
+
+describe('specs/bid-desk.md: the response', () => {
+  const response = sub('Response');
+
+  test('the Response heading is the anchor that the manifest of each Bid Desk links to', () => {
+    expect(page.match(/^### Response$/gm)).toHaveLength(1);
+    for (const instance of INSTANCES) expect(manifests[instance].interface.response_schema.$ref.endsWith('/specs/bid-desk.md#response'), instance).toBe(true);
+  });
+
+  test('the example is the quote that the job gives for the price list and the organisation of Bid Desk Alfa, and the members of the table are its members in their order', async () => {
+    const given = await alfaQuote('');
+    const shown = jsonBlock(response);
+    expect(shown).toBe(JSON.stringify(given, null, 2));
+    expect(must(parseQuote(JSON.parse(shown)))).toStrictEqual(given);
+    // The example answers the request of the example, and names the price list file of Bid Desk Alfa: its hash is the hash in the manifest of Bid Desk Alfa.
+    expect([given.rfq_id, given.organisation]).toStrictEqual([RFQ_VALUE.rfq_id, serviceEnv('alfa').BID_DESK_ORGANISATION]);
+    expect(given.rfq_sha256).toBe(must(rfqSha256(must(parseRfqDocument(RFQ_VALUE)))));
+    expect(given.price_list_sha256).toBe(manifests.alfa.behaviour.price_list.sha256);
+    expect(given.sender.did).toBe(messageOf().sender_did);
+    const alfa = loadPriceList(priceListFileOf('alfa')).list;
+    for (const line of given.lines) expect(line.unit_price, line.sku).toBe(priceFor(alfa, line.sku, line.quantity)?.unit_price);
+    expect(Object.keys(given.checks)).toStrictEqual([...QUOTE_CHECKS]);
+    // The table names the members in the order of the quote, and its rows say what they hold.
+    const names = response.split('\n').filter((line) => /^\| `/.test(line)).map((line) => /^\| `([a-z0-9_]+)` \|/.exec(line)?.[1] ?? '');
+    expect(names).toStrictEqual(Object.keys(given));
+    expect(names).toHaveLength(17);
+    expect(row(response, '`schema`')).toBe(`| \`schema\` | \`${given.schema}\` |`);
+    expect(row(response, '`outcome`')).toBe('| `outcome` | always `done`: a refusal or a failure is an error, never a quote |');
+    expect(row(response, '`checks`')).toBe(`| \`checks\` | the ${QUOTE_CHECKS.length} checks of the hook, each \`true\`, in the order of the table of the hook |`);
+    expect(row(response, '`decisions`')).toBe('| `decisions` | one decision, `quote`: its choice, its reasoning, and the hire of the model supplier with the sub-receipt that the service verified (`inference`) |');
+    expect(row(response, '`fault_mode`')).toBe('| `fault_mode` | the setting of the fault switch: the empty text in a clean run. It is the last member |');
+    expect(row(response, '`notes`')).toBe('| `notes` | the note of the model: at most 500 characters |');
+    expect(row(response, '`sender`')).toBe('| `sender` | the DID of the sender, the organisation that the covering Accountable Party names (or `null`), and whether the identity gateway verified it. The organisation is recorded, and it is never a reason to refuse |');
+    expect(Object.keys(given).at(-1)).toBe('fault_mode');
+    expect(response).toContain('`schema` is `vector.usecase.quote.v1`. A job that makes the quote answers with it, as the body of the answer, serialised once, with its members in the order of the table below.');
+    expect(response).toContain('The signed receipt of the job is the signed quote: the receipt commits to the text of the quote. A job that does not make a quote answers with an error (see Errors) and no quote.');
+    expect(response).toContain('It is an illustration and not a recorded run. Its desk DID, sender, credential, references, hashes and signature are made up, so none of them is of a real agent, escrow or key. Only the price list hash and the prices are those of the file of Bid Desk Alfa.');
+  });
+
+  test('the three numbers are arithmetic, a quote can have fewer lines than the request has items, and the quote names the hash of the request and the hash of the list', async () => {
+    const given = await alfaQuote('');
+    expect(quoteTotals(given.lines.map(({ sku, quantity, unit_price: unitPrice, lead_time_days: lead }) => ({ sku, quantity, unit_price: unitPrice, lead_time_days: lead })))).toStrictEqual({ lines: given.lines, total: given.total, lead_time_days: given.lead_time_days });
+    expect([given.total, given.lead_time_days]).toStrictEqual([21_900, 21]);
+    expect(given.lines.map((line) => line.line_total)).toStrictEqual(given.lines.map((line) => line.quantity * line.unit_price));
+    expect(parseQuote({ ...given, total: given.total + 1 }).ok).toBe(false);
+    expect(response).toContain('A line total is the quantity times the unit price, the total is the sum of the line totals, and `lead_time_days` is the longest lead time of the lines.');
+    expect(response).toContain('The service makes these three numbers from the lines of the model. They are arithmetic and not decisions, and the parser of the kit refuses a quote with a number that is not the arithmetic of its lines.');
+    expect(response).toContain('A quote can have fewer lines than the request has items, and its notes then say which items it leaves out.');
+    expect(response).toContain('The quote names the hash of the request and the hash of the price list that it was priced from, so a buyer\'s agent can check each unit price against the public list.');
+  });
+});
+
+describe('specs/bid-desk.md: the price list', () => {
+  const list = sub('The price list');
+  const marks = INSTANCES.map((instance) => list.indexOf(`\n**${INSTANCE_NAMES[instance]}**\n`));
+
+  test.each(INSTANCES.map((instance, at) => [instance, at] as const))('the table of %s is its file: the SKU, the lead time and the unit price at each break, and the hash of its bytes is the hash in its manifest', (instance, at) => {
+    expect(marks.every((mark) => mark >= 0)).toBe(true);
+    expect([...marks].sort((a, b) => a - b)).toStrictEqual(marks);
+    const loaded = loadPriceList(priceListFileOf(instance));
+    const minimums = loaded.list.items[0].breaks.map((step) => step.min_quantity);
+    for (const entry of loaded.list.items) expect(entry.breaks.map((step) => step.min_quantity), entry.sku).toStrictEqual(minimums);
+    const group = list.slice(marks[at], marks[at + 1] ?? list.length);
+    const header = `| SKU | Lead time in days | ${minimums.map((minimum) => `Unit price from ${minimum}`).join(' | ')} |`;
+    expect(tableRows(group, header)).toStrictEqual(loaded.list.items.map((entry) => [`\`${entry.sku}\``, String(entry.lead_time_days), ...entry.breaks.map((step) => String(step.unit_price))]));
+    // The hash of the file, as `node:crypto` makes it, is the hash that the manifest of the Bid Desk holds, and the page names it.
+    expect(loaded.sha256).toBe(sha256(readFileSync(priceListFileOf(instance), 'utf8')));
+    expect(loaded.sha256).toBe(manifests[instance].behaviour.price_list.sha256);
+    expect(loaded.sha256).toBe(priceListOf(instance).sha256);
+    expect(loaded.sha256).toBe(PRICE_LIST_SHA256[instance]);
+    expect(group).toContain(`\nSHA-256 of the file: \`${loaded.sha256}\`\n`);
+    expect(manifests[instance].behaviour.price_list.uri).toBe(`${runtimeEnv(instance).PUBLIC_ORIGIN}${PRICE_LIST_ROUTE}`);
+  });
+
+  test('the three files differ, the unit price of a quantity is the price of the break with the greatest minimum that is not above it, and the route gives the exact bytes of the file of each Bid Desk', async () => {
+    expect(new Set(INSTANCES.map((instance) => loadPriceList(priceListFileOf(instance)).sha256)).size).toBe(3);
+    const alfa = loadPriceList(priceListFileOf('alfa')).list;
+    expect([99, 100, 499, 500, 1_000_000].map((quantity) => priceFor(alfa, 'GLV-NIT-M', quantity)?.unit_price)).toStrictEqual([140, 125, 125, 110, 110]);
+    expect(list).toContain('The unit price of a quantity is the price of the break with the greatest minimum that is not above the quantity.');
+    expect(list).toContain('It needs no token and takes no job slot. The answer is the exact bytes of the file, with the header `content-type: application/json`.');
+    for (const instance of INSTANCES) {
+      await serve(makeServiceWorld({ instance }), async (api) => {
+        const served = await api.request('GET', '/price-list.json', { headers: { authorization: null } });
+        expect([served.status, served.headers.get('content-type')]).toStrictEqual([200, 'application/json']);
+        expect(Buffer.from(served.text, 'utf8').equals(readFileSync(priceListFileOf(instance)))).toBe(true);
+      });
+    }
+    cleanDirs();
+  });
+
+  test('the manifest holds the hash of the file and the advert holds the hash of the manifest, so a change of a list is a new image and a new advert, and the lists are stand-in data', () => {
+    // The manifest of an instance takes the hash of the file of its own instance only.
+    expect(() => manifestFromEnv(envOf('alfa', { BID_DESK_SERVICE_PKH: SERVICE.pkh }), { sha256: PRICE_LIST_SHA256.bravo })).toThrow(/price list hash/);
+    expect(readme).toContain('The advert holds the SHA-256 of the bytes that `GET /agent.json` serves.');
+    expect(readFileSync(new URL('../Dockerfile', import.meta.url), 'utf8')).toContain('COPY agents/bid-desk/price-lists ./agents/bid-desk/price-lists');
+    expect(list).toContain('The manifest holds the address of the file, `<public origin>/price-list.json`, and the SHA-256 of its bytes in `behaviour.price_list`. The advert holds the SHA-256 of the manifest.');
+    expect(list).toContain('So a change of a list changes the manifest of its Bid Desk, and it is a new image and a new advert. The three tables below are the three files.');
+    expect(list).toContain('The numbers are stand-in data of a demonstration: they carry no unit of account and no commercial value.');
+  });
+});
+
+describe('specs/bid-desk.md: the errors', () => {
+  const errors = sub('Errors');
+  const statusRows = (text: string): string[] => text.split('\n').filter((line) => /^\| \d{3}, /.test(line));
+  /** The names of codes in the second cell of a row of the table, in order. */
+  const codesIn = (line: string): string[] => [...(line.split('|')[2] ?? '').matchAll(/`([^`]+)`/g)].map((hit) => hit[1]).filter((text) => /^[a-z_]+$/.test(text));
+  const kitServer = readFileSync(new URL('../../../packages/service-kit/src/server.ts', import.meta.url), 'utf8');
+
+  test('the table is the table of the README, with its 11 rows, every code has its status, and the codes are the codes of the hook, the job and the service, and no others', () => {
+    const onPage = statusRows(errors);
+    expect(onPage).toHaveLength(11);
+    expect(onPage).toStrictEqual(statusRows(readme.split('\n## Errors\n')[1] ?? ''));
+    // A code that the protocol does not list has its status elsewhere: the request refusal of the service, and the kit of the service.
+    const outside: Record<string, number> = { bad_context: new RequestRefusal('bad_context', 'x').status, not_found: 404 };
+    const documented = new Map<string, number[]>();
+    for (const line of onPage) {
+      const status = Number(/^\| (\d{3}), /.exec(line)?.[1]);
+      for (const code of codesIn(line)) {
+        documented.set(code, [...(documented.get(code) ?? []), status]);
+        expect(Object.hasOwn(outside, code) ? outside[code] : statusOf(code), code).toBe(status);
+      }
+    }
+    // The 403 row before the Claim holds the 7 codes of the hook, in the order of its checks. The job gives one 403 after the Claim, and each code of the job is in the table with its status.
+    expect(codesIn(onPage.find((line) => line.startsWith('| 403, the hook, before the Claim')) ?? '')).toStrictEqual([...COUNTERPARTY_REFUSALS['bid-desk']]);
+    expect(codesIn(onPage.find((line) => line.startsWith('| 403, the job, after the Claim')) ?? '')).toStrictEqual(['duplicate_rfq']);
+    for (const [code, status] of Object.entries(QUOTE_REFUSAL_STATUS)) expect(documented.get(code), code).toContain(status);
+    const expected = [...COUNTERPARTY_REFUSALS['bid-desk'], ...Object.keys(QUOTE_REFUSAL_STATUS), 'check_unavailable', 'busy', 'shutting_down', 'unauthorized', 'not_found', 'bad_wire', 'request_too_large', 'bad_shape', 'bad_context'];
+    expect([...documented.keys()].sort()).toStrictEqual([...new Set(expected)].sort());
+    expect([...documented.entries()].filter(([, statuses]) => statuses.length > 1)).toStrictEqual([['duplicate_rfq', [403, 403]]]);
+  });
+
+  test('the 401, the 404, the 409 of a job and a plain 500 have no message, the 409 of the hook has one, the messages of duplicate_rfq and deadline are fixed, and the slot gives the busy answers as the page says', () => {
+    expect(errors).toContain('A refusal is `{ "error": "<code>", "message": "<words>" }` with the status in the table.');
+    expect(errors).toContain('- The 401, the 404, the 409 of a job and a plain 500 have the code and no message: `{"error":"unauthorized"}`, `{"error":"not_found"}`, `{"error":"busy"}` and `{"error":"internal"}`. A plain 500 is the answer to a fault that no code names, and its cause is in the log.');
+    expect(kitServer).toContain("return send(401, { error: 'unauthorized' });");
+    expect(kitServer).toContain("return send(404, { error: 'not_found' });");
+    expect(kitServer.split("send(409, { error: 'busy' })").length - 1).toBe(2);
+    expect(kitServer).toContain("return send(409, { error: 'busy', message: BUSY_TEXT });");
+    expect(kitServer).toContain("return send(500, { error: 'internal' });");
+    expect(errors).toContain(`- A refusal of status 500 or more gets a fixed message, \`${operatorsText('<code>')}\`, because the runtime copies the first 200 characters of a failure to the buyer, and the detail is the operator's. \`shutting_down\` has the fixed message \`${STOPPING_TEXT}\`, and the 409 \`busy\` of the hook has the fixed message \`${BUSY_TEXT}\`.`);
+    expect(errors).toContain('- The messages of `duplicate_rfq` and `deadline` are fixed texts that hold no value of the request.');
+    expect(errors).toContain('- A refusal of the hook leaves the escrow open, and nothing is paid. A job that fails after the Claim leaves the escrow Claimed: the buyer reclaims it after `deliver_by`, and nothing is paid for work that was not done.');
+    expect(readme).toContain('A job that fails after the Claim leaves the escrow claimed. The buyer reclaims it after the deadline, and nothing is paid for work that was not done.');
+    expect(errors).toContain('- The Bid Desk calls no mock system, so a failed job can leave behind a model hire and nothing else. A job that fails after the service accepted the model hire has paid the model supplier from the service key. A hire that stays unfinished is in the stranded file of the service key, and the janitor settles it.');
+    expect(readme).toContain('A job that fails after it accepted the model hire has paid the model supplier from the service key.');
+    expect(STRANDED_FILE).toBe('stranded.json');
+    expect(errors).toContain('- One job runs at a time. A job that arrives while a job runs, or while the slot is reserved for another escrow, gets 409 `{"error":"busy"}`, and nothing starts. A call of the hook gets 409 `busy` with a message while a job runs, whatever its escrow, and while the slot is reserved for another escrow. A new go of the hook for the escrow that holds the reservation reserves the slot again; a refusal of the hook reserves nothing.');
+    // The slot: a job that runs holds it against every call, the escrow of a reservation gets it again, and another escrow is held off.
+    const slot = new JobSlot();
+    expect(slot.take('escrow-a', 1_000)).toBe('taken');
+    expect([slot.canTake('escrow-a', 1_000), slot.canTake('escrow-b', 1_000)]).toStrictEqual(['busy', 'busy']);
+    slot.release();
+    expect(slot.reserve('escrow-a', 1_000)).toBe('reserved');
+    expect([slot.canTake('escrow-a', 2_000), slot.canTake('escrow-b', 2_000)]).toStrictEqual(['free', 'held']);
+    expect(slot.reserve('escrow-a', 2_000)).toBe('reserved');
+    expect(slot.take('escrow-b', 2_000)).toBe('held');
+    expect(HEARTBEAT_MS).toBe(60_000);
+    expect(errors).toContain('- While a job runs, the service writes an interim `102 Processing` line every 60 s, ahead of the answer, because the fetch of the runtime gives up after 300 s of silence.');
+    expect(errors).toContain('- A Bid Desk is the hired side. The service answers 200 only when it made a quote, and the 200 answer is the quote. Every code of the table is a refusal or a failure of the job or of the request, and the runtime turns it into the answer that the buyer reads.');
+    expect(readme).toContain('The reason is that the runtime\'s fetch gives up after 300 s of silence.');
   });
 });
