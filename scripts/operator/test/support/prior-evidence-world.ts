@@ -70,7 +70,6 @@ const KOIOS = 'https://koios.example';
 const INDEXER = 'https://indexer.example';
 const HEADER = { network: 'vector-mainnet' };
 const SUBMISSION_ROUTE = 'POST /records/orders/{order_id}/submission';
-const REFUND_TOKEN = `${'ec'.repeat(28)}be`;
 const manifest = {
   format: 'vector-module-deploy/1', module: 'module1', network: 'mainnet', mode: 'oracle', identity: { identity_hash: MAINNET.identity.hash },
   module1: { oracle_vkh: 'a1'.repeat(28), refs_token_policy: 'a2'.repeat(28) }, hashes: { claim: CLAIM, challenge: CHALLENGE },
@@ -154,6 +153,7 @@ export async function writePriorEvidence(s: PriorFixture, privateFile = false): 
     known.add(tx_hash);
   };
   const remember = (utxo: Utxo, spent: boolean) => { historical.push(koiosRow(utxo, { is_spent: spent })); };
+  const refOf = (out: Utxo): string => `${out.txHash}#${out.outputIndex}`;
   const toIo = (utxo: Utxo): TxIo => {
     const raw = koiosRow(utxo);
     return { ...io(`${utxo.txHash}#${utxo.outputIndex}`, raw.payment_cred!, utxo.address), value: raw.value, asset_list: raw.asset_list };
@@ -206,22 +206,26 @@ export async function writePriorEvidence(s: PriorFixture, privateFile = false): 
   for (const spec of childSpecs) live.push(recordUtxo(h(spec.id), liveRecord({ lineage: { type: 'Subagent', parent: DRAFT, parentEpoch: 0, depth: 1 } })));
 
   const owner = { type: 'PrincipalKey' as const, hash: ISSUER_KEY.keyHash, organisation: null };
-  const vault = { type: 'Live' as const, owner, delegation: ROOT, spent: 0n, periodStart: at(-50) };
+  const vault = { type: 'Live' as const, owner, delegation: ROOT, spent: 0n, periodStart: 0 };
   const returned = encodeVaultDatum({ type: 'Returned', owner });
   const refund = { address: plutusAddressFromBech32(MAINNET.vault.address), datum: returned };
   const constructor = (index: number, ...fields: unknown[]): Obj => ({ constructor: index, fields });
-  const vaultJson = constructor(0, constructor(0, { bytes: owner.hash }, constructor(1)), { bytes: ROOT }, { int: 0 }, { int: at(-50) });
-  let vaultRef = rf('open vault');
-  tx(h('open vault'), -50);
-  const runVault = vaultRef;
-  if (s.vault === 'different_vault') {
-    vaultRef = rf('open unrelated vault');
-    tx(h('open unrelated vault'), -49);
-  }
-  const rootDatum = delegation({ parent: null, delegate: DRAFT, delegator: owner });
+  const openVault = (name: string, minute: number) => {
+    const output = vaultUtxo(vault, 30_000_000n, { txHash: h(name), outputIndex: 0 });
+    tx(output.txHash, minute, [{ ...io(rf(`wallet for ${name}`), ISSUER_KEY.keyHash, ISSUER_KEY.address), value: '30250000' }],
+      { outputs: [toIo(output)], fee: '250000' });
+    return { datum: vault, output };
+  };
+  const runVault = openVault('open vault', -50);
+  let fundingVault = s.vault === 'different_vault' ? openVault('open unrelated vault', -49) : runVault;
+  const rootDatum = delegation({ parent: null, delegate: DRAFT, delegateKey: DRAFT_KEY.keyHash, delegator: owner });
   const rootOutput = { ...delegationUtxo(ROOT, rootDatum), txHash: h('delegate root') };
   remember(rootOutput, true);
-  tx(rootOutput.txHash, -60, [], { outputs: [toIo(rootOutput)], assets_minted: [minted(MAINNET.delegation.hash, ROOT, '1')] });
+  const seed = io(rf('delegate seed'), ISSUER_KEY.keyHash, ISSUER_KEY.address);
+  tx(rootOutput.txHash, -60, [seed], { outputs: [toIo(rootOutput)], assets_minted: [minted(MAINNET.delegation.hash, ROOT, '1')],
+    plutus_contracts: [{ script_hash: MAINNET.delegation.hash, valid_contract: true, spends_input: null, input: { redeemer: {
+      purpose: 'mint', datum: { hash: h('delegate seed redeemer'), value: { constructor: 0, fields: [constructor(0, { bytes: seed.tx_hash }, { int: seed.tx_index })] } },
+    } } }] });
   let rootEnd: string | null = null;
   if (s.delegation === 'not_closed') live.push(rootOutput);
   else {
@@ -252,21 +256,30 @@ export async function writePriorEvidence(s: PriorFixture, privateFile = false): 
     const agent = isIntake ? INTAKE : DRAFT;
     const fromVault = isIntake && s.vault !== 'wallet';
     const promptHash = payload === undefined ? h(`prompt ${step}`) : promptHashForPayload(payload);
-    const holdings = { lovelace: 5_000_000n, ...(reclaim === null ? {} : { [REFUND_TOKEN]: 3n }) };
+    const holdings = { lovelace: 5_000_000n };
     const open = identityEscrow(at(minute), { agent_id: agent, supplier_pkh: supplier.keyHash, advert_ref: { txHash: advert.slice(0, 64), index: 0 },
-      prompt_hash: promptHash, ...(fromVault ? { refund } : {}) });
+      buyer_bond_lovelace: 2_000_000n, prompt_hash: promptHash, ...(fromVault ? { buyer_pkh: rootDatum.delegateKey, refund } : {}) });
     const escrow = (hash: string, datum: typeof open): Utxo => escrowUtxo(hash, datum, { address: MAINNET.escrow.address, assets: holdings });
     const posted = escrow(post, open);
     remember(posted, true);
     const origin = toIo(posted);
     if (fromVault) {
-      const [hash, index] = vaultRef.split('#');
-      const funding = vaultUtxo(vault, 20_000_000n, { txHash: hash!, outputIndex: Number(index) });
+      const funding = fundingVault.output;
+      const old = fundingVault.datum;
+      const payingRef = refOf(funding);
       remember(funding, true);
-      tx(post, minute, [{ ...toIo(funding), inline_datum: { bytes: null, value: vaultJson } }], {
-        outputs: [origin, io(`${post}#1`, MAINNET.vault.hash)], plutus_contracts: [spend(vaultRef, MAINNET.vault.hash, 0)],
+      const reset = at(minute) - 20_000 >= old.periodStart + rootDatum.value!.periodMs;
+      const next = { ...old, spent: reset ? holdings.lovelace : old.spent + holdings.lovelace, periodStart: reset ? at(minute + 2) : old.periodStart };
+      const continuing = vaultUtxo(next, funding.assets.lovelace! - holdings.lovelace, { txHash: post, outputIndex: 1 });
+      const vaultJson = constructor(0, constructor(0, { bytes: owner.hash }, constructor(1)), { bytes: ROOT }, { int: Number(old.spent) }, { int: old.periodStart });
+      const slot = 10_000_000 + minute * 60;
+      const feeInput = { ...io(rf(`Pay fees ${step}`), WALLET.keyHash, WALLET.address), value: '2500000' };
+      const feeChange = toIo({ txHash: post, outputIndex: 2, address: WALLET.address, assets: { lovelace: 2_250_000n } });
+      tx(post, minute, [{ ...toIo(funding), inline_datum: { bytes: null, value: vaultJson } }, feeInput], {
+        outputs: [origin, toIo(continuing), feeChange], plutus_contracts: [spend(payingRef, MAINNET.vault.hash, 0)], fee: '250000',
+        reference_inputs: [toIo(rootOutput)], absolute_slot: slot, invalid_before: slot - 20, invalid_after: slot + 120,
       });
-      vaultRef = `${post}#1`;
+      fundingVault = { datum: next, output: continuing };
     } else tx(post, minute, [io(rf(`wallet ${step}`), WALLET.keyHash, WALLET.address)], { outputs: [origin] });
     hires.push({ step, agent: isIntake ? intake.id : draft.id, advert_ref: advert, escrow_ref: original, post_tx: post, accept_tx: accept, reclaim_tx: reclaim,
       report_file: result === null ? null : `${step}.report.json` });
@@ -275,7 +288,7 @@ export async function writePriorEvidence(s: PriorFixture, privateFile = false): 
       const wrong = s.vault === 'wrong_refund_owner' && step === 'intake-e';
       const refundA = vaultUtxo({ type: 'Returned', owner }, 2_300_000n, { txHash: reclaim, outputIndex: 0 });
       const refundB = vaultUtxo({ type: 'Returned', owner: wrong ? { ...owner, hash: WALLET.keyHash } : owner }, 2_750_000n,
-        { txHash: reclaim, outputIndex: 1, assets: { lovelace: 2_750_000n, [REFUND_TOKEN]: 3n } });
+        { txHash: reclaim, outputIndex: 1 });
       const change = { txHash: reclaim, outputIndex: 2, address: WALLET.address, assets: { lovelace: 3_700_000n } };
       remember(fund, true);
       for (const out of [refundA, refundB, change]) remember(out, false);
@@ -386,10 +399,19 @@ export async function writePriorEvidence(s: PriorFixture, privateFile = false): 
     execute({ step: 'execute-a', intakeStep: 'intake-a', minute: 130, proposal: a, approval: approval('a', a.proposal_digest, 116, 240),
       refusal: { reason: 'approval_digest_mismatch', exit: 'Escalated' }, altered: true });
   }
-  if (s.vault === 'different_vault') vaultRef = runVault;
+  const selectedVault = s.vault === 'different_vault' ? runVault.output : fundingVault.output;
+  const vaultRef = refOf(selectedVault);
   const close = s.delegation === 'not_closed' ? null : h('close vault');
-  if (close === null) live.push({ ...vaultUtxo(vault, 7_000_000n), txHash: vaultRef.slice(0, 64), outputIndex: Number(vaultRef.slice(65)) });
-  else tx(close, 445, [io(vaultRef, MAINNET.vault.hash)]);
+  remember(selectedVault, close !== null);
+  if (s.vault === 'different_vault') {
+    remember(fundingVault.output, false);
+    live.push(fundingVault.output);
+  }
+  if (close === null) live.push(selectedVault);
+  else tx(close, 445, [toIo(selectedVault)], {
+    outputs: [toIo({ txHash: close, outputIndex: 0, address: ISSUER_KEY.address, assets: { lovelace: selectedVault.assets.lovelace! - 250_000n } })],
+    plutus_contracts: [spend(vaultRef, MAINNET.vault.hash, 1)], fee: '250000',
+  });
   // Keep the actual producer order visible in the run record. The carried execute is the last one, not the last intake.
   hires.sort((left, right) => allTxs.findIndex((row) => row.tx_hash === left.post_tx) - allTxs.findIndex((row) => row.tx_hash === right.post_tx));
   const fault = EvidenceFile.open(join(world.stateDir, `fault.${label}.evidence.json`), { ...HEADER, check: 'fault', record: `${data.name}:${label}` }, { clock: () => iso(0) });

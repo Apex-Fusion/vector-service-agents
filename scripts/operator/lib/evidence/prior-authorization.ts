@@ -314,17 +314,6 @@ async function readDelegations(session: EvidenceReadSession, a: Assembly, drafte
   return { root, children };
 }
 
-/** The clean run has one payment. Its recorded vault can be the input or that payment's unique continuation. */
-async function readRunVaultPayment(session: EvidenceReadSession, a: Assembly, handoff: Handoff, payment: VaultPayment): Promise<boolean> {
-  const vault = a.reads.vaults.length === 1 ? a.reads.vaults[0] : undefined;
-  if (!payment.paid || vault?.close_tx == null) return false;
-  if (payment.vault_ref === vault.ref) return true;
-  if (txOf(vault.ref) !== handoff.intake.entry.post_tx) return false;
-  const post = await tx(session, handoff.intake.entry.post_tx);
-  const change = post.outputs.filter(({ credential }) => credential === session.chain.deployment.vault.hash);
-  return change.length === 1 && change[0]!.ref === vault.ref;
-}
-
 async function boundedList(session: EvidenceReadSession, path: string): Promise<readonly Obj[]> {
   const response = await fetchBounded({ fetch: session.fetchImpl, timeoutMs: 30_000, maxBytes: READ_BYTES }, `${session.extra.indexer}${path}`,
     { method: 'GET', headers: { accept: 'application/json' } });
@@ -594,7 +583,7 @@ async function readEnd(session: EvidenceReadSession, a: Assembly, parent: Record
 
 class Sources {
   constructor(readonly delegation: DelegationProof | null, readonly payment: VaultPayment | null, readonly dispute: DisputeProof | null,
-    readonly unlisted: boolean, readonly end: EndProof | null, readonly activeHoldObserved: boolean, readonly currentHold: string | null, readonly runVaultPaid: boolean) {}
+    readonly unlisted: boolean, readonly end: EndProof | null, readonly activeHoldObserved: boolean, readonly currentHold: string | null) {}
 }
 function prepared(a: Assembly): Sources {
   const value = a.extra.prior;
@@ -651,7 +640,9 @@ const RULES: EvidenceModule['rules'] = {
   'r1-04': (a) => {
     const handoff = signedHandoff(a, 'execute', 'intake');
     const payment = prepared(a).payment;
-    return handoff !== null && payment?.paid === true && payment.delegation === prepared(a).delegation?.root && prepared(a).runVaultPaid
+    const vault = a.reads.vaults.length === 1 ? a.reads.vaults[0] : undefined;
+    return handoff !== null && payment?.paid === true && payment.delegation === prepared(a).delegation?.root
+      && vault?.state === 'closed' && vault.lineage.delegation === payment.delegation && vault.lineage.path.includes(payment.vault_ref)
       ? [...hireRefs(handoff.execute), ...intakeRefs(handoff), ref('vault', payment.vault_ref)] : 'the signed handoff or the payment from the run vault is unproven';
   },
   'r1-05': (a) => {
@@ -788,8 +779,6 @@ export const priorAuthorization: EvidenceModule = {
     const handoff = run ? signedHandoff(a, clean ? 'execute' : 'execute-d2', clean ? 'intake' : 'intake-d2') : null;
     const delegation = run && clean ? await readSource('delegations', () => readDelegations(session, a, draft)) : null;
     const payment = handoff === null ? null : await a.paidFromVault(handoff.intake.entry);
-    const runVaultPaid = clean && handoff !== null && payment !== null
-      ? await readSource('vault_payment', () => readRunVaultPayment(session, a, handoff, payment)) : false;
     const dispute = a.loaded.record.challenged === null ? null : await readSource('challenge', () => readDispute(session, a, draft, counterparty));
     const current = dispute === null ? null : await readSource('hold', () => findRecord(session.chain.provider, session.chain.deployment, draft.id));
     const observed = dispute === null ? null : observeHold(current, dispute.policy, session.clock.now());
@@ -800,7 +789,7 @@ export const priorAuthorization: EvidenceModule = {
       && (observed.ref === application.record_output || (epoch?.input === application.record_output && epoch.output === observed.ref)) ? observed.ref : null;
     const unlisted = run && !clean && currentHold !== null ? await readSource('listing', () => readListing(session, a, draft)) : false;
     const end = epoch === null ? null : await readSource('subagent_ends', () => readEnd(session, a, draft, current, epoch));
-    return { prior: new Sources(delegation, payment, dispute, unlisted, end, observed !== null, currentHold, runVaultPaid) };
+    return { prior: new Sources(delegation, payment, dispute, unlisted, end, observed !== null, currentHold) };
   },
   mockRoutes: [ORDER_READ, GUIDELINE_READ, SUBMISSION, FILING],
   counts(state) {
