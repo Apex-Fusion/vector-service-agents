@@ -97,7 +97,7 @@ async function add(session: TaskSession<AllowlistExtra>): Promise<{ kind: 'dry' 
 
 const task: TaskDefinition<AllowlistExtra> = {
   name: 'allowlist',
-  title: 'Add the key hash of a principal to the co-sign allowlist of the Reorder Agent',
+  title: 'Add the key hash of a principal to the allowlist of the agent with a co-sign route',
   flags: [],
   valued: ['key', 'agent'],
   // The task signs and sends nothing, and it needs no key. A submit run loads the run key by itself, for the check of the approval.
