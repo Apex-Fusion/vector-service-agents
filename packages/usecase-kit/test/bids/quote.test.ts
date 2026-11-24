@@ -398,12 +398,45 @@ describe('the notes', () => {
     for (const count of [251, 300]) expectRefused(parse(change(golden(), ['notes'], '\u0344'.repeat(count))), 'quote.notes');
   });
 
-  it.each([
-    ['NUL', 'a\u0000b'], ['a NUL at the end', 'note\u0000'], ['a tab', 'a\tb'], ['a line break', 'a\nb'], ['a carriage return', 'a\rb'], ['a form feed', 'a\fb'], ['an escape character', 'a\u001bb'],
-    ['the last character of the first block', 'a\u001fb'], ['the delete character', 'a\u007fb'], ['the first control character of the second block', 'a\u0080b'], ['the last control character of the second block', 'a\u009fb'],
-    ['the marker, which has a line break', MARKER],
-  ])('refuses %s in the text, and names the member', (_what, text) => {
-    expectRefused(parse(change(golden(), ['notes'], text)), 'quote.notes');
+  /** The classes of character that the notes never hold: a reader cannot see them, and they can change how a text reads without a change of a letter. The line feed is a control character, so the notes are one line. */
+  const HIDDEN: ReadonlyArray<{ readonly label: string; readonly characters: readonly string[] }> = [
+    { label: 'the control characters of the first block (Cc), among them NUL, the tab, the line feed and the carriage return', characters: ['\u0000', '\t', '\n', '\u000b', '\f', '\r', '\u001b', '\u001f'] },
+    { label: 'the delete character and the control characters of the second block (Cc)', characters: ['\u007f', '\u0080', '\u0085', '\u009f'] },
+    { label: 'the line separator (Zl)', characters: ['\u2028'] },
+    { label: 'the paragraph separator (Zp)', characters: ['\u2029'] },
+    { label: 'the direction controls (Cf)', characters: ['\u200e', '\u200f', '\u202a', '\u202b', '\u202c', '\u202d', '\u202e', '\u2066', '\u2067', '\u2068', '\u2069', '\u061c'] },
+    { label: 'the zero-width characters, the word joiner and the soft hyphen (Cf)', characters: ['\u200b', '\u200c', '\u200d', '\u2060', '\u00ad'] },
+    { label: 'the byte order mark (Cf)', characters: ['\ufeff'] },
+    { label: 'the tag characters (Cf)', characters: ['\u{e0001}', '\u{e0020}', '\u{e0041}', '\u{e007f}'] },
+    { label: 'the variation selectors', characters: ['\ufe00', '\ufe0e', '\ufe0f'] },
+    { label: 'the variation selectors of the supplement', characters: ['\u{e0100}', '\u{e01ef}'] },
+  ];
+
+  it.each(HIDDEN)('refuses $label, in any place of the text, and never repeats the text', ({ characters }) => {
+    for (const character of characters) {
+      for (const text of [`${character}SYR-10ML is not quoted.`, `SYR-10ML ${character}is not quoted.`, `SYR-10ML is not quoted.${character}`, `zq9 marker ${character}`]) {
+        const result = parse(change(golden(), ['notes'], text));
+        expect(result.ok, `U+${character.codePointAt(0)?.toString(16)}`).toBe(false);
+        expectRefused(result, 'quote.notes');
+      }
+    }
+  });
+
+  it('refuses each control character: U+0000 to U+001F, U+007F and U+0080 to U+009F, the line feed too, and the detail says control', () => {
+    const codes = [...Array.from({ length: 32 }, (_, code) => code), ...Array.from({ length: 33 }, (_, index) => 0x7f + index)];
+    expect(codes).toHaveLength(32 + 33);
+    for (const code of codes) {
+      const result = parse(change(golden(), ['notes'], `Not quoted.${String.fromCharCode(code)}Not quoted.`));
+      expect(result.ok, `U+${code.toString(16).padStart(4, '0')}`).toBe(false);
+      expectRefused(result, 'quote.notes');
+      expect(!result.ok && result.detail).toContain('control');
+    }
+  });
+
+  it('takes letters of other scripts, symbols, emoji, a no-break space, a combining mark, flags, and the character after the variation selectors', () => {
+    for (const text of ['Kriterium: erf\u00fcllt \u8179\u75db \u2022 \u{1F600} \u00a0 ok', 'Flags \u{1F1E9}\u{1F1EA} and a mark e\u0301 and \ufe10 and a heart \u2764']) {
+      expect(parse(change(golden(), ['notes'], text)).ok, text).toBe(true);
+    }
   });
 
   it.each([['a number', 1], ['null', null], ['true', true], ['a list', ['note']], ['an object', {}]])('refuses notes that are %s', (_what, notes) => {
