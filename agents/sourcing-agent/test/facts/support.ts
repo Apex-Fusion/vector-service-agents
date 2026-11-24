@@ -88,6 +88,15 @@ export function stakeRow(n = 1, over: Partial<KoiosUtxo> = {}): KoiosUtxo {
   };
 }
 
+// The recorded stake output as Koios gave it on 2026-11-24 (`asset_utxos`, extended): the members that the reader does not read are here too. The datum as JSON (`inline_datum.value`) is left out.
+const liveRow = {
+  tx_hash: '48d4ce7bbd9141a0e5787af08a2cb14aa6c75b64134f874fa64bc8a4155eb6ad', tx_index: 0, address: REPUTATION_ADDRESS, value: '11000000', stake_address: null, payment_cred: REPUTATION_SCRIPT_HASH,
+  epoch_no: 453, block_height: 9_609_690, block_time: 1_795_424_118, datum_hash: 'f4f9cedb6cddb9b0ef4e8a4e0a2b1d3e0f33b881eb84f851eea165fe5c367927', inline_datum: { bytes: STAKE_HEX },
+  reference_script: null, is_spent: false,
+  asset_list: [{ decimals: 0, quantity: '1', policy_id: REPUTATION_SCRIPT_HASH, asset_name: TOKEN_NAME, fingerprint: 'asset1gu53tkydshnsqz762d2en7meejscjey96h7txf' }],
+};
+export const LIVE_ROW: KoiosUtxo = liveRow;
+
 // ---- the cases ----
 
 export const BIDDER = `did:vector:${'a1'.repeat(32)}`;

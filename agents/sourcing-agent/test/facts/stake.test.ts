@@ -6,7 +6,7 @@ import { REPUTATION_SCRIPT_HASH, decodeStakeDatum, encodeStakeDatum, stakeTokenN
 import type { KoiosUtxo } from '@vsa/vector-read';
 import { FACT_READ_TIMEOUT_MS, readStake } from '../../src/facts/index.ts';
 import type { StakeDeps, StakeFact } from '../../src/facts/index.ts';
-import { AGENT_ID, ManualClock, OTHER_ID, SIX_FIELD_DATUM, STAKE, STAKE_HEX, TOKEN_NAME, datumOf, never, settle, stakeRow, tokenOf } from './support.ts';
+import { AGENT_ID, LIVE_ROW, ManualClock, OTHER_ID, SIX_FIELD_DATUM, STAKE, STAKE_HEX, TOKEN_NAME, datumOf, never, settle, stakeRow, tokenOf } from './support.ts';
 
 interface Setup {
   readonly deps: StakeDeps;
@@ -47,6 +47,11 @@ describe('the stake that counts', () => {
   it('is the amount of the datum, for an output at the stake address with the 8-field datum and the one token of the agent', async () => {
     const { deps } = listing(stakeRow());
     expect(await readStake(deps, AGENT_ID)).toStrictEqual(stakeOf(11_000_000n));
+  });
+
+  it('is the same for the recorded stake output as Koios gave it, with the members that the reader does not read, and 0 when that output is spent', async () => {
+    expect(await readStake(listing(LIVE_ROW).deps, AGENT_ID)).toStrictEqual(stakeOf(11_000_000n));
+    expect(await readStake(listing({ ...LIVE_ROW, is_spent: true }).deps, AGENT_ID)).toStrictEqual(stakeOf(0n));
   });
 
   it('asks the port one time for the policy of the stake script and the token name of the agent, and gives the call the time of the fact reads', async () => {
