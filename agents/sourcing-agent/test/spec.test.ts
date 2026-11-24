@@ -7,9 +7,9 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { parse } from 'yaml';
-import { ACCEPT_WINDOW_MS, HIRE_ACTION } from '@vsa/buyer-core';
+import { ACCEPT_WINDOW_MS, HIRE_ACTION, narrowingProblems } from '@vsa/buyer-core';
 import { DECISION_WINDOW_MS } from '@vsa/hire-kit';
-import { MAX_BODY, RESERVATION_MS } from '@vsa/service-kit';
+import { MAX_BODY, RESERVATION_MS, parseWire } from '@vsa/service-kit';
 import { CONFIRMATIONS_REQUIRED, GATEWAY_FAILURES, MIN_SUB_DELEGATION_MS, SUB_DELEGATION_FAILURES, tokenTarget } from '@vsa/usecase-kit/access';
 import {
   BID_CAPABILITIES, BID_DESK_CLAIM, BID_DESK_MODEL, EXCLUDED_REASONS, MAX_ITEM_QUANTITY, MAX_RFQ_ITEMS, QUOTE_SCHEMA, SCORE_COMPONENTS, SOURCING_CLAIM, SOURCING_MODEL, WEIGHT_NAMES, buildRanking, parsePriceList, parseQuote,
@@ -25,9 +25,10 @@ import { HIRE_MIN_MS } from '@vsa/usecase-kit/decision';
 import { readFaultSwitch, withFaultMode } from '@vsa/usecase-kit/fault';
 import {
   APPROVAL_ATT_TYPE, APPROVAL_DEPOSIT_LOVELACE, COSIGN_ROUTE, COSIGN_RULE, COUNTERPARTY_REFUSALS, ERROR_STATUS, EXECUTE_OUTCOMES, EXIT_STATES, FAULT_MODES, MAX_REQUEST_BYTES, PROPOSE_OUTCOMES, RECEIPT_CHECKS,
-  RUNTIME_BODY_LIMIT_BYTES, agentIdOf, canonicalJson, checkRequestSize, exitStateOf, parseProposal, parseRequest, proposalDigest,
+  RUNTIME_BODY_LIMIT_BYTES, agentIdOf, canonicalJson, exitStateOf, parseProposal, parseRequest, proposalDigest,
 } from '@vsa/usecase-kit/protocol';
 import type { Decision, Did, ExecuteOutcome, JsonObject, JsonValue, ProtocolResult, ReceiptVerification, SubJob } from '@vsa/usecase-kit/protocol';
+import { wirePayloadFor } from '@vsa/vector-read';
 import { CLAIM_STAKE_LOVELACE, CLAIM_WINDOW_MS, RUN_APPROVAL_VALIDITY_MS } from '../../../scripts/operator/lib/claim-constants.ts';
 import { USE_CASE_NAMES } from '../../../scripts/operator/usecases/names.ts';
 import { MAX_CANDIDATES, readBidders } from '../src/bidders/index.ts';
@@ -242,7 +243,7 @@ describe('specs/sourcing-agent.md', () => {
     expect(limits).toStrictEqual({ request_bytes: MAX_REQUEST_BYTES, rfq_items: MAX_RFQ_ITEMS, item_quantity: MAX_ITEM_QUANTITY, tenant_chars: 48 });
     expect(ID_CHARS).toBe(64);
     expect(row(terms, 'Request')).toBe(
-      `| Request | at most ${limits.request_bytes} bytes of request JSON; \`tenant\` 1 to ${limits.tenant_chars} characters; \`rfq_id\` and \`sku\` 1 to ${ID_CHARS} characters; 1 to ${limits.rfq_items} items; \`quantity\` 1 to ${limits.item_quantity} |`,
+      `| Request | at most ${limits.request_bytes} bytes of wire payload; \`tenant\` 1 to ${limits.tenant_chars} characters; \`rfq_id\` and \`sku\` 1 to ${ID_CHARS} characters; 1 to ${limits.rfq_items} items; \`quantity\` 1 to ${limits.item_quantity} |`,
     );
     expect([MAX_CANDIDATES, MAX_INVITED]).toStrictEqual([8, 3]);
     expect(row(terms, 'Bidders')).toBe(`| Bidders | at most ${MAX_CANDIDATES} candidates are read, and at most ${MAX_INVITED} are invited |`);
@@ -292,7 +293,7 @@ describe('specs/sourcing-agent.md', () => {
       'With slow Bid Desks the job proposes from fewer quotes, and a job with no accepted quote ends `failed` with `no_quotes`.',
       'The scoring starts only when 1080000 ms are left, and the ranking decision only when 120000 ms are left. The job ends `failed` with `deadline` when they are not.',
       'A typical job is expected to end in about 20 minutes. No run has measured that yet, and the window is the longest time and not the usual time.',
-      'The escrow and the vault payment of the hirer stay locked up to the window of the advert, 5400000 ms (90 minutes), when a job runs to its end.',
+      'The escrow can stay locked after the job ends. It holds funds until a settlement transaction lands.',
     ]) expect(terms, part).toContain(part);
     // The README holds the same rule.
     expect(readme).toContain('A quote hire starts only when the deadline of the job is at least 2910000 ms away, so it starts in the first 2310000 ms of the job.');
@@ -301,33 +302,28 @@ describe('specs/sourcing-agent.md', () => {
     expect(QUOTE_CODES).toContain('deadline');
   });
 
-  test('the request limit is 900000 bytes of request JSON, and it is safe only below the 1 MiB limit of the runtime on the escaped body', () => {
+  test('the service limits the full wire payload; the runtime has a separate limit on its request body', () => {
     const terms = section('Terms');
     expect([MAX_REQUEST_BYTES, RUNTIME_BODY_LIMIT_BYTES, MAX_BODY]).toStrictEqual([900_000, 1_048_576, 1_000_000]);
-    for (const part of [
-      'The service counts the request JSON in bytes of UTF-8, and it refuses a request JSON of more than 900000 bytes with `request_too_large` (400). It reads at most 1000000 bytes of wire payload.',
-      'The wire payload carries the request JSON as a string inside a one-message array (see Interface).',
-      'The limit of 900000 bytes is safe only below the 1 MiB limit of the runtime, 1048576 bytes, on the escaped body.',
-      'A request JSON under 900000 bytes can give a body above 1048576 bytes, and the runtime refuses that body. A sender keeps the body of its call at or below 1048576 bytes.',
-      'The two requests of the examples under Request are a few kilobytes, so they are far below both limits.',
-    ]) expect(terms, part).toContain(part);
-    // The service counts the request JSON: one byte over the limit is refused as too large, and the limit itself passes the size check and fails as a request that is no JSON.
-    const codeOf = (request: string): string => {
-      try {
-        parseJob(request);
-        return 'accepted';
-      } catch (error) {
-        return error instanceof RequestRefusal ? error.code : 'other';
-      }
-    };
-    expect(codeOf('x'.repeat(MAX_REQUEST_BYTES + 1))).toBe('request_too_large');
-    expect(codeOf('x'.repeat(MAX_REQUEST_BYTES))).toBe('bad_shape');
-    expect(checkRequestSize('x'.repeat(MAX_REQUEST_BYTES)).ok).toBe(true);
-    // A request JSON of quote marks is 440000 bytes. Its wire payload is under the limit of 900000 bytes, and the body of the call to the runtime, which escapes it a second time, is over 1048576 bytes.
-    const quotes = '"'.repeat(440_000);
-    expect(quotes.length).toBeLessThan(MAX_REQUEST_BYTES);
-    expect(checkWirePayload(quotes).ok).toBe(true);
-    expect(checkRuntimeBody(quotes)).toMatchObject({ ok: false, code: 'request_too_large' });
+    expect(terms).toContain('`POST /` and `POST /precheck` count the UTF-8 bytes of the full wire payload, including the one-message array and all escapes.');
+    expect(terms).toContain(`A valid wire message above ${MAX_REQUEST_BYTES} bytes gets \`request_too_large\` (400).`);
+    expect(terms).toContain(`The shared HTTP reader stops at ${MAX_BODY} bytes.`);
+    expect(terms).toContain(`The runtime has a separate limit of ${RUNTIME_BODY_LIMIT_BYTES} bytes for its whole request body.`);
+    expect(terms).toContain('Escaping the payload again can make that body too large even if the payload fits.');
+    expect(section('Interface')).toContain('The wire payload carries the entire request, including `proposal.document` for `execute`.');
+
+    // Count the document, the message framing and the escapes. The request text alone is below the limit in both cases.
+    const request = JSON.stringify(EXECUTE_REQUEST);
+    const atLimit = request + ' '.repeat(MAX_REQUEST_BYTES - Buffer.byteLength(wirePayloadFor(request)));
+    const tooLarge = `${atLimit} `;
+    expect(Buffer.byteLength(tooLarge)).toBeLessThan(MAX_REQUEST_BYTES);
+    expect(checkWirePayload(atLimit)).toStrictEqual({ ok: true, value: MAX_REQUEST_BYTES });
+    expect(checkWirePayload(tooLarge)).toMatchObject({ ok: false, code: 'request_too_large' });
+
+    // Whitespace in the request can fit as escaped wire payload but not in the runtime's outer envelope.
+    const tabs = request + '\t'.repeat(440_000);
+    expect(checkWirePayload(tabs).ok).toBe(true);
+    expect(checkRuntimeBody(tabs)).toMatchObject({ ok: false, code: 'request_too_large' });
   });
 
   test('the economics: what the supplier receives, the window to accept, the vault, the quotes of the Bid Desks and the fees', () => {
@@ -337,20 +333,25 @@ describe('specs/sourcing-agent.md', () => {
     const desk = (JSON.parse(text('agents/bid-desk/agent.json.template')) as { terms: Record<string, number> }).terms;
     expect((desk.price_lovelace + desk.supplier_bond_lovelace + desk.buyer_bond_lovelace) / 1_000_000).toBe(3);
     for (const part of [
-      'A hire of either operation locks the price and both bonds, 5 units.',
-      "On Accept the supplier receives the price and the supplier bond, and the buyer's bond returns to the buyer.",
+      'A hire of either operation locks the price and both bonds, 5 units at the listed terms.',
+      "On Accept the supplier receives the price and the supplier bond. The buyer's bond goes to the refund address in the escrow.",
       `If the buyer does not accept within ${ACCEPT_WINDOW_MS / 1000} s of the supplier's Submit, the supplier may Release the escrow and take the price and both bonds.`,
-      'If the supplier never submits, the buyer reclaims after `deliver_by`.',
-      'The quotes are paid from the vault of the hirer. Each quote hire locks the price and both bonds of the advert of a Bid Desk: 3 units for the adverts of the Bid Desks of this repository. The value limit of the delegation caps the sum of these payments.',
-      'The delegation key of the agent pays the fees of each Pay and of each Accept.',
-      'When the agent does not accept a delivery, it does not accept the escrow of that quote. This happens when a check in code fails, when the decision on the quote fails, when the decision comes too late, and when the model does not accept the quote.',
-      `The Bid Desk may then Release the escrow ${ACCEPT_WINDOW_MS / 1000} s after its Submit and take the price and both bonds. Only a no of the model can start a challenge: no challenge follows a failed check, a failed decision or a late decision. A challenge does not return that money (see Known gaps).`,
-      'The service pays each model hire from the service key.',
+      'The Release builder counts from `submitted_at` and opens at the first whole second after the window.',
+      'Reclaim does not apply to a Submitted escrow. A `failed` job result does not itself refund the hire.',
+      'If the escrow is still Open or Claimed, anyone can submit a Reclaim after `deliver_by`.',
+      'Reclaim sends everything the escrow holds to its refund address, not to the caller.',
+      "It applies to an Open or Claimed escrow if the supplier's record is Revoked or Retired. For a Submitted escrow it applies only if the record is Revoked and `invalid_from` is at or before `submitted_at`.",
+      'Each Pay charges the full lock against `per_tx` and adds it to the spending of the current period for `total`. Allow for amounts already paid in that period.',
+      'A Pay must leave the ledger minimum in the Live vault.',
+      "The delegation key's wallet pays the Pay and Accept fees. The service key's wallet pays for the model hires.",
+      'On Accept of a quote the buyer bond goes to a separate `Returned` vault output. A full refund of a quote goes to the same type of output.',
+      'Only the vault owner can close it. It cannot fund another Pay and does not restore the spending allowance of the Live vault.',
+      'The challenge itself does not refund the escrow (see Known gaps).',
     ]) expect(terms, part).toContain(part);
   });
 
-  test('the README of the agent gives the same limits as the page', () => {
-    expect(readme).toContain('900000 bytes');
+  test('the README of the agent gives the same numbers as the page', () => {
+    expect(readme).toContain(`${MAX_REQUEST_BYTES} bytes`);
     expect(readme).toContain(`${JOB_DEADLINE_MS} ms`);
     expect(readme).toContain(`${MIN_PROCESSING_WINDOW_MS} ms`);
     for (const number of [QUOTE_HIRE_RESERVE_MS, SCORING_RESERVE_MS, SCORERS_NEED_MS, SCORER_NEED_MS, SCORER_JOB_TIMEOUT_MS, SUB_DELEGATION_VALID_MS, RANKING_RESERVE_MS, EXECUTE_DEADLINE_MS]) expect(readme).toContain(`${number} ms`);
@@ -590,8 +591,8 @@ describe('specs/sourcing-agent.md, Interface, Request', () => {
     expect(executeBlock).toBe(JSON.stringify(EXECUTE_REQUEST, null, 2));
     expect(must(parseRequest(JSON.parse(proposeBlock), parseProposeFields))).toStrictEqual(PROPOSE_REQUEST);
     expect(must(parseRequest(JSON.parse(executeBlock)))).toStrictEqual(EXECUTE_REQUEST);
-    expect(parseJob(proposeBlock).op).toBe('propose');
-    expect(parseJob(executeBlock).op).toBe('execute');
+    expect(parseJob(parseWire(wirePayloadFor(proposeBlock))).op).toBe('propose');
+    expect(parseJob(parseWire(wirePayloadFor(executeBlock))).op).toBe('execute');
     const { proposal } = JSON.parse(executeBlock) as typeof EXECUTE_REQUEST;
     expect(must(parseProposal(proposal))).toStrictEqual(PROPOSAL);
     expect(must(parseRanking(proposal.document)).rfq_id).toBe(RFQ.rfq_id);
@@ -599,7 +600,10 @@ describe('specs/sourcing-agent.md, Interface, Request', () => {
     expect(createHash('sha256').update(Buffer.from(proposal.salt, 'hex')).update(must(canonicalJson(proposal.document)), 'utf8').digest('hex')).toBe(proposal.proposal_digest);
     expect(request).toContain('The digest is the sha256 of the 32 bytes of the salt and the canonical JSON of the document.');
     // The two requests are a few kilobytes: far below the limits of Terms.
-    for (const block of [proposeBlock, executeBlock]) expect(Buffer.byteLength(block)).toBeLessThan(12_000);
+    for (const block of [proposeBlock, executeBlock]) {
+      expect(must(checkWirePayload(block))).toBeLessThan(12_000);
+      expect(must(checkRuntimeBody(block))).toBeLessThan(12_000);
+    }
     // The `propose` example uses the items and the weights of the Response example, and the SKUs are SKUs of the price list of Bid Desk Alfa.
     expect(RFQ.items.map((item) => item.sku).every((sku) => priceFor(ALFA_LIST, sku, 1) !== null)).toBe(true);
   });
@@ -664,11 +668,11 @@ describe('specs/sourcing-agent.md, Interface, Request', () => {
   test('each name in backticks in the two lists of steps is a code that a job writes, a word of the protocol, or a name that the test lists as no code', () => {
     const { propose, execute, protocol } = reasonsOfJobs();
     const codes = new Set<string>([...propose, ...execute, ...protocol, ...SCORING_FAILURES, ...QUOTE_CODES, ...EXCLUDED_REASONS, ...EXECUTE_OUTCOMES, ...Object.keys(ERROR_STATUS)]);
-    // The names of the steps that are no code: the four decisions, the member `document`, the word `null`, the list `mismatch` of SKUs, and the name of the second job.
-    const noCode = new Set<string>([SHORTLIST_DECISION.name, ACCEPT_QUOTE_DECISION.name, SCORE_DECISION.name, RANKING_DECISION.name, 'document', 'mismatch', 'null', 'execute']);
+    // The names of the steps that are no code: the decisions, the members of the requests and results, and the name of the second job.
+    const noCode = new Set<string>([SHORTLIST_DECISION.name, ACCEPT_QUOTE_DECISION.name, SCORE_DECISION.name, RANKING_DECISION.name, 'document', 'mismatch', 'null', 'reason', 'execute']);
     const steps = request.split('What `propose` does, in this order, under its deadline:')[1] ?? '';
     const names = [...new Set([...steps.matchAll(/`([a-z][a-z0-9_]*)`/g)].map((hit) => hit[1]))];
-    expect(names).toEqual(expect.arrayContaining(['delegation_not_mine', 'delivery_not_recordable', 'model_output_invalid', 'ranking_not_for_tenant', 'approval_not_found', 'refused_by_system', 'mock_system_failed']));
+    expect(names).toEqual(expect.arrayContaining(['delegation_not_mine', 'delivery_not_recordable', 'decision_failed', 'model_output_invalid', 'ranking_not_for_tenant', 'approval_not_found', 'refused_by_system', 'mock_system_failed']));
     expect(names.filter((name) => !noCode.has(name) && !codes.has(name))).toStrictEqual([]);
     expect(names.filter((name) => noCode.has(name))).toHaveLength(noCode.size);
   });
@@ -683,40 +687,67 @@ describe('specs/sourcing-agent.md, the delegation of the hirer and a decision th
     quoteWorld.cleanWorlds();
   });
 
-  test('the needs of the delegation: the page names them and their codes, and the kit refuses a delegation that fails them with those codes', async () => {
+  test('the parent must cover the scorer and its resource, and the child minimum is not the job budget', async () => {
     expect(MIN_SUB_DELEGATION_MS).toBe(300_000);
+    expect(MIN_SUB_DELEGATION_MS).toBeLessThan(SCORER_NEED_MS);
     for (const code of SUB_CODES) {
       expect(SCORING_FAILURES, code).toContain(code);
       expect(request, code).toContain(`\`${code}\``);
-      expect(how, code).toContain(`\`${code}\``);
     }
     for (const part of [
-      '**The delegation.** `propose` uses the delegation in two ways. It pays each quote from the vault of the delegation, and it makes one sub-delegation under the delegation for each scorer. So the delegation must meet these needs when you send `propose`:',
-      '- `remaining` is 1 or more.',
-      `- At least ${MIN_SUB_DELEGATION_MS} ms of life are left when each sub-delegation is made (\`MIN_SUB_DELEGATION_MS\`).`,
-      '- The delegation covers `vendor.read` for the vendor master of the tenant, and `sourcing.award.write` for the sourcing record of the tenant. `propose` needs the first, and `execute` needs the second.',
-      '- The delegation has exactly one Live vault.',
-      'A delegation with `remaining` 0 ends the job with `sub_delegation_parent_exhausted`. A delegation with less than 300000 ms of life ends it with `sub_delegation_parent_expiring`. A delegation that does not cover `vendor.read` ends it with `sub_delegation_build_refused`.',
-      'A delegation with no Live vault, or with more than one, loses nothing (`no_live_vault`, `several_live_vaults`).',
+      'the parent must have `remaining` of at least 1. This number limits the depth, not the number of scorers.',
+      `Keep the delegation valid for the full \`propose\` window (${MIN_PROCESSING_WINDOW_MS} ms).`,
+      'Keep the delegation valid through `execute`.',
+      'A token does not extend the authority of the delegation.',
+      `Its expiry is the earlier of ${SUB_DELEGATION_VALID_MS} ms after the start of its build and the end of the parent.`,
+      `The build requires at least ${MIN_SUB_DELEGATION_MS} ms of child validity (\`MIN_SUB_DELEGATION_MS\`). This is a refusal threshold`,
+      "The builder refuses a child that exceeds the parent's actions or resources.",
+      "The agent must still list the parent's delegate key for the delegation purpose.",
+      'The scorer must list its own delegate key for the delegation purpose, and no other delegation on the ledger may use that key.',
     ]) expect(request, part).toContain(part);
-    // The kit: a parent with `remaining` 0 gives parent_exhausted, a parent with less life than the least gives parent_expiring, and the builder refuses a sub-delegation that is wider than its parent.
+
+    // The access kit refuses exhausted and short-lived parents before it asks the builder.
     const exhausted = scoringWorld();
     exhausted.chain.parent = { ...exhausted.chain.parent!, remaining: 0 };
     expect(await exhausted.run()).toMatchObject({ ok: false, code: 'sub_delegation_parent_exhausted' });
     const expiring = scoringWorld();
     expiring.chain.parent = { ...expiring.chain.parent!, notAfter: SCORING_NOW + MIN_SUB_DELEGATION_MS - 1 };
     expect(await expiring.run()).toMatchObject({ ok: false, code: 'sub_delegation_parent_expiring' });
-    const access = text('packages/usecase-kit/src/access/subdelegation.ts');
-    expect(access).toContain("if (datum.remaining < 1) return refused('parent_exhausted'");
-    expect(access).toContain("< MIN_SUB_DELEGATION_MS) return refused('parent_expiring'");
-    expect(access).toContain("return refused('build_refused', `the Delegate could not be built");
-    expect(text('packages/buyer-core/src/vendored/mcp/delegation-build.ts')).toContain('no action pattern of the parent');
-    // The vault is checked before each Pay: a delegation with no Live vault gets no Pay, and the delegation with two is the other code of the same row.
+
+    // At the minimum the kit can build. The child's validity cannot exceed the parent's. Use the same narrowing check as the vendored builder.
+    const atMinimum = scoringWorld();
+    const parent = { ...atMinimum.chain.parent!, notAfter: SCORING_NOW + MIN_SUB_DELEGATION_MS };
+    atMinimum.chain.parent = parent;
+    await atMinimum.run({ input: { subjects: atMinimum.input.subjects.slice(0, 1) } });
+    const [built] = atMinimum.chain.builtDelegates;
+    expect(built?.delegation.notAfter).toBe(parent.notAfter);
+    const child = built!.delegation;
+    expect(narrowingProblems(child, parent)).toStrictEqual([]);
+    expect(narrowingProblems(child, { ...parent, actions: [Buffer.from(HIRE_ACTION).toString('hex')] })).toStrictEqual([expect.stringContaining('no action pattern')]);
+    expect(narrowingProblems(child, { ...parent, resources: [] })).toStrictEqual([expect.stringContaining('no resource pattern')]);
+
+    const refused = scoringWorld();
+    refused.script.build = () => { throw new Error('the builder refuses the child'); };
+    expect(await refused.run()).toMatchObject({ ok: false, code: 'sub_delegation_build_refused' });
+  });
+
+  test('a vault check blocks one Pay, but it does not undo an earlier Pay', async () => {
     expect(QUOTE_CODES).toEqual(expect.arrayContaining(['no_live_vault', 'several_live_vaults']));
     const none = await quoteWorld.world();
     const unpaid = await none.run(none.input(), { ...none.deps, reads: { delegation: (id) => none.reads.delegation(id), liveVaults: async () => ({ refs: [], complete: true }) } });
     expect(unpaid.outcomes.map(quoteWorld.words)).toStrictEqual(['excluded failed no_live_vault', 'excluded failed no_live_vault', 'excluded failed no_live_vault']);
     expect(quoteWorld.footprint(none).paid).toBe(0);
+
+    const changed = await quoteWorld.world();
+    const several = { refs: [refOf('first live vault'), refOf('second live vault')], complete: true };
+    const result = await changed.run(changed.input(), { ...changed.deps, reads: {
+      delegation: (id) => changed.reads.delegation(id),
+      liveVaults: async (id, at) => changed.booked.posted === 0 ? changed.reads.liveVaults(id, at) : several,
+    } });
+    expect(result.outcomes.map(quoteWorld.words)).toStrictEqual(['accepted', 'excluded failed several_live_vaults', 'excluded failed several_live_vaults']);
+    expect(changed.booked).toStrictEqual({ posted: 1, accepted: 1 });
+    expect(request).toContain('`no_live_vault` or `several_live_vaults` prevents that Pay. Neither code undoes earlier quote hires.');
+    expect(request).toContain('The agent can have already paid for the shortlist even if it paid for no quote.');
   });
 
   test('the job pays the quotes first: when the sub-delegation of a scorer fails, the quotes stay paid and the job ends with no ranking and the code of the sub-delegation', async () => {
@@ -731,11 +762,25 @@ describe('specs/sourcing-agent.md, the delegation of the hirer and a decision th
       if (result.outcome !== 'failed') throw new Error('the job must fail');
       expect([result.sub_jobs.length, result.quotes.map((record) => record.accepted)], code).toStrictEqual([1, ['confirmed']]);
     }
-    expect(request).toContain('The job pays the quotes first (step 4 of `propose`). The sub-delegations come after that (step 6), and nothing checks `remaining`, the life or the cover before the job pays.');
-    expect(request).toContain('In each case the quotes stay paid, and the job ends `failed` with no ranking, so the hirer loses those payments.');
-    expect(how).toContain('Set the end of the delegation so that at least 300000 ms of its life are left when the last scorer gets its sub-delegation: a delegation with less ends that job with `sub_delegation_parent_expiring`.');
-    expect(how).toContain('A delegation that does not cover `vendor.read` for the vendor master ends it with `sub_delegation_build_refused`.');
-    expect(how).toContain('The job pays the quotes before it makes the first sub-delegation, and nothing checks the delegation earlier. So a delegation that fails here costs you the quote payments: they stay paid, and the job ends `failed` with no ranking.');
+    expect(request).toContain('The agent makes the sub-delegations after the quote hires.');
+    expect(request).toContain('If scoring fails, the job returns no ranking. The job does not undo earlier quote payments or model hires.');
+  });
+
+  test('the buyer bond returns separately, so an accepted quote still charges the full lock to the period limit', async () => {
+    const q = await quoteWorld.world({ limit: { ...quoteWorld.LIMIT, perTx: 3_000_000n, total: 3_000_000n } });
+    const result = await q.run();
+    expect(result.outcomes.map(quoteWorld.words)).toStrictEqual(['accepted', 'excluded failed vault_refused', 'excluded failed vault_refused']);
+    expect(q.booked).toStrictEqual({ posted: 1, accepted: 1 });
+    const [first] = result.outcomes;
+    if (first?.kind !== 'accepted') throw new Error('the first quote must be accepted');
+    const escrow = q.chain.escrowDatum(first.record.escrow_ref)!;
+    const original = q.chain.vault(q.vault)!;
+    const fullLock = escrow.payment_lovelace + escrow.supplier_bond_lovelace + escrow.buyer_bond_lovelace;
+    const live = q.chain.vaults().filter((vault) => !vault.consumed);
+    expect(live).toMatchObject([
+      { kind: 'Live', spent: fullLock, lovelace: original.lovelace - fullLock },
+      { kind: 'Returned', owner: original.owner, lovelace: escrow.buyer_bond_lovelace },
+    ]);
   });
 
   test('a decision that fails ends the whole job with the code of the decision: the quote that the agent accepted before it stays paid and gets no ranking', async () => {
@@ -746,6 +791,7 @@ describe('specs/sourcing-agent.md, the delegation of the hirer and a decision th
     expect(fan.outcomes.map(quoteWorld.words)).toStrictEqual(['accepted', 'excluded failed decision_failed', 'excluded failed not_attempted']);
     expect(fan.stopped).toStrictEqual({ code: 'model_output_invalid' });
     expect(q.booked.accepted).toBe(1);
+    expect(quoteWorld.hired(fan.outcomes, 1).record.accepted).toBe('no');
     expect(quoteWorld.footprint(q)).toMatchObject({ paid: 2, asked: 2, challenges: 0 });
     // The job: it stops with the code of the decision, it holds the accepted quote, and it makes no ranking.
     const w = world();
@@ -755,10 +801,9 @@ describe('specs/sourcing-agent.md, the delegation of the hirer and a decision th
     expect(result).toMatchObject({ outcome: 'failed', exit_state: 'Failed', reason: 'model_output_invalid', document: null, salt: null, proposal_digest: null });
     if (result.outcome !== 'failed') throw new Error('the job must fail');
     expect([result.sub_jobs.length, result.quotes.map((record) => [record.desk_did, record.accepted])]).toStrictEqual([1, [[GOLDEN_ALFA, 'confirmed']]]);
-    expect(text('agents/sourcing-agent/src/quotes/quotes.ts')).toContain('case NOT_ACCEPTED.failed: return { ...failed(CODE.decisionFailed), stop: { code: learned.code } };');
-    expect(text('agents/sourcing-agent/src/propose/propose.ts')).toContain("if (fan.stopped !== null) return job.failed('quotes', fan.stopped);");
-    expect(request).toContain('A decision that fails ends the whole job: no bidder after it is paid, and the job ends `failed` with the code of the decision. The quotes that the agent accepted before it stay paid, and they get no ranking. The failed result holds them (see Response).');
-    expect(sub('Errors')).toContain('| `decision_failed` | `propose` | the decision `accept_quote` could not be made or read. The quote hires stop, and the job ends `failed` with the code of that decision |');
+    expect(request).toContain('If the decision fails, the quote step marks this bidder `failed` with `decision_failed` and does not pay any later bidder.');
+    expect(request).toContain("The job ends `failed` with the decision's code as its `reason`, for example `model_output_invalid`. There is no ranking. Quotes accepted earlier stay paid.");
+    expect(row(sub('Errors'), '`decision_failed`')).toContain("bidder code from the quote step when `accept_quote` fails. The quote hires stop. The job's `reason` is the decision's code");
   });
 });
 
@@ -810,6 +855,13 @@ describe('specs/sourcing-agent.md, the checks in code, the order of the ranking,
     expect(sub('Errors')).toContain('so the delivery cannot be recorded (the fifth check in code, step 4 of `propose`)');
   });
 
+  test('an invitation with a repeated DID is model_output_invalid', () => {
+    const ask = (invite: readonly Did[]) => readAnswer({ text: JSON.stringify({ reasoning: 'The invitation of the test.', choice: { invite, not_invited: [] } }), status: 'completed' }, SHORTLIST_DECISION.parse);
+    expect(ask([ALFA, ALFA])).toMatchObject({ ok: false, code: 'model_output_invalid' });
+    expect(ask([ALFA, BRAVO])).toMatchObject({ ok: true });
+    expect(request).toContain('An invitation that holds a DID two times is no choice: the hire ends with `model_output_invalid`.');
+  });
+
   test('an order that repeats a DID is no choice (model_output_invalid), and an order that leaves out a scored bidder or names another DID ends the job with ranking_invalid', async () => {
     const ask = (order: readonly Did[]) => readAnswer({ text: JSON.stringify({ reasoning: 'The order of the test.', choice: { order, tie_break: '' } }), status: 'completed' }, RANKING_DECISION.parse);
     expect(ask([ALFA, ALFA])).toMatchObject({ ok: false, code: 'model_output_invalid' });
@@ -831,12 +883,13 @@ describe('specs/sourcing-agent.md, the checks in code, the order of the ranking,
     expect(sub('Errors')).toContain('or the order of the model leaves out a scored bidder or names a DID that is not scored |');
   });
 
-  test('the Bid Desk keeps the escrow after any delivery that the agent does not accept, and only a no of the model can start a challenge', async () => {
+  test('an unaccepted delivery stays Submitted and cannot be reclaimed; only a no of the model can start a challenge', async () => {
     const delivered = async (arrange: (q: quoteWorld.World) => void): Promise<{ word: string; escrow: string; challenges: number; accepted: number }> => {
       const q = await quoteWorld.world();
       arrange(q);
       const result = await q.run(q.input({ invited: [quoteSupport.bidderOf(quoteSupport.BRAVO)] }));
       const outcome = quoteWorld.hired(result.outcomes, 0);
+      await expect(q.chain.reclaim(outcome.record.escrow_ref)).rejects.toThrow('Reclaim needs Open or Claimed');
       return { word: quoteWorld.words(outcome), escrow: await q.chain.escrowState(outcome.record.escrow_ref), challenges: quoteWorld.footprint(q).challenges, accepted: q.booked.accepted };
     };
     const kept = (word: string, challenges = 0): { word: string; escrow: string; challenges: number; accepted: number } => ({ word, escrow: 'Submitted', challenges, accepted: 0 });
@@ -854,7 +907,7 @@ describe('specs/sourcing-agent.md, the checks in code, the order of the ranking,
     ).toStrictEqual(kept('excluded failed decision_timeout'));
     vi.useRealTimers();
     expect(ACCEPT_WINDOW_MS).toBe(600_000);
-    expect(section('Terms')).toContain('This happens when a check in code fails, when the decision on the quote fails, when the decision comes too late, and when the model does not accept the quote. The Bid Desk may then Release the escrow 600 s after its Submit and take the price and both bonds.');
+    expect(section('Terms')).toContain('This can follow a failed check, a failed or late decision, or a no from the model. The Bid Desk may then Release the escrow after the same 600 s window.');
   });
 
   test('the key of the live delegation signs the proof of the token of execute only, and each scorer signs the proof of its own token with its own delegation key', () => {
@@ -1350,7 +1403,7 @@ describe('specs/sourcing-agent.md, Interface, Outcomes, Errors and the co-sign r
     ]) expect(server, answer).toContain(answer);
   });
 
-  test('the reasons table lists each code that a job writes and the job that writes it: the set is the set that the code gives, and the prefix and the class are the ones of the code', () => {
+  test('the reasons table covers job codes and quote step codes, including the prefix and the protocol group', () => {
     const errors = sub('Errors');
     const { propose, execute, protocol } = reasonsOfJobs();
     // One row holds each code, with the job that writes it: both jobs, or one of them.
@@ -1375,9 +1428,7 @@ describe('specs/sourcing-agent.md, Interface, Outcomes, Errors and the co-sign r
     // `token_failed` and `mock_system_failed` are codes of the protocol that only `execute` writes as its own: `propose` writes them only as codes of the class.
     expect([written.get('token_failed'), written.get('mock_system_failed')]).toStrictEqual(['execute', 'execute']);
     expect(['token_failed', 'mock_system_failed'].every((code) => !PROPOSE_FAILURES.includes(code) && !SCORING_FAILURES.includes(code))).toBe(true);
-    expect(errors).toContain(
-      'The next table lists each code that a job writes as the `reason` of a `failed` result. The column Job says which job writes it: `propose`, `execute` or both. The same list holds the code of a bidder that the job leaves out (`excluded` of the ranking) and the code that stops the quote hires. The other outcomes have their own reasons: see Outcomes. The reason of a `refused_by_system` result is a code of the sourcing record, and the record chooses it. Two rows stand for a class of codes and not for one code: `sub_delegation_<code>`, and the code of the protocol that a Bid Desk answers with.',
-    );
+    expect(errors).toContain('A bidder code describes that bidder, not the result of the whole job. If the job returns a ranking, its `excluded` entries can hold bidder codes. If a quote decision stops `propose`, the job\'s `reason` comes from that decision.');
     // The prefix: the codes after it are the list of the access folder, and the scoring writes each of them with its prefix.
     const cell = (first: string): string[] => rows.find((cells) => cells[0] === first) ?? [];
     expect(namesOf([cell('`sub_delegation_<code>`')[2]])).toStrictEqual([...SUB_DELEGATION_FAILURES]);
@@ -1397,11 +1448,9 @@ describe('specs/sourcing-agent.md, Interface, Outcomes, Errors and the co-sign r
     // The 60 seconds of `llm_out_of_time`.
     expect(HIRE_MIN_MS).toBe(60_000);
     expect(cell('`llm_out_of_time`, `hire_threw`')[2]).toContain(`less than ${HIRE_MIN_MS / 1000} s were left`);
-    // `bad_document` in `propose` has three causes: a choice that cannot be read as data, an invitation that holds a DID two times, and a ranking that the kit refuses.
-    expect(text('agents/sourcing-agent/src/propose/propose.ts')).toContain("if (new Set(list).size !== list.length) return { ok: false, code: 'bad_document' };");
+    // `bad_document` in `propose` has two causes: a choice that cannot be read as data or a ranking that the kit refuses.
     expect(text('agents/sourcing-agent/src/propose/propose.ts')).toContain("return { ok: false, code: 'bad_document' };");
-    expect(cell('`bad_document`')[2]).toContain('a choice of the model that the job cannot read as data, an invitation that holds a DID two times, or a ranking that the kit refuses as the document of a proposal');
-    expect(readme).toContain('The escrow and the vault payment of a hirer stay locked up to the window of the advert, 5400000 ms (90 minutes) by default, when a job runs to its end.');
+    expect(cell('`bad_document`')[2]).toContain('a choice of the model that the job cannot read as data, or a ranking that the kit refuses as the document of a proposal');
     // The window of the reasons of a failed hire: the interrupted hire and the unconfirmed Pay.
     expect([INTERRUPTION_REASONS.decision_error, INTERRUPTION_REASONS.other, PAY_UNCONFIRMED]).toStrictEqual(['decision_error', 'hire_interrupted', 'pay_unconfirmed']);
   });
@@ -1614,19 +1663,22 @@ describe('specs/sourcing-agent.md, the operator, the gaps, the hire and the link
     expect(manifest.keys.delegation_pkhs).toHaveLength(2);
     expect(how).toContain('a free one of its two delegation keys, which `keys.delegation_pkhs` of the manifest lists');
     // The codes that the steps name are the codes of the jobs and of the co-sign route.
-    expect(SCORING_FAILURES).toContain('sub_delegation_parent_exhausted');
+    expect(how).toContain('Keep the delegation valid for the full 90-minute `propose` window, the review of the ranking and the `execute` call. Do not use the 300000 ms minimum of a sub-delegation as the job budget.');
     expect(PROPOSE_FAILURES).toContain('delegation_not_found');
     expect([COSIGN_STATUS.principal_not_allowed, COSIGN_STATUS.key_in_use]).toStrictEqual([403, 409]);
     expect(QUOTE_CODES).toEqual(expect.arrayContaining(['no_live_vault', 'several_live_vaults']));
     expect(PROPOSE_FAILURES).toContain('no_quotes');
     expect(text('services/mock-systems/src/errors.ts')).toContain("'approval_wrong_issuer'");
-    for (const code of ['sub_delegation_parent_exhausted', 'delegation_not_found', 'principal_not_allowed', 'key_in_use', 'no_live_vault', 'several_live_vaults', 'no_quotes', 'approval_wrong_issuer']) {
+    for (const code of ['delegation_not_found', 'principal_not_allowed', 'key_in_use', 'no_live_vault', 'several_live_vaults', 'no_quotes', 'approval_wrong_issuer']) {
       expect(how, code).toContain(`\`${code}\``);
     }
-    // The value of a delegation: each quote hire pays 3 units, and a ranking of three bidders pays three of them, so the vault needs 9 units.
+    // Three locks of 3 units need 9 units at the listed terms, plus the minimum of the continuing vault.
     const desk = (JSON.parse(text('agents/bid-desk/agent.json.template')) as { terms: Record<string, number> }).terms;
     expect(((desk.price_lovelace + desk.supplier_bond_lovelace + desk.buyer_bond_lovelace) * MAX_INVITED) / 1_000_000).toBe(9);
     expect(how).toContain('9 units for three Bid Desks');
+    expect(how).toContain('Set `total` to cover the planned locks and any spending already recorded for the same period');
+    expect(how).toContain('Add the ledger minimum that must stay in the Live vault.');
+    expect(how).toContain('close the Live vault and collect any `Returned` outputs.');
     // The approval: the type, the deposit and the validity of the runs. The hosted tool sets no end, so the hirer sets `valid_until`.
     expect([APPROVAL_ATT_TYPE, APPROVAL_DEPOSIT_LOVELACE, RUN_APPROVAL_VALIDITY_MS / 3_600_000]).toStrictEqual([5, 5_000_000n, 4]);
     expect(text('packages/usecase-kit/src/protocol/approval.ts')).toContain('It returns 90 days after the attestation ends.');
@@ -1637,7 +1689,7 @@ describe('specs/sourcing-agent.md, the operator, the gaps, the hire and the link
     expect(text('packages/usecase-kit/src/live/chain.ts')).toContain('Every link of the chain must have 30 confirmations or more for `ready`.');
     expect(how).toContain('The agent has no advert yet, so nobody can hire it today.');
     expect(how).toContain('Use a new `rfq_id` each time.');
-    expect(how).toContain('The job can take most of the window of 90 minutes, and the escrow of the hire stays locked until the job ends.');
+    expect(how).toContain('The job can take most of the window of 90 minutes. Each lock remains in place until settlement (see Terms).');
     expect(MIN_PROCESSING_WINDOW_MS / 60_000).toBe(90);
   });
 
@@ -1655,5 +1707,6 @@ describe('specs/sourcing-agent.md, the operator, the gaps, the hire and the link
     expect(manifest.links.source.endsWith('/agents/sourcing-agent')).toBe(true);
     expect(links).toContain('[agents/sourcing-agent/agent.json.template](../agents/sourcing-agent/agent.json.template)');
     expect(links).toContain('[docs/HIRE.md](../docs/HIRE.md)');
+    expect(links).toContain('[Bid Desk](bid-desk.md)');
   });
 });
