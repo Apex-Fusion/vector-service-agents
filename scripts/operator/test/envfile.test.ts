@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { inspect } from 'node:util';
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 import { EnvFile, EnvFileError } from '../lib/envfile.ts';
 
 const roots: string[] = [];
@@ -395,6 +395,38 @@ describe('write', () => {
     expect(again.names()).toEqual(file.names());
     for (const name of file.names()) expect(again.get(name), name).toBe(file.get(name));
     expect(again.get('SUPPLIER_PRIV_KEY_HEX')).toBe(SECRET);
+  });
+});
+
+describe('output', () => {
+  it('prints nothing on any stream while it opens a file with secrets, sets, describes, refuses, and writes', () => {
+    const printed: string[] = [];
+    const keep = (...args: unknown[]): boolean => { printed.push(args.map(String).join(' ')); return true; };
+    const spies = [
+      vi.spyOn(console, 'log').mockImplementation(keep), vi.spyOn(console, 'info').mockImplementation(keep), vi.spyOn(console, 'warn').mockImplementation(keep),
+      vi.spyOn(console, 'error').mockImplementation(keep), vi.spyOn(console, 'debug').mockImplementation(keep), vi.spyOn(process.stdout, 'write').mockImplementation(keep),
+      vi.spyOn(process.stderr, 'write').mockImplementation(keep),
+    ];
+    try {
+      const dir = folderWith({ '.env.test': `SUPPLIER_PRIV_KEY_HEX=${SECRET}\nSERVICE_AUTH_HEADER="Bearer ${SECRET}"\n` });
+      const file = EnvFile.open(join(dir, '.env.test'));
+      file.set('REORDER_SERVICE_PRIV_KEY_HEX', SECRET);
+      file.set('SERVICE_AUTH_HEADER', `Bearer ${SECRET}`);
+      file.get('SUPPLIER_PRIV_KEY_HEX');
+      file.describe();
+      file.names();
+      file.has('SUPPLIER_PRIV_KEY_HEX');
+      errorOf(() => file.set('lower', SECRET));
+      errorOf(() => file.set('OK', `${SECRET}\n`));
+      file.write();
+      errorOf(() => file.write(join(dir, 'missing-folder', '.env')));
+      String(file);
+      JSON.stringify(file);
+      inspect(file);
+    } finally {
+      for (const spy of spies) spy.mockRestore();
+    }
+    expect(printed).toEqual([]);
   });
 });
 
