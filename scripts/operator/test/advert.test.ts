@@ -312,6 +312,7 @@ async function newAdvertWorld(use: UseCase) {
   };
   running();
   const hosted = new StakeAdvertHosted(w.world, () => w.clock.now(), registry.hashOf('controller'));
+  net.retirement = (hash) => hosted.archivedRetirement(hash);
   const deps = w.deps({ hosted });
   return {
     w, facts, net, hosted, running, manifests,
@@ -655,17 +656,60 @@ describe('advert: the cleanup', () => {
     expect(f.hosted.calls.filter(({ name }) => name === RETIRE).map(({ args }) => args.advert_ref)).toEqual([refOf(bravo), ...others.map(refOf)]);
   });
 
-  it('does not resend a transaction in flight for a different agent', async () => {
+  it('resends only in the same approved cleanup, after every running runtime is free', async () => {
     const f = await newAdvertWorld(UC3);
-    const state = StateFile.open(join(f.w.stateDir, 'advert.state.json'), { check: 'advert', network: 'vector-mainnet', record: UC3.name });
-    state.setInFlight({
-      step: 'retire:bid-desk-alfa:bid-desk-v1', tx_hash: hashOf('in flight'), signed_cbor: '84',
-      valid_to: NOW + 60_000, signed_at: NOW, refs: {}, facts: {},
-    });
+    expect(await f.run('--submit', '--all')).toBe(0);
+    const submit = f.w.node.submit.bind(f.w.node);
+    let attempts = 0;
+    let accepts = false;
+    f.w.node.submit = async (signed) => {
+      attempts += 1;
+      if (!accepts) throw new Error('the fake node could not accept the submit');
+      return submit(signed);
+    };
+    const scope = ['cleanup', '--submit', '--agent', 'bid-desk-alfa'];
+    expect(await f.run(...scope)).not.toBe(0);
+    const flight = f.w.state('advert').in_flight!;
+    const reserve = f.w.exposure();
+    expect(attempts).toBe(1);
+    expect(flight.step).toBe('retire:bid-desk-alfa:bid-desk-v1');
+    expect(await f.run('run', '--submit', '--agent', 'bid-desk-alfa')).toBe(2);
+    expect(f.w.screen.errorText).toContain('--agent goes with advert cleanup');
+    expect(await f.run('run', '--submit')).toBe(2);
+    expect(f.w.screen.errorText).toContain('in flight for cleanup');
     expect(await f.run('cleanup', '--submit', '--agent', 'bid-desk-bravo')).toBe(2);
     expect(f.w.screen.errorText).toContain('in flight outside --agent');
-    expect(f.w.node.submitted).toEqual([]);
-    expect(f.hosted.calls).toEqual([]);
+    expect(await f.run(...scope, '--run', 'other')).toBe(2);
+    expect(f.w.screen.errorText).toContain('another advert run has a transaction in flight');
+    f.w.writeGo({ tasks: ['advert'], capUnits: 100, session: 'other' });
+    expect(await f.run(...scope)).toBe(2);
+    expect(f.w.screen.errorText).toContain('not the approval of the recorded retirement');
+    f.w.writeGo({ tasks: ['advert'], capUnits: 100 });
+
+    const runtime = UC3.agents.find(({ id }) => id === 'bid-desk-charlie')!.adverts[0]!;
+    f.running(runtime.runtimeContainer);
+    f.net.statuses.set(runtime.origin, () => Response.json({ status: 'working' }));
+    expect(await f.run(...scope)).toBe(2);
+    expect(f.w.screen.errorText).toContain(`the runtime ${runtime.runtimeContainer} says working`);
+    expect(await f.run('status')).toBe(0);
+    expect(attempts).toBe(1);
+    expect(f.w.state('advert').in_flight).toEqual(flight);
+    expect(f.w.exposure()).toEqual(reserve);
+
+    const state = StateFile.open(join(f.w.stateDir, 'advert.state.json'), { check: 'advert', network: 'vector-mainnet', record: UC3.name });
+    state.clearInFlight();
+    state.setInFlight({ ...flight, tx_hash: hashOf('wrong hash') });
+    expect(await f.run(...scope)).toBe(2);
+    expect(f.w.screen.errorText).toContain('in-flight bytes do not match the recorded transaction hash');
+    expect(attempts).toBe(1);
+    state.clearInFlight();
+    state.setInFlight(flight);
+    f.net.statuses.set(runtime.origin, () => Response.json({ status: 'free' }));
+    accepts = true;
+    expect(await f.run(...scope)).toBe(0);
+    expect(attempts).toBe(2);
+    expect(f.w.state('advert').in_flight).toBeNull();
+    expect(f.w.state('advert').notes[`part.${flight.step}`]).toMatchObject({ tx_hash: flight.tx_hash, verified_at: expect.any(String) });
   });
   it('shows the retirement in a dry run, and signs nothing; and it needs an approval that lists the task', async () => {
     const f = await stakeAdvertWorld();
@@ -690,10 +734,43 @@ describe('advert: the cleanup', () => {
     f.hosted.twist.retire = { address: OUTSIDE };
     expect(await f.run(advert, 'cleanup', '--submit')).toBe(2);
     expect(refusedBy(errors(f))).toContain('destinations');
+    f.hosted.twist.retire = { extra: { address: f.w.keys.registry.addressOf('order-small-supplier'), lovelace: 2_000_000n } };
+    expect(await f.run(advert, 'cleanup', '--submit')).toBe(2);
+    expect(refusedBy(errors(f))).toContain('destinations');
+    f.hosted.twist.retire = { retireRedeemer: 'd87a80' };
+    expect(await f.run(advert, 'cleanup', '--submit')).toBe(2);
+    expect(refusedBy(errors(f))).toContain('body');
+    expect(errors(f)).toContain('only RetireAdvert');
     expect(f.world.chain.applied).toHaveLength(1);
     expect(f.signs).toHaveLength(1);
     delete f.hosted.twist.retire;
     expect(await f.run(advert, 'cleanup', '--submit')).toBe(0);
+  });
+  it.each(['short credit', 'failed phase two', 'wrong spend anchor', 'missing archive'] as const)('does not verify a confirmed retirement with %s', async (problem) => {
+    const f = await stakeAdvertWorld();
+    await land(f);
+    const ref = f.w.facts().adverts[REORDER.id]![REORDER_ADVERT.model]!.ref;
+    const supplierAddress = f.w.keys.registry.addressOf(REORDER_ADVERT.supplierKey);
+    const step = `retire:${REORDER.id}:${REORDER_ADVERT.model}`;
+    f.hosted.rewriteRetirement = (row) => {
+      if (problem === 'missing archive') return null;
+      if (problem === 'short credit') row.outputs[0]!.value = String(BigInt(row.outputs[0]!.value) - 1n);
+      if (problem === 'failed phase two') row.plutus_contracts[0]!.valid_contract = false;
+      if (problem === 'wrong spend anchor') row.plutus_contracts[0]!.spends_input = row.inputs.find(({ payment_addr }) => payment_addr.bech32 === supplierAddress)!;
+      return row;
+    };
+    expect(await f.run(advert, 'cleanup', '--submit')).toBe(1);
+    expect(f.w.state('advert').notes[`part.${step}`]).not.toHaveProperty('verified_at');
+    expect(f.w.evidence('advert').filter(({ step: name, status }) => name === step && status === 'info')).toEqual([]);
+    const length = f.signs.length;
+    f.hosted.rewriteRetirement = (row) => row;
+    expect(await f.run(advert, 'cleanup', '--submit')).toBe(0);
+    expect(f.signs).toHaveLength(length);
+    expect(f.w.state('advert').notes[`part.${step}`]).toMatchObject({
+      refs: { retiredRef: ref }, verified_at: expect.any(String),
+      facts: { phase: 'retire', supplierAddress, depositLovelace: '2500000', feeLovelace: '250000', creditLovelace: '2250000' },
+    });
+    expect(f.w.evidence('advert')).toContainEqual(expect.objectContaining({ step, status: 'info', shows: expect.objectContaining({ refundVerified: true, creditLovelace: '2250000' }) }));
   });
   it('lets a new advert replace a retired one: the facts of the advert and of the manifest are replaced, and the new hash is the hash of the new manifest', async () => {
     const f = await stakeAdvertWorld();
