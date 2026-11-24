@@ -10,6 +10,7 @@ Service agents that anyone can hire on the Vector agents marketplace, with the g
 | Advocate | `research.advocate.onesided.v1` | DEPLOYED |
 | Reorder Agent | `supplychain.reorder.po.v1` | PROPOSED |
 | Order Desk | `supplychain.order.accept.v1` | PROPOSED |
+| Bid Desk | `supplychain.rfq.quote.v1` | PROPOSED |
 
 ## Hire Agent History
 

@@ -631,7 +631,7 @@ test('status words: no file says PROPOSED about Agent History, Document Pipeline
   const SNIPPETS_FILES = [...S_FILES, 'agents/audio-snippets/README.md'];
   const ADVOCATE_FILES = [...A_FILES, 'agents/advocate/README.md'];
   // What may still say PROPOSED: the rule that lists the three words, the marketplace tools in the Interface section of a spec (the tools, not the agent), the instructions of the four
-  // runbooks that speak for the order of a first run, and the two agents of use case 1, which are built and not deployed: the status line of each page and its row in the README.
+  // runbooks that speak for the order of a first run, and the agents of the use cases, which are built and not deployed: the status line of each page and its row in the README.
   const PROPOSED_OK = {
     'agents/agent-history/README.md': [/`AGENT_STATUS_CHIP` must be LIVE, DEPLOYED or PROPOSED, in any case\./],
     'specs/agent-history.md': [/^The marketplace MCP tools \(PROPOSED\) and the template's buyer, /],
@@ -641,7 +641,8 @@ test('status words: no file says PROPOSED about Agent History, Document Pipeline
     'deploy/host/RUNBOOK-advocate.md': [/The status word stays PROPOSED until step 17\./, /change every file that says PROPOSED about Advocate/],
     'specs/reorder-agent.md': [/^PROPOSED \(built, not deployed\)\. Since 2026-11-23\.$/],
     'specs/order-desk.md': [/^PROPOSED \(built, not deployed\)\. Since 2026-11-23\.$/],
-    'README.md': [/^\| Reorder Agent \| `supplychain\.reorder\.po\.v1` \| PROPOSED \|$/, /^\| Order Desk \| `supplychain\.order\.accept\.v1` \| PROPOSED \|$/],
+    'specs/bid-desk.md': [/^PROPOSED \(built, not deployed\)\. Since 2026-11-24\.$/],
+    'README.md': [/^\| Reorder Agent \| `supplychain\.reorder\.po\.v1` \| PROPOSED \|$/, /^\| Order Desk \| `supplychain\.order\.accept\.v1` \| PROPOSED \|$/, /^\| Bid Desk \| `supplychain\.rfq\.quote\.v1` \| PROPOSED \|$/],
   };
   // What may say LIVE: the sentence that denies it, and the rule that lists the three words.
   const LIVE_OK = [/Nothing (on this page|in this guide|in this folder|in this section) is LIVE( or DEPLOYED)?\./, /`AGENT_STATUS_CHIP` must be LIVE, DEPLOYED or PROPOSED, in any case\./];
@@ -666,9 +667,9 @@ test('status words: no file says PROPOSED about Agent History, Document Pipeline
   assert.deepEqual(JSON.parse(read('agents/advocate/agent.json.template')).status, { chip: 'deployed', since: '2026-10-20' });
   assert.match(read('specs/audio-snippets.md'), /^DEPLOYED \(registered and staked 2026-10-17, advertised 2026-10-17, re-advertised 2026-10-17 at the status flip, one first-party job settled 2026-10-17\)\. Since 2026-10-17\.$/m);
   assert.match(read('specs/document-pipeline.md'), /^DEPLOYED \(registered and staked 2026-10-16, advertised 2026-10-16, re-advertised 2026-10-16 at the status flip, one first-party job settled 2026-10-16\)\. Since 2026-10-16\.$/m);
-  // No deployed spec opens a line with PROPOSED: read from the specs folder, so that a spec that says it again is seen. The two pages of use case 1 are the only ones that do.
+  // No deployed spec opens a line with PROPOSED: read from the specs folder, so that a spec that says it again is seen. The pages of the use cases are the only ones that do.
   const proposed = readdirSync(join(root, 'specs')).filter((f) => /^PROPOSED \(/m.test(read(`specs/${f}`))).map((f) => `specs/${f}`).sort();
-  assert.deepEqual(proposed, ['specs/order-desk.md', 'specs/reorder-agent.md'], 'only the two pages of use case 1 say PROPOSED');
+  assert.deepEqual(proposed, ['specs/bid-desk.md', 'specs/order-desk.md', 'specs/reorder-agent.md'], 'only the pages of the use cases say PROPOSED');
   assert.equal(readdirSync(join(root, 'specs')).filter((f) => /^DEPLOYED \(/m.test(read(`specs/${f}`))).length, 4, 'the four specs open their status line with DEPLOYED');
 });
 
