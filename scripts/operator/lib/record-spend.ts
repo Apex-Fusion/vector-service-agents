@@ -114,7 +114,7 @@ export interface RecordSpendSpec<Extra = unknown> {
   before(record: RecordUtxo, session: TaskSession<Extra>): void | Promise<void>;
   after(record: RecordUtxo, session: TaskSession<Extra>, before: RecordSpendBefore): readonly string[] | Promise<readonly string[]>;
   /** Check the decoded unsigned output. Give a public reason to refuse it, or null. */
-  checkBuild?(before: RecordUtxo, after: RecordUtxo, details: { action: IdentitySpend; validFrom: number; validTo: number }, session: TaskSession<Extra>): string | null;
+  checkBuild?(before: RecordUtxo, after: RecordUtxo, details: { action: IdentitySpend; validFrom: number; validTo: number; referenceInputs: readonly string[] }, session: TaskSession<Extra>): string | null;
   facts?(session: TaskSession<Extra>, landed: VerifiedRecordSpend): void;
   evidence?(session: TaskSession<Extra>, before: RecordSpendBefore, after: RecordUtxo): Record<string, unknown> | Promise<Record<string, unknown>>;
 }
@@ -515,7 +515,7 @@ export function recordSpendStep<Extra>(spec: RecordSpendSpec<Extra>): StepHandle
         plan: async (build, facts) => {
           try {
             const checked = checkOutput(step, before, build, facts, { action, address, unit, fee, minimum, authorities });
-            const problem = spec.checkBuild?.(before, checked.found, checked, session);
+            const problem = spec.checkBuild?.(before, checked.found, { ...checked, referenceInputs: facts.referenceInputs }, session);
             if (problem) refuseSpend(step, problem);
             planned = checked.found;
             await checkReferences(session, step, before, planned, action, facts.referenceInputs);
