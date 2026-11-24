@@ -10,7 +10,7 @@
 // transaction that the ledger refuses outright gives its reserve back. A dry run stops at the summary: it signs nothing and does not read the approval.
 import { HostedError } from '../../checks/lib/hosted.ts';
 import type { ToolAnswer } from '../../checks/lib/hosted.ts';
-import { iso } from '../../checks/lib/format.ts';
+import { iso, units } from '../../checks/lib/format.ts';
 import { neededSigners } from '../../checks/lib/guards.ts';
 import type { GuardName, GuardResult, RingView, StepPlan } from '../../checks/lib/guards.ts';
 import { GuardRefusal } from '../../checks/lib/land.ts';
@@ -118,10 +118,16 @@ function requireApproval(host: LandHost, irreversible: IrreversibleTag | undefin
   requireGo(host.go, { task: host.task, runWallet: host.registry.addressOf('run'), nowMs: host.clock.now(), irreversible: irreversible === undefined ? [] : [irreversible] });
 }
 
-/** The end of the validity that a builder gives must be a whole number of milliseconds after the clock of the host: `settleInFlight` lets a lost transaction go only after it. */
+/** The longest time that a transaction may stay valid, counted from the clock of the host: the hosted tools allow 59 minutes, and the builders of the pack use 20 minutes. */
+const MAX_VALID_AHEAD_MS = 3_600_000;
+
+/**
+ * The end of the validity that a builder gives must be a whole number of milliseconds after the clock of the host, and at most one hour after it. `settleInFlight` lets a lost transaction go only
+ * after that end, so a far end would keep the reserve and the wait for a long time.
+ */
 function requireValidTo(step: string, validTo: unknown, nowMs: number): void {
-  if (typeof validTo !== 'number' || !Number.isSafeInteger(validTo) || validTo <= nowMs) {
-    throw new Error(`the step ${step} gives a validTo that is not a whole number of milliseconds after now (${String(validTo)}), so no guard ran and nothing was signed`);
+  if (typeof validTo !== 'number' || !Number.isSafeInteger(validTo) || validTo <= nowMs || validTo > nowMs + MAX_VALID_AHEAD_MS) {
+    throw new Error(`the step ${step} gives a validTo that is not a whole number of milliseconds after now and within one hour of now (${String(validTo)}), so no guard ran and nothing was signed`);
   }
 }
 
@@ -167,6 +173,20 @@ function requireSigners(host: LandHost, core: Core, facts: TxFacts, utxos: reado
 function requireNoFlight(host: LandHost): void {
   const flight = host.state.snapshot().in_flight;
   if (flight !== null) throw new StateError('in_flight', `the step ${flight.step} is in flight (${flight.tx_hash}): settle it before another transaction is signed`);
+}
+
+/**
+ * The limits of a plan are at most the limits of the settings of the run. `planOf` takes them from the settings, so a plan that a task wrote by hand must not allow more: a task cannot raise a limit
+ * that the operator set.
+ */
+function requirePlanLimits(host: LandHost, step: string, plan: StepPlan): void {
+  const failures: GuardResult[] = [];
+  const { maxFeeLovelace, maxCollateralLossLovelace } = host.settings;
+  if (plan.maxFeeLovelace > maxFeeLovelace) failures.push({ guard: 'fee', ok: false, message: `the plan allows a fee of ${units(plan.maxFeeLovelace)}, over the limit of ${units(maxFeeLovelace)} of the settings` });
+  if (plan.maxCollateralLossLovelace > maxCollateralLossLovelace) {
+    failures.push({ guard: 'collateral', ok: false, message: `the plan allows a loss of ${units(plan.maxCollateralLossLovelace)} of the collateral, over the limit of ${units(maxCollateralLossLovelace)} of the settings` });
+  }
+  if (failures.length > 0) throw new GuardRefusal(step, failures);
 }
 
 // ---- the landing ----
@@ -215,7 +235,8 @@ interface Core {
 
 async function landCore(host: LandHost, core: Core): Promise<Landed> {
   const { step, built } = core;
-  const submit = host.mode === 'submit';
+  // The landing of the checks signs in every mode but dry, so the approval and the cap hold in every mode but dry.
+  const submit = host.mode !== 'dry';
   requireValidTo(step, built.validTo, host.clock.now());
   if (submit) requireApproval(host, core.irreversible);
   if (submit) requireNoFlight(host);
@@ -225,6 +246,7 @@ async function landCore(host: LandHost, core: Core): Promise<Landed> {
   requireSigners(host, core, facts, utxos);
   if (submit && core.beforeSign !== undefined) await core.beforeSign(facts);
   const plan = await core.plan(facts);
+  requirePlanLimits(host, step, plan);
   let net = 0n;
   if (submit) {
     // The map holds the spent inputs and the collateral inputs, all read from the node: the net outflow of a transaction that runs scripts counts the collateral that a failure takes.
@@ -257,7 +279,7 @@ export async function landBuilt(host: LandHost, spec: BuiltLandSpec): Promise<La
  * approval is read before the tool is called. A tool that refuses leaves a `tool_refused` entry in the evidence, with its message, before `ToolRefused` is thrown.
  */
 export async function landHosted(host: LandHost, spec: HostedLandSpec): Promise<Landed> {
-  if (host.mode === 'submit') requireApproval(host, spec.irreversible);
+  if (host.mode !== 'dry') requireApproval(host, spec.irreversible);
   let build: HostedBuild;
   try {
     build = await hostedBuild(host, spec.tool, spec.args);

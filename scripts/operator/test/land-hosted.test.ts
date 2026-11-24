@@ -273,7 +273,7 @@ describe('landBuilt: the end of the validity', () => {
   it('refuses a validTo that is not the end of the ttl, in either direction, and takes the validTo that is', async () => {
     const c = await context();
     const payment = await pay(c.world, INSIDE);
-    for (const shift of [-60_000, 1_000, 3_600_000]) {
+    for (const shift of [-60_000, 1_000, 1_800_000]) {
       const err = await refusal(landBuilt(c.host, builtSpec(c, { ...payment, validTo: payment.validTo + shift })));
       expect(guardsOf(err), `shift ${shift}`).toEqual(['body']);
       expect((err as GuardRefusal).message).toContain(`the body ends at the slot ${(payment.validTo - SYSTEM_START_MS) / 1000}`);
@@ -292,6 +292,7 @@ describe('landBuilt: the end of the validity', () => {
     const bad: Array<[string, unknown]> = [
       ['a fraction', payment.validTo + 0.5], ['not a number', Number.NaN], ['infinity', Number.POSITIVE_INFINITY], ['a text', String(payment.validTo)], ['now', NOW], ['the past', NOW - 1_000],
       ['a missing value', undefined],
+      ['more than an hour after now', NOW + 3_600_001],
     ];
     for (const [label, validTo] of bad) {
       const err = await refusal(landBuilt(c.host, builtSpec(c, { ...payment, validTo: validTo as number })));
@@ -305,6 +306,19 @@ describe('landBuilt: the end of the validity', () => {
     unreserved(c);
     const ok = await context();
     expect((await landBuilt(ok.host, builtSpec(ok, await pay(ok.world, INSIDE)))).kind).toBe('landed');
+  });
+  it('refuses a validTo more than one hour after now even when the ttl is its slot, and lands a validTo exactly one hour after now', async () => {
+    const c = await context({ throwing: true });
+    const far = await pay(c.world, INSIDE, { validTo: NOW + 3_600_000 + 1_000 });
+    expect(factsOf(far.unsignedCbor).validityEndSlot).toBe(BigInt((far.validTo - SYSTEM_START_MS) / 1000));
+    const err = await refusal(landBuilt(c.host, builtSpec(c, far)));
+    expect(err).not.toBeInstanceOf(GuardRefusal);
+    expect((err as Error).message).toContain('within one hour of now');
+    untouched(c);
+    unreserved(c);
+    expect(c.screen.lines).toEqual([]);
+    const ok = await context();
+    expect((await landBuilt(ok.host, builtSpec(ok, await pay(ok.world, INSIDE, { validTo: NOW + 3_600_000 })))).kind).toBe('landed');
   });
   it('refuses when the node gives no start of the chain, and when it cannot be read', async () => {
     const c = await context();
@@ -676,6 +690,38 @@ describe('landBuilt in a submit run', () => {
     untouched(tight);
     const ok = await context();
     expect((await landBuilt(ok.host, builtSpec(ok, await pay(ok.world, INSIDE)))).kind).toBe('landed');
+  });
+  it('refuses a plan whose limits are above the limits of the settings, and lands a plan that is at them', async () => {
+    const c = await context({ throwing: true });
+    const payment = await pay(c.world, INSIDE);
+    const own = (over: Partial<StepPlan>): BuiltLandSpec => builtSpec(c, payment, {}, { plan: () => ({ ...planOf(c.host, { outflow: { run: 10_000_000n } }), ...over }) });
+    const fee = await refusal(landBuilt(c.host, own({ maxFeeLovelace: FEE_LIMIT + 1n })));
+    expect(guardsOf(fee)).toEqual(['fee']);
+    expect((fee as GuardRefusal).message).toContain('over the limit of 2.000000 units of the settings');
+    expect(guardsOf(await refusal(landBuilt(c.host, own({ maxCollateralLossLovelace: 5_000_001n }))))).toEqual(['collateral']);
+    expect(guardsOf(await refusal(landBuilt(c.host, own({ maxFeeLovelace: 10n ** 12n, maxCollateralLossLovelace: 10n ** 12n }))))).toEqual(['fee', 'collateral']);
+    untouched(c);
+    unreserved(c);
+    const ok = await context();
+    const atLimits: Partial<StepPlan> = { maxFeeLovelace: FEE_LIMIT, maxCollateralLossLovelace: 5_000_000n };
+    expect((await landBuilt(ok.host, builtSpec(ok, await pay(ok.world, INSIDE), {}, { plan: () => ({ ...planOf(ok.host, { outflow: { run: 10_000_000n } }), ...atLimits }) }))).kind).toBe('landed');
+  });
+  it('holds the approval and the cap in every mode but dry: a mode outside the type signs in the landing of the checks', async () => {
+    const live = 'live' as unknown as 'dry';
+    const unlisted = await context({ mode: live, go: goOf(keyOf(KEY_N.run).address, { tasks: ['keys'] }), throwing: true });
+    const err = await refusal(landBuilt(unlisted.host, builtSpec(unlisted, await pay(unlisted.world, INSIDE))));
+    expect(err).toBeInstanceOf(ApprovalError);
+    expect((err as ApprovalError).message).toContain('does not list the task fund');
+    untouched(unlisted);
+    unreserved(unlisted);
+    const hosted = await context({ mode: live, go: null, throwing: true });
+    expect(await refusal(landHosted(hosted.host, (await opening(hosted)).spec))).toBeInstanceOf(ApprovalError);
+    expect(hosted.hosted.calls).toEqual([]);
+    const capped = await context({ mode: live, go: goOf(keyOf(KEY_N.run).address, { capUnits: 1 }), throwing: true });
+    const over = await refusal(landBuilt(capped.host, builtSpec(capped, await pay(capped.world, OUTWARD), { destinations: [OUTSIDE] })));
+    expect((over as ApprovalError).message).toContain('over the cap');
+    untouched(capped);
+    unreserved(capped);
   });
   it('refuses an outflow over the limit of the plan, and lands within it', async () => {
     const c = await context({ throwing: true });
