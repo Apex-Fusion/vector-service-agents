@@ -402,6 +402,8 @@ describe('hostedBuild', () => {
     expect((await hostedBuild(host, TOOL, ARGS)).txHash).toBe(payment.txHash);
     const upper = await sample((live) => answerText(live, { json: (json) => ({ ...json, tx_hash: String(json.tx_hash).toUpperCase() }) }));
     expect((await hostedBuild(upper.host, TOOL, ARGS)).txHash).toBe(upper.payment.txHash);
+    const spaced = await sample((live) => ({ text: answerText(live).text.replace('**Unsigned TX CBOR:**\n```', '**Unsigned TX CBOR:**\n\n```hex') }));
+    expect((await hostedBuild(spaced.host, TOOL, ARGS)).unsignedCbor).toBe(spaced.payment.unsignedCbor);
   });
   it('asks again when a failed answer says that the tool cannot answer now, 10 seconds apart, and takes the answer that comes', async () => {
     let asked = 0;
@@ -644,6 +646,19 @@ describe('landBuilt in a submit run', () => {
     untouched(c);
     const ok = await context();
     expect((await landBuilt(ok.host, builtSpec(ok, await pay(ok.world, INSIDE), { outflow: { run: 7_000_000n + FEE_LIMIT } }))).kind).toBe('landed');
+  });
+  it('refuses a hash or a fee that the builder gives and that is not the hash or the fee of the bytes, and lands the claim that is', async () => {
+    const c = await context({ throwing: true });
+    const payment = await pay(c.world, INSIDE);
+    const hash = await refusal(landBuilt(c.host, builtSpec(c, { ...payment, txHash: 'ee'.repeat(32) })));
+    expect(guardsOf(hash)).toEqual(['body']);
+    expect((hash as GuardRefusal).message).toContain('the hash of the bytes is');
+    const fee = await refusal(landBuilt(c.host, builtSpec(c, { ...payment, feeLovelace: payment.feeLovelace + 1n })));
+    expect(guardsOf(fee)).toEqual(['body']);
+    untouched(c);
+    unreserved(c);
+    const ok = await context();
+    expect((await landBuilt(ok.host, builtSpec(ok, await pay(ok.world, INSIDE)))).kind).toBe('landed');
   });
   it('refuses a transaction when the node cannot read an input, and says which', async () => {
     const c = await context({ throwing: true });
