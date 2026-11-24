@@ -8,11 +8,12 @@
 // reference for it: a step with no reference and a step that did not run say so, and give no reference. The page starts with the text of the header file of the operator, verbatim. That text names
 // the group that the results go to, and the name is in no file of the repository. The page ends with the section "Not covered".
 // A label is the name of an evidence file without `.json`: the file `<state>/evidence/private/<label>.json`, or the file `<state>/evidence/<label>.json` (a public file has the date and the number
-// of the run in its name). The task reads no key and no chain, signs nothing, and records no step in the state file, so it can run again when a later run adds an evidence file.
+// of the run in its name). Without `--runs` the page takes the public labels only: a private file goes into the page when `--runs` names its label. The header file must lie outside the key folder,
+// and it must hold no run of 40 or more hex characters. The task reads no key and no chain, signs nothing, and records no step in the state file, so it can run again when a later run adds a file.
 import { createHash } from 'node:crypto';
-import { lstatSync, readFileSync, readdirSync } from 'node:fs';
+import { lstatSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
 import type { Dirent, Stats } from 'node:fs';
-import { join } from 'node:path';
+import { isAbsolute, join, relative, sep } from 'node:path';
 import { writeFileAtomically } from '../../checks/lib/files.ts';
 import { PreconditionError } from '../../checks/lib/session.ts';
 import type { StepOutcome, TaskDefinition, TaskSession, UseCase } from '../lib/contract.ts';
@@ -231,11 +232,28 @@ export function renderPage(input: { header: string; use: Pick<UseCase, 'title' |
 
 // ---- the files ----
 
-/** The text of the header file, verbatim. A link, a folder, a device, a file above the limit, a file that is not UTF-8 text, and a file with no text in it are refused. */
-function readHeader(path: string): string {
+/** True when `path` is `base` or lies below it. Both are real paths. */
+function isInside(path: string, base: string): boolean {
+  const way = relative(base, path);
+  return way === '' || !(way === '..' || way.startsWith(`..${sep}`) || isAbsolute(way));
+}
+
+/**
+ * The text of the header file, verbatim. These are refused: a link, a folder, a device, a file of the key folder (by its real path, so that a link to the folder does not hide it, and before the file is
+ * read), a file above the limit, a file that is not UTF-8 text, a file with no text in it, and a text with a mark of a secret or with 40 or more hex characters in a row (the size of a key, a hash
+ * or a token).
+ */
+function readHeader(path: string, keysDir: string): string {
   let found: Stats;
   try { found = lstatSync(path); } catch (err) { throw new PreconditionError(`the header file cannot be read (${codeOf(err)})`); }
   if (!found.isFile()) throw new PreconditionError('the header file is not a regular file: a link, a folder or a device is refused');
+  let real: string;
+  try { real = realpathSync(path); } catch (err) { throw new PreconditionError(`the header file cannot be read (${codeOf(err)})`); }
+  let keys: string | null = null;
+  try { keys = realpathSync(keysDir); } catch (err) {
+    if (codeOf(err) !== 'ENOENT') throw new PreconditionError(`the key folder cannot be checked (${codeOf(err)})`);
+  }
+  if (keys !== null && isInside(real, keys)) throw new PreconditionError('the header file is inside the key folder: a file of that folder is no header, and the page shows the header');
   if (found.size > HEADER_LIMIT_BYTES) throw new PreconditionError(`the header file is larger than ${HEADER_LIMIT_BYTES} bytes: it holds a name and a few lines, and no document`);
   let bytes: Buffer;
   try { bytes = readFileSync(path); } catch (err) { throw new PreconditionError(`the header file cannot be read (${codeOf(err)})`); }
@@ -244,6 +262,7 @@ function readHeader(path: string): string {
   try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes); } catch { throw new PreconditionError('the header file is not UTF-8 text'); }
   if (text.includes('\0')) throw new PreconditionError('the header file is not text: it holds a NUL character');
   if (text.trim() === '') throw new PreconditionError('the header file holds no text: it names the group that the results go to');
+  if (/[0-9a-fA-F]{40,}/.test(text)) throw new PreconditionError('the header file holds 40 or more hex characters in a row: that is the size of a key, a hash or a token, and the header names a group');
   if (holdsSecret(text)) throw new PreconditionError('the header file holds a mark of a secret: the page holds no key and no token');
   return text;
 }
@@ -282,8 +301,8 @@ function readEvidence(file: Found): unknown {
 }
 
 function loadRuns(files: ReadonlyMap<string, Found>, wanted: readonly string[] | null, use: UseCase): PageRun[] {
-  const labels = wanted ?? [...files.keys()];
-  if (labels.length === 0) throw new PreconditionError('there is no evidence file: run the task evidence first');
+  const labels = wanted ?? [...files.values()].filter((file) => file.folder === 'public').map((file) => file.label);
+  if (labels.length === 0) throw new PreconditionError('there is no public evidence file: run the task evidence first, or name a private label with --runs');
   const runs = labels.map((label) => {
     const file = files.get(label);
     if (file === undefined) throw new PreconditionError(`there is no evidence file for the label ${label}: the evidence folders hold ${[...files.keys()].join(', ') || 'no file'}`);
@@ -308,7 +327,7 @@ const pageFile = (use: Pick<UseCase, 'name'>): string => join('results', `${use.
 async function produce(session: TaskSession<ResultsExtra>): Promise<StepOutcome> {
   const { extra, use } = session;
   if (extra.headerFile === null) throw new FlagError('--header-file is required: the page names the group that the results go to, and that name comes from a text file of the operator');
-  const header = readHeader(extra.headerFile);
+  const header = readHeader(extra.headerFile, session.settings.keysDir);
   const runs = loadRuns(listEvidence(session.settings.stateDir), extra.runs, use);
   const page = renderPage({ header, use, runs });
   if (holdsSecret(page)) throw new PreconditionError('the page holds a mark of a secret: it is not shown and not written');

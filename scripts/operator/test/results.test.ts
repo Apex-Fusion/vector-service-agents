@@ -105,7 +105,7 @@ describe('the task results', () => {
   it('writes the page of two runs, with one step that did not run, and the page equals its golden file byte for byte', async () => {
     const rig = await makeRig();
     rig.seed();
-    expect(await rig.run(...NO_ARGUMENTS(rig), '--submit')).toBe(0);
+    expect(await rig.run(...NO_ARGUMENTS(rig), '--runs', `${CLEAN},${FAILURE}`, '--submit')).toBe(0);
     if (process.env.WRITE_GOLDEN === '1') writeFileSync(GOLDEN, rig.page());
     expect(rig.page()).toBe(readFileSync(GOLDEN, 'utf8'));
     const line = rig.world.machine();
@@ -129,12 +129,12 @@ describe('the task results', () => {
   it('prints the page and writes no file in a dry run, and writes the same page with --submit: mode 600 in a folder of mode 700', async () => {
     const rig = await makeRig();
     rig.seed();
-    expect(await rig.run(...NO_ARGUMENTS(rig))).toBe(0);
+    expect(await rig.run(...NO_ARGUMENTS(rig), '--runs', `${CLEAN},${FAILURE}`)).toBe(0);
     expect(existsSync(join(rig.world.stateDir, 'results'))).toBe(false);
     const golden = readFileSync(GOLDEN, 'utf8');
     expect(rig.world.screen.text).toContain(golden.slice(0, -1));
     expect(rig.world.machine()).toMatchObject({ mode: 'dry', outcome: 'done', exit: 0, result: { written: false } });
-    expect(await rig.run(...NO_ARGUMENTS(rig), '--submit')).toBe(0);
+    expect(await rig.run(...NO_ARGUMENTS(rig), '--runs', `${CLEAN},${FAILURE}`, '--submit')).toBe(0);
     expect(rig.page()).toBe(golden);
     expect(statSync(rig.pagePath).mode & 0o777).toBe(0o600);
     expect(statSync(join(rig.world.stateDir, 'results')).mode & 0o777).toBe(0o700);
@@ -147,7 +147,7 @@ describe('the task results', () => {
     expect(await rig.run(...NO_ARGUMENTS(rig), '--submit')).toBe(0);
     const first = rig.page();
     rig.put('private', FAILURE, failureDoc());
-    expect(await rig.run(...NO_ARGUMENTS(rig), '--submit')).toBe(0);
+    expect(await rig.run(...NO_ARGUMENTS(rig), '--runs', `${CLEAN},${FAILURE}`, '--submit')).toBe(0);
     expect(rig.page()).not.toBe(first);
     expect(rig.page()).toContain('## Run r2: failure, 2026-12-03');
     expect(rig.world.state('results').steps).toEqual({});
@@ -230,16 +230,35 @@ describe('the task results', () => {
       expect(rig.page()).not.toContain('## Run r2');
     });
 
-    it('takes every label that has a file by default, in the order of the dates, and the labels of --runs in the order that they are given', async () => {
+    it('takes the public labels by default, in the order of the dates, and the labels of --runs in the order that they are given', async () => {
       const rig = await makeRig();
-      rig.put('private', 'a-late', doc('failure', '2026-12-09', failureSteps()));
-      rig.put('private', 'z-early', doc('clean', '2026-11-30', cleanSteps()));
+      rig.put('public', '2026-12-09-reorder-agent-run-3', doc('failure', '2026-12-09', failureSteps()));
+      rig.put('public', '2026-11-30-reorder-agent-run-0', doc('clean', '2026-11-30', cleanSteps()));
       rig.put('public', CLEAN, cleanDoc());
       const headings = (): string[] => rig.page().split('\n').filter((line) => line.startsWith('## Run ')).map((line) => line.split(':')[0]!);
       expect(await rig.run(...NO_ARGUMENTS(rig), '--submit')).toBe(0);
-      expect(headings()).toEqual(['## Run z-early', `## Run ${CLEAN}`, '## Run a-late']);
-      expect(await rig.run(...NO_ARGUMENTS(rig), '--runs', `a-late,${CLEAN}`, '--submit')).toBe(0);
-      expect(headings()).toEqual(['## Run a-late', `## Run ${CLEAN}`]);
+      expect(headings()).toEqual(['## Run 2026-11-30-reorder-agent-run-0', `## Run ${CLEAN}`, '## Run 2026-12-09-reorder-agent-run-3']);
+      expect(await rig.run(...NO_ARGUMENTS(rig), '--runs', `2026-12-09-reorder-agent-run-3,${CLEAN}`, '--submit')).toBe(0);
+      expect(headings()).toEqual(['## Run 2026-12-09-reorder-agent-run-3', `## Run ${CLEAN}`]);
+    });
+
+    it('takes a private label only when --runs names it, and stops when only private files exist and no label is named (RP5)', async () => {
+      const rig = await makeRig();
+      rig.seed();
+      expect(await rig.run(...NO_ARGUMENTS(rig), '--submit')).toBe(0);
+      expect(rig.page()).toContain(`## Run ${CLEAN}`);
+      expect(rig.page()).not.toContain('## Run r2');
+      expect(rig.page()).not.toContain(NOTE);
+      expect(rig.world.machine().result).toMatchObject({ labels: [CLEAN] });
+      expect(await rig.run(...NO_ARGUMENTS(rig), '--runs', `${CLEAN},${FAILURE}`, '--submit')).toBe(0);
+      expect(rig.page()).toContain('## Run r2: failure, 2026-12-03');
+      expect(rig.page()).toContain(NOTE);
+      const privateOnly = await makeRig();
+      privateOnly.put('private', FAILURE, failureDoc());
+      expect(await privateOnly.run(...NO_ARGUMENTS(privateOnly), '--submit')).toBe(2);
+      expect(privateOnly.world.screen.errorText).toContain('there is no public evidence file');
+      expect(existsSync(privateOnly.pagePath)).toBe(false);
+      expect(await privateOnly.run(...NO_ARGUMENTS(privateOnly), '--runs', FAILURE, '--submit')).toBe(0);
     });
 
     it('refuses a list that is no list of labels: an empty item, a label twice, a bad label, an empty value, and too many', async () => {
@@ -257,7 +276,7 @@ describe('the task results', () => {
     it('stops with exit 2 when there is no evidence file at all', async () => {
       const rig = await makeRig();
       expect(await rig.run(...NO_ARGUMENTS(rig), '--submit')).toBe(2);
-      expect(rig.world.screen.errorText).toContain('there is no evidence file');
+      expect(rig.world.screen.errorText).toContain('there is no public evidence file');
       expect(existsSync(rig.pagePath)).toBe(false);
     });
 
@@ -300,14 +319,14 @@ describe('the task results', () => {
     it('is refused above 8 KiB, and a file of exactly 8 KiB passes', async () => {
       const rig = await makeRig();
       rig.seed();
-      writeFileSync(rig.header, `${'a'.repeat(HEADER_LIMIT_BYTES - 1)}\n`);
+      writeFileSync(rig.header, `${'x'.repeat(HEADER_LIMIT_BYTES - 1)}\n`);
       expect(statSync(rig.header).size).toBe(8192);
       expect(await rig.run(...NO_ARGUMENTS(rig), '--submit')).toBe(0);
-      writeFileSync(rig.header, `${'a'.repeat(HEADER_LIMIT_BYTES)}\n`);
+      writeFileSync(rig.header, `${'x'.repeat(HEADER_LIMIT_BYTES)}\n`);
       expect(statSync(rig.header).size).toBe(8193);
       expect(await rig.run(...NO_ARGUMENTS(rig), '--submit')).toBe(2);
       expect(rig.world.screen.errorText).toContain('the header file is larger than 8192 bytes');
-      expect(rig.world.screen.errorText).not.toContain('aaaaaaaa');
+      expect(rig.world.screen.errorText).not.toContain('xxxxxxxx');
     });
 
     it('is refused when it is a folder, a link, no UTF-8 text, text with a NUL character, blank, or text with a mark of a secret', async () => {
@@ -336,6 +355,42 @@ describe('the task results', () => {
       symlinkSync(real, link);
       expect(await rig.run('--header-file', link, '--submit')).toBe(2);
       expect(await rig.run('--header-file', real, '--submit')).toBe(0);
+    });
+
+    it('is refused when it is a file of the key folder, by its real path and also through a link to the folder, and the same text outside the folder passes (RP1)', async () => {
+      const rig = await makeRig();
+      rig.seed();
+      const root = rig.world.keys.root;
+      writeFileSync(join(root, 'header.txt'), HEADER);
+      const folderLink = join(rig.world.dir, 'keys-link');
+      symlinkSync(root, folderLink);
+      for (const path of [join(root, 'header.txt'), join(root, 'shared', 'fee.seed'), join(folderLink, 'header.txt'), join(folderLink, 'shared', 'fee.seed')]) {
+        expect(await rig.run('--header-file', path, '--submit'), path).toBe(2);
+        expect(rig.world.screen.errorText).toContain('the header file is inside the key folder');
+      }
+      expect(existsSync(rig.pagePath)).toBe(false);
+      expect(rig.world.screen.text).not.toContain(rig.world.keys.seedOf('fee'));
+      expect(rig.world.screen.errorText).not.toContain(rig.world.keys.seedOf('fee'));
+      expect(rig.world.screen.text).not.toContain(HEADER.split('\n')[0]!);
+      expect(await rig.run(...NO_ARGUMENTS(rig), '--submit')).toBe(0);
+    });
+
+    it('is refused when its text holds 40 or more hex characters in a row, and a text with 39 passes (RP2)', async () => {
+      const rig = await makeRig();
+      rig.seed();
+      const refused = [`MOCK_OPERATOR_TOKEN=${'ab'.repeat(32)}\n`, `Group ${'0'.repeat(40)}\n`, `${'F'.repeat(64)}\n`];
+      for (const text of refused) {
+        writeFileSync(rig.header, text);
+        expect(await rig.run(...NO_ARGUMENTS(rig), '--submit'), text).toBe(2);
+        expect(rig.world.screen.errorText).toContain('40 or more hex characters in a row');
+        expect(rig.world.screen.text).not.toContain(text.trim());
+        expect(rig.world.screen.errorText).not.toContain(text.trim());
+        expect(existsSync(rig.pagePath)).toBe(false);
+      }
+      for (const text of [`Group ${'0'.repeat(39)}\n`, `${'ab'.repeat(19)}-${'cd'.repeat(19)}\n`]) {
+        writeFileSync(rig.header, text);
+        expect(await rig.run(...NO_ARGUMENTS(rig), '--submit'), text).toBe(0);
+      }
     });
   });
 
@@ -432,7 +487,7 @@ describe('the task results', () => {
     it('holds only the header, the table, the data, the evidence and the fixed text of the page, and ends with the section Not covered', async () => {
       const rig = await makeRig();
       rig.seed();
-      expect(await rig.run(...NO_ARGUMENTS(rig), '--submit')).toBe(0);
+      expect(await rig.run(...NO_ARGUMENTS(rig), '--runs', `${CLEAN},${FAILURE}`, '--submit')).toBe(0);
       const page = rig.page();
       const refs = [...cleanSteps(), ...failureSteps()].flatMap((step) => step.refs).flatMap((ref) => (typeof ref === 'string' ? [ref] : isLabelled(ref) ? [ref.kind, ref.value] : []));
       const known = [
