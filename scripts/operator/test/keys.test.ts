@@ -25,6 +25,7 @@ const SPECS: readonly KeySpec[] = [
 ];
 const NAMES = SPECS.map((spec) => spec.name);
 const MANIFEST = publicManifestFile(USE_CASE);
+const markerOf = (w: TaskWorld): string => join(w.stateDir, 'keys-initialized.json');
 
 /** A world whose key folder is empty (it exists, with mode 700, as the settings need). The use case has the keys of SPECS unless a test says others. */
 async function emptyWorld(keys: readonly KeySpec[] = SPECS): Promise<{ w: TaskWorld; root: string }> {
@@ -42,11 +43,12 @@ const runWalletOf = (w: TaskWorld): string => {
   const root = w.env.OPERATOR_KEYS_DIR!;
   return existsSync(join(root, 'shared', 'run.seed')) ? loadRegistry({ dir: root, useCase: USE_CASE, specs: SPECS, need: ['run'] }).addressOf('run') : 'unset';
 };
-const approve = (w: TaskWorld, over: Parameters<TaskWorld['writeGo']>[0] = {}): void => { w.writeGo({ runWallet: runWalletOf(w), tasks: ['keys'], ...over }); };
+const approve = (w: TaskWorld, over: Parameters<TaskWorld['writeGo']>[0] = {}): void => { w.writeGo({ runWallet: runWalletOf(w), tasks: ['keys'], capUnits: 0, ...over }); };
 /** A submit run with the approval that fits the key files now. */
-const submit = (w: TaskWorld): Promise<number> => { approve(w); return w.run(keysTask, '--submit'); };
+const submit = (w: TaskWorld, ...flags: string[]): Promise<number> => { approve(w); return w.run(keysTask, '--submit', ...flags); };
+const initialize = (w: TaskWorld, ...flags: string[]): Promise<number> => submit(w, '--initialize', ...flags);
 /** A submit run with the approval file as it is: none, or the one that the test wrote. */
-const submitAsIs = (w: TaskWorld): Promise<number> => w.run(keysTask, '--submit');
+const submitAsIs = (w: TaskWorld, ...flags: string[]): Promise<number> => w.run(keysTask, '--submit', ...flags);
 const folderOf = (spec: KeySpec): string => (spec.scope === 'shared' ? 'shared' : USE_CASE);
 const fileOf = (root: string, spec: KeySpec): string => join(root, folderOf(spec), `${spec.name}.seed`);
 const modeOf = (path: string): number => statSync(path).mode & 0o777;
@@ -65,7 +67,7 @@ describe('the definition', () => {
     expect(loaded.name).toBe('keys');
     expect(loaded.needs.keys(w.use, parseArguments(loaded, []).flags)).toEqual([]);
     expect(loaded.needs).toMatchObject({ chain: true, hosted: [], approval: 'submit' });
-    expect(loaded.flags).toEqual([]);
+    expect(loaded.flags).toEqual(['initialize']);
     expect(loaded.valued).toEqual([]);
     expect(loaded.steps(w.use, parseArguments(loaded, []).flags)).toEqual([]);
   });
@@ -77,17 +79,19 @@ describe('the definition', () => {
     nothingMade(root);
     const twin = await emptyWorld();
     approve(twin.w);
-    expect(await submit(twin.w)).toBe(0);
+    expect(await initialize(twin.w)).toBe(0);
   });
 });
 
 describe('a dry run', () => {
-  it('lists the keys that it would make, each with its folder, writes nothing (no folder, no file), reads no approval, and prints no table', async () => {
+  it('previews first setup on empty mounts without any key files, approval or marker', async () => {
     const { w, root } = await emptyWorld();
-    approve(w);
-    writeFileSync(w.goPath, 'this is not JSON', { mode: 0o600 });
-    expect(await w.run(keysTask)).toBe(0);
-    nothingMade(root);
+    for (const folder of ['shared', USE_CASE]) mkdirSync(join(root, folder), { mode: 0o700 });
+    expect(existsSync(w.goPath)).toBe(false);
+    expect(await w.run(keysTask, '--initialize')).toBe(0);
+    expect(readdirSync(root).sort()).toEqual([USE_CASE, 'shared']);
+    for (const folder of ['shared', USE_CASE]) expect(readdirSync(join(root, folder))).toEqual([]);
+    expect(existsSync(markerOf(w))).toBe(false);
     expect(w.screen.lines).toContain('would make 4 keys:');
     expect(w.screen.lines).toContain('would keep 0 keys:');
     for (const spec of SPECS) expect(w.screen.lines).toContain(`  ${spec.name}: folder ${folderOf(spec)}`);
@@ -96,19 +100,19 @@ describe('a dry run', () => {
   });
   it('lists a key that exists as kept, and the dry list is the list that the next submit run makes', async () => {
     const { w, root } = await emptyWorld();
-    for (const spec of SPECS) if (spec.name !== 'alpha') writeSeed(root, folderOf(spec), spec.name, `${counterSeed()}\n`);
+    writeSeed(root, 'shared', 'fee', `${counterSeed()}\n`);
     reset(w);
-    expect(await w.run(keysTask)).toBe(0);
-    expect(w.machine().result).toEqual({ would_make: ['alpha'], would_keep: ['run', 'fee', 'beta'] });
+    expect(await w.run(keysTask, '--initialize')).toBe(0);
+    expect(w.machine().result).toEqual({ would_make: ['run', 'alpha', 'beta'], would_keep: ['fee'] });
     expect(existsSync(fileOf(root, SPECS[2]!))).toBe(false);
     reset(w);
-    expect(await submit(w)).toBe(0);
-    expect(w.machine().result).toMatchObject({ made: ['alpha'], kept: ['run', 'fee', 'beta'] });
+    expect(await initialize(w)).toBe(0);
+    expect(w.machine().result).toMatchObject({ made: ['run', 'alpha', 'beta'], kept: ['fee'] });
   });
   it('stops with exit 2 for a key file with the wrong mode, in a dry run too, and takes the file with mode 600', async () => {
     const { w, root } = await emptyWorld();
     approve(w);
-    expect(await submit(w)).toBe(0);
+    expect(await initialize(w)).toBe(0);
     chmodSync(fileOf(root, SPECS[3]!), 0o644);
     reset(w);
     expect(await w.run(keysTask)).toBe(2);
@@ -122,7 +126,7 @@ describe('a dry run', () => {
 describe('the approval', () => {
   it('stops a submit run with exit 2 and makes nothing when there is no approval file', async () => {
     const { w, root } = await emptyWorld();
-    expect(await submitAsIs(w)).toBe(2);
+    expect(await submitAsIs(w, '--initialize')).toBe(2);
     expect(w.screen.errorText).toContain('the approval file does not exist');
     nothingMade(root);
     expect(w.machine()).toMatchObject({ task: 'keys', mode: 'submit', outcome: 'stopped', exit: 2 });
@@ -130,30 +134,52 @@ describe('the approval', () => {
   it('stops a submit run with exit 2 and makes nothing when the approval lists another task, or names a run wallet, and takes the approval that says unset and lists the task keys', async () => {
     const { w, root } = await emptyWorld();
     approve(w, { tasks: ['fund'] });
-    expect(await submitAsIs(w)).toBe(2);
+    expect(await submitAsIs(w, '--initialize')).toBe(2);
     expect(w.screen.errorText).toContain('only the task keys may run');
     approve(w, { runWallet: w.keys.registry.addressOf('run') });
     reset(w);
-    expect(await submitAsIs(w)).toBe(2);
+    expect(await submitAsIs(w, '--initialize')).toBe(2);
     expect(w.screen.errorText).toContain('no run key exists yet');
     nothingMade(root);
     approve(w);
     reset(w);
-    expect(await submit(w)).toBe(0);
+    expect(await initialize(w)).toBe(0);
     expect(readdirSync(root).sort()).toEqual([USE_CASE, MANIFEST, 'shared']);
   });
-  it('refuses the approval that says unset once the run key file exists, makes nothing, and takes the approval that names the run wallet', async () => {
+  it('does not treat an existing run key with no public proof as the first wallet', async () => {
     const { w, root } = await emptyWorld();
-    for (const spec of SPECS) if (spec.name !== 'alpha') writeSeed(root, folderOf(spec), spec.name, `${counterSeed()}\n`);
+    writeSeed(root, 'shared', 'run', `${counterSeed()}\n`);
     approve(w, { runWallet: 'unset' });
-    reset(w);
-    expect(await submitAsIs(w)).toBe(2);
+    expect(await submitAsIs(w, '--initialize')).toBe(2);
     expect(w.screen.errorText).toContain('the approval says unset for runWallet, and the run key exists: it must name the run wallet');
-    expect(existsSync(fileOf(root, SPECS[2]!))).toBe(false);
-    approve(w, { runWallet: registryOf(root, SPECS.filter((spec) => spec.name !== 'alpha')).addressOf('run') });
     reset(w);
-    expect(await submitAsIs(w)).toBe(0);
-    expect(w.machine().result).toMatchObject({ made: ['alpha'] });
+    expect(await initialize(w)).toBe(2);
+    expect(w.screen.errorText).toContain('needs an approval that names the recorded shared run wallet');
+    expect(existsSync(markerOf(w))).toBe(false);
+    expect(existsSync(join(root, USE_CASE))).toBe(false);
+  });
+  it('requires an explicit first setup and a keys-only, zero-cap approval', async () => {
+    const { w, root } = await emptyWorld();
+    expect(await submit(w)).toBe(2);
+    expect(w.screen.errorText).toContain('Use --initialize only after you verify that this is first setup');
+    const refused: NonNullable<Parameters<TaskWorld['writeGo']>[0]>[] = [
+      { tasks: ['keys', 'fund'] }, { capUnits: 1 }, { irreversible: ['record'] },
+      { external: [{ label: 'member', address: w.keys.registry.addressOf('run'), units: 1 }] },
+    ];
+    for (const over of refused) {
+      reset(w);
+      approve(w, over);
+      expect(await submitAsIs(w, '--initialize')).toBe(2);
+      expect(w.screen.errorText).toContain('needs a zero-cap approval for keys only');
+      expect(existsSync(markerOf(w))).toBe(false);
+      nothingMade(root);
+    }
+    expect(await initialize(w)).toBe(0);
+    const original = manifestOf(root);
+    reset(w);
+    expect(await initialize(w)).toBe(2);
+    expect(w.screen.errorText).toContain('only for first setup');
+    expect(manifestOf(root)).toBe(original);
   });
 });
 
@@ -161,7 +187,7 @@ describe('a submit run that makes the keys', () => {
   it('makes each key with mode 600 in a folder with mode 700, writes the public file, prints the table and the run wallet line last, and gives the result', async () => {
     const { w, root } = await emptyWorld();
     approve(w);
-    expect(await submit(w)).toBe(0);
+    expect(await initialize(w)).toBe(0);
     for (const folder of [root, join(root, 'shared'), join(root, USE_CASE)]) expect(modeOf(folder)).toBe(0o700);
     const seeds = seedsOf(root);
     for (const spec of SPECS) {
@@ -170,6 +196,8 @@ describe('a submit run that makes the keys', () => {
     }
     expect(new Set(Object.values(seeds)).size).toBe(SPECS.length);
     expect(modeOf(join(root, MANIFEST))).toBe(0o600);
+    expect(modeOf(markerOf(w))).toBe(0o600);
+    expect(JSON.parse(readFileSync(markerOf(w), 'utf8'))).toEqual({ format: 1, useCase: USE_CASE, network: 'vector-mainnet' });
     const registry = registryOf(root);
     checkPublicManifest(join(root, MANIFEST), registry);
     for (const spec of SPECS) {
@@ -186,8 +214,8 @@ describe('a submit run that makes the keys', () => {
   it('makes the 18 keys of the real data of use case 1: 8 in the shared folder and 10 in the folder of the use case, all different', async () => {
     const root = makeKeyRoot();
     const w = await taskWorld({ env: { OPERATOR_KEYS_DIR: root }, use: realUseCase });
-    approve(w);
-    expect(await submit(w)).toBe(0);
+    for (const folder of ['shared', USE_CASE]) mkdirSync(join(root, folder), { mode: 0o700 });
+    expect(await initialize(w)).toBe(0);
     const names = realUseCase.keys.map((spec) => spec.name);
     expect(names).toHaveLength(18);
     expect(w.machine().result).toMatchObject({ made: names, kept: [] });
@@ -205,14 +233,14 @@ describe('a submit run that makes the keys', () => {
     const second = await emptyWorld();
     approve(first.w);
     approve(second.w);
-    await submit(first.w);
-    await submit(second.w);
+    expect(await initialize(first.w)).toBe(0);
+    expect(await initialize(second.w)).toBe(0);
     expect(seedsOf(first.root).run).not.toBe(seedsOf(second.root).run);
   });
   it('prints no seed on the screen, in the errors, in the state folder, in the evidence, in the machine line or in the public file, and the public file holds each public key', async () => {
     const { w, root } = await emptyWorld();
     approve(w);
-    expect(await submit(w)).toBe(0);
+    expect(await initialize(w)).toBe(0);
     const text = readable(w, root);
     for (const seed of Object.values(seedsOf(root))) expect(text).not.toContain(seed.trim());
     expect(manifestOf(root)).toContain(registryOf(root).publicKeyOf('run'));
@@ -221,10 +249,10 @@ describe('a submit run that makes the keys', () => {
     const { w, root } = await emptyWorld();
     approve(w);
     const marker = counterSeed();
-    writeSeed(root, 'shared', 'run', `${marker}\n`);
-    expect(await submit(w)).toBe(0);
-    expect(w.machine().result).toMatchObject({ made: ['fee', 'alpha', 'beta'], kept: ['run'] });
-    expect(readFileSync(fileOf(root, SPECS[0]!), 'utf8')).toBe(`${marker}\n`);
+    writeSeed(root, 'shared', 'fee', `${marker}\n`);
+    expect(await initialize(w)).toBe(0);
+    expect(w.machine().result).toMatchObject({ made: ['run', 'alpha', 'beta'], kept: ['fee'] });
+    expect(readFileSync(fileOf(root, SPECS[1]!), 'utf8')).toBe(`${marker}\n`);
     expect(readable(w, root)).not.toContain(marker);
     reset(w);
     expect(await w.run(keysTask, 'status')).toBe(0);
@@ -236,7 +264,7 @@ describe('a second run', () => {
   it('makes nothing, says so, leaves each file and the public file as they are (bytes and times), and prints the table and the run wallet line again', async () => {
     const { w, root } = await emptyWorld();
     approve(w);
-    expect(await submit(w)).toBe(0);
+    expect(await initialize(w)).toBe(0);
     const files = [...SPECS.map((spec) => fileOf(root, spec)), join(root, MANIFEST)];
     const before = files.map((file) => [readFileSync(file, 'utf8'), statSync(file).mtimeMs]);
     reset(w);
@@ -246,23 +274,40 @@ describe('a second run', () => {
     expect(w.screen.lines.at(-2)).toBe(RUN_LINE(registryOf(root).addressOf('run')));
     expect(w.machine()).toMatchObject({ outcome: 'finished', exit: 0, result: { made: [], kept: NAMES, run_wallet: registryOf(root).addressOf('run') } });
   });
-  it('writes the public file when the first run made the keys and stopped before it', async () => {
+  it('does not rebuild a lost manifest from case keys even if there is no setup marker', async () => {
     const { w, root } = await emptyWorld();
-    approve(w);
-    expect(await submit(w)).toBe(0);
+    expect(await initialize(w)).toBe(0);
+    const original = manifestOf(root);
     rmSync(join(root, MANIFEST));
+    rmSync(markerOf(w));
+    reset(w);
+    expect(await initialize(w)).toBe(2);
+    expect(w.screen.errorText).toContain('is missing for a use case with existing keys or setup history');
+    expect(existsSync(markerOf(w))).toBe(false);
+    expect(existsSync(join(root, MANIFEST))).toBe(false);
+    writeFileSync(join(root, MANIFEST), original, { mode: 0o600 });
     reset(w);
     expect(await submit(w)).toBe(0);
-    checkPublicManifest(join(root, MANIFEST), registryOf(root));
-    expect(w.screen.text).toContain('the public key file is new');
-    expect(w.machine()).toMatchObject({ outcome: 'done', result: { made: [], kept: NAMES } });
+    expect(w.machine()).toMatchObject({ outcome: 'finished', result: { made: [], kept: NAMES } });
+  });
+  it('does not treat an empty scope with historical facts and no setup marker as first setup', async () => {
+    const { w, root } = await emptyWorld();
+    for (const folder of ['shared', USE_CASE]) mkdirSync(join(root, folder), { mode: 0o700 });
+    const facts = readFileSync(new URL('./fixtures/facts-first-shape.json', import.meta.url));
+    approve(w);
+    writeFileSync(join(w.stateDir, 'facts.json'), facts, { mode: 0o600 });
+    expect(await submitAsIs(w, '--initialize')).toBe(2);
+    expect(w.screen.errorText).toContain('is missing for a use case with existing keys or setup history');
+    expect(existsSync(markerOf(w))).toBe(false);
+    for (const folder of ['shared', USE_CASE]) expect(readdirSync(join(root, folder))).toEqual([]);
+    expect(existsSync(join(root, MANIFEST))).toBe(false);
   });
 });
 
 describe('a key file that is lost', () => {
   it('does not replace a recorded use-case key that is missing or gives another address', async () => {
     const { w, root } = await emptyWorld();
-    expect(await submit(w)).toBe(0);
+    expect(await initialize(w)).toBe(0);
     const manifest = manifestOf(root);
     const path = fileOf(root, SPECS[2]!);
     const original = readFileSync(path, 'utf8');
@@ -286,7 +331,7 @@ describe('a key file that is lost', () => {
   it('stops with exit 2 and makes nothing, not even another key that is lost, when the run key is lost and the public file shows its wallet, in a dry run too', async () => {
     const { w, root } = await emptyWorld();
     approve(w);
-    expect(await submit(w)).toBe(0);
+    expect(await initialize(w)).toBe(0);
     const runAddress = registryOf(root).addressOf('run');
     rmSync(fileOf(root, SPECS[0]!));
     rmSync(fileOf(root, SPECS[2]!));
@@ -302,13 +347,13 @@ describe('a key file that is lost', () => {
   it('makes the run key on first setup, but not after the existing public file or its run entry is lost', async () => {
     const { w, root } = await emptyWorld();
     approve(w);
-    expect(await submit(w)).toBe(0);
+    expect(await initialize(w)).toBe(0);
     rmSync(fileOf(root, SPECS[0]!));
     const original = manifestOf(root);
     rmSync(join(root, MANIFEST));
     reset(w);
     expect(await submit(w)).toBe(2);
-    expect(w.screen.errorText).toContain('is missing for the existing key folder');
+    expect(w.screen.errorText).toContain('is missing for a use case with existing keys or setup history');
     expect(existsSync(fileOf(root, SPECS[0]!))).toBe(false);
     const document = JSON.parse(original);
     delete document.keys.run;
@@ -321,7 +366,7 @@ describe('a key file that is lost', () => {
   it('keeps an unreadable public file until the operator restores the original, even when every key file exists', async () => {
     const { w, root } = await emptyWorld();
     approve(w);
-    expect(await submit(w)).toBe(0);
+    expect(await initialize(w)).toBe(0);
     const original = manifestOf(root);
     const run = readFileSync(fileOf(root, SPECS[0]!), 'utf8');
     writeFileSync(join(root, MANIFEST), 'this is not JSON', { mode: 0o600 });
@@ -344,7 +389,7 @@ describe('a key file that is lost', () => {
   it('stops with exit 2 when the run key file holds another key than the public file shows, and takes the file that holds the same key again', async () => {
     const { w, root } = await emptyWorld();
     approve(w);
-    expect(await submit(w)).toBe(0);
+    expect(await initialize(w)).toBe(0);
     const original = readFileSync(fileOf(root, SPECS[0]!), 'utf8');
     writeSeed(root, 'shared', 'run', `${counterSeed()}\n`);
     reset(w);
@@ -357,7 +402,7 @@ describe('a key file that is lost', () => {
   });
   it('does not show an invalid manifest address and refuses to make a run key when the file cannot be read as a manifest', async () => {
     const { w, root } = await emptyWorld();
-    expect(await submit(w)).toBe(0);
+    expect(await initialize(w)).toBe(0);
     const document = JSON.parse(manifestOf(root));
     document.keys.run.address = KEY_TEXT;
     writeFileSync(join(root, MANIFEST), JSON.stringify(document), { mode: 0o600 });
@@ -374,7 +419,7 @@ describe('a key file that is not as the pack made it', () => {
   it('is never replaced: a file with the wrong mode stops the run before any other key is made, and the file with mode 600 lets the run go on', async () => {
     const { w, root } = await emptyWorld();
     approve(w);
-    expect(await submit(w)).toBe(0);
+    expect(await initialize(w)).toBe(0);
     const before = seedsOf(root);
     rmSync(fileOf(root, SPECS[3]!));
     chmodSync(fileOf(root, SPECS[2]!), 0o640);
@@ -392,7 +437,7 @@ describe('a key file that is not as the pack made it', () => {
   it('is refused when it is a symbolic link, which is never followed, and when its text is no key, and the refusal shows no text of the file', async () => {
     const { w, root } = await emptyWorld();
     approve(w);
-    expect(await submit(w)).toBe(0);
+    expect(await initialize(w)).toBe(0);
     const original = readFileSync(fileOf(root, SPECS[2]!), 'utf8');
     const target = join(root, 'elsewhere');
     writeFileSync(target, `${counterSeed()}\n`, { mode: 0o600 });
@@ -423,7 +468,7 @@ describe('a key file that is not as the pack made it', () => {
     expect(existsSync(join(root, USE_CASE))).toBe(false);
     chmodSync(join(root, 'shared'), 0o700);
     reset(w);
-    expect(await submit(w)).toBe(0);
+    expect(await initialize(w)).toBe(0);
   });
 });
 
@@ -451,7 +496,7 @@ describe('the status', () => {
     expect(await w.run(keysTask, 'status')).toBe(0);
     expect(w.screen.text).toContain('4 of 4 key files are missing: run, fee, alpha, beta');
     expect(existsSync(join(root, 'shared'))).toBe(false);
-    expect(await submit(w)).toBe(0);
+    expect(await initialize(w)).toBe(0);
     const original = readFileSync(fileOf(root, SPECS[3]!), 'utf8');
     rmSync(fileOf(root, SPECS[3]!));
     reset(w);
@@ -475,7 +520,7 @@ describe('the cleanup', () => {
   it('says that nothing can be taken back, because a key is never deleted, exits 0 and changes nothing', async () => {
     const { w, root } = await emptyWorld();
     approve(w);
-    expect(await submit(w)).toBe(0);
+    expect(await initialize(w)).toBe(0);
     const before = [...SPECS.map((spec) => readFileSync(fileOf(root, spec), 'utf8')), manifestOf(root)];
     reset(w);
     expect(await w.run(keysTask, 'cleanup')).toBe(0);
@@ -504,15 +549,33 @@ describe('two use cases in one key folder', () => {
   }
   it('gives each use case a public key file of its own: the run of the second does not change the file of the first, and the status of the first still says that its file equals the key files', async () => {
     const { first, second, root } = await twoWorlds();
-    expect(await submit(first), first.screen.errorText).toBe(0);
+    expect(await initialize(first), first.screen.errorText).toBe(0);
     const firstFile = join(root, publicManifestFile(USE_CASE));
     const before = [readFileSync(firstFile, 'utf8'), statSync(firstFile).mtimeMs];
-    approve(second);
-    expect(await submitAsIs(second)).toBe(0);
+    const firstScope = join(root, USE_CASE);
+    const unmounted = join(first.dir, 'unmounted-scope');
+    renameSync(firstScope, unmounted);
+    mkdirSync(firstScope, { mode: 0o700 });
+    mkdirSync(join(root, SECOND), { mode: 0o700 });
+    const backup = join(first.dir, 'prior-manifest.json');
+    renameSync(firstFile, backup);
+    expect(await initialize(second)).toBe(2);
+    expect(second.screen.errorText).toContain('is missing for an earlier use case');
+    expect(existsSync(markerOf(second))).toBe(false);
+    expect(readdirSync(join(root, SECOND))).toEqual([]);
+    renameSync(backup, firstFile);
+    reset(second);
+    expect(await second.run(keysTask, '--initialize')).toBe(0);
+    expect(existsSync(markerOf(second))).toBe(false);
+    expect(await initialize(second)).toBe(0);
+    expect(second.machine().result).toMatchObject({ made: ['new-shared', 'gamma'], kept: ['run', 'fee'] });
     expect(readdirSync(root).sort()).toEqual([USE_CASE, publicManifestFile(USE_CASE), publicManifestFile(SECOND), 'shared', SECOND].sort());
     expect([readFileSync(firstFile, 'utf8'), statSync(firstFile).mtimeMs]).toEqual(before);
     expect(JSON.parse(readFileSync(join(root, publicManifestFile(SECOND)), 'utf8')).use_case).toBe(SECOND);
     expect(Object.keys(JSON.parse(readFileSync(firstFile, 'utf8')).keys)).toEqual(FIRST_NAMES);
+    expect(readdirSync(firstScope)).toEqual([]);
+    rmSync(firstScope, { recursive: true });
+    renameSync(unmounted, firstScope);
     reset(first);
     expect(await first.run(keysTask, 'status')).toBe(0);
     expect(first.screen.text).toContain('the public key file equals the key files');
@@ -520,9 +583,29 @@ describe('two use cases in one key folder', () => {
     expect(await second.run(keysTask, 'status')).toBe(0);
     expect(second.screen.text).toContain('the public key file equals the key files');
   });
+  it('does not treat an empty scope as fresh after it wrote the setup marker', async () => {
+    const { first, second, root } = await twoWorlds();
+    expect(await initialize(first)).toBe(0);
+    const scope = join(root, SECOND);
+    mkdirSync(scope, { mode: 0o700 });
+    expect(await initialize(second)).toBe(0);
+    const marker = readFileSync(markerOf(second), 'utf8');
+    const manifest = join(root, publicManifestFile(SECOND));
+    const role = join(root, 'shared', 'new-shared.seed');
+    rmSync(manifest);
+    rmSync(role);
+    rmSync(join(scope, 'gamma.seed'));
+    reset(second);
+    expect(await initialize(second, '--run', 'another-label')).toBe(2);
+    expect(second.screen.errorText).toContain('is missing for a use case with existing keys or setup history');
+    expect(readFileSync(markerOf(second), 'utf8')).toBe(marker);
+    expect(readdirSync(scope)).toEqual([]);
+    expect(existsSync(manifest)).toBe(false);
+    expect(existsSync(role)).toBe(false);
+  });
   it.each([false, true])('guards the shared run wallet that another use case recorded (legacy file: %s)', async (legacy) => {
     const { first, second, root } = await twoWorlds();
-    expect(await submit(first)).toBe(0);
+    expect(await initialize(first)).toBe(0);
     const firstPath = join(root, legacy ? LEGACY_PUBLIC_MANIFEST : MANIFEST);
     if (legacy) renameSync(join(root, MANIFEST), firstPath);
     const before = readFileSync(firstPath, 'utf8');
@@ -542,13 +625,13 @@ describe('two use cases in one key folder', () => {
     }
     writeSeed(root, 'shared', 'run', original);
     reset(second);
-    expect(await submit(second)).toBe(0);
+    expect(await initialize(second)).toBe(0);
     expect(second.machine().result).toMatchObject({ made: ['new-shared', 'gamma'], kept: ['run', 'fee'], run_wallet: runAddress });
     expect(readFileSync(firstPath, 'utf8')).toBe(before);
   });
   it('refuses a shared fee key that is missing or has another address before making keys for the second use case', async () => {
     const { first, second, root } = await twoWorlds();
-    expect(await submit(first)).toBe(0);
+    expect(await initialize(first)).toBe(0);
     const feePath = fileOf(root, SPECS[1]!);
     const original = readFileSync(feePath, 'utf8');
     rmSync(feePath);
@@ -563,12 +646,12 @@ describe('two use cases in one key folder', () => {
     expect(existsSync(join(root, SECOND))).toBe(false);
     writeSeed(root, 'shared', 'fee', original);
     reset(second);
-    expect(await submit(second)).toBe(0);
+    expect(await initialize(second)).toBe(0);
     expect(second.machine().result).toMatchObject({ made: ['new-shared', 'gamma'], kept: ['run', 'fee'] });
   });
   it.each([false, true])('does not make a shared key omitted from an earlier use case manifest (legacy file: %s)', async (legacy) => {
     const { first, second, root } = await twoWorlds();
-    expect(await submit(first)).toBe(0);
+    expect(await initialize(first)).toBe(0);
     const original = manifestOf(root);
     const prior = join(root, legacy ? LEGACY_PUBLIC_MANIFEST : MANIFEST);
     if (legacy) renameSync(join(root, MANIFEST), prior);
@@ -596,14 +679,14 @@ describe('two use cases in one key folder', () => {
     expect(second.screen.errorText).toContain('the shared key fee is missing');
     writeSeed(root, 'shared', 'fee', fee);
     reset(second);
-    expect(await submit(second)).toBe(0);
+    expect(await initialize(second)).toBe(0);
     expect(second.machine().result).toMatchObject({ made: ['new-shared', 'gamma'], kept: ['run', 'fee'] });
     expect(readFileSync(prior, 'utf8')).toBe(original);
     expect(readFileSync(feePath, 'utf8')).toBe(fee);
   });
   it.each([false, true])('keeps a damaged manifest when a shared key is missing or wrong (legacy file: %s)', async (legacy) => {
     const { first, second, root } = await twoWorlds();
-    expect(await submit(first)).toBe(0);
+    expect(await initialize(first)).toBe(0);
     const manifest = manifestOf(root);
     const path = join(root, legacy ? LEGACY_PUBLIC_MANIFEST : MANIFEST);
     if (legacy) renameSync(join(root, MANIFEST), path);
@@ -665,10 +748,11 @@ describe('a public key file of the earlier name', () => {
   /** A key folder with the keys made and the public key file under the earlier name only, as an earlier run of the pack left it. */
   async function earlierWorld(): Promise<{ w: TaskWorld; root: string; earlier: string }> {
     const { w, root } = await emptyWorld();
-    expect(await submit(w)).toBe(0);
+    expect(await initialize(w)).toBe(0);
     const earlier = join(root, LEGACY_PUBLIC_MANIFEST);
     const text = manifestOf(root);
     rmSync(join(root, MANIFEST));
+    rmSync(markerOf(w));
     writeFileSync(earlier, text, { mode: 0o600 });
     reset(w);
     return { w, root, earlier };

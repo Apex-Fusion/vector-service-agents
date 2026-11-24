@@ -4,8 +4,10 @@
 // The folders have mode 700 and the files mode 600. A dry run writes nothing, not even a folder, and it reads no approval.
 // The runner loads the run key for a submit approval. Before the key exists, only this task can use an approval that says `unset` for the run wallet.
 // Validate each public key file against the declared keys of its use case. A damaged file must be restored before a run can make keys or write a public key file.
+// First setup requires an explicit flag. The state marker survives loss of the key files and the public key file.
 import { lstatSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { writeFileAtomically } from '../../checks/lib/files.ts';
 import { enterpriseAddressOf, keyHashOf } from '../../checks/lib/platform.ts';
 import { PreconditionError } from '../../checks/lib/session.ts';
 import { units } from '../../checks/lib/format.ts';
@@ -17,6 +19,8 @@ import { repeatedMember } from '../lib/strict-json.ts';
 import { USE_CASE_NAMES } from '../usecases/names.ts';
 
 const RUN = 'run';
+const INITIALIZE = 'initialize';
+const SETUP_MARKER = 'keys-initialized.json';
 const KNOWN_MANIFESTS = USE_CASE_NAMES.map((useCase) => [publicManifestFile(useCase), useCase] as const);
 const PUBLIC_KEY_HEX = /^[0-9a-f]{64}$/;
 const NAME_WIDTH = 24;
@@ -106,7 +110,8 @@ function addressesOf(file: string, manifest: Record<string, unknown>, use: UseCa
 
 interface PriorManifests {
   readonly ownsFile: boolean;
-  readonly ownsFolder: boolean;
+  readonly marker: string;
+  readonly marked: boolean;
   readonly ownKeys: Addresses | undefined;
   readonly shared: Addresses;
 }
@@ -150,22 +155,68 @@ async function priorManifests(settings: OperatorSettings, use: UseCase, ownFile:
     }
     recorded.set(name, addresses);
   }
+  // The earlier use cases must have a public record. Their private key folders need not be mounted.
   for (const name of USE_CASE_NAMES) {
-    if (name !== use.name && files.has(name) && !recorded.has(name)) throw badManifest(publicManifestFile(name), 'is missing for an existing use case');
+    if (name === use.name) break;
+    if (!recorded.has(name)) throw badManifest(publicManifestFile(name), 'is missing for an earlier use case');
   }
-  return { ownsFile: files.has(ownFile), ownsFolder: files.has(use.name), ownKeys: recorded.get(use.name), shared };
+  const marker = join(settings.stateDir, SETUP_MARKER);
+  return { ownsFile: files.has(ownFile), marker, marked: stateFileExists(marker), ownKeys: recorded.get(use.name), shared };
+}
+
+function stateFileExists(path: string): boolean {
+  try { return lstatSync(path, { throwIfNoEntry: false }) !== undefined; } catch (err) {
+    throw new PreconditionError(`the key setup state cannot be checked (${codeOf(err)}). Nothing was made`);
+  }
+}
+
+/** Look only inside this use case's private scope, and never read a key here. An empty mount point is not evidence of setup. */
+function hasCaseKeys(settings: OperatorSettings, use: UseCase): boolean {
+  const path = join(settings.keysDir, use.name);
+  try {
+    const folder = lstatSync(path, { throwIfNoEntry: false });
+    if (folder === undefined) return false;
+    if (!folder.isDirectory()) throw new PreconditionError('the use case key scope is not a folder. Nothing was made');
+    return readdirSync(path).some((file) => file.endsWith('.seed'));
+  } catch (err) {
+    if (err instanceof PreconditionError) throw err;
+    throw new PreconditionError(`the use case key folder cannot be checked (${codeOf(err)}). Nothing was made`);
+  }
+}
+
+function requireSetup(session: TaskSession<KeysExtra>, prior: PriorManifests, ownFile: string): void {
+  const { settings, use, flags, go, mode } = session;
+  if (prior.ownKeys !== undefined) {
+    if (flags.has(INITIALIZE)) throw new PreconditionError('--initialize is only for first setup. This use case has a public key file. Nothing was made');
+    return;
+  }
+  // Older runs have no marker. The facts and funding state are separate from the key scope.
+  if (prior.marked || stateFileExists(join(settings.stateDir, 'facts.json')) || stateFileExists(join(settings.stateDir, 'fund.state.json')) || hasCaseKeys(settings, use)) {
+    throw badManifest(ownFile, 'is missing for a use case with existing keys or setup history');
+  }
+  if (!flags.has(INITIALIZE)) throw new PreconditionError('there is no public key file for this use case. Use --initialize only after you verify that this is first setup. Nothing was made');
+  if (mode === 'dry') return;
+  if (go === null || go.capUnits !== 0 || go.tasks.length !== 1 || go.tasks[0] !== 'keys' || go.irreversible.length !== 0 || (go.external?.length ?? 0) !== 0) {
+    throw new PreconditionError('--initialize needs a zero-cap approval for keys only, with no irreversible tags or external addresses. Nothing was made');
+  }
+  if (go.runWallet !== (prior.shared.get(RUN) ?? 'unset')) {
+    throw new PreconditionError('--initialize needs an approval that names the recorded shared run wallet, or unset before the first run wallet exists. Nothing was made');
+  }
+}
+
+function recordSetup(session: TaskSession<KeysExtra>, prior: PriorManifests): void {
+  if (prior.marked) return;
+  const marker = { format: 1, useCase: session.use.name, network: session.settings.network.name };
+  try { writeFileAtomically(prior.marker, `${JSON.stringify(marker)}\n`); } catch (err) {
+    throw new PreconditionError(`the key setup marker could not be written (${codeOf(err)}). Nothing was made`);
+  }
 }
 
 function requireRecordedKeysStay(use: UseCase, kept: Registry, prior: PriorManifests): void {
   for (const { name, scope } of use.keys) {
     const address = scope === 'shared' ? prior.shared.get(name) : prior.ownKeys?.get(name);
     const present = kept.has(name);
-    if (address === undefined) {
-      if (!present && scope === 'shared' && prior.ownsFolder && prior.ownKeys === undefined) {
-        throw badManifest(publicManifestFile(use.name), 'is missing for the existing key folder of this use case');
-      }
-      continue;
-    }
+    if (address === undefined) continue;
     if (present && kept.addressOf(name) === address) continue;
     if (name === RUN && prior.ownKeys !== undefined) {
       const problem = present ? `the run key file gives another wallet than the public key file shows (${address})`
@@ -207,7 +258,7 @@ async function walletLines(session: TaskSession<KeysExtra>, registry: Registry):
 const task: TaskDefinition<KeysExtra> = {
   name: 'keys',
   title: 'Make the keys of the use case, and show the address of the run wallet',
-  flags: [],
+  flags: [INITIALIZE],
   valued: [],
   needs: { keys: () => [], chain: true, hosted: [], approval: 'submit' },
   steps: () => [],
@@ -225,6 +276,7 @@ const task: TaskDefinition<KeysExtra> = {
     const prior = await priorManifests(settings, use, name);
     const existing = loadRegistry({ dir: settings.keysDir, useCase: use.name, specs: use.keys, need: plan.kept });
     requireRecordedKeysStay(use, existing, prior);
+    requireSetup(session, prior, name);
 
     if (session.mode === 'dry') {
       out.out(`the key folder is ${settings.keysDir}`);
@@ -235,6 +287,8 @@ const task: TaskDefinition<KeysExtra> = {
       session.extra.would = { make: plan.made, keep: plan.kept };
       return { kind: 'dry' };
     }
+
+    recordSetup(session, prior);
 
     // Never make a key that the plan kept, even if its file disappears after the check.
     const { made } = makeMissingKeys(settings.keysDir, use.name, use.keys.filter(({ name: key }) => !existing.has(key)));
@@ -265,7 +319,8 @@ const task: TaskDefinition<KeysExtra> = {
     return made.length === 0 && unchanged ? { kind: 'finished', message } : { kind: 'done', message };
   },
 
-  async cleanup() {
+  async cleanup(session) {
+    if (session.flags.has(INITIALIZE)) throw new PreconditionError('--initialize is only for a keys run');
     return { kind: 'done', message: 'nothing can be taken back: the pack never deletes a key file' };
   },
 
