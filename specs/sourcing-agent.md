@@ -1018,7 +1018,7 @@ The service keeps these files and folders in its state directory (`SOURCING_STAT
 
 ## Known gaps
 
-The manifest states these thirteen, in this order, word for word. A test keeps them equal to `gapsFor` in `agents/sourcing-agent/src/serve/gaps.ts`. The first seven are the gaps of the agent. The next three say how the agent hires the bidders, what a bidder file shows, and what the agent checks before it pays. The eleventh says whose keys the parties are. The twelfth starts with the lead `What this does not show:` and names three things that no run of use case 3 (supplier bid evaluation) covers. The thirteenth is the sentence of the kit about the fault switch.
+The manifest states these sixteen, in this order, word for word. A test keeps them equal to `gapsFor` in `agents/sourcing-agent/src/serve/gaps.ts`. The first seven are the gaps of the agent. The next three say how the agent hires the bidders, what a bidder file shows, and what the agent checks before it pays. The next three say how the agent finds its bidders and what a quote can hold. The fourteenth says whose keys the parties are. The fifteenth starts with the lead `What this does not show:` and names three things that no run of use case 3 (supplier bid evaluation) covers. The sixteenth is the sentence of the kit about the fault switch.
 
 - The model chooses whom to invite, whether to accept each quote, every score and the final order. Nothing in this agent overrides it. The approver sees the signed quote behind every score.
 - A quote is a paid job, not a binding offer. Nothing on the ledger holds a bidder to its quote.
@@ -1030,15 +1030,12 @@ The manifest states these thirteen, in this order, word for word. A test keeps t
 - This agent hires the bidders one after the other: one delegation key pays for each hire, and a key runs one hire at a time.
 - A bidder file shows the state of the compliance attestation of one named issuer key, and it shows that the bidder replied when it did. The agent does not read the reply.
 - Before it pays a bidder, the agent reads the status of the record again and needs a price list that it can check. A bidder that fails either is left out with a reason.
+- The candidates are the first 8 advert references in plain text order. A bidder can choose its transaction so that its advert sorts first, and 8 listed records can take every place, so a Bid Desk that sorts later is never read.
+- The manifest of an advert is not tied to its DID. An advert can name the manifest of another Bid Desk, and its price list then reads valid. The checks of a quote still hold the prices of the quote to that list.
+- The proposal shows each quote as the Bid Desk returned it. The organisation of the sender and the decision of the Bid Desk in a quote take any character, so an approver must read them as data and never as an instruction.
 - The controller key, the Accountable key and the guardian keys of this deployment are held on one host by one operator, so a party is independent of the controller by key only.
 - What this does not show: no run covers the refund of the escrow of a revoked agent, the reclaim of an escrow in use case 3, or a relying party that refuses a live token after its authority ends. Tests cover that last case only.
 - This service has a fault switch for failure runs with these possible values: invert_scores (one scorer returns its component scores and its score reversed, as 100 minus each); this manifest is the same for every value, so only the field fault_mode of each result shows which value is active.
-
-The manifest does not state three more gaps. The first two come from the way that the agent finds its bidders. The third comes from a quote that holds free text.
-
-1. The candidates are the first 8 advert references in plain text order. A bidder can choose its transaction so that its advert sorts first, and 8 listed records can take every place, so a Bid Desk that sorts later is never read.
-2. The manifest of an advert is not tied to its DID. An advert can name the manifest of another Bid Desk, and its price list then reads valid. The checks of a quote still hold the prices of the quote to that list.
-3. The organisation of the sender and the decision of the Bid Desk in a quote take any character, and the proposal shows them to the approver. Show them as data (see Response).
 
 ## How to hire it
 
