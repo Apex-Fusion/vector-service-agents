@@ -7,8 +7,11 @@
 //   bidder     the file of a bidder as a plain shape, and the part of it that a model reads
 //   choice     the checks that the parsers of the choices share: a text of the model, and a list of values that stand each once
 //   shortlist  the decision `shortlist`: the fixed text, the input and the parser of the choice
+//   accept     the decision `accept_quote`
 export { parseProposeFields } from './intake.ts';
 export type { ProposeFields } from './intake.ts';
 export type { BidderFile, BidderLineage, BidderStatus, ComplianceFact, FactState } from './bidder.ts';
 export { MAX_INVITED, SHORTLIST_DECISION, shortlistInput } from './shortlist.ts';
 export type { ShortlistChoice } from './shortlist.ts';
+export { ACCEPT_QUOTE_DECISION, acceptQuoteInput } from './accept.ts';
+export type { AcceptQuoteChoice } from './accept.ts';
