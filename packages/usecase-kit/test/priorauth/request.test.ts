@@ -4,7 +4,7 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { DOCUMENT_SCHEMAS, canonicalSha256, makeProposal, parseHandoff, proposalDigest } from '@vsa/usecase-kit/protocol';
-import { MAX_JUSTIFICATION_CHARS, PRIORAUTH_REQUEST_SCHEMA, parsePriorAuthRequest, requestNumberKey, requestNumberOf } from '@vsa/usecase-kit/priorauth';
+import { MAX_JUSTIFICATION_CHARS, PRIORAUTH_REQUEST_SCHEMA, parsePriorAuthRequest, parseRecordSet, requestNumberKey, requestNumberOf } from '@vsa/usecase-kit/priorauth';
 import { BAD_TEXT, ID_BAD, ID_GOOD, MARKER, NOT_TEXT, change, expectRefused, golden, goldenText, messageOf, must, withGetter, withPrototype, withProtoKey } from './support.ts';
 import type { Json } from './support.ts';
 
@@ -188,6 +188,15 @@ describe('the lists', () => {
       expectRefused(parsePriorAuthRequest(withValue(['diagnosis_codes'], ['zq9 marker\u0001'])), `${REQUEST}.diagnosis_codes[0]`);
     });
 
+    it('refuses a code with a control, format or separator character, although the record set takes it, and the twin without it passes', () => {
+      // The records system takes the tab, the line feed, the carriage return, the format characters and the separators in a code, so the record set keeps its rule. A request does not take them.
+      for (const code of ['M54\t16', 'M54.16\n', 'M54\r', 'M54\u0085', 'M54\u200b', 'M54\u202e', '\ufeffM54', 'M54\u2028', 'M54\u2029', 'M54\u{e0041}']) {
+        expectRefused(parsePriorAuthRequest(withValue(['diagnosis_codes'], ['M54.16', code])), `${REQUEST}.diagnosis_codes[1]`);
+        expect(parseRecordSet(change(golden('record-set'), ['order', 'diagnosis_codes', 0], code)).ok, JSON.stringify(code)).toBe(true);
+      }
+      expect(parsePriorAuthRequest(withValue(['diagnosis_codes'], ['M54.16', 'M54 16', 'M54\u00a0'])).ok).toBe(true);
+    });
+
     it('gives the NFC form of a code', () => {
       expect(must(parsePriorAuthRequest(withValue(['diagnosis_codes'], ['e\u0301']))).diagnosis_codes).toStrictEqual(['\u00e9']);
     });
@@ -297,7 +306,7 @@ describe('the justification', () => {
     }
     expect(justification('Criterion C1 is met.\nCriterion C2 is met.').ok).toBe(true);
     const nul = justification('a\u0000b');
-    expect(!nul.ok && nul.detail).toContain('control character');
+    expect(!nul.ok && nul.detail).toContain('control');
   });
 
   it('refuses a carriage return, so that a line break is the line feed alone', () => {
@@ -306,8 +315,29 @@ describe('the justification', () => {
     expectRefused(justification('Criterion C1 is met.\tCriterion C2 is met.'), WHERE);
   });
 
-  it('takes letters of other scripts, symbols and emoji, and the characters that are not controls', () => {
+  const HIDDEN: ReadonlyArray<{ readonly label: string; readonly characters: readonly string[] }> = [
+    { label: 'the line separator (Zl)', characters: ['\u2028'] },
+    { label: 'the paragraph separator (Zp)', characters: ['\u2029'] },
+    { label: 'the direction controls (Cf)', characters: ['\u200e', '\u200f', '\u202a', '\u202b', '\u202c', '\u202d', '\u202e', '\u2066', '\u2067', '\u2068', '\u2069'] },
+    { label: 'the zero-width characters and the soft hyphen (Cf)', characters: ['\u200b', '\u200c', '\u200d', '\u2060', '\u00ad'] },
+    { label: 'the byte order mark (Cf)', characters: ['\ufeff'] },
+    { label: 'the variation selectors', characters: ['\ufe00', '\ufe0e', '\ufe0f', '\u{e0100}', '\u{e01ef}'] },
+    { label: 'the tag characters (Cf)', characters: ['\u{e0001}', '\u{e0020}', '\u{e0041}', '\u{e007f}'] },
+  ];
+
+  it.each(HIDDEN)('refuses $label, in any place of the text, and never repeats the text', ({ characters }) => {
+    for (const character of characters) {
+      for (const text of [`${character}Criterion C1 is met.`, `Criterion C1 ${character}is met.`, `Criterion C1 is met.${character}`, `zq9 marker ${character}`]) {
+        const result = justification(text);
+        expect(result.ok, `U+${character.codePointAt(0)?.toString(16)}`).toBe(false);
+        expectRefused(result, WHERE);
+      }
+    }
+  });
+
+  it('takes letters of other scripts, symbols, emoji, a no-break space, a combining mark, and the character after the variation selectors', () => {
     expect(justification('Kriterium C1 ist erf\u00fcllt: \u8179\u75db \u2022 \u{1F600} \u00a0 ok').ok).toBe(true);
+    expect(justification('Flags \u{1F1E9}\u{1F1EA} and a mark e\u0301 and \ufe10 and a heart \u2764').ok).toBe(true);
   });
 
   it('gives the NFC copy of an NFD text, and the same digest as the NFC document', () => {

@@ -6,8 +6,9 @@
 //   request_number, order_id, patient_ref, ordering_clinician_ref, service_code
 //                         an identifier of 1 to 64 letters, digits, dots, hyphens and underscores, starting with a letter or a digit
 //   tenant                1 to 48 lower-case letters, digits and hyphens, starting with a letter or a digit (the protocol takes 64 characters for the tenant of a request: the portal takes 48)
-//   diagnosis_codes       1 to 8 texts of 1 to 16 characters, the list that the records system gives for the order
-//   justification         1 to 4,000 characters, counted as code points, with no control character but the line feed
+//   diagnosis_codes       1 to 8 texts of 1 to 16 characters, the list that the records system gives for the order, with no control, format or separator character (the record set takes the characters
+//                         that the records system takes)
+//   justification         1 to 4,000 characters, counted as code points, with no control, format, separator or variation selector character but the line feed
 //   guideline_refs        0 to 20 identifiers, none twice
 //   record_refs           0 to 50 identifiers, none twice
 //   record_set_sha256     a digest
@@ -61,8 +62,13 @@ const MAX_RECORD_REFS = 50;
 const MAX_NUMBER_CHARS = 64;
 
 const TENANT = /^[a-z0-9][a-z0-9-]{0,47}$/;
-/** The control characters of a justification: every control character of Unicode (U+0000 to U+001F and U+007F to U+009F) but the line feed. */
-const JUSTIFICATION_CONTROL = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/;
+/**
+ * The characters that a justification never holds, but the line feed: the control characters (Cc), the format characters (Cf: zero width, direction, byte order mark and tag characters), the line and paragraph
+ * separators (Zl and Zp), and the variation selectors. A reviewer who reads the text cannot see them, and they can change how a text reads without a change of a letter.
+ */
+const JUSTIFICATION_CONTROL = /(?!\n)[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\u{fe00}-\u{fe0f}\u{e0100}-\u{e01ef}]/u;
+/** The characters that a diagnosis code of a request never holds: the control, format and separator characters. The records system takes some of them in a code, so the record set keeps its own rule. */
+const CODE_HIDDEN = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
 
 function parseTenant(value: unknown, field: string): ProtocolResult<TenantId> {
   return typeof value === 'string' && TENANT.test(value)
@@ -85,8 +91,8 @@ function pointsIn(text: string): number {
 }
 
 /**
- * The justification: 1 to MAX_JUSTIFICATION_CHARS code points, with no control character but the line feed. The limit holds for the text as it is written and for its NFC form, so the copy is a text that
- * this takes again: the Insurer Intake Agent reads the copy. The copy holds the text in the NFC form.
+ * The justification: 1 to MAX_JUSTIFICATION_CHARS code points, with no control, format, separator or variation selector character but the line feed. The limit holds for the text as it is written and for its
+ * NFC form, so the copy is a text that this takes again: the Insurer Intake Agent reads the copy. The copy holds the text in the NFC form, and the check of the characters runs on the copy.
  */
 function parseJustification(value: unknown, field: string): ProtocolResult<string> {
   if (typeof value !== 'string') return refused('bad_shape', `${field} must be a text`);
@@ -95,7 +101,7 @@ function parseJustification(value: unknown, field: string): ProtocolResult<strin
   if (value.length < 1 || value.length > 2 * MAX_JUSTIFICATION_CHARS) return refused('bad_shape', limit);
   const form = value.normalize('NFC');
   if (pointsIn(value) > MAX_JUSTIFICATION_CHARS || pointsIn(form) > MAX_JUSTIFICATION_CHARS) return refused('bad_shape', limit);
-  if (JUSTIFICATION_CONTROL.test(value)) return refused('bad_shape', `${field} must not hold a control character but the line feed`);
+  if (JUSTIFICATION_CONTROL.test(form)) return refused('bad_shape', `${field} must not hold a control, format, separator or variation selector character but the line feed`);
   return accepted(form);
 }
 
@@ -124,6 +130,8 @@ export function parsePriorAuthRequest(value: unknown, field = 'authorization req
   if (!serviceCode.ok) return serviceCode;
   const diagnoses = parseDiagnosisCodes(request.diagnosis_codes, `${field}.diagnosis_codes`);
   if (!diagnoses.ok) return diagnoses;
+  const hidden = diagnoses.value.findIndex((code) => CODE_HIDDEN.test(code));
+  if (hidden !== -1) return refused('bad_shape', `${field}.diagnosis_codes[${hidden}] must not hold a control, format or separator character`);
   const justification = parseJustification(request.justification, `${field}.justification`);
   if (!justification.ok) return justification;
   const criteria = parseIds(request.guideline_refs, `${field}.guideline_refs`, 0, MAX_GUIDELINE_REFS);
