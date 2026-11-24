@@ -85,7 +85,7 @@ Amounts are `lovelace` fields. The last column is the same amount divided by 1,0
 |---|---|
 | Processing window, advert `max_processing_ms` | 480000 ms, for each of the three adverts |
 | Service timeout, `SERVICE_TIMEOUT_MS` of each runtime | 360000 ms |
-| Job deadline, set by the service when a request arrives | 300000 ms |
+| Deadline of the model hire, set by the service when a request arrives | 300000 ms after the request arrives, or 50000 ms before `deliver_by`, whichever is earlier |
 | Request | at most 900000 bytes of wire payload, and 1 to 20 items |
 | Model calls | one for each job: the decision `quote` |
 | Jobs at a time | one for each Bid Desk: a second job gets 409 `busy` |
@@ -187,16 +187,16 @@ The runtime sends six headers of context with each call: `x-vector-escrow-ref`, 
 
 The Bid Desk files no challenge. It takes no approval, so a request has no digest that the hook could refuse, and the service has no dispute code and no dispute setting. A refusal of the hook is the answer to the runtime and nothing more.
 
-The hook does not check the SKUs of the request against the price list. A request none of whose SKUs the list carries passes the hook and the Claim. The job then hires the model, and it ends with `model_output_invalid` (502), because a quote needs at least one line (see What it does).
+The hook does not check the SKUs of the request against the price list. A request none of whose SKUs the list carries passes the hook and the Claim. The job then hires the model. It ends with `model_output_invalid` (502) only when the model gives no line, because a quote needs at least one line (see What it does). When the model gives a line for an item that the list does not carry, with a price that it made up, the job makes a quote: it checks no price against the list.
 
 The check `not_duplicate` and the job both read the book of the Bid Desk. The book holds one entry for each request that the Bid Desk answered, by the DID of the sender and the `rfq_id` as it was written. It never drops an entry, so a Bid Desk refuses a repeated `rfq_id` of the same sender for ever. It holds at most 10000 entries. A book that is full cannot take a new entry: for a request that it lacks, the hook then answers 503 `check_unavailable` and the escrow stays open, and for a request that it holds, the hook still answers 403 `duplicate_rfq`.
 
 ### What it does
 
-After the Claim the runtime posts the job to the service. The job has a deadline of 300000 ms after its request arrives, and it runs these steps in this order. A failure ends the job with an error, and no later step runs.
+After the Claim the runtime posts the job to the service. The job runs these steps in this order. A failure ends the job with an error, and no later step runs. The service sets one deadline when the request arrives, and it holds the model hire only: the earlier of 300000 ms after the request arrives and 50000 ms before `deliver_by`. The 50000 ms are 30000 ms for the runtime, which stops waiting then, and 20000 ms for the call for the credential. The steps after the hire can end later than the 300000 ms.
 
 1. The job takes the record of the checks that the hook kept for its escrow, and it compares the hash of its own body with the hash that the hook checked. A job with no record, with the record of another body, with a record that lacks one of the 7 checks, or with a fact in the record that it cannot read, fails with `precheck_missing` and makes no quote. It takes the sender and the 7 checks of the quote from that record.
-2. Decision `quote`: the service hires one model from the Vector marketplace. The model gets a fixed instruction, the date of today, the items and the date of the request, and the entries of the price list for the SKUs of the items. It answers `{ "lines": [ { "sku", "quantity", "unit_price", "lead_time_days" } ], "valid_until": "<date>", "notes": "..." }`, and its reasons. The model sets the unit price of each line from the price list. The hire ends at the job deadline, or 50000 ms before `deliver_by` when that is earlier, and it does not start with less than 60000 ms left for it.
+2. Decision `quote`: the service hires one model from the Vector marketplace. The model gets a fixed instruction, the date of today, the items and the date of the request, and the entries of the price list for the SKUs of the items. It answers `{ "lines": [ { "sku", "quantity", "unit_price", "lead_time_days" } ], "valid_until": "<date>", "notes": "..." }`, and its reasons. The model sets the unit price of each line from the price list. The hire ends 300000 ms after the request arrives, or 50000 ms before `deliver_by` when that is earlier, and it does not start with less than 60000 ms left for it.
 3. The job checks the choice against the request, in code: there is at least one line, each line has the SKU and the quantity of an item of the request, and each SKU stands in one line. A choice that breaks this rule ends the job with `model_output_invalid` (502). The decision is on record and no quote is made. The job does not check that every item has a line, and it never adds, removes or changes a line.
 4. When the fault switch is set, the job changes the unit price of one line (see Fault switch). Then it makes the line totals, the total and the longest lead time. These three are arithmetic, not decisions.
 5. It reads the book again. A request that the book holds ends the job with `duplicate_rfq` (403) after the Claim. The hook can pass two escrows of one request before the first job writes the book, and this read closes that gap.
@@ -347,7 +347,7 @@ Example. The test of the job gives exactly this quote for the request above, wit
 | `notes` | the note of the model: at most 500 characters |
 | `price_list_sha256` | the SHA-256 of the price list file that this Bid Desk serves |
 | `credential` | the credential of this Bid Desk from the identity gateway, a compact JWS |
-| `sender` | the DID of the sender, the organisation that the covering Accountable Party names (or `null`), and whether the identity gateway verified it. The organisation is recorded, and it is never a reason to refuse |
+| `sender` | the DID of the sender, the organisation that the covering Accountable Party names (or `null`), and whether the identity gateway verified it. The organisation is recorded, and the hook never refuses a sender for it. The job refuses an organisation of more than 1024 characters with `precheck_missing` (500) after the Claim |
 | `checks` | the 7 checks of the hook, each `true`, in the order of the table of the hook |
 | `decisions` | one decision, `quote`: its choice, its reasoning, and the hire of the model supplier with the sub-receipt that the service verified (`inference`) |
 | `fault_mode` | the setting of the fault switch: the empty text in a clean run. It is the last member |
@@ -356,7 +356,7 @@ A line total is the quantity times the unit price, the total is the sum of the l
 
 The quote names the hash of the request and the hash of the price list that it was priced from, so a buyer's agent can check each unit price against the public list.
 
-The `notes` and the organisation of the sender are free text. The notes hold at most 500 characters and no control or hidden character. The organisation of the sender holds at most 1024 characters, and it can be any text that the covering Accountable Party names.
+The `notes` and the organisation of the sender are free text. The notes hold at most 500 characters and no control or hidden character. The quote holds an organisation of the sender of at most 1024 characters, and it can be any text that the covering Accountable Party names. The hook takes an organisation of any length. The job refuses one of more than 1024 characters: it fails with `precheck_missing` (500) after the Claim and before the model hire, and it makes no quote.
 
 ### The price list
 
@@ -416,7 +416,7 @@ A refusal is `{ "error": "<code>", "message": "<words>" }` with the status in th
 | 403, the job, after the Claim | `duplicate_rfq` (the book holds an answer to this request already: the hook passed two escrows of one request before the first job wrote the book) |
 | 404, no such route | `not_found` (no message) |
 | 409, the service is busy | `busy` (a job runs, or the slot is reserved for another escrow. The answer to a job has no message, and the answer of the hook has one) |
-| 422, the job | `deadline` (the caller hung up before the model hire or before the record in the book, or less than 30 s are left before the runtime stops waiting for the job) |
+| 422, the job | `deadline` (the caller hung up before the model hire or before the record in the book, or less than 30 s are left before `deliver_by`) |
 | 500, the service | `precheck_missing` (the job has no record of passed checks for its body), `store_write_failed` (the rfq book or the record of the model hire cannot be written), `internal` (a fault of the service: a plain 500 with no message when nothing names it, and the fixed message when the job names it) |
 | 502, a third party | `credential_failed` (the identity gateway gave no credential that a quote can hold), `inference_failed` (the model hire failed, or it did not start because less than 60 s were left for it), `model_output_invalid` (the answer of the model cannot be used: it breaks the shape of the decision, or a line is not an item of the request, or there is no line) |
 | 503, the service cannot answer now | `check_unavailable` (the hook could not read a source), `shutting_down` (the service is stopping) |
@@ -457,7 +457,7 @@ S1 is the statement that the fault `quote_off_price_list` breaks. A buyer's agen
 
 `FAULT_MODE=quote_off_price_list`: the unit price of the first line that the price list prices is lowered by a fifth of the listed price, rounded up, and every check of the hook still passes. The new price is `listed - ceil(listed / 5)`, where `listed` is the price of the list for the SKU and the quantity of that line. The totals follow the changed line. The new price is below the listed price and at least 1, because no price of the three files is below 10. For the request of the example under Request and the price list of Bid Desk Alfa, the quote of a fault run has the unit price 100 on its first line (the listed price is 125), the line total 10000 and the total 19400, and its `fault_mode` is `quote_off_price_list`. The decision on record stays what the model said.
 
-When no line can take the new price, the job ends with `internal` (500): a run never says that a fault was on when it changed nothing. The failure run sets the switch on one Bid Desk only, Bid Desk Charlie, to show that the Sourcing Agent catches a quote that is below the published price list. The switch of one Bid Desk never changes another: each Bid Desk reads an env file of its own.
+When no line can take the new price, the job ends with `internal` (500): a run never says that a fault was on when it changed nothing. The planned failure run sets the switch on one Bid Desk only, Bid Desk Charlie, to show that the Sourcing Agent catches a quote that is below the published price list. No command of this repository runs use case 3 yet. The switch of one Bid Desk never changes another: each Bid Desk reads an env file of its own.
 
 The switch is empty in a clean run. Any other value stops the start of the service. The switch changes what the job writes and never a check: the hook does not know that it exists. It is declared in the manifest, in `behaviour.fault_modes`, and the manifest is the same for every value. Each quote returns the active value as `fault_mode`, its last member.
 
@@ -486,11 +486,11 @@ What the decision receives:
 |---|---|---|
 | `quote` | `today`, `request` (`items` and `needed_by`) and `price_list` (the entries for the SKUs of the items, each with `sku`, `lead_time_days` and `breaks`) | the identifier of the request (`rfq_id`), the sender, the delegation and every other member of the message, and the entries of the price list for other SKUs |
 
-The text of the request and of the price list reaches the model only inside the marked data block, and never inside an instruction. To post and settle its escrows for the model hire, the service reads the ledger through the node (Ogmios) and the Koios indexer, submits its transactions through the submit API, and finds the model suppliers on the marketplace indexer. At start the service makes no call to a third party.
+The text of the request and of the price list reaches the model only inside the marked data block, and never inside an instruction. To post and settle its escrows for the model hire, the service reads the ledger through the node (Ogmios) and the Koios indexer, submits its transactions through the submit API, and finds the model suppliers on the marketplace indexer. At start the service makes no call of its own to a third party. The janitor of the service key runs its first pass at once, and then one pass every 60 s. A pass reads the ledger for each escrow of the stranded file that is due, and it can submit a Reclaim, or one more Accept, through the submit API. When the stranded file holds no escrow that is due, a pass makes no call.
 
 ## Known gaps
 
-The manifest states these eight, in this order, word for word. A test keeps them equal to `GAPS` in `agents/bid-desk/src/serve/gaps.ts`. The first five are the gaps of the agent. The sixth says whose keys the parties are. The seventh starts with a run-in lead and names three things that no run of use case 3 (supplier bid evaluation) covers. The eighth is the sentence of the kit about the fault switch.
+The manifest states these eight, in this order, word for word. A test keeps them equal to `GAPS` in `agents/bid-desk/src/serve/gaps.ts`. The first five are the gaps of the agent. The sixth says whose keys the parties are. The seventh starts with a run-in lead and names three things that no run of use case 3 (supplier bid evaluation) covers. The eighth is the sentence of the kit about the fault switch. The fourth gap names the compliance attestation of a Bid Desk: an identity attestation (type 0) that the compliance registry issues about it. The Bid Desk does not read it. Only the Sourcing Agent reads it. Nothing in this repository issues it.
 
 - A quote is the result of a paid job. It is not a binding offer.
 - The model prices the request. Nothing in this agent checks its lines against the price list: the buyer's agent can, because the price list and its hash are public.
