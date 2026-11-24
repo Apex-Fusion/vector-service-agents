@@ -1,10 +1,12 @@
 // The task `register`: the three records of use case 1 (the Reorder Agent, its subagent `stock-reader` and the Order Desk), the TXT gate, the signers, the consent of Module-1, the check of the
 // record that landed, and the wait for the organisation check. A fake tool builds a REAL registration over the identity fixtures with the real builder and answers in the format of the live
 // tools, so the real guards judge real bytes. A fake `fetch` stands for the three public resolvers and the gateway. The task runs through the real runner. Each refusal has an accepted twin.
-import { describe, expect, it } from 'vitest';
-import { chmodSync, mkdtempSync, rmSync } from 'node:fs';
+import { decode, encode, RECURSION_DESIRED } from '@dnsquery/dns-packet';
+import { describe, expect, it, vi } from 'vitest';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { EvidenceFile } from '../../checks/lib/evidence.ts';
 import { iso } from '../../checks/lib/format.ts';
 import { HostedError, checkArguments } from '../../checks/lib/hosted.ts';
 import type { ToolAnswer } from '../../checks/lib/hosted.ts';
@@ -15,6 +17,7 @@ import { buildRegister } from '../../../packages/buyer-core/src/vendored/mcp/ide
 import type { PartySpec, RegisterBuild, RegisterParams } from '../../../packages/buyer-core/src/vendored/mcp/identity-build.ts';
 import type { GoFile } from '../lib/approval.ts';
 import type { UseCase } from '../lib/contract.ts';
+import { FactsFile } from '../lib/facts.ts';
 import { RIGHT, ROLE_MAX_RIGHTS } from '../../../packages/buyer-core/src/vendored/mcp/identity-rules.ts';
 import { M1 } from '../../../packages/buyer-core/test/fixtures/identity-world.ts';
 import { decodeIdentityDatum, encodeIdentityDatum, utf8Hex } from '../../../packages/vector-read/src/identity-codec.ts';
@@ -25,10 +28,14 @@ import { loadTask } from '../lib/load.ts';
 import { runTask } from '../lib/runner.ts';
 import register from '../tasks/register.ts';
 import USE from '../usecases/inventory-reorder.ts';
+import UC2 from '../usecases/prior-authorization.ts';
+import UC3 from '../usecases/bid-evaluation.ts';
 import { FakeClock, ThrowingSigner, World } from './support/fakes.ts';
 import { PACK_SCHEMAS, PackHosted, liveBuildAnswer } from './support/pack-hosted.ts';
 import { NOW, ScriptedNode, USE_CASE, hashOf, taskWorld } from './support/task-world.ts';
 import type { TaskWorld } from './support/task-world.ts';
+
+vi.mock('node:http2', () => ({ connect: vi.fn(() => { throw new Error('registration tests must use the injected DNS fetch'); }) }));
 
 // ---- the data ----
 
@@ -121,12 +128,23 @@ class RegisterHosted extends PackHosted {
 
 // ---- the resolvers and the gateway ----
 
-interface GatewayEntry { organisation: string; verified: boolean; role?: string; status?: 'active' | 'revoked' }
+interface GatewayEntry { organisation: string; verified: boolean; role?: string; status?: 'active' | 'revoked'; did?: string }
+const DNS_MESSAGE = 'application/dns-message';
+
+function dnsQuestion(url: URL) {
+  expect([...url.searchParams.keys()]).toEqual(['dns']);
+  const query = decode(Buffer.from(url.searchParams.get('dns')!, 'base64url'));
+  expect(query).toMatchObject({ id: 0, type: 'query', flags: RECURSION_DESIRED, answers: [], authorities: [], additionals: [] });
+  expect(query.questions).toHaveLength(1);
+  const question = query.questions![0]!;
+  expect(question).toMatchObject({ class: 'IN', type: 'TXT' });
+  return question;
+}
 
 /** A `fetch` for the three resolvers (DNS-over-HTTPS) and the gateway. It keeps each URL that it was asked for. */
 class Net {
   readonly urls: string[] = [];
-  /** The records that each resolver holds: resolver name, then TXT name, then the texts of the records as the resolver writes them. */
+  /** The TXT values, by resolver and record name. */
   readonly records = new Map<string, Map<string, string[]>>();
   readonly gateway = new Map<string, GatewayEntry>();
   gatewayFails: Error | null = null;
@@ -134,22 +152,30 @@ class Net {
   /** The TXT lookups that were made. */
   lookups(): URL[] { return this.urls.map((url) => new URL(url)).filter((url) => RESOLVERS.some((resolver) => new URL(resolver.url).host === url.host)); }
 
-  /** Publishes the value at the name on the resolvers (all three by default). Cloudflare and Quad9 write the text with quotes, and Google writes it without. */
+  /** Publishes the value at the name on the resolvers (all three by default). */
   publish(name: string, value: string, only: readonly string[] = RESOLVER_NAMES): void {
     for (const resolver of only) {
       const held = this.records.get(resolver) ?? new Map<string, string[]>();
-      held.set(name, [...(held.get(name) ?? []), resolver === 'google' ? value : `"${value}"`]);
+      held.set(name, [...(held.get(name) ?? []), value]);
       this.records.set(resolver, held);
     }
   }
 
-  readonly fetchImpl = (async (input: string | URL | Request): Promise<Response> => {
+  readonly fetchImpl: typeof fetch = async (input, init) => {
     const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
     this.urls.push(url.href);
     const resolver = RESOLVERS.find((one) => new URL(one.url).host === url.host);
     if (resolver !== undefined) {
-      const texts = this.records.get(resolver.name)?.get(url.searchParams.get('name') ?? '') ?? [];
-      return new Response(JSON.stringify(texts.length === 0 ? { Status: 3 } : { Status: 0, Answer: texts.map((data) => ({ name: url.searchParams.get('name'), type: 16, TTL: 60, data })) }), { status: 200 });
+      expect(`${url.origin}${url.pathname}`).toBe(resolver.url);
+      expect(init).toMatchObject({ method: 'GET', redirect: 'manual', signal: expect.any(AbortSignal) });
+      expect(new Headers(init?.headers).get('accept')).toBe(DNS_MESSAGE);
+      const question = dnsQuestion(url);
+      const texts = this.records.get(resolver.name)?.get(question.name) ?? [];
+      const response = encode({
+        id: 0, type: 'response', flags: texts.length === 0 ? 0x0183 : 0x0180, questions: [question],
+        answers: texts.map((data) => ({ type: 'TXT', class: 'IN', name: question.name, ttl: 60, data })),
+      });
+      return new Response(Buffer.from(response), { status: 200, headers: { 'content-type': DNS_MESSAGE } });
     }
     if (url.origin === GATEWAY) {
       if (this.gatewayFails !== null) throw this.gatewayFails;
@@ -161,10 +187,10 @@ class Net {
         vectorStatus: { status: entry.status ?? 'active', effective: entry.status ?? 'active' },
         vectorParties: [{ role: entry.role ?? 'accountable', signer: 'controller', organisation: entry.organisation, ...(entry.verified ? { organisationVerified: true } : {}), rights: ['suspend', 'revoke'] }],
       };
-      return new Response(JSON.stringify({ didDocument: ended ? null : { id: did }, didResolutionMetadata: {}, didDocumentMetadata: metadata }), { status: ended ? 410 : 200 });
+      return new Response(JSON.stringify({ didDocument: ended ? null : { id: entry.did ?? did }, didResolutionMetadata: {}, didDocumentMetadata: metadata }), { status: ended ? 410 : 200 });
     }
     throw new Error('the test fetch was asked for a host that it does not know');
-  }) as typeof fetch;
+  };
 }
 
 // ---- the fixture ----
@@ -188,9 +214,12 @@ interface Fixture {
 const THROWER = new ThrowingSigner();
 const feeOutputs = (address: string, lovelace: readonly bigint[]) => lovelace.map((amount, outputIndex) => ({ txHash: hashOf('wallet fee'), outputIndex, address, assets: { lovelace: amount } }));
 
-/** A world with the real data of use case 1: the keys of the registry, the identity fixtures, a funded `fee` wallet, the resolvers, the gateway and the approval of the session. */
-async function fixture(over: { go?: Partial<GoFile> | null; fee?: readonly bigint[] } = {}): Promise<Fixture> {
-  const w = await taskWorld({ keys: KEY_NAMES, shared: SHARED, use: USE, wallets: {}, env: { OPERATOR_GATEWAY_URL: GATEWAY } });
+/** Uses real registration builders over a fake ledger. The transport and keys belong to the fixture. */
+async function fixture(over: { go?: Partial<GoFile> | null; fee?: readonly bigint[]; use?: UseCase } = {}): Promise<Fixture> {
+  const use = over.use ?? USE;
+  const keys = use.keys.map(({ name }) => name);
+  const shared = use.keys.filter(({ scope }) => scope === 'shared').map(({ name }) => name);
+  const w = await taskWorld({ keys, shared, use, wallets: {}, env: { OPERATOR_GATEWAY_URL: GATEWAY, OPERATOR_USE_CASE: USE_CASE } });
   const world = await World.identity({ wallets: [], extra: feeOutputs(w.keys.registry.addressOf('fee'), over.fee ?? [1_000_000_000n, 5_000_000n]) });
   const account: Account = { rewards: 7_000_000n };
   Object.assign(world.chain, { getRewardAccount: async () => ({ registered: true, rewards: account.rewards, source: 'ogmios' }) });
@@ -203,7 +232,7 @@ async function fixture(over: { go?: Partial<GoFile> | null; fee?: readonly bigin
   };
   if (over.go !== null) w.writeGo({ tasks: ['register'], irreversible: ['record'], capUnits: 100, ...over.go });
   const f: Fixture = {
-    w, world, account, hosted, net, use: USE, signs: [], refuseSigning: false,
+    w, world, account, hosted, net, use, signs: [], refuseSigning: false,
     run: async (...argv) => {
       w.screen.lines.length = 0;
       w.screen.errors.length = 0;
@@ -395,7 +424,7 @@ describe('register --submit: the note and the TXT gate', () => {
       publish(f, shown, RESOLVER_NAMES.filter((name) => name !== hidden));
       expect(await f.run('--submit')).toBe(2);
       expect(f.net.lookups().map((url) => url.host).sort()).toEqual(RESOLVERS.map((resolver) => new URL(resolver.url).host).sort());
-      expect(f.net.lookups().map((url) => url.searchParams.get('name'))).toEqual([shown.txt!.name, shown.txt!.name, shown.txt!.name]);
+      expect(f.net.lookups().map((url) => dnsQuestion(url).name)).toEqual([shown.txt!.name, shown.txt!.name, shown.txt!.name]);
       const text = errorText(f);
       expect(text).toContain(`publish the TXT value ${shown.did} at ${shown.txt!.name}, then run again`);
       expect(text).toContain(hidden);
@@ -433,7 +462,7 @@ describe('register --submit: the note and the TXT gate', () => {
     // The twin: a dry run of the new data writes a new note, and the value that is published at the new name lets the run land.
     publish(f, await dry(f));
     expect(await f.run('--submit')).toBe(0);
-    expect(f.net.lookups().every((url) => url.searchParams.get('name') === '_did.changed.example')).toBe(true);
+    expect(f.net.lookups().every((url) => dnsQuestion(url).name === '_did.changed.example')).toBe(true);
   });
   it('stops before it builds when the domain of the organisation is not the domain of an Accountable party of the record, because the gateway would check another name than the TXT name', async () => {
     const f = await fixture();
@@ -461,7 +490,7 @@ describe('register --submit: the note and the TXT gate', () => {
     expect(f.w.facts().records['reorder-agent']).toEqual({
       did: shown.did, id: idOf(shown.did), tx: built.txHash, recordRef: `${built.txHash}#${built.recordOutputIndex}`, depositLovelace: built.depositLovelace.toString(), registeredAt: step.confirmed_at,
     });
-    expect(f.w.facts().organisations.echo).toEqual({ txtName: `_did.${ECHO.domain}`, txtValue: shown.did, verifiedAt: null });
+    expect(f.w.facts().organisations['reorder-agent']).toEqual({ txtName: `_did.${ECHO.domain}`, txtValue: shown.did, verifiedAt: null });
     expect(f.w.exposure()).toHaveLength(1);
     expect(f.w.exposure()[0]).toMatchObject({ step: 'reorder-agent' });
     expect(BigInt(f.w.exposure()[0]!.net_lovelace)).toBeGreaterThan(0n);
@@ -594,7 +623,7 @@ describe('register --all', () => {
     expect(f.w.machine()).toMatchObject({ outcome: 'failed', exit: 1, step: 'order-desk' });
     // Three lookups, all for the first record: the subagent has no TXT, and the Order Desk was not looked up.
     expect(f.net.lookups()).toHaveLength(3);
-    expect(f.net.lookups().every((url) => url.searchParams.get('name') === first.txt!.name)).toBe(true);
+    expect(f.net.lookups().every((url) => dnsQuestion(url).name === first.txt!.name)).toBe(true);
     expect(Object.keys(f.w.state('register').notes).sort()).toEqual(['dry.reorder-agent']);
     const records = f.w.facts().records;
     expect(Object.keys(records).sort()).toEqual(['reorder-agent', 'stock-reader']);
@@ -623,7 +652,7 @@ describe('register --all', () => {
     expect(await f.run('--submit')).toBe(0);
     expect(steps(f)).toEqual(['reorder-agent', 'stock-reader', 'order-desk']);
     expect(f.w.facts().records['order-desk']!.did).toBe(shown.did);
-    expect(f.w.facts().organisations.alfa).toMatchObject({ txtName: `_did.${ALFA.domain}`, txtValue: shown.did, verifiedAt: null });
+    expect(f.w.facts().organisations['order-desk']).toMatchObject({ txtName: `_did.${ALFA.domain}`, txtValue: shown.did, verifiedAt: null });
     expect(shown.signers).toEqual(['controller', 'fee', 'order-small-supplier', 'order-medium-supplier', 'order-large-supplier', 'order-desk-service', 'accountable-alfa', 'provider', 'guardian-alfa']);
   });
 });
@@ -831,19 +860,19 @@ describe('register: the wait for the organisation check', () => {
     expect(f.net.urls).toEqual([`${GATEWAY}/1.0/identifiers/${reorder!.did}`]);
     verifyAt(f, reorder!, false);
     expect(await f.run('--submit')).toBe(4);
-    expect(f.w.facts().organisations.echo!.verifiedAt).toBeNull();
+    expect(f.w.facts().organisations['reorder-agent']!.verifiedAt).toBeNull();
     expect(steps(f)).toEqual(['reorder-agent', 'stock-reader', 'order-desk']);
     verifyAt(f, reorder!, true);
     expect(await f.run('--submit')).toBe(0);
     expect(f.w.machine()).toMatchObject({ outcome: 'done', step: 'organisation:reorder-agent' });
-    expect(f.w.facts().organisations.echo!.verifiedAt).toBe(iso(NOW));
+    expect(f.w.facts().organisations['reorder-agent']!.verifiedAt).toBe(iso(NOW));
     expect(f.w.state('register').steps['organisation:reorder-agent']).toMatchObject({ tx_hash: null, verified_at: iso(NOW) });
     // The next step is the organisation of the Order Desk.
     expect(await f.run('--submit')).toBe(4);
     expect(f.w.machine()).toMatchObject({ step: 'organisation:order-desk' });
     verifyAt(f, desk!, true);
     expect(await f.run('--submit')).toBe(0);
-    expect(f.w.facts().organisations.alfa!.verifiedAt).toBe(iso(NOW));
+    expect(f.w.facts().organisations['order-desk']!.verifiedAt).toBe(iso(NOW));
     const facts = JSON.stringify(f.w.facts());
     expect(await f.run('--submit')).toBe(0);
     expect(f.w.machine()).toMatchObject({ outcome: 'finished', exit: 0 });
@@ -869,9 +898,9 @@ describe('register: the wait for the organisation check', () => {
     expect(await f.run('--submit')).toBe(1);
     const text = errorText(f);
     for (const phrase of ['_did.', 'every 10 minutes', '24 hours', 'update of the record']) expect(text).toContain(phrase);
-    expect(text).toContain(f.w.facts().organisations.echo!.txtValue);
+    expect(text).toContain(f.w.facts().organisations['reorder-agent']!.txtValue);
     expect(f.w.machine()).toMatchObject({ outcome: 'failed', exit: 1, step: 'organisation:reorder-agent' });
-    expect(f.w.facts().organisations.echo!.verifiedAt).toBeNull();
+    expect(f.w.facts().organisations['reorder-agent']!.verifiedAt).toBeNull();
     // The twin: verified even after the time limit, it ends the step.
     verifyAt(f, reorder!, true);
     expect(await f.run('--submit')).toBe(0);
@@ -899,10 +928,258 @@ describe('register: the wait for the organisation check', () => {
     verifyAt(f, reorder!, true);
     expect(await f.run()).toBe(0);
     expect(f.w.machine()).toMatchObject({ mode: 'dry', outcome: 'dry', step: 'organisation:reorder-agent' });
-    expect(f.w.facts().organisations.echo!.verifiedAt).toBeNull();
+    expect(f.w.facts().organisations['reorder-agent']!.verifiedAt).toBeNull();
     expect(steps(f)).toEqual(['reorder-agent', 'stock-reader', 'order-desk']);
     expect(await f.run('--submit')).toBe(0);
-    expect(f.w.facts().organisations.echo!.verifiedAt).toBe(iso(NOW));
+    expect(f.w.facts().organisations['reorder-agent']!.verifiedAt).toBe(iso(NOW));
+  });
+});
+
+describe('register: agents, subagents and additional records', () => {
+  const flags = { has: () => false, value: () => undefined };
+  const uc2Records = ['prior-authorization-agent', 'record-reader', 'drafter', 'insurer-intake-agent'];
+  const uc3Records = ['sourcing-agent', 'scorer-1', 'scorer-2', 'scorer-3', 'bid-desk-alfa', 'bid-desk-bravo', 'bid-desk-charlie', 'bravo-successor'];
+  const gatewayVerifies = (f: Fixture, shown: Result, did = shown.did): void => {
+    f.net.gateway.set(shown.did, { organisation: shown.txt!.name.slice('_did.'.length), verified: true, did });
+  };
+
+  it('registers both prior authorization subagents in order after their parent', async () => {
+    const f = await fixture({ use: UC2 });
+    expect(register.steps(UC2, flags)).toEqual([...uc2Records, 'organisation:prior-authorization-agent', 'organisation:insurer-intake-agent']);
+    const parent = await registered(f);
+    const reader = await registered(f);
+    const drafter = await registered(f);
+    const intake = await registered(f);
+    expect(steps(f)).toEqual(uc2Records);
+    for (const child of [reader, drafter]) {
+      expect(child.txt).toBeNull();
+      expect(child.signers).toEqual(['controller', 'fee', `${child.subject}-auth`, `${child.subject}-delegation`]);
+    }
+    gatewayVerifies(f, parent);
+    gatewayVerifies(f, intake);
+    expect(await f.run('--submit', '--all')).toBe(0);
+    expect(Object.keys(f.w.facts().organisations)).toEqual(['prior-authorization-agent', 'insurer-intake-agent']);
+  });
+
+  it('requires an Active scorer parent and keeps the Bravo successor TXT and verification separate', async () => {
+    const f = await fixture({ use: UC3 });
+    expect(register.steps(UC3, flags)).toEqual([...uc3Records, ...['sourcing-agent', 'bid-desk-alfa', 'bid-desk-bravo', 'bid-desk-charlie', 'bravo-successor'].map((id) => `organisation:${id}`)]);
+    const sourcing = await registered(f);
+    const parent = f.world.chain.held.find((out) => out.assets[`${DEPLOYMENT.identity.hash}${idOf(sourcing.did)}`] === 1n)!;
+    const original = parent.datum!;
+    const hold = { by: { type: 'ControllerSet' as const }, reason: 6, since: NOW - MINUTE, until: NOW + MINUTE };
+    parent.datum = encodeIdentityDatum({ ...decodeIdentityDatum(original), status: { type: 'Suspended', holds: [hold] } });
+    const before = f.hosted.built.length;
+    expect(await f.run('--submit')).toBe(2);
+    expect(errorText(f)).toContain('only an Active record can start a subagent');
+    expect(f.hosted.built).toHaveLength(before);
+    parent.datum = original;
+    for (const id of ['scorer-1', 'scorer-2', 'scorer-3']) {
+      const scorer = await registered(f);
+      expect(scorer).toMatchObject({ subject: id, txt: null, signers: ['controller', 'fee', `${id}-auth`, `${id}-delegation`] });
+      expect(f.hosted.calls.at(-1)?.args.parent).toBe(sourcing.did);
+    }
+    const alfa = await registered(f);
+    const bravo = await registered(f);
+    const charlie = await registered(f);
+    const successor = await dry(f);
+    expect(successor).toMatchObject({ subject: 'bravo-successor', txt: { name: bravo.txt!.name, value: successor.did }, signers: ['controller', 'fee', 'bravo-successor-auth', 'accountable-bravo'] });
+    expect(successor.did).not.toBe(bravo.did);
+    const signed = f.signs.length;
+    const previousLookups = f.net.lookups().length;
+    expect(await f.run('--submit')).toBe(2);  // All three resolvers still have only Bravo's DID.
+    expect(f.net.lookups()).toHaveLength(previousLookups + 3);
+    expect(errorText(f)).toContain('not public on all three resolvers');
+    expect(f.signs).toHaveLength(signed);
+    publish(f, successor);
+    expect(await f.run('--submit')).toBe(0);
+    expect(f.hosted.calls.at(-1)?.args).not.toHaveProperty('endpoint');
+    expect(f.hosted.calls.at(-1)?.args).not.toHaveProperty('capabilities');
+    expect(f.hosted.calls.at(-1)?.args).not.toHaveProperty('parent');
+    expect(steps(f)).toEqual(uc3Records);
+    const organisations = f.w.facts().organisations;
+    expect(organisations['bid-desk-bravo']).toEqual({ txtName: bravo.txt!.name, txtValue: bravo.did, verifiedAt: null });
+    expect(organisations['bravo-successor']).toEqual({ txtName: bravo.txt!.name, txtValue: successor.did, verifiedAt: null });
+    expect(organisations).not.toHaveProperty('bravo');
+
+    for (const shown of [sourcing, alfa, bravo, charlie]) gatewayVerifies(f, shown);
+    expect(await f.run('--submit', '--all')).toBe(4);
+    expect(f.w.machine()).toMatchObject({ step: 'organisation:bravo-successor' });
+    expect(f.w.facts().organisations['bid-desk-bravo']!.verifiedAt).toBe(iso(NOW));
+    expect(f.w.facts().organisations['bravo-successor']!.verifiedAt).toBeNull();
+    gatewayVerifies(f, successor, bravo.did);
+    expect(await f.run('--submit')).toBe(4);
+    expect(f.w.screen.text).toContain('a different DID');
+    gatewayVerifies(f, successor);
+    f.w.clock.t += MINUTE;
+    expect(await f.run('--submit')).toBe(0);
+    expect(f.w.facts().organisations['bravo-successor']!.verifiedAt).toBe(iso(f.w.clock.now()));
+  });
+});
+
+/** The pinned writer uses this ten-section envelope and these registration and gateway evidence shapes. */
+function pinnedRegistration(f: Fixture, over: { pending?: boolean; badEvidence?: 'missing' | 'other DID' | 'conflicting'; missingOrganisationStep?: boolean } = {}) {
+  const format = { useCase: USE_CASE, network: 'vector-mainnet' };
+  const path = join(f.w.stateDir, 'facts.json');
+  const header = { check: 'register', network: format.network, record: format.useCase };
+  const state = StateFile.open(join(f.w.stateDir, 'register.state.json'), header);
+  const verified = iso(NOW - MINUTE);
+  const registered = iso(NOW - 2 * MINUTE);
+  const journal = EvidenceFile.open(join(f.w.stateDir, 'register.evidence.json'), header, { clock: () => iso(NOW - MINUTE + 11) });
+  const fixtures = { records: {}, organisations: {}, stakes: {}, adverts: {}, manifests: {}, attestations: {}, claims: {}, tenants: {}, holds: {}, deploy: null } as const;
+  const moves = [REORDER, USE.agents[1]!].map((agent) => {
+    const organisation = USE.organisations.find(({ id }) => id === agent.organisation)!;
+    const tx = hashOf(`old register tx ${agent.id}`);
+    const id = hashOf(`old record ${agent.id}`);
+    const did = `${DID_PREFIX}${id}`;
+    const record = { did, id, tx, recordRef: `${tx}#0`, depositLovelace: '10000000', registeredAt: registered };
+    const fact = { txtName: `_did.${organisation.domain}`, txtValue: did, verifiedAt: over.pending === true && agent.id === 'order-desk' ? null : verified };
+    return { from: organisation.id, to: agent.id, domain: organisation.domain, record, fact };
+  });
+  const readerTx = hashOf('old reader tx');
+  const readerId = hashOf('old reader id');
+  const reader = { to: 'stock-reader', record: { did: `${DID_PREFIX}${readerId}`, id: readerId, tx: readerTx, recordRef: `${readerTx}#0`, depositLovelace: '10000000', registeredAt: registered }, fact: null };
+  const registeredRecords = [moves[0]!, reader, moves[1]!];
+  for (const { to, record, fact } of registeredRecords) {
+    const { did, id, tx, recordRef, depositLovelace } = record;
+    if (fact !== null) state.setNote(`dry.${to}`, { did, txtName: fact.txtName, txtValue: fact.txtValue, at: iso(NOW - 3 * MINUTE) });
+    state.recordStep(to, { tx_hash: tx, confirmed_at: registered, verified_at: registered, refs: { did, id, recordRef }, facts: { depositLovelace } });
+    journal.add({ step: to, status: 'confirmed', tx_hash: tx, fee_lovelace: 500_000n, at: registered, shows: { refs: { did, id, recordRef }, facts: { depositLovelace } } });
+    journal.add({ step: to, status: 'info', at: registered, shows: { verification: 'the record on the node is the record of the data', did } });
+  }
+  for (const { from, to, domain, record, fact } of moves) {
+    if (fact.verifiedAt === null) continue;
+    const name = `organisation:${to}`;
+    if (to !== 'order-desk' || over.missingOrganisationStep !== true) {
+      state.recordStep(name, { tx_hash: null, confirmed_at: verified, verified_at: verified, refs: { did: record.did }, facts: { organisation: from, domain } });
+    }
+    const isDesk = to === 'order-desk';
+    const did = isDesk && over.badEvidence === 'other DID' ? moves[0]!.record.did : record.did;
+    const shows = { organisation: from, domain, did, organisationVerified: true };
+    if (!isDesk || over.badEvidence !== 'missing') journal.add({ step: name, status: 'info', shows });
+    if (isDesk && over.badEvidence === 'conflicting') journal.add({ step: name, status: 'info', shows: { ...shows, organisationVerified: false } });
+  }
+  const records = Object.fromEntries(registeredRecords.map(({ to, record }) => [to, record]));
+  const organisations = Object.fromEntries(moves.map(({ from, fact }) => [from, fact]));
+  const envelope = { format: 1, ...format, facts: { ...fixtures, records, organisations } };
+  const write = (): void => writeFileSync(path, `${JSON.stringify(envelope, null, 2)}\n`, { mode: 0o600 });
+  write();
+  return { path, moves, organisations, records, write, store: FactsFile.open(path, format) };
+}
+
+describe('register: legacy organisation facts', () => {
+  it('reads pinned writer bytes without a dry write and moves both facts once on submit', async () => {
+    const f = await fixture();
+    const old = pinnedRegistration(f);
+    const source = readFileSync(old.path, 'utf8');
+    expect(await f.run('status')).toBe(0);
+    expect(await f.run()).toBe(0);
+    expect(readFileSync(old.path, 'utf8')).toBe(source);
+    expect(await f.run('--submit')).toBe(0);
+    expect(f.w.machine()).toMatchObject({ outcome: 'finished' });
+    expect(old.store.read().organisations).toEqual(Object.fromEntries(old.moves.map(({ to, fact }) => [to, fact])));
+    expect(old.store.read().records).toEqual(old.records);
+    const migrated = readFileSync(old.path, 'utf8');
+    old.store.moveOrganisations(old.moves);
+    expect(await f.run('--submit')).toBe(0);
+    expect(readFileSync(old.path, 'utf8')).toBe(migrated);
+    expect(f.net.urls).toEqual([]);
+    expect(f.hosted.calls).toEqual([]);
+    expect(f.signs).toEqual([]);
+  });
+
+  it.each([null, 'another-case'])('refuses organisation-keyed facts without the matching released writer: %s', async (writer) => {
+    const { legacyOrganisationWriter: _original, ...current } = USE;
+    const f = await fixture({ use: writer === null ? current : { ...current, legacyOrganisationWriter: writer } });
+    const old = pinnedRegistration(f);
+    const bytes = readFileSync(old.path);
+    expect(await f.run('--submit')).toBe(2);
+    expect(readFileSync(old.path)).toEqual(bytes);
+    expect(f.signs).toEqual([]);
+  });
+
+  it('preserves a pending legacy fact without giving it another subject\'s verification', async () => {
+    const f = await fixture();
+    const old = pinnedRegistration(f, { pending: true });
+    expect(await f.run('--submit')).toBe(4);
+    const desk = old.moves[1]!;
+    expect(f.net.urls).toEqual([`${GATEWAY}/1.0/identifiers/${desk.record.did}`]);
+    expect(old.store.read().organisations['order-desk']).toEqual(desk.fact);
+    expect(old.store.read().organisations['reorder-agent']).toEqual(old.moves[0]!.fact);
+    f.net.gateway.set(desk.record.did, { organisation: desk.domain, verified: true });
+    expect(await f.run('--submit')).toBe(0);
+    expect(old.store.read().organisations['order-desk']!.verifiedAt).toBe(iso(NOW));
+    expect(f.signs).toEqual([]);
+  });
+
+  it.each(['other DID', 'conflicting'] as const)('keeps every old byte when verification evidence is %s', async (badEvidence) => {
+    const f = await fixture();
+    const old = pinnedRegistration(f, { badEvidence });
+    const source = readFileSync(old.path, 'utf8');
+    expect(await f.run('--submit')).toBe(2);
+    expect(errorText(f)).toContain('no matching verification evidence or its evidence conflicts');
+    expect(readFileSync(old.path, 'utf8')).toBe(source);
+    expect(f.net.urls).toEqual([]);
+    expect(f.signs).toEqual([]);
+  });
+
+  it.each([true, false])('rechecks an interrupted legacy verification when the original step is missing: %s', async (missingOrganisationStep) => {
+    const f = await fixture();
+    const old = pinnedRegistration(f, { badEvidence: 'missing', missingOrganisationStep });
+    const desk = old.moves[1]!;
+    const previous = readFileSync(old.path, 'utf8');
+    f.net.gateway.set(desk.record.did, { organisation: desk.domain, verified: true, did: old.moves[0]!.record.did });
+    expect(await f.run('--submit')).toBe(4);
+    expect(readFileSync(old.path, 'utf8')).toBe(previous);
+    expect(f.w.screen.text).toContain('needs fresh verification');
+    f.net.gateway.set(desk.record.did, { organisation: desk.domain, verified: true });
+    // Simulate interruption after the observation but before the atomic facts move.
+    writeFileSync(`${old.path}.lock`, '', { mode: 0o600 });
+    expect(await f.run('--submit')).toBe(2);
+    expect(readFileSync(old.path, 'utf8')).toBe(previous);
+    const name = 'organisation:order-desk';
+    const shown = { organisationVerified: true, did: desk.record.did, legacyVerifiedAt: desk.fact.verifiedAt, verifiedAt: iso(NOW), txtName: desk.fact.txtName, txtValue: desk.fact.txtValue };
+    expect(f.w.evidence('register').filter(({ step }) => step === name)).toEqual([expect.objectContaining({ at: iso(NOW), shows: expect.objectContaining(shown) })]);
+    rmSync(`${old.path}.lock`);
+    f.net.urls.length = 0;
+    expect(await f.run('--submit')).toBe(0);
+    expect(f.net.urls).toEqual([]);
+    expect(old.store.read().organisations['order-desk']).toEqual({ ...desk.fact, verifiedAt: iso(NOW) });
+    expect(f.w.state('register').steps[name]).toMatchObject({ refs: { did: desk.record.did }, verified_at: iso(NOW) });
+    expect(f.w.evidence('register').filter(({ step }) => step === name)).toHaveLength(1);
+    expect(f.hosted.calls).toEqual([]);
+    expect(f.signs).toEqual([]);
+  });
+
+  it.each(['wrong TXT name', 'wrong TXT value', 'missing TXT fact', 'missing record', 'ambiguous DID', 'conflicting target'] as const)('refuses a legacy map with %s', async (problem) => {
+    const f = await fixture();
+    const old = pinnedRegistration(f);
+    const desk = old.moves[1]!;
+    if (problem === 'wrong TXT name') old.organisations[desk.from] = { ...desk.fact, txtName: '_did.other.example' };
+    if (problem === 'wrong TXT value') old.organisations[desk.from] = { ...desk.fact, txtValue: old.moves[0]!.fact.txtValue };
+    if (problem === 'missing TXT fact') delete old.organisations[desk.from];
+    if (problem === 'missing record') delete old.records[desk.to];
+    if (problem === 'ambiguous DID') old.records.duplicate = desk.record;
+    if (problem === 'conflicting target') old.organisations[desk.to] = { ...desk.fact, verifiedAt: null };
+    old.write();
+    const source = readFileSync(old.path, 'utf8');
+    expect(await f.run('--submit')).toBe(2);
+    expect(readFileSync(old.path, 'utf8')).toBe(source);
+    expect(f.signs).toEqual([]);
+  });
+
+  it('removes an identical old key and refuses a stale attribution or a duplicate move without a partial write', async () => {
+    const f = await fixture();
+    const old = pinnedRegistration(f);
+    const [first, second] = old.moves;
+    old.store.put('organisations', [first!.to], first!.fact);
+    const source = readFileSync(old.path, 'utf8');
+    expect(() => old.store.moveOrganisations([first!, first!])).toThrow('uses one key more than once');
+    expect(() => old.store.moveOrganisations([first!, { ...second!, record: { ...second!.record, tx: hashOf('a stale record') } }])).toThrow('record attribution');
+    expect(readFileSync(old.path, 'utf8')).toBe(source);
+    expect(await f.run('--submit')).toBe(0);
+    expect(old.store.read().organisations).toEqual({ [first!.to]: first!.fact, [second!.to]: second!.fact });
+    expect(f.signs).toEqual([]);
   });
 });
 

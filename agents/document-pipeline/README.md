@@ -115,6 +115,12 @@ pnpm --filter @vsa/document-pipeline test
 
 The tests need no network and no key: the pipeline runs against the in-memory marketplace of `test/stub-suppliers.ts`, the keys of the service tests are made at run time, and the process tests start `src/index.ts` against a node that is not there, with stand-ins for `pdfinfo` and `pdftoppm` first on the path (the start asks them for their version). The tests that render a real PDF, and the one that runs the check on the real tools, run only when `pdftoppm` and `pdfinfo` (poppler-utils) are on the path, and are skipped otherwise. The interim lines of a long job are read off a raw socket, because fetch hides them; a real SIGTERM cannot be sent to a child process on Windows, so the signal handling is tested through the `process` object.
 
+The normal suite checks that a dense schema at the byte limit compiles and that one extra byte is refused. To also check the 2 s compile limit, run this command from the repository root on an idle machine. Do not run other tests at the same time.
+
+```bash
+VSA_WORKLOAD_PERF=1 pnpm --filter @vsa/document-pipeline exec vitest run test/extract.test.ts -t 'takes a dense schema' --maxWorkers=1
+```
+
 ## Image
 
 `Dockerfile` builds the service image. The build context is the repository root, because the image installs the workspace from the lockfile: `docker build -f agents/document-pipeline/Dockerfile -t vsa/document-pipeline:dev .`. The image runs as the `node` user under `tini`, listens on 9092 and answers `/healthz` for its health check. It installs `poppler-utils` with a base font (`fontconfig`, `ttf-dejavu`), because a PDF whose fonts are not embedded cannot be drawn without one. `/data` is a volume owned by `node`. The memory limit is set where the container is run; the image carries none.

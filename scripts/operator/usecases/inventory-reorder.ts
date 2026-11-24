@@ -74,8 +74,11 @@ const DELEGATION_ITEMS: UseCase['funding'][number]['items'] = [
   { what: 'Top-ups of the returned output', lovelace: 500_000n },
 ];
 
+const RELEASED_REGISTER_CASE = 'inventory-reorder';
+
 const USE_CASE: UseCase = {
-  name: 'inventory-reorder',
+  name: RELEASED_REGISTER_CASE,
+  legacyOrganisationWriter: RELEASED_REGISTER_CASE,
   title: 'Use case 1 (inventory reorder)',
   keys: [
     ...CORE_KEYS,

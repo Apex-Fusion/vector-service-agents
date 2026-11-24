@@ -3,7 +3,7 @@
 // kept out of every other line, out of the manifest, out of the log and out of a message. The fault switch: the empty text and the one value of the agent start it, and any other value stops the start. The start
 // itself, with the parts that a test replaces: the line it logs, the manifest it serves and the hash that the script of the repository prints for it, the state directory, the node, the co-sign register, and the stop.
 // Then `src/index.ts` as a process, against a stand-in node.
-import { execFile, spawn } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -13,6 +13,7 @@ import { afterEach, describe, expect, test } from 'vitest';
 import { VAULT_PAYER_IDENTITY_SETTINGS, rawHexToBech32 } from '@vsa/buyer-core';
 import { renderManifest } from '@vsa/usecase-kit/manifest';
 import { AGENT_DID as KIT_AGENT_DID, DELEG_A, liveDelegation, world as ledgerWorld } from '../../../../packages/usecase-kit/test/cosign/support.ts';
+import { CHILD_CLEANUP_MS, Child } from '../../../../services/mock-systems/test/support/child.ts';
 import { KEY_ROLES, keyOf } from '../../src/serve/keys.ts';
 import { STATUS_SINCE_DEFAULT, manifestFromEnv } from '../../src/serve/manifest.ts';
 import { SETTINGS, loadConfig, stopOnSignals } from '../../src/serve/start.ts';
@@ -419,20 +420,15 @@ describe('the stop on a signal', () => {
 });
 
 describe('src/index.ts as a process', () => {
-  /**
-   * The environment of the child: the complete environment, and no setting of this process. The addresses that the child could use point at a port that nothing holds. The two fetches of the start that are not made
-   * to such a port, the Module-1 manifest at its pinned address and the calls to the node at its https address, are answered by `child-fetch.mjs`, which a child loads before the service: no child reaches a network.
-   */
-  const spawnService = (env: NodeJS.ProcessEnv) => {
+  const START_MS = 60_000;
+  const REQUEST_MS = 15_000;
+  const EXIT_MS = 15_000;
+  const PROCESS_TEST_MS = START_MS + REQUEST_MS + EXIT_MS + CHILD_CLEANUP_MS + 5_000;
+  // The preload answers the pinned manifest and node requests. Other endpoints are not on the live chain.
+  const spawnService = (env: NodeJS.ProcessEnv, label: string) => {
     const inherited: NodeJS.ProcessEnv = { ...process.env };
     for (const name of SETTINGS) delete inherited[name];
-    const child = spawn(process.execPath, ['--import', 'tsx', '--import', childFetch, 'src/index.ts'], { cwd: agentDir, env: { ...inherited, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
-    let out = '';
-    let err = '';
-    child.stdout.on('data', (chunk: Buffer) => { out += chunk.toString('utf8'); });
-    child.stderr.on('data', (chunk: Buffer) => { err += chunk.toString('utf8'); });
-    const exited = new Promise<number | null>((resolve) => child.on('exit', (code) => resolve(code)));
-    return { child, exited, out: () => out, err: () => err };
+    return new Child(process.execPath, ['--import', 'tsx', '--import', childFetch, 'src/index.ts'], { cwd: agentDir, env: { ...inherited, ...env }, label });
   };
   const OFF_CHAIN: NodeJS.ProcessEnv = { VECTOR_OGMIOS_URL: 'https://198.51.100.8:1337', VECTOR_KOIOS_URL: 'http://127.0.0.1:9', VECTOR_SUBMIT_URL: 'http://127.0.0.1:9', IDENTITY_GATEWAY_URL: 'https://127.0.0.1:9' };
 
@@ -446,37 +442,41 @@ describe('src/index.ts as a process', () => {
       [{ VECTOR_MODULE1_MANIFEST: MODULE1_FIXTURE }, /^\[prior-authorization-agent\] cannot start: environment variable VECTOR_MODULE1_MANIFEST must be an https URL/],
       [{ VECTOR_OGMIOS_URL: 'http://198.51.100.8:1337' }, /^\[prior-authorization-agent\] cannot start: environment variable VECTOR_OGMIOS_URL must be an https address/],
     ];
-    const results = await Promise.all(cases.map(async ([env]) => {
-      const p = spawnService({ ...startEnv({ PRIORAUTH_STATE_DIR: dir }), ...OFF_CHAIN, ...env });
-      return { code: await p.exited, out: p.out(), err: p.err() };
+    const results = await Promise.allSettled(cases.map(async ([env, refusal]) => {
+      const child = spawnService({ ...startEnv({ PRIORAUTH_STATE_DIR: dir }), ...OFF_CHAIN, ...env }, `refusal: ${Object.keys(env)[0]}`);
+      try {
+        expect(await child.waitForExit('startup refusal', START_MS), child.diagnostics()).toEqual({ code: 1, signal: null });
+        expect(child.stderr).toMatch(refusal);
+        expect(child.stdout).not.toContain('listening on');
+        for (const secret of secretsOf()) expect((child.stdout + child.stderr).toLowerCase()).not.toContain(secret.toLowerCase());
+      } finally {
+        await child.cleanup();
+      }
     }));
-    cases.forEach(([, refusal], index) => {
-      expect(results[index].code).toBe(1);
-      expect(results[index].err).toMatch(refusal);
-      expect(results[index].out).not.toContain('listening on');
-      for (const secret of secretsOf()) expect((results[index].out + results[index].err).toLowerCase()).not.toContain(secret.toLowerCase());
-    });
-  }, 90_000);
+    for (const result of results) if (result.status === 'rejected') throw result.reason;
+  }, START_MS + CHILD_CLEANUP_MS + 5_000);
 
   test('started for real with a complete environment: it logs its line, answers /healthz and /agent.json, refuses a job without the token, prints no secret, and stops on SIGTERM with exit 0', async () => {
     const dir = tempDir();
-    const p = spawnService({ ...startEnv({ PRIORAUTH_STATE_DIR: dir, VECTOR_MARKETPLACE_INDEXER_URL: undefined }), ...OFF_CHAIN });
+    const p = spawnService({ ...startEnv({ PRIORAUTH_STATE_DIR: dir, VECTOR_MARKETPLACE_INDEXER_URL: undefined }), ...OFF_CHAIN }, 'Prior Authorization Agent');
     try {
-      await until(() => /listening on 127\.0\.0\.1:\d+/.test(p.out()) || p.child.exitCode !== null, 20_000);
-      const port = /listening on 127\.0\.0\.1:(\d+)/.exec(p.out())?.[1];
-      expect(port, p.err()).toBeDefined();
-      const base = `http://127.0.0.1:${port}`;
-      expect(await (await fetch(`${base}/healthz`)).json()).toStrictEqual({ ok: true });
-      const manifest = (await (await fetch(`${base}/agent.json`)).json()) as { name: string; status: unknown; keys: { buyer_pkh: string } };
+      const [, port] = await p.waitFor(/^\[prior-authorization-agent\] listening on 127\.0\.0\.1:([1-9]\d*);/m, 'Prior Authorization startup', START_MS);
+      const signal = AbortSignal.timeout(REQUEST_MS);
+      const request = (path: string, init?: RequestInit) => fetch(`http://127.0.0.1:${port}${path}`, { ...init, signal }).catch((cause: unknown) => {
+        throw new Error(`request to ${path} failed\n${p.diagnostics()}`, { cause });
+      });
+      // Wait for a real HTTP answer before sending a signal. The entry sets the handlers after it logs the listener.
+      expect(await (await request('/healthz')).json()).toStrictEqual({ ok: true });
+      const manifest = (await (await request('/agent.json')).json()) as { name: string; status: unknown; keys: { buyer_pkh: string } };
       expect([manifest.name, manifest.status, manifest.keys.buyer_pkh]).toStrictEqual(['Prior Authorization Agent', { chip: 'proposed', since: STATUS_SINCE_DEFAULT }, keyOf(SERVICE_HEX).pkh]);
-      expect((await fetch(`${base}/`, { method: 'POST', body: '[]' })).status).toBe(401);
-      expect(p.out()).toMatch(/^\[prior-authorization-agent\] listening on 127\.0\.0\.1:\d+; manifest [0-9a-f]{64}; wallets \(service, delegation 1, delegation 2\) addr1/m);
-      for (const secret of secretsOf()) expect((p.out() + p.err()).toLowerCase()).not.toContain(secret.toLowerCase());
-      p.child.kill('SIGTERM');
-      expect(await p.exited).toBe(0);
-      expect(p.out()).toContain('SIGTERM: stopping');
+      expect((await request('/', { method: 'POST', body: '[]' })).status).toBe(401);
+      expect(p.stdout).toMatch(/^\[prior-authorization-agent\] listening on 127\.0\.0\.1:\d+; manifest [0-9a-f]{64}; wallets \(service, delegation 1, delegation 2\) addr1/m);
+      for (const secret of secretsOf()) expect((p.stdout + p.stderr).toLowerCase()).not.toContain(secret.toLowerCase());
+      p.signal('SIGTERM');
+      expect(await p.waitForExit('exit after SIGTERM', EXIT_MS), p.diagnostics()).toEqual({ code: 0, signal: null });
+      expect(p.stdout).toContain('SIGTERM: stopping');
     } finally {
-      p.child.kill('SIGKILL');
+      await p.cleanup();
     }
-  }, 90_000);
+  }, PROCESS_TEST_MS);
 });

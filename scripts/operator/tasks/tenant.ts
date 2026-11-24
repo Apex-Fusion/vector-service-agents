@@ -1,14 +1,14 @@
-// scripts/operator/tasks/tenant.ts - the task tenant: it makes the tenant of a run on the mock systems of use case 1 (inventory reorder), through the operator route of the mock service.
-// The call is `POST /admin/tenants` on the public origin of the mock systems, with the operator token of the mock in the header `authorization` and a JSON body that names the tenant and its two
-// organisations. The service makes the tenant from its default seed, and it resets a tenant that exists when the same name comes again: the writes and the log of that tenant are gone. So the task
-// refuses a name that the facts hold for another run, and a name that the facts hold for this run unless the flag --reset is given.
+// scripts/operator/tasks/tenant.ts - make or reset the tenant of a run on the mock systems.
+// A new tenant needs a confirmed missing state and an atomic create request. A reset removes writes and log entries.
+// A reset needs --reset, a matching local fact, and a matching owner in the mock service.
 // The token is read from the env file of the mock at the moment of the call, held in one local variable, and put into the header and nowhere else: no argument, line of output, message, fact,
 // state or evidence entry holds it. An error of a failed call names the status and the code of the answer, and never a header, a message of the answer or a message of the network.
 import { iso } from '../../checks/lib/format.ts';
 import { PreconditionError } from '../../checks/lib/session.ts';
 import type { TaskDefinition, TaskSession, TenantFact } from '../lib/contract.ts';
 import { EnvFile, EnvFileError } from '../lib/envfile.ts';
-import { MOCK_INSURER_DOMAIN, MOCK_PUBLIC_BASE } from '../lib/mock-hosts.ts';
+import { MOCK_PUBLIC_BASE } from '../lib/mock-hosts.ts';
+import { INVENTORY_CAPABILITIES } from '../lib/platform.ts';
 import { codeOf } from '../lib/registry.ts';
 import { FlagError } from '../lib/runner.ts';
 
@@ -20,12 +20,17 @@ const TOKEN_LINE = 'MOCK_OPERATOR_TOKEN';
 /** The code of a refusal of the mock service: lower-case words with underscores. Any other text of an answer is not shown. */
 const REFUSAL_CODE = /^[a-z][a-z_]{0,39}$/;
 const CALL_LIMIT_MS = 30_000;
-const MAX_ANSWER_CHARS = 1_048_576;
+const MAX_ANSWER_BYTES = 1_048_576;
 
 interface Extra { result: Readonly<Record<string, unknown>> | null }
 
 /** What `status` reads of the state and the log of a tenant. */
-interface TenantCounts { readonly orders: number; readonly supplierOrders: number; readonly lines: number; readonly dropped: number }
+interface TenantCounts {
+  readonly orders: { readonly store: number; readonly supplier: number } | null;
+  readonly sections: readonly string[];
+  readonly lines: number;
+  readonly dropped: number;
+}
 
 /** The answer of the mock service as text: the status and the text of the body. No header is kept. */
 interface Answer { readonly status: number; readonly text: string }
@@ -40,6 +45,8 @@ function networkCode(err: unknown): string {
   return typeof code === 'string' && /^[A-Z0-9_]{2,24}$/.test(code) ? code : 'ERROR';
 }
 
+const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
+
 /** The JSON of a text, or undefined when the text is no JSON. */
 function parseJson(text: string): unknown {
   try { return JSON.parse(text); } catch { return undefined; }
@@ -48,49 +55,85 @@ function parseJson(text: string): unknown {
 /** The code of a refusal in the body of an answer, or null. */
 function refusalCodeOf(text: string): string | null {
   const body = parseJson(text);
-  return typeof body === 'object' && body !== null && 'error' in body && typeof body.error === 'string' && REFUSAL_CODE.test(body.error) ? body.error : null;
+  return isObject(body) && typeof body.error === 'string' && REFUSAL_CODE.test(body.error) ? body.error : null;
 }
 
-/** The field `created` of the answer to the call that makes a tenant, or null when the body is no object of the mock service for this tenant. */
-function createdOf(text: string, name: string): boolean | null {
-  const body = parseJson(text);
-  return typeof body === 'object' && body !== null && 'tenant' in body && body.tenant === name && 'created' in body && typeof body.created === 'boolean' ? body.created : null;
-}
-
-/** The number of entries of the list `orders` in the object that `section` names, or null. */
+/** The number of entries in a section's list of orders, or null. */
 function ordersIn(section: unknown): number | null {
-  return typeof section === 'object' && section !== null && 'orders' in section && Array.isArray(section.orders) ? section.orders.length : null;
+  return isObject(section) && Array.isArray(section.orders) ? section.orders.length : null;
 }
 
 /** The counts that `status` prints, or null when the state or the log has not the form that the mock service documents. */
-function countsOf(state: string, log: string): TenantCounts | null {
+function countsOf(name: string, state: string, log: string, includeOrders: boolean): TenantCounts | null {
   const stateBody = parseJson(state);
   const logBody = parseJson(log);
-  if (typeof stateBody !== 'object' || stateBody === null || !('po_store' in stateBody) || !('supplier' in stateBody)) return null;
-  if (typeof logBody !== 'object' || logBody === null || !('lines' in logBody) || !Array.isArray(logBody.lines) || !('dropped' in logBody) || typeof logBody.dropped !== 'number') return null;
-  const orders = ordersIn(stateBody.po_store);
-  const supplierOrders = ordersIn(stateBody.supplier);
-  return orders === null || supplierOrders === null ? null : { orders, supplierOrders, lines: logBody.lines.length, dropped: logBody.dropped };
+  if (!isObject(stateBody) || stateBody.tenant !== name || !isObject(logBody) || logBody.tenant !== name || !Array.isArray(logBody.lines)
+    || logBody.lines.some((line: unknown) => !isObject(line) || line.tenant !== name)) return null;
+  const { dropped } = logBody;
+  if (typeof dropped !== 'number' || !Number.isSafeInteger(dropped) || dropped < 0) return null;
+  const lines = logBody.lines.length;
+  if (includeOrders) {
+    const store = ordersIn(stateBody.po_store);
+    const supplier = ordersIn(stateBody.supplier);
+    return store === null || supplier === null ? null : { orders: { store, supplier }, sections: [], lines, dropped };
+  }
+  const sections = Object.entries(stateBody).flatMap(([name, value]) =>
+    name !== 'organisations' && /^[a-z][a-z_]{0,30}$/.test(name) && (Array.isArray(value) || isObject(value)) ? [name] : []);
+  return { orders: null, sections, lines, dropped };
 }
 
 async function call(session: TaskSession<Extra>, method: 'GET' | 'POST', path: string, init: { headers: Record<string, string>; body?: string }): Promise<Answer> {
   let response: Response;
   try {
-    response = await session.fetchImpl(`${MOCK_PUBLIC_BASE}${path}`, { method, headers: init.headers, body: init.body, redirect: 'error', signal: AbortSignal.timeout(CALL_LIMIT_MS) });
+    response = await session.fetchImpl(`${MOCK_PUBLIC_BASE}${path}`, { ...init, method, cache: 'no-store', redirect: 'error', signal: AbortSignal.timeout(CALL_LIMIT_MS) });
   } catch (err) {
     throw new Error(`the call to the mock service failed (${networkCode(err)}), and nothing is known of the tenant`);
   }
-  let text: string;
-  try { text = (await response.text()).slice(0, MAX_ANSWER_CHARS); } catch (err) {
-    throw new Error(`the answer of the mock service could not be read (${networkCode(err)}), and nothing is known of the tenant`);
+  const length = response.headers.get('content-length');
+  let declared: number | null = null;
+  if (length !== null) {
+    declared = Number(length);
+    if (!/^\d+$/.test(length) || !Number.isSafeInteger(declared) || declared > MAX_ANSWER_BYTES) {
+      void response.body?.cancel().catch(() => undefined);
+      throw new Error('the answer of the mock service has an invalid or oversized Content-Length, and nothing is known of the tenant');
+    }
+  }
+  let bytes = 0;
+  let text = '';
+  const reader = response.body?.getReader();
+  const decoder = new TextDecoder('utf-8', { fatal: true });
+  try {
+    if (reader !== undefined) {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        bytes += value.byteLength;
+        if (bytes > MAX_ANSWER_BYTES) {
+          void reader.cancel().catch(() => undefined);
+          break;
+        }
+        text += decoder.decode(value, { stream: true });
+      }
+      if (bytes <= MAX_ANSWER_BYTES) text += decoder.decode();
+    }
+  } catch (err) {
+    void reader?.cancel().catch(() => undefined);
+    throw new Error(`the answer of the mock service could not be read in full (${networkCode(err)}), and nothing is known of the tenant`);
+  } finally {
+    reader?.releaseLock();
+  }
+  if (bytes > MAX_ANSWER_BYTES) throw new Error(`the answer of the mock service exceeds ${MAX_ANSWER_BYTES} bytes, and nothing is known of the tenant`);
+  const encoding = response.headers.get('content-encoding')?.toLowerCase();
+  if (declared !== null && (encoding === undefined || encoding === 'identity') && bytes !== declared) {
+    throw new Error('the answer of the mock service does not match its Content-Length, and nothing is known of the tenant');
   }
   return { status: response.status, text };
 }
 
 /** The refusal that an answer with another status than the expected ones is: the status and the code, and no header and no message. A refused token is a setting (nothing was done). */
-function refusalOf(answer: Answer): Error {
+function refusalOf(answer: Answer, token?: string): Error {
   const code = refusalCodeOf(answer.text);
-  const detail = `HTTP ${answer.status}${code === null ? '' : ` ${code}`}`;
+  const detail = `HTTP ${answer.status}${code === null || (token !== undefined && code.includes(token)) ? '' : ` ${code}`}`;
   return answer.status === 401 || answer.status === 403
     ? new PreconditionError(`the mock service refused the operator token (${detail}): check the file of the token`)
     : new Error(`the mock service refused the call (${detail})`);
@@ -109,16 +152,17 @@ function operatorToken(path: string | null): string {
 }
 
 /** The name of the tenant: `--name`, or the prefix of the run kind and the date. A flag problem is exit 2 and names the flag. */
-function tenantName(session: TaskSession<Extra>): { name: string; sku: string | null } {
+function tenantName(session: TaskSession<Extra>): { name: string; subject: string | null } {
   const given = session.flags.value('name');
   const kind = session.flags.value('kind');
   if (given === undefined && kind === undefined) throw new FlagError('give --kind <clean or failure> or --name <tenant>: the task has no table of run labels, so the name of the tenant comes from one of them');
-  const spec = kind === undefined ? undefined : session.use.runs.find((run) => run.id === kind);
-  if (kind !== undefined && spec === undefined) throw new FlagError(`--kind is one of: ${session.use.runs.map((run) => run.id).join(', ')}`);
+  const runs = session.use.runs.filter((run) => run.id !== 'lifecycle');
+  const spec = kind === undefined ? undefined : runs.find((run) => run.id === kind);
+  if (kind !== undefined && spec === undefined) throw new FlagError(`--kind is one of: ${runs.map((run) => run.id).join(', ')}`);
   const date = new Date(session.clock.now()).toISOString().slice(0, 10).replace(/-/g, '');
   const name = given ?? `${spec!.tenantPrefix}-${date}`;
   if (!TENANT_NAME.test(name)) throw new FlagError('the name of a tenant has 1 to 48 lower-case letters, digits or hyphens, and its first character is no hyphen');
-  return { name, sku: spec === undefined ? null : spec.subject };
+  return { name, subject: spec?.subject ?? null };
 }
 
 /** The tenant that the facts hold for a run, or undefined. */
@@ -127,45 +171,67 @@ function heldBy(session: TaskSession<Extra>, run: string): TenantFact | undefine
   return Object.hasOwn(tenants, run) ? tenants[run] : undefined;
 }
 
-/** The domain of the supplier organisation of the tenant: the organisation of the Order Desk. */
-function supplierDomain(session: TaskSession<Extra>): string {
-  const desk = session.use.agents.find((agent) => agent.kind === 'order-desk');
-  const organisation = desk === undefined ? undefined : session.use.organisations.find((one) => one.id === desk.organisation);
-  if (organisation === undefined) throw new PreconditionError('the data of the use case names no organisation for the Order Desk');
-  return organisation.domain;
-}
-
 async function create(session: TaskSession<Extra>): Promise<{ kind: 'dry' } | { kind: 'done'; message: string }> {
   const run = session.flags.value('run');
   if (run === undefined) throw new FlagError('--run <label> is required: the tenant belongs to a run');
-  const { name, sku } = tenantName(session);
+  const { name, subject } = tenantName(session);
   const facts = session.facts.read();
-  const owner = Object.entries(facts.tenants).find(([label, fact]) => fact.name === name && label !== run);
-  if (owner !== undefined) throw new PreconditionError(`the facts hold the tenant ${name} for the run ${owner[0]}: a second call with this name resets that tenant, so use another name`);
-  const held = heldBy(session, run);
+  const other = Object.entries(facts.tenants).find(([label, fact]) => fact.name === name && label !== run);
+  if (other !== undefined) throw new PreconditionError(`the facts hold the tenant ${name} for the run ${other[0]}: use another name`);
+  const held = Object.hasOwn(facts.tenants, run) ? facts.tenants[run] : undefined;
+  const reset = session.flags.has('reset');
   if (held !== undefined && held.name !== name) throw new PreconditionError(`the facts hold the tenant ${held.name} for the run ${run}: give --name ${held.name} with --reset to reset it, or use another run label`);
-  if (held !== undefined && !session.flags.has('reset')) throw new PreconditionError(`the facts hold the tenant ${name} for the run ${run} already: a second call resets it, and its writes and its log are lost. Give --reset to reset it`);
-  const body = { tenant: name, organisations: { supplier: supplierDomain(session), insurer: MOCK_INSURER_DOMAIN } };
+  if (held !== undefined && !reset) throw new PreconditionError(`the facts hold the tenant ${name} for the run ${run} already. Give --reset to remove its writes and log and reset it`);
+  if (held === undefined && reset) throw new PreconditionError(`--reset requires a local tenant fact for the run ${run}`);
+  const target = {
+    tenant: name, organisations: session.use.tenantOrganisations,
+    operation: reset ? 'reset' : 'create', owner: { use_case: session.use.name, run },
+  };
+  const domains = new Set<string>();
+  const vendors = session.use.tenantSeed?.vendors.map((vendor) => {
+    const organisation = session.use.organisations.find((one) => one.id === vendor.organisation);
+    if (organisation === undefined) throw new PreconditionError(`vendor ${vendor.vendor_id}: the data does not name the organisation ${vendor.organisation}`);
+    const domain = organisation.domain.toLowerCase();
+    if (domains.has(domain)) throw new PreconditionError(`vendor ${vendor.vendor_id}: more than one vendor uses the organisation domain ${organisation.domain}`);
+    domains.add(domain);
+    return { ...vendor, organisation: organisation.domain };
+  });
   if (session.mode === 'dry') {
     if (session.settings.mockEnvFile === null) throw new PreconditionError('OPERATOR_MOCK_ENV_FILE is not set: it names the env file of the mock systems, which holds the operator token');
     session.out.out('the request that --submit sends (a dry run sends nothing):');
+    if (!reset) session.out.out(`  GET ${MOCK_PUBLIC_BASE}/t/${name}/state must first confirm that the name is unused`);
     session.out.out(`  POST ${MOCK_PUBLIC_BASE}/admin/tenants`);
     session.out.out('  header authorization: the operator token of the mock systems, read from its env file at the call (not shown)');
-    session.out.out(`  body ${JSON.stringify(body)}`);
+    session.out.out(`  body ${JSON.stringify(target)}`);
+    if (vendors !== undefined) for (const { vendor_id, organisation } of vendors) session.out.out(`  vendor ${vendor_id}: ${organisation}`);
     session.extra.result = { tenant: name };
     return { kind: 'dry' };
   }
   const token = operatorToken(session.settings.mockEnvFile);
+  if (!reset) {
+    const probe = await call(session, 'GET', `/t/${name}/state`, { headers: { accept: 'application/json' } });
+    if (probe.status === 200) throw new PreconditionError(`the mock service already has a tenant named ${name}: choose another name`);
+    if (probe.status !== 404 || refusalCodeOf(probe.text) !== 'tenant_not_found') {
+      throw new Error(`cannot confirm that the tenant ${name} is absent (HTTP ${probe.status}): no create request was sent`);
+    }
+  }
+  const body = vendors === undefined ? target : { ...target, seed: { vendors } };
   const answer = await call(session, 'POST', '/admin/tenants', { headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', accept: 'application/json' }, body: JSON.stringify(body) });
-  if (answer.status !== 200 && answer.status !== 201) throw refusalOf(answer);
-  const created = createdOf(answer.text, name);
-  if (created !== (answer.status === 201)) throw new Error(`the mock service answered HTTP ${answer.status} with a body that does not say so (the field created) or that names another tenant: the state of the tenant ${name} is not known`);
-  const fact: TenantFact = { name, createdAt: iso(session.clock.now()), seedKind: 'default' };
+  if (answer.status !== 200 && answer.status !== 201) throw refusalOf(answer, token);
+  const result = parseJson(answer.text);
+  const created = answer.status === 201;
+  if (created === reset || !isObject(result) || result.tenant !== name || result.created !== created) {
+    throw new Error(`the mock service answered HTTP ${answer.status} with a status or body that does not confirm the requested operation: the state of the tenant ${name} is not known`);
+  }
+  if (vendors !== undefined && (!isObject(result.counts) || result.counts.vendors !== vendors.length)) {
+    throw new Error(`the vendor count in the answer does not match the seed of ${vendors.length} vendors: the state of the tenant ${name} is not known`);
+  }
+  const fact: TenantFact = { name, createdAt: iso(session.clock.now()), seedKind: vendors === undefined ? 'default' : 'custom' };
   try { session.facts.put('tenants', [run], fact, { replace: held !== undefined }); } catch (err) {
-    throw new Error(`the tenant ${name} is ${created ? 'made' : 'reset'}, and the facts file could not take the fact tenants.${run} (${err instanceof Error ? err.message : 'an error'}). Give --reset with the same name to write the fact`);
+    throw new Error(`the tenant ${name} is ${created ? 'made' : 'reset'}, but the facts file could not take the fact tenants.${run} (${err instanceof Error ? err.message : 'an error'}). Check the mock tenant before any further write`);
   }
   session.extra.result = { tenant: name, created };
-  const seed = sku === null ? 'the default seed' : `the default seed (the run reads ${sku})`;
+  const seed = `the ${fact.seedKind} seed${subject === null ? '' : ` (the run reads ${subject})`}`;
   return {
     kind: 'done',
     message: created
@@ -198,11 +264,15 @@ const task: TaskDefinition<Extra> = {
     if (run === undefined) return ['tenant: give --run <label> to read the tenant of a run'];
     const held = heldBy(session, run);
     if (held === undefined) return [`tenant: the facts hold no tenant for the run ${run}`];
-    const counts = countsOf(await read(session, held.name, 'state'), await read(session, held.name, 'log'));
+    // The supplier portal is the reason to report order counts. The mock state can include them even if no agent uses that portal.
+    const includeOrders = session.use.agents.some((agent) => agent.capability === INVENTORY_CAPABILITIES.order);
+    const counts = countsOf(held.name, await read(session, held.name, 'state'), await read(session, held.name, 'log'), includeOrders);
     if (counts === null) throw new Error(`the state or the log of the tenant ${held.name} does not have the form that the mock service documents`);
     return [
-      `tenant ${held.name} of the run ${run}: made at ${held.createdAt} from the default seed`,
-      `  orders in the PO store: ${counts.orders}, orders at the supplier portal: ${counts.supplierOrders}`,
+      `tenant ${held.name} of the run ${run}: made at ${held.createdAt} from the ${held.seedKind} seed`,
+      counts.orders === null
+        ? `  state sections: ${counts.sections.join(', ') || 'none'}`
+        : `  orders in the PO store: ${counts.orders.store}, orders at the supplier portal: ${counts.orders.supplier}`,
       `  lines in the log: ${counts.lines}, dropped: ${counts.dropped}`,
     ];
   },

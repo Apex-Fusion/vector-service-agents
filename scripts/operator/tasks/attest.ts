@@ -4,11 +4,9 @@
 //   attest run --record --commit <sha>   Makes no transaction, needs no approval and no key. For each agent it checks that the running containers run the public images of the commit and that
 //                                        the service serves the manifest that the facts hold, and it writes the document file. A docs pull request then publishes the files.
 //   attest run --commit <sha> --locator-base <url>
-//                                        The four attestations, one step each: `reorder-agent:provenance`, `reorder-agent:software`, `order-desk:provenance` and `order-desk:software`. Each
-//                                        step fetches the document at the locator and builds the attestation only when those bytes are exactly the canonical JSON of the manifest that the
-//                                        service serves now and the digest of the running service image. The digest of the attestation is the SHA-256 of the bytes that were fetched. The
-//                                        software attestation of the Reorder Agent carries an envelope: the Provider key signs the COSE Sig_structure, and the transaction is built a second
-//                                        time with that signature and the same `issued_at`. Then the four `visible:<agent>:<type>` steps wait until the gateway lists each attestation.
+//                                        Each `<agent>:<type>` step checks the document at the locator. Its digest must match the exact canonical bytes for that
+//                                        agent's served manifest and running service image. If the data requires an envelope, the Provider signs its COSE Sig_structure.
+//                                        The second build uses that signature and the same `issued_at`. Each `visible:<agent>:<type>` step then waits for the gateway.
 //   attest cleanup                       Withdraws the deposit of each attestation whose `valid_until` plus 90 days has passed. For the others it prints the date.
 //
 // The Provider key signs two kinds of bytes: an attestation transaction (through `landBuilt`) and the Sig_structure of the envelope, which this file computes itself from the five fields that
@@ -134,6 +132,15 @@ function subjectOf(session: Session, spec: AttestationSpec): Subject {
   if (manifest === undefined) throw new PreconditionError(`the facts hold no manifest of ${agent.id}: run the task advert first`);
   if (!HASH.test(record.id) || record.did !== `did:vector:${record.id}`) throw new PreconditionError(`the record of ${agent.id} in the facts has an identifier that is not the one of its DID`);
   if (!HASH.test(manifest.sha256)) throw new PreconditionError(`the manifest of ${agent.id} in the facts has a SHA-256 that is not 64 lower-case hex characters`);
+  const adverts = Object.entries(facts.adverts[agent.id] ?? {});
+  if (adverts.length === 0) throw new PreconditionError(`the facts hold no advert of ${agent.id} to bind to its manifest`);
+  for (const [model, advert] of adverts) {
+    const planned = agent.adverts.find((candidate) => candidate.model === model);
+    if (planned === undefined || advert.detailHash !== manifest.sha256 || advert.detailUri !== `${planned.origin.replace(/\/+$/, '')}/agent.json`) {
+      throw new PreconditionError(`the manifest fact of ${agent.id} does not agree with its recorded advert ${model}`);
+    }
+  }
+  if (!adverts.some(([, advert]) => advert.detailUri === manifest.uri)) throw new PreconditionError(`the manifest fact of ${agent.id} names no URI of its recorded adverts`);
   return { agent, record, manifestSha256: manifest.sha256 };
 }
 

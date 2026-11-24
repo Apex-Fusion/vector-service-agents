@@ -1,7 +1,6 @@
 // agents/order-desk/test/serve/start.test.ts
 // How the service starts and stops: the line it logs when it listens, a start that fails before it listens (a setting, the state directory, the Module-1 manifest) and leaves nothing running, the stop of a restart that
 // waits for the job that runs, the signals, and src/index.ts run as a process with the real parts and a chain that nothing answers. No test here uses the network.
-import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { createServer as netServer } from 'node:net';
@@ -9,6 +8,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeAll, describe, expect, test } from 'vitest';
 import { rawHexToBech32 } from '@vsa/buyer-core';
+import { CHILD_CLEANUP_MS, Child } from '../../../../services/mock-systems/test/support/child.ts';
 import { LOTS_FILE } from '../../src/serve/settings.ts';
 import { SETTINGS, startService, stopOnSignals } from '../../src/serve/start.ts';
 import { until } from './serve.ts';
@@ -144,6 +144,10 @@ describe('src/index.ts as a process', () => {
   const cwd = fileURLToPath(new URL('../../', import.meta.url));
   /** The file that the child loads before the service: it answers the fetch of the Module-1 manifest from MODULE1_STUB_FILE and passes every other fetch on. */
   const PRELOAD = fileURLToPath(new URL('./module1-preload.mjs', import.meta.url));
+  const START_MS = 60_000;
+  const REQUEST_MS = 15_000;
+  const EXIT_MS = 15_000;
+  const PROCESS_TEST_MS = START_MS + REQUEST_MS + EXIT_MS + CHILD_CLEANUP_MS + 5_000;
   /** The ledger and the marketplace indexer at a loopback port where nothing listens. */
   let offChain: Record<string, string> = {};
   const closedPort = (): Promise<number> => new Promise<number>((resolve, reject) => {
@@ -164,26 +168,18 @@ describe('src/index.ts as a process', () => {
     ...offChain, PORT: '0', HOST: '127.0.0.1', ORDER_DESK_STATE_DIR: tempDir(), MODULE1_STUB_URL: MODULE1_URL, MODULE1_STUB_FILE: module1StubFile(), LLM_MAX_PRICE_LOVELACE: '1000000', ...over,
   });
 
-  /**
-   * Starts src/index.ts on `env` over the environment the tests run in, less every setting that the service reads, so that nothing an operator has set can change what a test sees, and with the chain off
-   * (offChain, last), so that no call of the real chain can leave the machine.
-   */
-  const run = (env: NodeJS.ProcessEnv) => {
+  const run = (env: NodeJS.ProcessEnv, label: string) => {
     const inherited: NodeJS.ProcessEnv = { ...process.env };
     for (const name of SETTINGS) delete inherited[name];
-    const child = spawn(process.execPath, ['--import', 'tsx', '--import', PRELOAD, 'src/index.ts'], { cwd, env: { ...inherited, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
-    let out = '';
-    let err = '';
-    child.stdout.on('data', (chunk: Buffer) => { out += chunk.toString('utf8'); });
-    child.stderr.on('data', (chunk: Buffer) => { err += chunk.toString('utf8'); });
-    const exited = new Promise<number | null>((resolve) => child.on('exit', (code) => resolve(code)));
-    return { child, exited, out: () => out, err: () => err };
+    return new Child(process.execPath, ['--import', 'tsx', '--import', PRELOAD, 'src/index.ts'], { cwd, env: { ...inherited, ...env }, label });
   };
-  const listening = async (p: ReturnType<typeof run>): Promise<string> => {
-    await until(() => /listening on 127\.0\.0\.1:\d+/.test(p.out()) || p.child.exitCode !== null, 'the service listens', 30_000);
-    const port = /listening on 127\.0\.0\.1:(\d+)/.exec(p.out())?.[1];
-    if (port === undefined) throw new Error(`the service did not listen: ${p.err()}`);
-    return `http://127.0.0.1:${port}`;
+  const listening = async (child: Child) => {
+    const [, port] = await child.waitFor(/^\[order-desk\] listening on 127\.0\.0\.1:([1-9]\d*);/m, 'Order Desk startup', START_MS);
+    const signal = AbortSignal.timeout(REQUEST_MS);
+    const request = (path: string, init?: RequestInit) => fetch(`http://127.0.0.1:${port}${path}`, { ...init, signal }).catch((cause: unknown) => {
+      throw new Error(`request to ${path} failed\n${child.diagnostics()}`, { cause });
+    });
+    return { port, request };
   };
 
   test('exits 1 at start with the variable named, and listens on nothing, when a setting is missing or wrong, and prints no secret', async () => {
@@ -193,50 +189,49 @@ describe('src/index.ts as a process', () => {
       [{ FAULT_MODE: 'alter_after_approval' }, /^\[order-desk\] cannot start: environment variable FAULT_MODE must be empty or "confirm_wrong_lot" for order-desk/],
       [{ AGENT_DID: SERVICE.privateKeyHex }, /^\[order-desk\] cannot start: environment variable AGENT_DID holds the service key/],
     ];
-    const results = await Promise.all(cases.map(async ([over]) => { const p = run(envOf(over)); return { code: await p.exited, out: p.out(), err: p.err() }; }));
-    cases.forEach(([, expected], index) => {
-      const result = results[index]!;
-      expect(result.code).toBe(1);
-      expect(result.err).toMatch(expected);
-      expect(result.out).not.toContain('listening on');
-      expect(shows(result.out + result.err, SERVICE.privateKeyHex)).toBe(false);
-    });
-  }, 60_000);
-
-  test('started for real, with the fault value too: it logs its line, answers /healthz, /agent.json and /lots.json, refuses a job without the token, and prints no secret', async () => {
-    for (const fault of ['', 'confirm_wrong_lot']) {
-      const p = run(envOf({ FAULT_MODE: fault }));
+    const results = await Promise.allSettled(cases.map(async ([over, expected]) => {
+      const child = run(envOf(over), `refusal: ${Object.keys(over)[0]}`);
       try {
-        const base = await listening(p);
-        expect(p.out()).toContain(`[order-desk] listening on 127.0.0.1:${base.split(':')[2]}; service address ${SERVICE_ADDRESS}; state directory `);
-        expect(await (await fetch(`${base}/healthz`)).json()).toStrictEqual({ ok: true });
-        const manifest = await (await fetch(`${base}/agent.json`)).json() as { name: string; identity: { did: string }; keys: { service_pkh: string }; behaviour: { lots: { sha256: string } } };
-        expect([manifest.name, manifest.identity.did, manifest.keys.service_pkh]).toStrictEqual(['Order Desk', AGENT_DID, SERVICE.pkh]);
-        const lots = Buffer.from(await (await fetch(`${base}/lots.json`)).arrayBuffer());
-        expect(lots.equals(readFileSync(LOTS_FILE))).toBe(true);
-        expect((await fetch(`${base}/`, { method: 'POST', body: wire(FULL_ENV) })).status).toBe(401);
-        expect((await fetch(`${base}/precheck`, { method: 'POST', body: wire(FULL_ENV) })).status).toBe(401);
-        for (const secret of [TOKEN, TOKEN.slice('Bearer '.length), SERVICE.privateKeyHex, rawHexToBech32(SERVICE.privateKeyHex)]) expect((p.out() + p.err()).toLowerCase()).not.toContain(secret.toLowerCase());
+        expect(await child.waitForExit('startup refusal', START_MS), child.diagnostics()).toEqual({ code: 1, signal: null });
+        expect(child.stderr).toMatch(expected);
+        expect(child.stdout).not.toContain('listening on');
+        expect(shows(child.stdout + child.stderr, SERVICE.privateKeyHex)).toBe(false);
       } finally {
-        p.child.kill();
-        await p.exited;
+        await child.cleanup();
       }
-    }
-  }, 120_000);
+    }));
+    for (const result of results) if (result.status === 'rejected') throw result.reason;
+  }, START_MS + CHILD_CLEANUP_MS + 5_000);
 
-  // A signal reaches a handler only on POSIX (on Windows kill() ends the process at once), so CI on Linux runs this. The line "listening" does not show that the handlers of SIGTERM are on: the entry puts them on
-  // in the same run of its event loop, a moment after that line. An answer of the server comes in a later run of the loop, so the test waits for one answer before it sends the signal.
-  test.skipIf(process.platform === 'win32')('SIGTERM stops it the way a restart should: the line of the stop, and exit 0', async () => {
-    const p = run(envOf());
+  test.each(['', 'confirm_wrong_lot'])('started for real with FAULT_MODE=%j: it logs its line, answers /healthz, /agent.json and /lots.json, refuses a job without the token, and prints no secret', async (fault) => {
+    const p = run(envOf({ FAULT_MODE: fault }), `FAULT_MODE=${JSON.stringify(fault)}`);
     try {
-      const base = await listening(p);
-      expect(await (await fetch(`${base}/healthz`)).json(), p.err()).toStrictEqual({ ok: true });
-      p.child.kill('SIGTERM');
-      expect(await p.exited).toBe(0);
-      expect(p.out()).toContain('[order-desk] SIGTERM: stopping; no new job, and up to 300 s for the one that is running');
+      const { port, request } = await listening(p);
+      expect(p.stdout).toContain(`[order-desk] listening on 127.0.0.1:${port}; service address ${SERVICE_ADDRESS}; state directory `);
+      expect(await (await request('/healthz')).json()).toStrictEqual({ ok: true });
+      const manifest = await (await request('/agent.json')).json() as { name: string; identity: { did: string }; keys: { service_pkh: string }; behaviour: { lots: { sha256: string } } };
+      expect([manifest.name, manifest.identity.did, manifest.keys.service_pkh]).toStrictEqual(['Order Desk', AGENT_DID, SERVICE.pkh]);
+      const lots = Buffer.from(await (await request('/lots.json')).arrayBuffer());
+      expect(lots.equals(readFileSync(LOTS_FILE))).toBe(true);
+      expect((await request('/', { method: 'POST', body: wire(FULL_ENV) })).status).toBe(401);
+      expect((await request('/precheck', { method: 'POST', body: wire(FULL_ENV) })).status).toBe(401);
+      for (const secret of [TOKEN, TOKEN.slice('Bearer '.length), SERVICE.privateKeyHex, rawHexToBech32(SERVICE.privateKeyHex)]) expect((p.stdout + p.stderr).toLowerCase()).not.toContain(secret.toLowerCase());
     } finally {
-      p.child.kill();
-      await p.exited;
+      await p.cleanup();
     }
-  }, 60_000);
+  }, PROCESS_TEST_MS);
+
+  // The signal test needs POSIX. Wait for a real HTTP answer before sending the signal: the entry sets the handlers after it logs the listener.
+  test.skipIf(process.platform === 'win32')('SIGTERM stops it the way a restart should: the line of the stop, and exit 0', async () => {
+    const p = run(envOf(), 'SIGTERM');
+    try {
+      const { request } = await listening(p);
+      expect(await (await request('/healthz')).json(), p.diagnostics()).toStrictEqual({ ok: true });
+      p.signal('SIGTERM');
+      expect(await p.waitForExit('exit after SIGTERM', EXIT_MS), p.diagnostics()).toEqual({ code: 0, signal: null });
+      expect(p.stdout).toContain('[order-desk] SIGTERM: stopping; no new job, and up to 300 s for the one that is running');
+    } finally {
+      await p.cleanup();
+    }
+  }, PROCESS_TEST_MS);
 });
