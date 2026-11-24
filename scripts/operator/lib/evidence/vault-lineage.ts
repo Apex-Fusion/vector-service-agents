@@ -63,6 +63,93 @@ function outputOf(row: Obj, origin?: string): Output {
     script: credential?.type === 'Script' ? credential.hash : null, value: BigInt(amount), raw: row };
 }
 
+async function transactionRows(source: Source, hashes: readonly string[]): Promise<unknown[]> {
+  const { koiosUrl, fetchImpl } = source.env;
+  return koiosPostList(koiosUrl, 'tx_info', { _tx_hashes: hashes, _inputs: true, _assets: true, _scripts: true }, fetchImpl, '', TX_BYTES);
+}
+
+function transaction(raw: Obj, hash: string, vault: string): Tx {
+  need(raw.valid_contract === undefined || raw.valid_contract === true, 'the vault transaction failed script validation');
+  const runs = objects(raw.plutus_contracts, IO, 'the vault transaction does not show complete script validation');
+  need(runs.every((run) => run.valid_contract === true), 'the vault transaction does not show complete script validation');
+  const inputs = objects(raw.inputs, IO, 'the vault transaction has no complete input list').map((row) => outputOf(row));
+  const outputs = objects(raw.outputs, IO, 'the vault transaction has no complete output list').map((row) => outputOf(row, hash));
+  need(inputs.length > 0 && outputs.length > 0 && new Set(inputs.map(({ ref }) => ref)).size === inputs.length
+    && new Set(outputs.map(({ ref }) => ref)).size === outputs.length, 'the vault transaction has ambiguous inputs or outputs');
+  const vaultInputs = inputs.filter((input) => input.script === vault);
+  need(vaultInputs.length <= VAULT_INPUTS, 'a vault transaction has more than eight vault inputs');
+  return { raw, outputs, vaultInputs, runs };
+}
+
+function rememberSpend(spenders: Map<string, string>, ref: string, hash: string): void {
+  const known = spenders.get(ref);
+  need(known === undefined || known === hash, 'the vault lineage is ambiguous: transactions name the same spent output');
+  spenders.set(ref, hash);
+}
+
+interface CloseCandidate { readonly input: string; ref: string; readonly visited: Set<string> }
+
+/**
+ * Discover the exact cited output one layer at a time, with at most eight candidates per layer.
+ * The rows locate a candidate only. `prove` confirms the selected transactions and rechecks the whole Pay path.
+ */
+async function findCloseInput(source: Source, from: VaultLineage, candidates: CloseCandidate[], rows: Map<string, Tx | null>,
+    spenders: Map<string, string>, vault: string): Promise<string | null> {
+  let problem: string | null = null;
+  for (let after = DEPTH - from.path.length - 1; after >= 0 && candidates.length > 0; after -= 1) {
+    source.check();
+    const exact = candidates.filter((candidate) => candidate.ref === from.ref);
+    if (exact.length > 0) {
+      need(exact.length === 1, 'the vault lineage is ambiguous: more than one Close input names the exact vault branch');
+      return exact[0]!.input;
+    }
+    if (after === 0) throw new PreconditionError(`the vault lineage exceeds its depth limit of ${DEPTH} transactions`);
+    const needRows = [...new Set(candidates.map(({ ref }) => txOf(ref)).filter((hash) => !rows.has(hash)))].sort();
+    if (needRows.length > 0) {
+      const results = new Map<string, Obj | null>();
+      for (const row of await transactionRows(source, needRows)) {
+        if (isObject(row) && typeof row.tx_hash === 'string' && needRows.includes(row.tx_hash)) {
+          results.set(row.tx_hash, results.has(row.tx_hash) ? null : row);
+        }
+      }
+      for (const hash of needRows) {
+        const raw = results.get(hash);
+        let parsed: Tx | null = null;
+        if (raw != null) {
+          try { parsed = transaction(raw, hash, vault); } catch { /* An unreadable row is not proof for this candidate. */ }
+        }
+        rows.set(hash, parsed);
+      }
+    }
+    const next: CloseCandidate[] = [];
+    for (const candidate of candidates) {
+      const hash = txOf(candidate.ref);
+      const tx = rows.get(hash);
+      if (tx == null || !tx.outputs.some((out) => out.ref === candidate.ref && out.script === vault)) {
+        problem ??= 'a candidate vault branch has a missing or unreadable ancestor';
+        continue;
+      }
+      if (tx.vaultInputs.length === 0) continue; // An exact different opening.
+      if (tx.vaultInputs.length !== 1) {
+        problem ??= 'a Live continuation does not have one exact vault parent';
+        continue;
+      }
+      const parent = tx.vaultInputs[0]!.ref;
+      if (candidate.visited.has(txOf(parent))) {
+        problem ??= 'the vault lineage contains a cycle';
+        continue;
+      }
+      rememberSpend(spenders, parent, hash);
+      candidate.ref = parent;
+      candidate.visited.add(txOf(parent));
+      next.push(candidate);
+    }
+    candidates = next;
+  }
+  if (problem !== null) throw new PreconditionError(`the exact Live input is unproven: ${problem}`);
+  return null;
+}
+
 function emptyAction(datum: unknown, action: number): boolean {
   if (!isObject(datum) || (datum.bytes == null && datum.value == null)) return false;
   if (datum.bytes != null) {
@@ -179,30 +266,20 @@ export function vaultLineageReader(env: LedgerEnv, node: Pick<NodeAccess, 'txSta
     }
   }
 
-  function readTx(source: Source, hash: string): Promise<Tx> {
+  function readTx(source: Source, hash: string, located?: Tx): Promise<Tx> {
     source.check();
     need(HASH.test(hash), 'the vault lineage has an invalid transaction hash');
     const saved = txs.get(hash);
     if (saved !== undefined) return saved;
     need(txs.size < TRANSACTIONS, `the vault lineage exceeds its read limit of ${TRANSACTIONS} distinct transactions`);
     const loaded = (async () => {
-      const { koiosUrl, fetchImpl: fetch } = source.env;
-      const [rows, status] = await Promise.all([
-        koiosPostList(koiosUrl, 'tx_info', { _tx_hashes: [hash], _inputs: true, _assets: true, _scripts: true }, fetch, '', TX_BYTES), node.txStatus(hash),
-      ]);
-      need(rows.length === 1 && isObject(rows[0]) && rows[0].tx_hash === hash && Number.isSafeInteger(status.confirmations) && (status.confirmations ?? 0) >= 1,
-        'the exact vault transaction is not confirmed');
-      const raw = rows[0];
-      need(raw.valid_contract === undefined || raw.valid_contract === true, 'the vault transaction failed script validation');
-      const runs = objects(raw.plutus_contracts, IO, 'the vault transaction does not show complete script validation');
-      need(runs.every((run) => run.valid_contract === true), 'the vault transaction does not show complete script validation');
-      const inputs = objects(raw.inputs, IO, 'the vault transaction has no complete input list').map((row) => outputOf(row));
-      const outputs = objects(raw.outputs, IO, 'the vault transaction has no complete output list').map((row) => outputOf(row, hash));
-      need(inputs.length > 0 && outputs.length > 0 && new Set(inputs.map(({ ref }) => ref)).size === inputs.length
-        && new Set(outputs.map(({ ref }) => ref)).size === outputs.length, 'the vault transaction has ambiguous inputs or outputs');
-      const vaultInputs = inputs.filter((input) => input.script === vault.hash);
-      need(vaultInputs.length <= VAULT_INPUTS, 'a vault transaction has more than eight vault inputs');
-      return { raw, outputs, vaultInputs, runs };
+      const indexed = located ?? transactionRows(source, [hash]).then((rows) => {
+        need(rows.length === 1 && isObject(rows[0]) && rows[0].tx_hash === hash, 'the exact vault transaction is not confirmed');
+        return transaction(rows[0], hash, vault.hash);
+      });
+      const [checked, status] = await Promise.all([indexed, node.txStatus(hash)]);
+      need(Number.isSafeInteger(status.confirmations) && (status.confirmations ?? 0) >= 1, 'the exact vault transaction is not confirmed');
+      return checked;
     })();
     txs.set(hash, loaded);
     return loaded;
@@ -277,14 +354,11 @@ export function vaultLineageReader(env: LedgerEnv, node: Pick<NodeAccess, 'txSta
     return loaded;
   }
 
-  function prove(source: Source, wanted: string, maxDepth?: number): Promise<VaultLineage>;
-  function prove(source: Source, wanted: string, maxDepth: number, root: string): Promise<VaultLineage | null>;
-  async function prove(source: Source, wanted: string, maxDepth = DEPTH, root?: string): Promise<VaultLineage | null> {
+  async function prove(source: Source, wanted: string, maxDepth = DEPTH, located?: ReadonlyMap<string, Tx | null>): Promise<VaultLineage> {
     need(REF.test(wanted), 'the vault lineage has an invalid output reference');
     const saved = proved.get(wanted);
     if (saved !== undefined) {
       need(saved.path.length <= maxDepth, `the vault lineage exceeds its depth limit of ${DEPTH} transactions`);
-      if (root !== undefined && saved.rootRef !== root) return null;
       return saved;
     }
     const hops: { tx: Tx; ref: string }[] = [];
@@ -295,14 +369,12 @@ export function vaultLineageReader(env: LedgerEnv, node: Pick<NodeAccess, 'txSta
       need(!visited.has(hash), 'the vault lineage contains a cycle');
       need(hops.length < maxDepth, `the vault lineage exceeds its depth limit of ${DEPTH} transactions`);
       visited.add(hash);
-      const tx = await readTx(source, hash);
+      const tx = await readTx(source, hash, located?.get(hash) ?? undefined);
       hops.push({ tx, ref });
       if (tx.vaultInputs.length === 0) break;
       need(tx.vaultInputs.length === 1, 'a Live continuation does not have one exact vault parent');
       ref = tx.vaultInputs[0]!.ref;
     }
-    // The root is the exact output, not just a matching owner or delegation. Do not verify a foreign branch as part of this run.
-    if (root !== undefined && hops.at(-1)!.ref !== root) return null;
     const path: string[] = [];
     let parent: Vault | undefined;
     let link: Link | undefined;
@@ -348,10 +420,15 @@ export function vaultLineageReader(env: LedgerEnv, node: Pick<NodeAccess, 'txSta
       need(!tx.outputs.some((output) => output.script === vault.hash), 'makes an output at the vault script: a close leaves no vault output');
       need(tx.vaultInputs.length > 0, 'does not spend the vault lineage of ref: the close has no vault input');
       const runs = requireSpends(tx, vault.hash, 1, 'Close');
-      let matchedRoot = false;
-      let found: VaultLineage | undefined;
+      const spenders = new Map(tx.vaultInputs.map(({ ref }) => [ref, hash]));
+      for (let i = 1; i < from.path.length; i += 1) rememberSpend(spenders, from.path[i - 1]!, txOf(from.path[i]!));
+      const located = new Map<string, Tx | null>();
+      const candidates: CloseCandidate[] = [];
       for (const input of tx.vaultInputs) {
-        const origin = await readTx(source, txOf(input.ref));
+        const originHash = txOf(input.ref);
+        const origin = await readTx(source, originHash);
+        located.set(originHash, origin);
+        for (const spent of origin.vaultInputs) rememberSpend(spenders, spent.ref, originHash);
         const output = origin.outputs.find((candidate) => candidate.ref === input.ref);
         need(output !== undefined, 'the close does not name an exact archived vault output');
         const prior = await readVault(source, output);
@@ -363,16 +440,17 @@ export function vaultLineageReader(env: LedgerEnv, node: Pick<NodeAccess, 'txSta
         need(datum == null || (isObject(datum) && datumHashMatches(datum.hash, prior) && projectedDatumMatches(datum, prior, vaultDatumFromData)),
           'the Close script receipt gives a different vault datum');
         if (prior.datum.type !== 'Live' || prior.datum.delegation !== from.delegation || !sameDelegator(prior.datum.owner, from.owner)) continue;
-        const lineage = await prove(source, input.ref, DEPTH - 1, from.rootRef);
-        if (lineage === null) continue;
-        need(!matchedRoot, 'the close spends the same vault branch more than once');
-        matchedRoot = true;
-        if (lineage.path.includes(from.ref)) found = lineage;
+        candidates.push({ input: input.ref, ref: input.ref, visited: new Set([originHash]) });
       }
-      need(found !== undefined, 'does not spend the vault lineage of ref: no exact Live input descends from it');
+      candidates.sort((a, b) => a.input < b.input ? -1 : a.input === b.input ? 0 : 1);
+      const input = await findCloseInput(source, from, candidates, located, spenders, vault.hash);
+      need(input !== null, 'does not spend the vault lineage of ref: no exact Live input descends from it');
+      const lineage = await prove(source, input, DEPTH - 1, located);
+      need(lineage.rootRef === from.rootRef && lineage.path.includes(from.ref) && lineage.delegation === from.delegation
+        && sameDelegator(lineage.owner, from.owner), 'the exact Close input does not extend the cited vault lineage');
       const refs = tx.vaultInputs.map(({ ref }) => ({ txHash: txOf(ref), outputIndex: Number(ref.slice(65)) }));
       need((await source.env.provider.getUtxosByOutRef(refs)).length === 0, 'the node still holds an input of the named vault close');
-      return found;
+      return lineage;
     }),
   };
 }
