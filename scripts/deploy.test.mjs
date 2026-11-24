@@ -7654,8 +7654,9 @@ test('dockerignore: no image holds a test folder, and the first comment line nam
 
 // ======================================================================================================================================
 // Use case 2 (prior authorization): the Prior Authorization Agent and the Insurer Intake Agent. The tests of each pack hold its files on their own (agents/*/test/deploy.test.ts). These tests read
-// more than one place: the tracked files of the repository, the compose files of both hosts, the README of the agents host and the README of each agent. Each guard has an accepted twin and refused
-// copies.
+// more than one place: the tracked files of the repository, the compose files of both hosts, the README of the agents host, the README of each agent, and the parsers that the kit, the two agents and
+// the mock service use for the documents that they pass to each other. The drift tests run the real TypeScript of the kit and of the mock service in one child process, as the tests of use case 1 do.
+// Each guard has an accepted twin and refused copies.
 // ======================================================================================================================================
 const PRIORAUTH_PACK = ['deploy/server/docker-compose.prior-authorization-agent.yml', 'deploy/server/.env.prior-authorization-agent.example', 'deploy/server/Caddyfile.prior-authorization-agent.snippet', 'deploy/server/RUNBOOK-prior-authorization-agent.md'];
 const INTAKE_PACK = ['deploy/server/docker-compose.insurer-intake-agent.yml', 'deploy/server/.env.insurer-intake-agent.example', 'deploy/server/Caddyfile.insurer-intake-agent.snippet', 'deploy/server/RUNBOOK-insurer-intake-agent.md'];
@@ -7762,6 +7763,205 @@ test('use case 2 README of each agent: the Deploy section names the three files 
     const long = srvReplace(composeText, `["127.0.0.1:${port}:${port}"]`, `[{ target: ${port}, published: ${port}, host_ip: 127.0.0.1 }]`);
     assert.deepEqual(readmePackProblems(readme, pack, long, there), [], `${agent}: the long form`);
   }
+});
+
+// The documents of use case 2 that the kit, the two agents and the mock service read. The mock service is the system on the other side: the insurer portal files a request, the records system takes a
+// submission, and the seed of a tenant holds the record sets, the guidelines and the requirement sets. One child process loads the real TypeScript of the mock service and of the kit, so that nothing
+// here re-implements a parser. The documents go in on the standard input: a long list does not fit in one argument of a command.
+const jsonOf = (file) => JSON.parse(read(file));
+const inMockServiceStdin = (code, arg) => JSON.parse(execFileSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', code], { cwd: join(root, 'services/mock-systems'), encoding: 'utf8', input: JSON.stringify(arg), maxBuffer: 64 * 1024 ** 2 }));
+const KIT_GOLDENS = 'packages/usecase-kit/test/priorauth/golden';
+const PRIOR_TESTS = 'agents/prior-authorization-agent/test';
+const REQUEST_GOLDENS = [`${KIT_GOLDENS}/request.json`, `${PRIOR_TESTS}/model/golden/request.json`, `${PRIOR_TESTS}/propose/golden/request.json`, `${PRIOR_TESTS}/execute/golden/request.json`];
+
+// The request, as the kit reads it and as the mock service reads the members that it takes. The portal reads the schema, the tenant, the request number and the service code, and it keeps the rest of the
+// request as it came. The tenant is the one of the URL, and the router takes a name of the form TENANT only. The records system reads the order of a record set and its records, and the guideline store
+// reads the criteria of a guideline: the request copies the identifiers of the order, its diagnosis codes, the references of the records and the references of the criteria.
+const REQUEST_DRIFT_CODE = String.raw`
+import { readFileSync } from 'node:fs';
+import { parseIntake } from './src/documents.ts';
+import { parseSeed } from './src/seed.ts';
+import { TENANT } from './src/validate.ts';
+import { parsePriorAuthRequest } from '../../packages/usecase-kit/src/priorauth/index.ts';
+const accepted = (run) => { try { run(); return true; } catch (error) { if (error?.name !== 'Invalid') throw error; return false; } };
+const ORDER = { order_id: 'ORD-1', patient_ref: 'SYN-PT-1', service_code: 'SYN-MRI-LS', service_description: 'Imaging', diagnosis_codes: ['M54.16'], ordering_clinician_ref: 'SYN-CL-1', ordered_at: '2026-10-22' };
+const RECORD = { record_id: 'REC-1', type: 'note', recorded_at: '2026-10-22', summary: 'A note.' };
+const GUIDELINE = { code: 'SYN-MRI-LS', title: 'Imaging', version: '1', criteria: [], documentation: [] };
+const many = (count, make) => Array.from({ length: count }, (_, i) => make(i + 1));
+const mock = {
+  intake: (request) => typeof request?.tenant === 'string' && TENANT.test(request.tenant) && accepted(() => parseIntake({ request, status: 'complete', missing: [] }, request.tenant)),
+  order: (_, member, value) => accepted(() => parseSeed('seed', { records: [{ order: { ...ORDER, [member]: value }, records: [RECORD] }] })),
+  records: (_, count) => accepted(() => parseSeed('seed', { records: [{ order: ORDER, records: many(count, (n) => ({ ...RECORD, record_id: 'REC-' + n })) }] })),
+  criteria: (_, count) => accepted(() => parseSeed('seed', { guidelines: [{ ...GUIDELINE, criteria: many(count, (n) => ({ id: 'C' + n, text: 'A criterion.' })) }] })),
+};
+console.log(JSON.stringify(JSON.parse(readFileSync(0, 'utf8')).map(([request, [reader, ...args]]) => ({ kit: parsePriorAuthRequest(request).ok, mock: mock[reader](request, ...args) }))));
+`;
+
+test('use case 2 drift: the authorization request is read in the same way by the parser of the kit and by the insurer portal and the records system of the mock service, for each golden request and for each edge of each member that the two read', () => {
+  const golden = jsonOf(REQUEST_GOLDENS[0]);
+  const edit = (changes) => ({ ...golden, ...changes });
+  const fill = (count, char = 'a') => char.repeat(count);
+  const codes = (count) => Array.from({ length: count }, (_, i) => `M${i}`);
+  const refs = (count, prefix) => Array.from({ length: count }, (_, i) => `${prefix}${i + 1}`);
+  const portal = ['intake'];
+  // [name, request, how the mock service reads the member, whether the kit takes it, whether the mock service takes it]
+  const viaOrder = (name, member, value, both) => [name, edit({ [member]: value }), ['order', member, value], both, both];
+  const cases = [
+    ...REQUEST_GOLDENS.map((file) => [file, jsonOf(file), portal, true, true]),
+    ['a request number of 64 characters', edit({ request_number: `a${fill(63, '0')}` }), portal, true, true],
+    ['a request number of 65 characters', edit({ request_number: `a${fill(64, '0')}` }), portal, false, false],
+    ['a request number with a dot, a hyphen and an underscore', edit({ request_number: 'run1.a-b_c' }), portal, true, true],
+    ['a request number with a space', edit({ request_number: 'run1 1' }), portal, false, false],
+    ['a request number that starts with a dot', edit({ request_number: '.run1' }), portal, false, false],
+    ['a request number with a letter that is not ASCII', edit({ request_number: 'run\u00e91' }), portal, false, false],
+    ['a request number that is a number', edit({ request_number: 1 }), portal, false, false],
+    ['a service code of 64 characters', edit({ service_code: `A${fill(63, '0')}` }), portal, true, true],
+    ['a service code of 65 characters', edit({ service_code: `A${fill(64, '0')}` }), portal, false, false],
+    ['a service code with the Kelvin sign, which NFC turns into K', edit({ service_code: '\u212A-1' }), portal, false, false],
+    ['a tenant of 48 characters', edit({ tenant: `a${fill(47, '0')}` }), portal, true, true],
+    ['a tenant of 49 characters', edit({ tenant: `a${fill(48, '0')}` }), portal, false, false],
+    ['a tenant in upper case', edit({ tenant: 'RUN1' }), portal, false, false],
+    ['a tenant with an underscore', edit({ tenant: 'run_1' }), portal, false, false],
+    ['another schema', edit({ schema: 'vector.usecase.priorauth-request.v2' }), portal, false, false],
+    viaOrder('an order id of 64 characters', 'order_id', `A${fill(63, '0')}`, true),
+    viaOrder('an order id of 65 characters', 'order_id', `A${fill(64, '0')}`, false),
+    viaOrder('an order id that starts with a dot', 'order_id', '.ORD-1', false),
+    viaOrder('a patient reference of 64 characters', 'patient_ref', `A${fill(63, '0')}`, true),
+    viaOrder('a patient reference of 65 characters', 'patient_ref', `A${fill(64, '0')}`, false),
+    viaOrder('a clinician reference of 64 characters', 'ordering_clinician_ref', `A${fill(63, '0')}`, true),
+    viaOrder('a clinician reference of 65 characters', 'ordering_clinician_ref', `A${fill(64, '0')}`, false),
+    viaOrder('8 diagnosis codes', 'diagnosis_codes', codes(8), true),
+    viaOrder('9 diagnosis codes', 'diagnosis_codes', codes(9), false),
+    viaOrder('no diagnosis code', 'diagnosis_codes', [], false),
+    viaOrder('a diagnosis code of 16 characters', 'diagnosis_codes', [fill(16)], true),
+    viaOrder('a diagnosis code of 17 characters', 'diagnosis_codes', [fill(17)], false),
+    viaOrder('an empty diagnosis code', 'diagnosis_codes', [''], false),
+    ['50 references to records', edit({ record_refs: refs(50, 'REC-') }), ['records', 50], true, true],
+    ['51 references to records', edit({ record_refs: refs(51, 'REC-') }), ['records', 51], false, false],
+    ['20 references to criteria', edit({ guideline_refs: refs(20, 'C') }), ['criteria', 20], true, true],
+    ['21 references to criteria', edit({ guideline_refs: refs(21, 'C') }), ['criteria', 21], false, false],
+  ];
+  const answers = inMockServiceStdin(REQUEST_DRIFT_CODE, cases.map(([, request, probe]) => [request, probe]));
+  assert.equal(answers.length, cases.length);
+  cases.forEach(([name, , , kit, mock], i) => {
+    assert.equal(answers[i].kit, kit, `${name}: the kit ${kit ? 'must read it' : 'must refuse it'}; found ${JSON.stringify(answers[i])}`);
+    assert.equal(answers[i].mock, mock, `${name}: the mock service ${mock ? 'must read it' : 'must refuse it'}; found ${JSON.stringify(answers[i])}`);
+  });
+  assert.ok(cases.filter(([, , , kit]) => kit).length >= 15 && cases.filter(([, , , kit]) => !kit).length >= 15, 'the table has the accepted twins and the refused copies');
+});
+
+// The intake record and what follows from it: the portal files the request with the status and the missing requirements of the record, and the Prior Authorization Agent writes the number of the request,
+// the id of the intake and the status to the records system. The words of a status are the words that the readers name when they refuse one, so a word that one side adds is seen.
+const INTAKE_DRIFT_CODE = String.raw`
+import { readFileSync } from 'node:fs';
+import { parseIntake, parseSubmission } from './src/documents.ts';
+import { INTAKE_STATUSES, parseIntakeRecord } from '../../packages/usecase-kit/src/priorauth/index.ts';
+const { request, records, submissions, ids: edges } = JSON.parse(readFileSync(0, 'utf8'));
+const refusal = (run) => { try { run(); return null; } catch (error) { if (error?.name !== 'Invalid') throw error; return String(error.message); } };
+const words = (message) => /^body\.status must be one of (.+)$/.exec(message ?? '')?.[1].split(', ') ?? null;
+const missing = (count) => Array.from({ length: count }, (_, i) => 'R' + (i + 1));
+const incomplete = (count) => ({ ...records[0], status: 'incomplete', missing: missing(count), decisions: [{ ...records[0].decisions[0], choice: { complete: false, missing: missing(count) } }] });
+const largest = (accepts) => { let count = 0; while (count < 40 && accepts(count + 1)) count += 1; return count; };
+const portal = (status, list) => refusal(() => parseIntake({ request, status, missing: list }, request.tenant)) === null;
+const submit = (body) => refusal(() => parseSubmission(body)) === null;
+console.log(JSON.stringify({
+  words: { kit: [...INTAKE_STATUSES], portal: words(refusal(() => parseIntake({ request, status: 'x', missing: [] }, request.tenant))), records: words(refusal(() => parseSubmission({ request_number: 'r1', intake_id: 'i1', status: 'x' }))) },
+  most: { kit: largest((count) => parseIntakeRecord(incomplete(count)).ok), portal: largest((count) => portal('incomplete', missing(count))) },
+  records: records.map((record) => ({ kit: parseIntakeRecord(record).ok, portal: portal(record.status, record.missing), submission: submit({ request_number: record.request_number, intake_id: record.intake_id, status: record.status }) })),
+  submissions: submissions.map((body) => submit(body)),
+  ids: edges.map(([member, value]) => ({ kit: parseIntakeRecord({ ...records[0], [member]: value }).ok, submission: submit({ request_number: records[0].request_number, intake_id: records[0].intake_id, status: records[0].status, [member]: value }) })),
+}));
+`;
+
+test('use case 2 drift: the intake record of the kit and the insurer portal and the records system of the mock service say the same of the status and of the list of missing requirements, and the submission of the Prior Authorization Agent is a submission that the records system takes', () => {
+  const request = jsonOf(REQUEST_GOLDENS[0]);
+  const records = [`${KIT_GOLDENS}/intake-record.json`, 'agents/insurer-intake-agent/test/job/golden/intake-record-complete.json', 'agents/insurer-intake-agent/test/job/golden/intake-record-incomplete.json'].map(jsonOf);
+  const submissions = [jsonOf(`${PRIOR_TESTS}/execute/golden/submission-body.json`)];
+  const fill = (count) => 'a'.repeat(count);
+  // [name, member of the record and of the body, value, whether both read it]
+  const edges = [
+    ['a request number of 64 characters', 'request_number', fill(64), true], ['a request number of 65 characters', 'request_number', fill(65), false], ['a request number with a dot, a hyphen and an underscore', 'request_number', 'run1.a-b_c', true],
+    ['a request number that starts with a dot', 'request_number', '.run1', false], ['a request number with a space', 'request_number', 'run 1', false], ['an empty request number', 'request_number', '', false],
+    ['an intake id of 64 characters', 'intake_id', fill(64), true], ['an intake id of 65 characters', 'intake_id', fill(65), false], ['an intake id with a dot, a hyphen and an underscore', 'intake_id', 'INT-run1_0001.a', true],
+    ['an intake id that starts with a hyphen', 'intake_id', '-INT', false], ['an intake id with a space', 'intake_id', 'INT 1', false], ['an empty intake id', 'intake_id', '', false],
+  ];
+  const answer = inMockServiceStdin(INTAKE_DRIFT_CODE, { request, records, submissions, ids: edges.map(([, member, value]) => [member, value]) });
+  assert.ok(answer.words.kit.length >= 2, `the kit has the words of the status; found ${JSON.stringify(answer.words)}`);
+  assert.deepEqual(answer.words.kit, answer.words.portal, 'the status words of the kit are the words of the insurer portal, in the same order');
+  assert.deepEqual(answer.words.kit, answer.words.records, 'and the words of the submission to the records system');
+  assert.deepEqual([answer.most.kit, answer.most.portal], [20, 20], 'the record and the portal take the same number of missing requirements: at most 20');
+  records.forEach((record, i) => assert.deepEqual(answer.records[i], { kit: true, portal: true, submission: true }, `golden record ${i}: the kit reads it, the portal files its status and its missing list, and the records system takes its submission`));
+  assert.deepEqual(answer.submissions, [true], 'the golden body that the Prior Authorization Agent sends to the records system');
+  assert.deepEqual(submissions[0], { request_number: records[0].request_number, intake_id: records[0].intake_id, status: records[0].status }, 'the body is the request number, the intake id and the status of the record');
+  edges.forEach(([name, , , both], i) => {
+    assert.equal(answer.ids[i].kit, both, `${name}: the record of the kit ${both ? 'must read it' : 'must refuse it'}`);
+    assert.equal(answer.ids[i].submission, both, `${name}: the records system ${both ? 'must take it' : 'must refuse it'}`);
+  });
+});
+
+// The record set, the guideline and the requirement set, as the kit reads them and as the seed of a tenant reads them. A tenant can be seeded with every document that the kit reads, and the kit reads
+// every document of the default seed. The kit refuses a text that NFC makes longer than its limit, which the seed takes: no case below has such a text.
+const RECORDS_DRIFT_CODE = String.raw`
+import { readFileSync } from 'node:fs';
+import { isDeepStrictEqual } from 'node:util';
+import { defaultSeed, parseSeed } from './src/seed.ts';
+import { parseGuideline, parseRecordSet, parseRequirementSet } from '../../packages/usecase-kit/src/priorauth/index.ts';
+const KIT = { records: parseRecordSet, guidelines: parseGuideline, requirements: parseRequirementSet };
+const accepted = (part, document) => { try { parseSeed('seed', { [part]: [document] }); return true; } catch (error) { if (error?.name !== 'Invalid') throw error; return false; } };
+const seed = defaultSeed();
+console.log(JSON.stringify({
+  seed: Object.fromEntries(Object.keys(KIT).map((part) => [part, seed[part].map((document) => { const read = KIT[part](document); return read.ok && isDeepStrictEqual(read.value, document); })])),
+  cases: JSON.parse(readFileSync(0, 'utf8')).map(([part, document]) => ({ kit: KIT[part](document).ok, mock: accepted(part, document) })),
+}));
+`;
+
+test('use case 2 drift: the record set, the guideline and the requirement set are read in the same way by the parsers of the kit and by the seed of the mock service: every document of the default seed is a document of the kit, and every golden of the kit and of the Prior Authorization Agent can seed a tenant', () => {
+  const goldens = [
+    ['records', `${KIT_GOLDENS}/record-set.json`], ['guidelines', `${KIT_GOLDENS}/guideline.json`], ['requirements', `${KIT_GOLDENS}/requirements.json`],
+    ['records', `${PRIOR_TESTS}/evidence/golden/record-set.json`], ['records', `${PRIOR_TESTS}/evidence/golden/record-set-knee.json`], ['guidelines', `${PRIOR_TESTS}/evidence/golden/guideline.json`], ['guidelines', `${PRIOR_TESTS}/evidence/golden/guideline-knee.json`],
+    ['records', `${PRIOR_TESTS}/propose/golden/record-set.json`], ['guidelines', `${PRIOR_TESTS}/propose/golden/guideline.json`], ['records', `${PRIOR_TESTS}/model/golden/record-set.json`], ['guidelines', `${PRIOR_TESTS}/model/golden/guideline.json`],
+  ];
+  const [set, guideline, requirements] = goldens.slice(0, 3).map(([, file]) => jsonOf(file));
+  const text = (count) => 'x'.repeat(count);
+  const items = (count, prefix, sample) => Array.from({ length: count }, (_, i) => ({ id: `${prefix}${i + 1}`, text: sample }));
+  const withOrder = (changes) => ({ ...set, order: { ...set.order, ...changes } });
+  const withRecord = (changes) => ({ ...set, records: [{ ...set.records[0], ...changes }, ...set.records.slice(1)] });
+  const withRecords = (count) => ({ ...set, records: Array.from({ length: count }, (_, i) => ({ ...set.records[0], record_id: `REC-${i + 1}` })) });
+  const withCriteria = (count) => ({ ...guideline, criteria: items(count, 'C', guideline.criteria[0].text) });
+  const withRequirements = (count) => ({ ...requirements, requirements: items(count, 'R', requirements.requirements[0].text) });
+  // [part, name, document, whether both read it]
+  const cases = [
+    ...goldens.map(([part, file]) => [part, file, jsonOf(file), true]),
+    ['records', 'a summary of 2,000 characters', withRecord({ summary: text(2000) }), true], ['records', 'a summary of 2,001 characters', withRecord({ summary: text(2001) }), false],
+    ['records', 'a type of 32 characters', withRecord({ type: text(32) }), true], ['records', 'a type of 33 characters', withRecord({ type: text(33) }), false],
+    ['records', 'a description of 200 characters', withOrder({ service_description: text(200) }), true], ['records', 'a description of 201 characters', withOrder({ service_description: text(201) }), false],
+    ['records', '8 diagnosis codes', withOrder({ diagnosis_codes: Array.from({ length: 8 }, (_, i) => `M${i}`) }), true], ['records', '9 diagnosis codes', withOrder({ diagnosis_codes: Array.from({ length: 9 }, (_, i) => `M${i}`) }), false],
+    ['records', 'a diagnosis code of 16 characters', withOrder({ diagnosis_codes: [text(16)] }), true], ['records', 'a diagnosis code of 17 characters', withOrder({ diagnosis_codes: [text(17)] }), false],
+    ['records', 'no diagnosis code', withOrder({ diagnosis_codes: [] }), false], ['records', 'a date that does not exist', withOrder({ ordered_at: '2026-02-30' }), false],
+    ['records', 'a member of the order that is not listed', withOrder({ carrier: 'x' }), false], ['records', 'a member of the order that is missing', withOrder({ patient_ref: undefined }), false],
+    ['records', '50 records', withRecords(50), true], ['records', '51 records', withRecords(51), false], ['records', 'no record', withRecords(0), false],
+    ['records', 'a record id two times', { ...set, records: [set.records[0], set.records[0]] }, false],
+    ['guidelines', '20 criteria', withCriteria(20), true], ['guidelines', '21 criteria', withCriteria(21), false], ['guidelines', 'no criterion', withCriteria(0), false],
+    ['guidelines', 'a criterion of 500 characters', { ...guideline, criteria: items(1, 'C', text(500)) }, true], ['guidelines', 'a criterion of 501 characters', { ...guideline, criteria: items(1, 'C', text(501)) }, false],
+    ['guidelines', 'a title of 200 characters', { ...guideline, title: text(200) }, true], ['guidelines', 'a title of 201 characters', { ...guideline, title: text(201) }, false],
+    ['guidelines', 'a version of 32 characters', { ...guideline, version: text(32) }, true], ['guidelines', 'a version of 33 characters', { ...guideline, version: text(33) }, false],
+    ['guidelines', '20 lines of documentation', { ...guideline, documentation: Array.from({ length: 20 }, () => text(500)) }, true], ['guidelines', '21 lines of documentation', { ...guideline, documentation: Array.from({ length: 21 }, () => 'x') }, false],
+    ['guidelines', 'no documentation', { ...guideline, documentation: [] }, true], ['guidelines', 'a criterion id two times', { ...guideline, criteria: [guideline.criteria[0], guideline.criteria[0]] }, false],
+    ['requirements', '20 requirements', withRequirements(20), true], ['requirements', '21 requirements', withRequirements(21), false], ['requirements', 'no requirement', withRequirements(0), false],
+    ['requirements', 'a requirement of 500 characters', { ...requirements, requirements: items(1, 'R', text(500)) }, true], ['requirements', 'a requirement of 501 characters', { ...requirements, requirements: items(1, 'R', text(501)) }, false],
+    ['requirements', 'a title of 200 characters', { ...requirements, title: text(200) }, true], ['requirements', 'a title of 201 characters', { ...requirements, title: text(201) }, false],
+    ['requirements', 'a requirement id two times', { ...requirements, requirements: [requirements.requirements[0], requirements.requirements[0]] }, false],
+  ];
+  const answer = inMockServiceStdin(RECORDS_DRIFT_CODE, cases.map(([part, , document]) => [part, document]));
+  for (const part of ['records', 'guidelines', 'requirements']) {
+    assert.ok(answer.seed[part].length >= 2 && answer.seed[part].every(Boolean), `${part}: each document of the default seed is a document that the kit reads, and the kit gives it back as it is; found ${JSON.stringify(answer.seed[part])}`);
+  }
+  assert.equal(answer.cases.length, cases.length);
+  cases.forEach(([, name, , both], i) => {
+    assert.equal(answer.cases[i].kit, both, `${name}: the kit ${both ? 'must read it' : 'must refuse it'}; found ${JSON.stringify(answer.cases[i])}`);
+    assert.equal(answer.cases[i].mock, both, `${name}: the seed of the mock service ${both ? 'must read it' : 'must refuse it'}; found ${JSON.stringify(answer.cases[i])}`);
+  });
+  assert.ok(cases.filter(([, , , both]) => both).length >= 20 && cases.filter(([, , , both]) => !both).length >= 20, 'the table has the accepted twins and the refused copies');
 });
 
 // ---- The README and the RUNBOOK of the agents host, for the packs of use case 2 ----
