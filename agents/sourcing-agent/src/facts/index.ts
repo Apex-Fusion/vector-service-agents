@@ -10,3 +10,5 @@ export { FACT_READ_TIMEOUT_MS } from './bound.ts';
 export type { FactClock } from './bound.ts';
 export { readStake } from './stake.ts';
 export type { StakeDeps, StakeFact } from './stake.ts';
+export { casesAgainst, casesAgainstAll } from './cases.ts';
+export type { CasesDeps, CasesFact } from './cases.ts';
