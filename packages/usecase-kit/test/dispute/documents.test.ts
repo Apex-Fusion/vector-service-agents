@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { documentHash } from '@vsa/buyer-core';
 import { canonicalSha256 } from '@vsa/usecase-kit/protocol';
 import type { JsonValue } from '@vsa/usecase-kit/protocol';
-import { EVIDENCE_STATEMENT, JUROR_RECORD_LIMIT_BYTES, MAX_JUROR_DOCUMENT_BYTES, claimDocument, evidenceDocument, evidenceReferences, jurorRecordSize, readClaimDocument } from '@vsa/usecase-kit/dispute';
+import { JUROR_RECORD_LIMIT_BYTES, MAX_JUROR_DOCUMENT_BYTES, claimDocument, evidenceDocument, evidenceReferences, jurorRecordSize, readClaimDocument } from '@vsa/usecase-kit/dispute';
 import type { ClaimDocumentInput, EvidenceDocumentInput } from '@vsa/usecase-kit/dispute';
 import {
   APPROVAL, BID_DESK, BID_DESK_CLAIM, CONFIRMATION, DIGEST_FACTS, ESCROW, HIRER, MANIFEST_SHA, MISMATCH, ME, ORDER_DESK_CLAIM, ORDER_FACTS, OTHER, PARTIES, PRIOR_AUTHORIZATION_CLAIM,
@@ -530,7 +530,7 @@ describe('the evidence document of a challenge', () => {
       for (const input of [evidenceInput(), { ...PARTIES, ...QUOTE_FACTS }, { ...PARTIES, ...DIGEST_FACTS }]) {
         const document = evidenceDocument(input as unknown as EvidenceDocumentInput);
         if (!document.ok) throw new Error(document.detail);
-        expect(document.value.text.split('\n')[1]).toBe(`Statement ${EVIDENCE_STATEMENT} of the claim reads: "${STATEMENT_S1}"`);
+        expect(document.value.text.split('\n')[1]).toBe(`Statement S1 of the claim reads: "${STATEMENT_S1}"`);
       }
     });
 

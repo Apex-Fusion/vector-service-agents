@@ -15,6 +15,9 @@
 //
 // A document is plain text. Its bytes are the same for the same input: it has no time and no random part. The evidence of an approval has the two digests and the references, and no text of the request.
 //
+// An evidence document is about one statement of the claim. The kind of the evidence decides which one (`EVIDENCE_STATEMENTS`), so the header and the statement row of the document name that id, and the code
+// that chooses the claim to challenge reads the same table. A caller never names the id.
+//
 // A claim document is read back with `readClaimDocument`, the inverse of `claimDocument`: it reads the fields, writes the document again, and accepts the bytes only when the new document is the same bytes.
 // An evidence document that the challenge code wrote is read back for its references only (`evidenceReferences`): the facts of an evidence document are not in it whole.
 import { documentHash } from '@vsa/buyer-core';
@@ -29,9 +32,23 @@ export const MAX_JUROR_DOCUMENT_BYTES = 3_000;
 export const JUROR_RECORD_LIMIT_BYTES = 4_300;
 /** The media type of a document for a juror. */
 export const JUROR_MEDIA_TYPE = 'text/plain';
-/** The statement that the three evidence formats are about. */
-export const EVIDENCE_STATEMENT = 'S1';
-const EVIDENCE_HEADER = `Evidence about statement ${EVIDENCE_STATEMENT} of a claim on the Vector marketplace.`;
+/** The id of a statement of a claim: a claim document has three statements, S1 to S3. */
+export type StatementId = 'S1' | 'S2' | 'S3';
+const STATEMENT_IDS: readonly StatementId[] = ['S1', 'S2', 'S3'];
+
+/**
+ * The statement of a claim that each kind of evidence is about: the statement that the facts of the kind contradict. A kind is about exactly one statement. The header of an evidence document, its statement
+ * row and the choice of the claim that a challenge names all read the id from this table, and the table is frozen. No caller names an id.
+ */
+export const EVIDENCE_STATEMENTS = Object.freeze({
+  order_confirmation: 'S1', quote_price: 'S1', approval_digest: 'S1',
+} as const satisfies Record<EvidenceFacts['kind'], StatementId>);
+
+/** A kind of evidence: the `kind` member of its facts. */
+export type EvidenceKind = EvidenceFacts['kind'];
+
+/** The first row of an evidence document about the statement `id`. */
+const headerOf = (id: StatementId): string => `Evidence about statement ${id} of a claim on the Vector marketplace.`;
 
 const MAX_SHOWN_CHARS = 80;
 /** A statement of a claim is shown longer than another value: it is the sentence that the evidence is about. It is still cut at this size, with a note, so the references stay in the document. */
@@ -72,9 +89,9 @@ export interface EvidenceReferences {
   readonly escrow_ref: OutputRef;
 }
 
-/** What every evidence document needs: its references, and the text of the statement S1 of the claim document that the challenge reads from the chain. */
+/** What every evidence document needs: its references, and the text of the statement that its kind is about, which the challenge reads from the claim document on the chain. */
 export interface EvidenceParties extends EvidenceReferences {
-  /** The text of the statement `EVIDENCE_STATEMENT` of the claim document of the claim. The evidence shows it, cut when it is long. */
+  /** The text of the statement of the claim document of the claim that the kind of the evidence is about (`EVIDENCE_STATEMENTS`). The evidence shows it, cut when it is long. */
   readonly statement_text: string;
 }
 
@@ -133,6 +150,12 @@ export function parseClaimToken(value: unknown, field = 'claim_token'): Protocol
 /** A capability identifier: 1 to 64 characters, letters, digits, dot, underscore and hyphen, and it starts with a letter or a digit. */
 export function parseCapabilityId(value: unknown, field = 'capability_id'): ProtocolResult<string> {
   return typeof value === 'string' && CAPABILITY.test(value) ? accepted(value) : refused('bad_shape', `${field} must be 1 to 64 characters: letters, digits, dot, underscore and hyphen`);
+}
+
+/** A statement id: `S1`, `S2` or `S3`. The detail names the field and never repeats the value. */
+export function parseStatementId(value: unknown, field = 'statement_id'): ProtocolResult<StatementId> {
+  const id = STATEMENT_IDS.find((candidate) => candidate === value);
+  return id === undefined ? refused('bad_shape', `${field} must be "S1", "S2" or "S3"`) : accepted(id);
 }
 
 const isObject = (value: JsonValue | undefined): value is JsonObject => typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -338,7 +361,7 @@ function parseParties(root: JsonObject): ProtocolResult<EvidenceParties, Documen
 }
 
 /** The sentence that the evidence is about, as the rules of a statement of a claim document have it. */
-const statementRow = (parties: EvidenceParties): string => `Statement ${EVIDENCE_STATEMENT} of the claim reads: ${show(parties.statement_text, MAX_STATEMENT_SHOWN_CHARS)}`;
+const statementRow = (id: StatementId, parties: EvidenceParties): string => `Statement ${id} of the claim reads: ${show(parties.statement_text, MAX_STATEMENT_SHOWN_CHARS)}`;
 
 const references = (parties: EvidenceParties, rows: readonly string[]): string[] => [
   'References',
@@ -350,7 +373,7 @@ const references = (parties: EvidenceParties, rows: readonly string[]): string[]
   ...rows,
 ];
 
-function orderEvidence(parties: EvidenceParties, root: JsonObject): ProtocolResult<string, 'bad_shape' | 'no_contradiction' | 'confirmation_not_for_order'> {
+function orderEvidence(parties: EvidenceParties, root: JsonObject): ProtocolResult<readonly string[], 'bad_shape' | 'no_contradiction' | 'confirmation_not_for_order'> {
   const members = checkMembers(root, 'evidence', ['claim', 'claim_token', 'against_did', 'by_did', 'escrow_ref', 'statement_text', 'kind', 'purchase_order', 'confirmation', 'confirmation_sha256']);
   if (members !== null) return members;
   const order = root.purchase_order;
@@ -370,9 +393,7 @@ function orderEvidence(parties: EvidenceParties, root: JsonObject): ProtocolResu
   const answered = member(confirmation, 'po_sha256');
   if (answered === undefined) return refused('confirmation_not_for_order', 'the confirmation has no po_sha256, so it is not tied to this purchase order');
   if (answered !== orderSha.value) return refused('confirmation_not_for_order', 'the po_sha256 of the confirmation is not the canonical SHA-256 of this purchase order');
-  return accepted(lines([
-    EVIDENCE_HEADER,
-    statementRow(parties),
+  return accepted([
     'The claimer is an order desk. The challenger is the agent that sent the order desk a purchase order.',
     `The purchase order names ${namesIn(order)}.`,
     `The confirmation that the order desk signed for this purchase order names ${namesIn(confirmation)}.`,
@@ -380,10 +401,10 @@ function orderEvidence(parties: EvidenceParties, root: JsonObject): ProtocolResu
     'So the confirmation does not name the same SKU, lot and quantity as the purchase order that it answers.',
     'The challenger did not accept the confirmation.',
     ...references(parties, [`SHA-256 of the purchase order: ${orderSha.value}`, `SHA-256 of the confirmation: ${confirmationSha.value}`]),
-  ]));
+  ]);
 }
 
-function quoteEvidence(parties: EvidenceParties, root: JsonObject): ProtocolResult<string, 'bad_shape' | 'no_contradiction'> {
+function quoteEvidence(parties: EvidenceParties, root: JsonObject): ProtocolResult<readonly string[], 'bad_shape' | 'no_contradiction'> {
   const members = checkMembers(root, 'evidence', [
     'claim', 'claim_token', 'against_did', 'by_did', 'escrow_ref', 'statement_text', 'kind', 'sku', 'quantity', 'quoted_unit_price', 'listed_unit_price', 'price_list_sha256', 'quote_sha256',
   ]);
@@ -393,16 +414,14 @@ function quoteEvidence(parties: EvidenceParties, root: JsonObject): ProtocolResu
   const quote = parseDigest(root.quote_sha256, 'evidence.quote_sha256');
   if (!quote.ok) return quote;
   if (same(root.quoted_unit_price, root.listed_unit_price)) return refused('no_contradiction', 'the quoted unit price is the unit price of the published price list');
-  return accepted(lines([
-    EVIDENCE_HEADER,
-    statementRow(parties),
+  return accepted([
     'The claimer is a bid desk. The challenger is the agent that asked the bid desk for a quote.',
     `The bid desk quoted the unit price ${show(root.quoted_unit_price)} for the SKU ${show(root.sku)} at the quantity ${show(root.quantity)}.`,
     `The published price list of the bid desk gives the unit price ${show(root.listed_unit_price)} for the SKU ${show(root.sku)} at the quantity ${show(root.quantity)}.`,
     'The quoted unit price is not the unit price of the published price list.',
     'The challenger did not accept the quote.',
     ...references(parties, [`SHA-256 of the published price list: ${priceList.value}`, `SHA-256 of the quote: ${quote.value}`]),
-  ]));
+  ]);
 }
 
 const DIGEST_ROLES = {
@@ -413,7 +432,7 @@ const DIGEST_ROLES = {
   },
 } as const;
 
-function approvalEvidence(parties: EvidenceParties, root: JsonObject): ProtocolResult<string, 'bad_shape' | 'no_contradiction'> {
+function approvalEvidence(parties: EvidenceParties, root: JsonObject): ProtocolResult<readonly string[], 'bad_shape' | 'no_contradiction'> {
   const members = checkMembers(root, 'evidence', ['claim', 'claim_token', 'against_did', 'by_did', 'escrow_ref', 'statement_text', 'kind', 'use_case', 'approval', 'mismatch']);
   if (members !== null) return members;
   const useCase = root.use_case;
@@ -431,9 +450,7 @@ function approvalEvidence(parties: EvidenceParties, root: JsonObject): ProtocolR
   if (!observed.ok) return observed;
   if (expected.value === observed.value) return refused('no_contradiction', 'the digest of the approval is the digest of the request that was sent');
   const role = DIGEST_ROLES[useCase];
-  return accepted(lines([
-    EVIDENCE_HEADER,
-    statementRow(parties),
+  return accepted([
     `The claimer is ${role.claimer}. ${role.receiver}`,
     `The hirer of the claimer approved a document. The approval holds the digest ${expected.value}.`,
     `The ${role.sent} that the claimer sent holds the digest ${observed.value}.`,
@@ -441,13 +458,25 @@ function approvalEvidence(parties: EvidenceParties, root: JsonObject): ProtocolR
     `The digest of a ${role.sent} is the SHA-256 of its salt followed by its canonical text. This evidence has no text of the ${role.sent} and no salt.`,
     `The challenger refused the ${role.sent} before it did any work.`,
     ...references(parties, [`Approval attestation: ${approval.value.attestation}`, `Approval issuer: ${approval.value.issuer_did}`]),
-  ]));
+  ]);
 }
 
+/** The rows of an evidence document after its statement row: the facts, and then the references. */
+type EvidenceRows = ProtocolResult<readonly string[], DocumentCode>;
+
+/** The rows for each kind. The compiler checks that the table has an entry for each kind of `EVIDENCE_STATEMENTS`. */
+const EVIDENCE_ROWS = {
+  order_confirmation: orderEvidence, quote_price: quoteEvidence, approval_digest: approvalEvidence,
+} as const satisfies Record<EvidenceKind, (parties: EvidenceParties, root: JsonObject) => EvidenceRows>;
+
+const isEvidenceKind = (value: unknown): value is EvidenceKind => typeof value === 'string' && Object.hasOwn(EVIDENCE_STATEMENTS, value);
+const KINDS_QUOTED = Object.keys(EVIDENCE_STATEMENTS).map((kind) => `"${kind}"`);
+const KINDS_WORDS = `${KINDS_QUOTED.slice(0, -1).join(', ')} or ${KINDS_QUOTED[KINDS_QUOTED.length - 1]}`;
+
 /**
- * The evidence document of a challenge. It refuses an input that is not in its form (`bad_shape`: the detail names the member and never repeats the value), facts that show no contradiction
- * (`no_contradiction`: nothing is worth a challenge), a confirmation that is not tied to the purchase order by its hash (`confirmation_not_for_order`), and a document over the limit
- * (`document_too_large`). It never cuts a document.
+ * The evidence document of a challenge. It is about the statement that its kind names in `EVIDENCE_STATEMENTS`: its header and its statement row say which one. It refuses an input that is not in its form
+ * (`bad_shape`: the detail names the member and never repeats the value), facts that show no contradiction (`no_contradiction`: nothing is worth a challenge), a confirmation that is not tied to the purchase
+ * order by its hash (`confirmation_not_for_order`), and a document over the limit (`document_too_large`). It never cuts a document.
  */
 export function evidenceDocument(input: EvidenceDocumentInput): ProtocolResult<JurorDocument, DocumentCode> {
   const copy = parseJsonValue(input, 'evidence');
@@ -456,27 +485,29 @@ export function evidenceDocument(input: EvidenceDocumentInput): ProtocolResult<J
   if (!isObject(root)) return refused('bad_shape', 'evidence must be a JSON object');
   const parties = parseParties(root);
   if (!parties.ok) return parties;
-  const text =
-    root.kind === 'order_confirmation' ? orderEvidence(parties.value, root)
-      : root.kind === 'quote_price' ? quoteEvidence(parties.value, root)
-        : root.kind === 'approval_digest' ? approvalEvidence(parties.value, root)
-          : refused('bad_shape', 'evidence.kind must be "order_confirmation", "quote_price" or "approval_digest"');
-  return text.ok ? finish('evidence', text.value) : text;
+  const kind = root.kind;
+  if (!isEvidenceKind(kind)) return refused('bad_shape', `evidence.kind must be ${KINDS_WORDS}`);
+  const rows = EVIDENCE_ROWS[kind](parties.value, root);
+  if (!rows.ok) return rows;
+  const id = EVIDENCE_STATEMENTS[kind];
+  return finish('evidence', lines([headerOf(id), statementRow(id, parties.value), ...rows.value]));
 }
 
 const REFERENCE_LABELS = ['Claim', 'Claim token', 'Claimer', 'Challenger', 'Escrow of the job'] as const;
+/** The first row of an evidence document that this kit writes: the header for each statement that a kind is about. */
+const EVIDENCE_HEADERS: readonly string[] = [...new Set(Object.values(EVIDENCE_STATEMENTS))].map(headerOf);
 
 /**
- * The references of an evidence document that `evidenceDocument` wrote: the claim, the claim token, the two agents and the job. The rows come after the row `References`, in the order of
- * `evidenceDocument`. The facts of an evidence document are not read back: they are not in it whole. The caller must know where the document comes from: a document that this reads is only as
- * true as its source.
+ * The references of an evidence document that `evidenceDocument` wrote: the claim, the claim token, the two agents and the job. The first row must be the header of a statement that a kind of evidence is about,
+ * and the rows come after the row `References`, in the order of `evidenceDocument`. The facts of an evidence document are not read back: they are not in it whole. The caller must know where the document comes
+ * from: a document that this reads is only as true as its source.
  */
 export function evidenceReferences(bytes: Uint8Array): ProtocolResult<EvidenceReferences, 'bad_shape'> {
   const bad = (why: string): ProtocolResult<EvidenceReferences, 'bad_shape'> => refused('bad_shape', `the bytes are not an evidence document that this kit writes: ${why}`);
   const text = textOfDocument(bytes);
   if (text === null) return bad(`they are not UTF-8 text of 1 to ${MAX_JUROR_DOCUMENT_BYTES} bytes`);
   const rows = text.split('\n');
-  if (rows[0] !== EVIDENCE_HEADER) return bad('the first row');
+  if (!EVIDENCE_HEADERS.includes(rows[0]!)) return bad('the first row');
   const start = rows.indexOf('References');
   if (start < 0 || rows.lastIndexOf('References') !== start) return bad('the row References');
   const values = REFERENCE_LABELS.map((label, index) => {
