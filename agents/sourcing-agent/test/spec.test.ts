@@ -79,7 +79,6 @@ const manifest = manifestFromEnv({ ...TEMPLATE_ENV });
 
 const CLAIM_SUPPORT = [
   '`claim` task of the operator pack supports one Module-1 claim for the Sourcing Agent per clean or failure run',
-  'The operator CLI does not enable use case 3 yet.',
   "stakes the claim before the run and signs with the agent's service key",
   'After the window, the operator can withdraw an unchallenged claim with `claim cleanup`.',
   'The service stakes no claim.',
@@ -1559,7 +1558,7 @@ describe('specs/sourcing-agent.md, the receipt, the claim and the fault switch',
     for (const part of [
       '`FAULT_MODE=invert_scores`: the scorer of the first accepted quote returns each of its four component scores and its score as 100 minus the value. The subtraction is made on the decimal text of the number, so 80.2 gives 19.8. The other scorers are not changed.',
       'The decision that the model made stays on record as the model gave it: the reversal is made on the answer of the scorer, after the job checked that answer.',
-      'The planned failure run sets the switch on this agent to show that an approver can find a wrong score from the quote that it cites. No command of this repository runs use case 3 yet. The switch changes what the job writes and never a check.',
+      'The planned failure run sets the switch on this agent to show that an approver can find a wrong score from the quote that it cites. The switch changes what the job writes and never a check.',
       'The switch is empty in a clean run. Any other value than `invert_scores` stops the start of the service. The service reads the switch one time, at start. It is declared in the manifest, in `behaviour.fault_modes`, and the manifest is the same for every value. Each result returns the active value as `fault_mode`, its last member.',
     ]) expect(fault, part).toContain(part);
   });

@@ -30,7 +30,7 @@ The table gives the design of the record. A value that the registration fixes re
 | Organisation | the domain of the Bid Desk, from the second table, with the description "Demonstration organisation run by the Apex Fusion Foundation". The identity gateway verifies the domain with a DNS TXT record |
 | Public URL | planned: one origin for each Bid Desk, the origin of its runtime in its pack (second table). The manifest names the price list at `/price-list.json` on that origin. No Bid Desk has an advert yet |
 | Reputation stake | a Module-3 self-stake on the capability, owned by the service key |
-| Claim | The `claim` task of the operator pack supports one Module-1 claim for each Bid Desk per clean or failure run. The operator CLI does not enable use case 3 yet. The task stakes the claim before the run and signs with that Bid Desk's service key. The stake is 50 units (50,000,000 lovelace). The challenge window is 24 hours. After the window, the operator can withdraw an unchallenged claim with `claim cleanup`. The service stakes no claim. If the challenge lookup finds no eligible open claim, it returns `no_open_claim`. See Claim statements |
+| Claim | The `claim` task of the operator pack supports one Module-1 claim for each Bid Desk per clean or failure run. The task stakes the claim before the run and signs with that Bid Desk's service key. The stake is 50 units (50,000,000 lovelace). The challenge window is 24 hours. After the window, the operator can withdraw an unchallenged claim with `claim cleanup`. The service stakes no claim. If the challenge lookup finds no eligible open claim, it returns `no_open_claim`. See Claim statements |
 
 | Instance | Name | Organisation | Public URL (planned) | Role in the planned runs |
 |---|---|---|---|---|
@@ -449,7 +449,7 @@ The signature is Ed25519 over the canonical JSON of the receipt. The sha256 of t
 
 ## Claim statements
 
-The `claim` task of the operator pack supports one Module-1 claim for each Bid Desk per clean or failure run. The operator CLI does not enable use case 3 yet. The task stakes the claim before the run and signs with that Bid Desk's service key. The stake is 50 units (50,000,000 lovelace). The challenge window is 24 hours. After the window, the operator can withdraw an unchallenged claim with `claim cleanup`. The service stakes no claim. If the challenge lookup finds no eligible open claim, it returns `no_open_claim`.
+The `claim` task of the operator pack supports one Module-1 claim for each Bid Desk per clean or failure run. The task stakes the claim before the run and signs with that Bid Desk's service key. The stake is 50 units (50,000,000 lovelace). The challenge window is 24 hours. After the window, the operator can withdraw an unchallenged claim with `claim cleanup`. The service stakes no claim. If the challenge lookup finds no eligible open claim, it returns `no_open_claim`.
 
 The claim has three statements, and the three Bid Desks have the same three. The manifest of each holds the same three texts in `behaviour.claim`, with no reference to a claim. A challenge names the text of a statement.
 
@@ -465,7 +465,7 @@ S1 is the statement that the fault `quote_off_price_list` breaks. When the Sourc
 
 `FAULT_MODE=quote_off_price_list`: the unit price of the first line that the price list prices is lowered by a fifth of the listed price, rounded up, and every check of the hook still passes. The new price is `listed - ceil(listed / 5)`, where `listed` is the price of the list for the SKU and the quantity of that line. The totals follow the changed line. The new price is below the listed price and at least 1, because no price of the three files is below 10. For the request of the example under Request and the price list of Bid Desk Alfa, the quote of a fault run has the unit price 100 on its first line (the listed price is 125), the line total 10000 and the total 19400, and its `fault_mode` is `quote_off_price_list`. The decision on record stays what the model said.
 
-When no line can take the new price, the job ends with `internal` (500): a run never says that a fault was on when it changed nothing. The planned failure run sets the switch on one Bid Desk only, Bid Desk Charlie, to test whether the Sourcing Agent's model identifies the off-list price. No command of this repository runs use case 3 yet. The switch of one Bid Desk never changes another: each Bid Desk reads an env file of its own.
+When no line can take the new price, the job ends with `internal` (500): a run never says that a fault was on when it changed nothing. The planned failure run sets the switch on one Bid Desk only, Bid Desk Charlie, to test whether the Sourcing Agent's model identifies the off-list price. The switch of one Bid Desk never changes another: each Bid Desk reads an env file of its own.
 
 The switch is empty in a clean run. Any other value stops the start of the service. The switch changes what the job writes and never a check: the hook does not know that it exists. It is declared in the manifest, in `behaviour.fault_modes`, and the manifest is the same for every value. Each quote returns the active value as `fault_mode`, its last member.
 
@@ -502,7 +502,7 @@ The manifest states these eight, in this order, word for word. A test keeps them
 
 The fourth gap describes an identity attestation (type 0) about a Bid Desk. The Sourcing Agent reads it. The Bid Desk does not. The operator pack's `compliance` task supports one attestation for each Bid Desk. The task checks the exact bytes of the published statement before it signs the issue. The attestation records the URI and its SHA-256 digest. It is valid for 365 days unless revoked first.
 
-The demonstration registry's key signs the issue and can revoke it. The current controller of the Bid Desk signs a `Contest` after the task verifies the revocation. The reply on the ledger records the URI and SHA-256 digest, not the text. The operator CLI does not enable use case 3 yet. This task support does not show that any of these attestations exist on mainnet.
+The demonstration registry's key signs the issue and can revoke it. The current controller of the Bid Desk signs a `Contest` after the task verifies the revocation. The reply on the ledger records the URI and SHA-256 digest, not the text. This task support does not show that any of these attestations exist on mainnet.
 
 - A quote is the result of a paid job. It is not a binding offer.
 - The model prices the request. Nothing in this agent checks its lines against the price list: the buyer's agent can, because the price list and its hash are public.

@@ -1637,14 +1637,13 @@ describe('deploy/server/RUNBOOK-bid-desk.md', () => {
     for (const part of ['bid-desk-<name>-state', 'rfq-book.json']) expect(out).toContain(part);
   });
 
-  test('the operator claim task uses the key of each Bid Desk and the CLI does not enable bid evaluation', () => {
+  test('the operator claim task uses the separate service key of each Bid Desk', () => {
     const note = sectionOf(runbookText, 'The operator pack');
     for (const part of [
       '`claim` task of the operator pack supports one Module-1 claim for each Bid Desk',
       'before each clean or failure run', 'signs with the service key of that Bid Desk',
       `${CLAIM_STAKE_LOVELACE / 1_000_000n} units (${CLAIM_STAKE_LOVELACE.toLocaleString('en-US')} lovelace)`,
       `challenge window is ${CLAIM_WINDOW_MS / 3_600_000} hours`, '`claim cleanup` withdraws the claim if nobody challenged it',
-      'The operator CLI does not enable use case 3 yet.',
       'the claim document transaction and then the stake transaction, one Bid Desk at a time',
       'The service has no claim code and no dispute code', 'Sourcing Agent', 'It never makes a stake, a claim or a record', 'behaviour.claim',
     ]) expect(note).toContain(part);

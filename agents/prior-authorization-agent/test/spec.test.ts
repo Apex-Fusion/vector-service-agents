@@ -136,7 +136,7 @@ describe('specs/prior-authorization-agent.md: the frame, the identity and the te
     expect(supplier).toContain('The service does not start unless the public key hashes to the key hash');
     expect(() => supplierKeyOf({ SUPPLIER_PKH: 'aa'.repeat(28), SUPPLIER_PUB_KEY_HEX: 'bb'.repeat(32) })).toThrow('is not the public key of SUPPLIER_PKH');
     expect(row(identity, 'Service key')).toContain('The manifest publishes its key hash as `keys.buyer_pkh`');
-    expect(row(identity, 'Service key')).toContain('It signs the claim of the agent too, once a command stakes one.');
+    expect(row(identity, 'Service key')).toContain("The operator pack uses this key to sign the agent's claim.");
     expect(manifest.keys.buyer_pkh).toBe(TEMPLATE_ENV.PRIORAUTH_SERVICE_PKH);
     const delegation = row(identity, 'Delegation keys');
     expect(delegation.startsWith('| Delegation keys | two keys,')).toBe(true);

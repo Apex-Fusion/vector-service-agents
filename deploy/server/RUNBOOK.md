@@ -308,7 +308,7 @@ docker compose -f docker-compose.mock-systems.yml down
 
 ## 7. Add an agent
 
-The deploy pack of an agent has its compose file, its env example, its snippet and its own runbook. The packs of use case 1 (inventory reorder) are the Reorder Agent, with `RUNBOOK-reorder-agent.md`, and the Order Desk, with `RUNBOOK-order-desk.md`. The packs of use case 2 (prior authorization) are the Prior Authorization Agent, with `RUNBOOK-prior-authorization-agent.md`, and the Insurer Intake Agent, with `RUNBOOK-insurer-intake-agent.md`. The packs of use case 3 (supplier bid evaluation) are the Sourcing Agent, with `RUNBOOK-sourcing-agent.md`, and the three Bid Desks, with `RUNBOOK-bid-desk.md`. They fit the marker block only: their upstreams are container names, and Caddy on the host cannot resolve them. The runbook of each pack of use case 1 says which tasks of the operator pack make the keys, the records, the stakes, the env files and the advert. README.md, section "The operator image", describes the pack. The runbooks of the other packs give the keys, the registration and the advert. These steps are only for the host.
+The deploy pack of an agent has its compose file, its env example, its snippet and its own runbook. The packs of use case 1 (inventory reorder) are the Reorder Agent, with `RUNBOOK-reorder-agent.md`, and the Order Desk, with `RUNBOOK-order-desk.md`. The packs of use case 2 (prior authorization) are the Prior Authorization Agent, with `RUNBOOK-prior-authorization-agent.md`, and the Insurer Intake Agent, with `RUNBOOK-insurer-intake-agent.md`. The packs of use case 3 (supplier bid evaluation) are the Sourcing Agent, with `RUNBOOK-sourcing-agent.md`, and the three Bid Desks, with `RUNBOOK-bid-desk.md`. They fit the marker block only: their upstreams are container names, and Caddy on the host cannot resolve them. The runbook of each pack says which tasks of the operator pack make the keys, the records, the stakes, the env files and the advert. See README.md, "The operator image".
 
 For each pack listed above, use its own runbook from the first DNS and folder steps through the public checks. Do not run `setup.sh` on its existing host. Install its files and pin its images as that runbook says. Follow "The start order": put the confirmed advert reference in `ADVERT_REF` before the runtime starts. The numbered steps below apply only to other packs.
 
@@ -403,7 +403,7 @@ Record the tip and the result of both checks. Do not treat an output you cannot 
 - An env file that holds a key belongs to `agents` and has mode 600.
 - The key never leaves the host. Nobody signs on another machine.
 - The script makes no key and reads no key.
-- The task `keys` of the operator pack makes the keys on this host. It never prints a key.
+- For these three use cases, the task `keys` of the operator pack makes the keys. It never prints a key. Follow the first-setup and recovery rules in `scripts/operator/README.md`. Keep the public key file for each use case and the separate operator state folders.
 - Do not delete a key file while its wallet holds funds. Deleting the host deletes every key on it. Empty every wallet first.
 
 ## The restart rule

@@ -39,6 +39,7 @@ const STAKE_UNITS = CLAIM_STAKE_LOVELACE / UNIT;
 const WINDOW_HOURS = CLAIM_WINDOW_MS / HOUR_MS;
 const APPROVAL_HOURS = RUN_APPROVAL_VALIDITY_MS / HOUR_MS;
 const BID_CLAIM_TERMS = `The stake is ${STAKE_UNITS} units (${CLAIM_STAKE_LOVELACE.toLocaleString('en-US')} lovelace). The challenge window is ${WINDOW_HOURS} hours.`;
+const BID_PAGES = ['specs/sourcing-agent.md', 'specs/bid-desk.md'] as const;
 
 interface PageSentence {
   readonly page: string; readonly what: string; readonly text: string;
@@ -68,7 +69,7 @@ const SENTENCES: readonly PageSentence[] = [
     page: 'specs/insurer-intake-agent.md', what: 'the claim of the Insurer Intake Agent',
     text: `an operator command stakes a claim with the service key of the agent: ${STAKE_UNITS} units, which is ${CLAIM_STAKE_LOVELACE} lovelace, with a challenge window of ${WINDOW_HOURS} hours. After the window, the same command withdraws the claim when nobody challenged it.`,
   },
-  ...['specs/sourcing-agent.md', 'specs/bid-desk.md'].flatMap((page) =>
+  ...BID_PAGES.flatMap((page) =>
     (['Identity', 'Claim statements'] as const).map((section) => ({ page, what: `the claim in ${section}`, text: BID_CLAIM_TERMS, section })),
   ),
 ];
@@ -82,8 +83,14 @@ function claimText(page: string, section: PageSentence['section']): string {
 
 /** The problems of a set of pages: each sentence that its page does not hold. `pages` maps the path of a page to its text. */
 function pageProblems(pages: Readonly<Record<string, string>>): string[] {
-  return SENTENCES.filter(({ page, section, text }) => !claimText(pages[page] ?? '', section).includes(text))
+  const problems = SENTENCES.filter(({ page, section, text }) => !claimText(pages[page] ?? '', section).includes(text))
     .map(({ page, what }) => `${page} does not state ${what} with the numbers of the constants`);
+  for (const page of BID_PAGES) {
+    if (/(?:The operator CLI does not enable|No command of this repository stakes a claim)/i.test(pages[page] ?? '')) {
+      problems.push(`${page} gives an obsolete restriction on the claim command`);
+    }
+  }
+  return problems;
 }
 
 const PAGES: Readonly<Record<string, string>> = Object.fromEntries([...new Set(SENTENCES.map(({ page }) => page))].map((page) => [page, read(page)]));
@@ -97,10 +104,15 @@ describe('the claim constants', () => {
   });
 
   it('holds the stake of a claim to the stake of a challenge in the example environments: a challenge targets a claim whose stake is not above it, and an equal stake is a target', () => {
+    expect(Object.keys(CHALLENGE_STAKES)).toHaveLength(5);
     for (const challenge of Object.values(CHALLENGE_STAKES)) {
       expect(CLAIM_STAKE_LOVELACE).toBe(challenge);
       expect(CLAIM_STAKE_LOVELACE <= challenge).toBe(true);
     }
+  });
+
+  it('gives the Bid Desk no challenge settings', () => {
+    expect(read('deploy/server/.env.bid-desk.example')).not.toMatch(/^DISPUTE_[A-Z0-9_]+=/m);
   });
 
   it('hold the stake of a claim to the least claim that the Module-1 manifest takes', () => {
@@ -166,6 +178,17 @@ describe('the agent pages', () => {
     const differentWindow = BID_CLAIM_TERMS.replace(`${WINDOW_HOURS} hours`, `${WINDOW_HOURS + 1} hours`);
     expect(pageProblems({ ...PAGES, [page]: PAGES[page].replace(BID_CLAIM_TERMS, differentWindow) })).toEqual([
       `${page} does not state the claim in Identity with the numbers of the constants`,
+    ]);
+  });
+
+  it.each(BID_PAGES)('requires the exact claim stake and supported action in %s', (page) => {
+    const wrongStake = BID_CLAIM_TERMS.replace(`The stake is ${STAKE_UNITS} units`, `The stake is ${STAKE_UNITS + 1n} units`);
+    expect(pageProblems({ ...PAGES, [page]: PAGES[page].replaceAll(BID_CLAIM_TERMS, wrongStake) })).toEqual([
+      `${page} does not state the claim in Identity with the numbers of the constants`,
+      `${page} does not state the claim in Claim statements with the numbers of the constants`,
+    ]);
+    expect(pageProblems({ ...PAGES, [page]: `${PAGES[page]}\nNo command of this repository stakes a claim for this agent yet.` })).toEqual([
+      `${page} gives an obsolete restriction on the claim command`,
     ]);
   });
 
