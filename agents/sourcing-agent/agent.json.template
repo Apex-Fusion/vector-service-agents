@@ -81,7 +81,7 @@
                   "minLength": 1,
                   "maxLength": 64,
                   "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
-                  "description": "The identifier of the request for quotation: 1 to 64 characters. A bidder quotes an identifier one time for one sender, so each propose needs a new one"
+                  "description": "The identifier of the request for quotation: 1 to 64 characters. A bidder gives one quote for each identifier and sender, so each propose needs a new identifier"
                 },
                 "items": {
                   "type": "array",

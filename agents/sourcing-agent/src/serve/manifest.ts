@@ -47,7 +47,7 @@ const RFQ_SCHEMA = {
   properties: {
     rfq_id: {
       type: 'string', minLength: 1, maxLength: ID_CHARS, pattern: ID_PATTERN,
-      description: `The identifier of the request for quotation: 1 to ${ID_CHARS} characters. A bidder quotes an identifier one time for one sender, so each propose needs a new one`,
+      description: `The identifier of the request for quotation: 1 to ${ID_CHARS} characters. A bidder gives one quote for each identifier and sender, so each propose needs a new identifier`,
     },
     items: {
       type: 'array', minItems: 1, maxItems: MAX_RFQ_ITEMS, description: `The items to quote: 1 to ${MAX_RFQ_ITEMS} items, and each SKU one time`,
