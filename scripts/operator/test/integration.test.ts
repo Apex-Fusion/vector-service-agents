@@ -80,7 +80,7 @@ function taskTableProblems(readme: string, definitions: ReadonlyMap<string, Tabl
     for (const flag of definition.flags) if (listed.includes(`--${flag} <`)) problems.push(`the row of ${row.name} shows --${flag} with a value in the column of the flags, and the flag takes none`);
     const submit = (row.cells[COLUMNS.submit] ?? '').toLowerCase();
     const needs = definition.needs.approval === 'submit';
-    if (needs && !submit.includes('needs the approval')) problems.push(`the row of ${row.name} does not say that --submit needs the approval, and the task needs it`);
+    if (needs && !/\bneeds (?:the )?approval\b/.test(submit)) problems.push(`the row of ${row.name} does not say that --submit needs the approval, and the task needs it`);
     if (!needs && !submit.includes('needs no approval')) problems.push(`the row of ${row.name} does not say that the task needs no approval, and it needs none`);
     if (needs && submit.includes('needs no approval')) problems.push(`the row of ${row.name} says that the task needs no approval, and it needs it`);
   }
