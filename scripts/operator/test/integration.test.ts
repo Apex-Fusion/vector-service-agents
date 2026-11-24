@@ -49,11 +49,15 @@ function rowsOf(section: string): { name: string; cells: string[] }[] {
 const COLUMNS = { what: 1, flags: 2, submit: 3, writes: 4 } as const;
 const flagsIn = (text: string): string[] => [...new Set([...text.matchAll(/--[a-z][a-z0-9-]*/g)].map((hit) => hit[0].slice(2)))];
 
+/** The members of a task definition that the table of the README is held to. */
+type TableDefinition = Pick<TaskDefinition, 'flags' | 'valued' | 'needs'>;
+
 /**
  * What is wrong with the table of the tasks of a README, held to the definitions of the tasks: one row for each task, in the order of the list, no row for a name that is no task, the flags of the task
- * in its row and no other flag but the global ones, and the word about the approval that the task has (a task whose `--submit` needs the approval file says so, and the others say that they need none).
+ * in its row (a flag that takes a value as `--x <what it takes>` and a flag that takes none as `--x`, both in the column of the flags) and no other flag but the global ones, and the word about the approval that
+ * the task has (a task whose `--submit` needs the approval file says so, and the others say that they need none).
  */
-function taskTableProblems(readme: string, definitions: ReadonlyMap<string, Pick<TaskDefinition, 'flags' | 'valued' | 'needs'>>): string[] {
+function taskTableProblems(readme: string, definitions: ReadonlyMap<string, TableDefinition>): string[] {
   const problems: string[] = [];
   const rows = rowsOf(sectionOf(readme, 'The tasks'));
   const names = rows.map((row) => row.name);
@@ -69,8 +73,11 @@ function taskTableProblems(readme: string, definitions: ReadonlyMap<string, Pick
     if (definition === undefined) continue;
     const own = [...definition.flags, ...definition.valued];
     const shown = flagsIn(row.cells.join(' '));
+    const listed = row.cells[COLUMNS.flags] ?? '';
     for (const flag of own) if (!shown.includes(flag)) problems.push(`the row of ${row.name} lacks the flag --${flag}`);
     for (const flag of shown) if (!own.includes(flag) && !GLOBAL_FLAGS.includes(flag)) problems.push(`the row of ${row.name} names --${flag}, which is no flag of the task`);
+    for (const flag of definition.valued) if (shown.includes(flag) && !listed.includes(`--${flag} <`)) problems.push(`the row of ${row.name} does not show --${flag} with a value in the column of the flags, and the flag takes a value`);
+    for (const flag of definition.flags) if (listed.includes(`--${flag} <`)) problems.push(`the row of ${row.name} shows --${flag} with a value in the column of the flags, and the flag takes none`);
     const submit = (row.cells[COLUMNS.submit] ?? '').toLowerCase();
     const needs = definition.needs.approval === 'submit';
     if (needs && !submit.includes('needs the approval')) problems.push(`the row of ${row.name} does not say that --submit needs the approval, and the task needs it`);
@@ -127,12 +134,18 @@ describe('the README of the pack', () => {
     expect(taskTableProblems(change('results', (line) => line.split('Needs no approval').join('Reads the files')), definitions)).toEqual(['the row of results does not say that the task needs no approval, and it needs none']);
     const swapped = lines.map((line) => (isRow(line, 'keys') ? lines.find((other) => isRow(other, 'fund'))! : isRow(line, 'fund') ? lines.find((other) => isRow(other, 'keys'))! : line));
     expect(taskTableProblems(swapped.join('\n'), definitions)).toContain('the rows are not in the order of the list of the tasks');
+    // The kind of a flag: a flag that takes a value must show its value in the column of the flags, and a flag that takes none must not.
+    const hold = definitions.get('hold')!;
+    const claim = definitions.get('claim')!;
+    expect(taskTableProblems(README, new Map<string, TableDefinition>([...definitions, ['hold', { ...hold, flags: [...hold.flags, 'days'], valued: hold.valued.filter((flag) => flag !== 'days') }]]))).toEqual(['the row of hold shows --days with a value in the column of the flags, and the flag takes none']);
+    expect(taskTableProblems(README, new Map<string, TableDefinition>([...definitions, ['claim', { ...claim, flags: claim.flags.filter((flag) => flag !== 'trial'), valued: [...claim.valued, 'trial'] }]]))).toEqual(['the row of claim does not show --trial with a value in the column of the flags, and the flag takes a value']);
   });
 
   it('accepts a harmless change: a global flag in a row, and an extra section after the table that holds a row of its own', () => {
     const lines = README.split('\n');
     const isRow = (line: string, name: string): boolean => line.startsWith(`| \`${name}\` |`);
     expect(taskTableProblems(lines.map((line) => (isRow(line, 'keys') ? line.split('Needs the approval').join('Needs the approval, as --all does') : line)).join('\n'), definitions)).toEqual([]);
+    expect(taskTableProblems(lines.map((line) => (isRow(line, 'hold') ? line.split('--days <n>').join('--days <number of days>') : line)).join('\n'), definitions)).toEqual([]);
     expect(taskTableProblems(`${README}\n## An extra section\n\n| \`ghost\` | not a task |\n`, definitions)).toEqual([]);
   });
 
@@ -141,6 +154,14 @@ describe('the README of the pack', () => {
     const text = claim.cells.join(' ');
     expect(text).toContain(`${CLAIM_STAKE_LOVELACE / UNIT} units`);
     expect(text).toContain(`${CLAIM_WINDOW_MS / HOUR_MS} hours`);
+  });
+
+  it('says that the pack never signs a transaction without an approval, and that the probe signs one request with two keys, also in a dry run', () => {
+    expect(definitions.get('probe')!.needs.approval).toBe('never');
+    expect(sectionOf(README, 'What it never does')).toContain('It never signs a transaction without an approval.');
+    const probe = rowsOf(sectionOf(README, 'The tasks')).find((row) => row.name === 'probe')!;
+    expect(probe.cells[COLUMNS.what]).toContain('in a dry run too');
+    expect(probe.cells[COLUMNS.what]).toContain('it signs the request with two keys, the subject token with the service key of the agent and the proof with the delegate key. It signs no transaction.');
   });
 
   it('says what the machine line holds: its prefix, its seven members and its six outcomes, as the code writes them', () => {

@@ -356,22 +356,26 @@ test('the compose check lets a service with no key through, and refuses one that
 
 // ---- The operator pack: no key, no key-shaped text, and the name of a key variable in the two files that may hold it ----
 // scripts/operator makes keys and writes them into env files, so a key must never stand in one of its files. Its own source test (scripts/operator/test/sources.test.ts) reads the script files for the call that gives
-// a seed, the suffix of a key file and a run of 64 hex characters. This guard reads every file of the folder as a text, whatever its kind, and so it reaches the README and the data files too. A script file and a
-// document outside the test folder hold no run of 64 hex characters. A file of the test folder may hold one (a hash, a digest, a transaction hash), but not on a line that names a secret: a seed, a secret, a
-// private key, a mnemonic or a signing key. No file is a key file, and none holds one key and nothing else. The name of a key variable (a name that ends in _PRIV_KEY_HEX) stands only in the data of the use case,
-// which lists the variables, and in the task env, which writes them. The file that holds the marks of a secret names the mark `PRIV_KEY_HEX=` and no variable, so it passes.
+// a seed, the suffix of a key file and a run of 64 hex characters. This guard reads every file of the folder as a text, whatever its kind or its name (a Dockerfile has no extension), and so it reaches the README and the
+// data files too. A script file and a document outside the test folder hold no run of 64 hex characters. A file of the test folder may hold one (a hash, a digest, a transaction hash), but not on a line that names a
+// secret: a seed, a secret, a private key, a mnemonic or a signing key. No file holds a key in the bech32 form (the form that lib/secrets.ts marks as secret text: the prefix of a signing key, then the separator 1 and
+// at least 20 characters of the alphabet), and no file is named like a key file (.seed or .skey) or holds one key and nothing else. The text PRIV_KEY_HEX that is not followed by an equals sign (a key variable name, also
+// one that the code builds) stands only in the data of the use case, which lists the variables, and in the task env, which writes them. The file that holds the marks of a secret has `PRIV_KEY_HEX=`, so it passes.
 const PACK_FOLDER = 'scripts/operator';
 const KEY_VARIABLE_FILES = ['usecases/inventory-reorder.ts', 'tasks/env.ts'];
 const SECRET_LINE = /seed|secret|private|priv_key|mnemonic|signing key|_sk\b/i;
-const KEY_VARIABLE = /[A-Za-z0-9]_PRIV_KEY_HEX/;
+const KEY_VARIABLE = /PRIV_KEY_HEX(?!=)/;
+const KEY_TEXT = /(?:ed25519e?_sk|_x?sk|xprv)1[02-9ac-hj-np-z]{20,}/i;
+const KEY_FILE_NAME = /\.(seed|skey)$/;
 /** What is wrong with a file of the pack: `rel` is its path in the pack, written with a slash, and `text` is its content. */
 function packProblems(rel, text) {
   const problems = [];
   const inTests = rel.startsWith('test/');
-  if (rel.endsWith('.seed')) problems.push(`${rel} is a key file`);
+  if (KEY_FILE_NAME.test(rel)) problems.push(`${rel} is a key file`);
   if (/^\s*[0-9a-fA-F]{64}\s*$/.test(text)) problems.push(`${rel} holds one key and nothing else`);
   if (!inTests && KEY_RUN.test(text)) problems.push(`${rel} holds a run of 64 hex characters outside the test folder`);
   if (inTests && text.split('\n').some((line) => KEY_RUN.test(line) && SECRET_LINE.test(line))) problems.push(`${rel} holds a run of 64 hex characters on a line that names a secret`);
+  if (KEY_TEXT.test(text)) problems.push(`${rel} holds a key in the bech32 form`);
   if (!inTests && KEY_VARIABLE.test(text) && !KEY_VARIABLE_FILES.includes(rel)) problems.push(`${rel} names a key variable, which only the data of the use case and the task env may do`);
   return problems;
 }
@@ -383,8 +387,11 @@ test('the operator pack holds no key and no key-shaped text, and names a key var
   assert.deepEqual(problems, []);
 });
 
-test('the guard of the operator pack refuses a key file, a lone key, a key in a script or a document, a key on a line of a test that names a secret and a key variable in another file, and passes their twins', () => {
+test('the guard of the operator pack refuses a key file, a lone key, a key in a script or a document, a key in the bech32 form in any file, a key on a line of a test that names a secret and a key variable name in another file, and passes their twins', () => {
   const KEY = 'ab'.repeat(32);
+  // The alphabet of the bech32 form, which a key of the cardano tools is written in. A text of the test builds each key from it at run time, and no key stands written out here.
+  const BECH32 = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
+  const keyText = (prefix) => `${prefix}1${BECH32}`;
   const refused = [
     ['a key file', 'lib/alpha.seed', 'x', /is a key file/],
     ['one key and nothing else', 'test/fixtures/key.txt', `${KEY}\n`, /one key and nothing else/],
@@ -397,6 +404,13 @@ test('the guard of the operator pack refuses a key file, a lone key, a key in a 
     ['a key variable in another task', 'tasks/fund.ts', "const name = 'SUPPLIER_PRIV_KEY_HEX';", /names a key variable/],
     ['a key variable in a library file', 'lib/x.ts', "const name = 'REORDER_SERVICE_PRIV_KEY_HEX';", /names a key variable/],
     ['a key variable in the README', 'README.md', 'Set SUPPLIER_PRIV_KEY_HEX in the file.', /names a key variable/],
+    ['a key in the bech32 form in a document', 'README.md', `Use ${keyText('ed25519_sk')} as the key.`, /bech32/],
+    ['an extended key in the bech32 form in a script', 'lib/output.ts', `const k = '${keyText('addr_xsk')}';`, /bech32/],
+    ['a key in the bech32 form in a file with no extension', 'Dockerfile', `ENV KEY=${keyText('ed25519e_sk')}`, /bech32/],
+    ['an extended key in a fixture of a test', 'test/fixtures/key.json', `{ "key": "${keyText('xprv')}" }`, /bech32/],
+    ['a key file of the cardano tools', 'test/fixtures/payment.skey', '{}', /is a key file/],
+    ['a key variable name that the code builds', 'lib/output.ts', '`${role}_PRIV_KEY_HEX`', /names a key variable/],
+    ['the suffix of a key variable name', 'lib/output.ts', "const suffix = '_PRIV_KEY_HEX';", /names a key variable/],
   ];
   for (const [what, rel, text, problem] of refused) assert.ok(packProblems(rel, text).some((found) => problem.test(found)), what);
   const accepted = [
@@ -409,6 +423,12 @@ test('the guard of the operator pack refuses a key file, a lone key, a key in a 
     ['a key variable in a test', 'test/env.test.ts', "expect(file.get('SUPPLIER_PRIV_KEY_HEX')).toBe('');"],
     ['the mark of a secret with no variable name', 'lib/secrets.ts', 'const SECRET_TEXT = /ed25519e?_sk|PRIV_KEY_HEX=|bearer\\s/i;'],
     ['the word seed in a script file', 'lib/x.ts', 'const seed = 1;'],
+    ['19 characters of bech32 data after the prefix of a key', 'README.md', `ed25519_sk1${BECH32.slice(0, 19)}`],
+    ['data that is not in the bech32 alphabet', 'README.md', `ed25519_sk1${'b'.repeat(30)}`],
+    ['the prefix of a key with no data', 'lib/secrets.ts', 'const SECRET_TEXT = /ed25519e?_sk|_x?sk1|PRIV_KEY_HEX=|bearer\\s/i;'],
+    ['a Dockerfile with no key', 'Dockerfile', 'ENV NODE_ENV=production'],
+    ['a file name with the word seed that does not end in .seed', 'lib/seed.ts', 'x'],
+    ['a file name with the suffix inside it', 'test/fixtures/payment.skey.md', '{}'],
   ];
   for (const [what, rel, text] of accepted) assert.deepEqual(packProblems(rel, text), [], what);
 });

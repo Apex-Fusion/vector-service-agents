@@ -136,7 +136,7 @@ The operator pack (`scripts/operator`) makes the keys, the agent records, the st
 | Tags | `:latest` and `:<full git commit sha>`, as for every image of this repository. |
 | Memory limit | 768 MiB. |
 | Gate | The agents host starts a run only while `MemAvailable` is at least 1,792 MiB: the gate of 1,024 MiB plus the 768 MiB of the image. |
-| Mounts | `/keys`: the keys folder, read-only, and read-write for the task `keys` only. `/state`: the state folder, read-write. `/agents/<agent>`: the folder of one agent, for the tasks `env`, `allowlist` and `fault` only. `/mock-env/.env.mock-systems`: one file, read-only, for the task `tenant` only. |
+| Mounts | `/keys`: the keys folder, read-only, and read-write for the task `keys` only. `/state`: the state folder, read-write. `/agents/<agent>`: the folders of the agents, for the tasks `env`, `allowlist` and `fault` only. The task `env` plans both agents of use case 1 in one run, so it needs both folders and both records, and it runs again after `advert`, to write `ADVERT_REF`. `/mock-env/.env.mock-systems`: one file, read-only, for the task `tenant` only. |
 
 The agents host never mounts `/srv/agents` as a whole: that would give a task write access to the keys folder and to the file of the mock operator token. The container has no docker socket. No task prints a key or a token: the screen, the evidence and the machine line hold names, hashes and addresses only.
 

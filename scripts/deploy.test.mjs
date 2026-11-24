@@ -8169,6 +8169,7 @@ test('the README of the agents host has a section about the operator image: its 
   for (const part of [
     `${image}@sha256:<digest>`, '`docker run --rm`', 'by its digest, never by a tag', '`/keys`', '`/state`', '`/agents/<agent>`', '`/mock-env/.env.mock-systems`', 'read-only', 'for the task `keys` only', 'for the task `tenant` only',
     'for the tasks `env`, `allowlist` and `fault` only', '768 MiB', '1,792 MiB', 'No task prints a key or a token', 'scripts/operator/README.md', 'The agents host never mounts `/srv/agents` as a whole',
+    'The task `env` plans both agents of use case 1 in one run, so it needs both folders and both records', 'and it runs again after `advert`, to write `ADVERT_REF`',
   ]) assert.ok(text.includes(part), part);
   const gate = /at least ([\d,]+) MiB: the gate of ([\d,]+) MiB plus the ([\d,]+) MiB of the image/.exec(text);
   assert.ok(gate, 'the sentence of the gate');

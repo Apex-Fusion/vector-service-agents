@@ -933,6 +933,10 @@ describe('deploy/server/RUNBOOK-order-desk.md', () => {
     expect([...what.matchAll(/^\| `([a-z]+)` \|/gm)].map((hit) => hit[1])).toStrictEqual(['keys', 'fund', 'register', 'stake', 'env', 'advert']);
     expect(what).toContain('The commands of this runbook that make the env files by hand stay as the manual way, and the task `env` does the same work.');
     expect(what.split('\n').find((line) => line.startsWith('| `advert` |'))).toContain('After the service runs and serves its manifest, and before the runtimes start.');
+    const env = what.split('\n').find((line) => line.startsWith('| `env` |'));
+    expect(env).toContain('The env files of both agents of use case 1: the four files of this pack (the shared file and one file for each runtime), and the env file of the Reorder Agent.');
+    expect(env).toContain('It needs both agent folders and the records of both agents (and of stock-reader), and it writes nothing when one is missing.');
+    expect(env).toContain('and again after `advert`, to write `ADVERT_REF` of each runtime.');
   });
 
   test('the env files section says that the task env does the same work, and the contact is the address that the live agents publish: the operator types it, and no file of the repository holds it', () => {

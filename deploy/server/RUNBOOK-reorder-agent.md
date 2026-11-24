@@ -36,7 +36,7 @@ The operator pack (`scripts/operator`) makes the keys, the agent records, the st
 | `fund` | The collateral output and the float of each wallet. | After `keys`. |
 | `register` | The record of the agent and the record of its subagent stock-reader. | After `fund`, and before the first start. The operator publishes the TXT value of the organisation first. |
 | `stake` | The Module-3 stake of the agent. | After `register`, and before the first start. |
-| `env` | The env file of this pack, `.env.reorder-agent`. | Before the first start (step 2 of the order of the work). |
+| `env` | The env files of both agents of use case 1: `.env.reorder-agent` of this pack, and the files of the Order Desk. One run plans both agents. It needs both agent folders and the records of both agents (and of stock-reader), and it writes nothing when one is missing. | Before the first start (step 2 of the order of the work), and again after `advert`, to write `ADVERT_REF`. |
 | `advert` | The advert. | After the service runs and serves its manifest, and before the runtime starts. |
 
 This runbook says when each result is needed and where it goes. The service does not start without its keys, `AGENT_DID` and `STOCK_READER_DID`. The runtime does not start without its advert. The commands of this runbook that make the env file by hand stay as the manual way, and the task `env` does the same work. `scripts/operator/README.md` says what each task does.
