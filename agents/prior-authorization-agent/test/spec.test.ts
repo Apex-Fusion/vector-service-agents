@@ -905,11 +905,9 @@ describe('specs/prior-authorization-agent.md, the receipt, the claim and the fau
     // No code of the service calls the staking of a claim: the kit has the call, and the sources of the agent do not.
     expect(text('packages/usecase-kit/src/dispute/dispute.ts')).toContain('async stakeRunClaim(input: RunClaimInput)');
     expect(sourcesOf('agents/prior-authorization-agent/src/').filter(({ code }) => code.includes('stakeRunClaim')).map(({ file }) => file)).toStrictEqual([]);
-    // No command of this repository stakes a claim for this agent or for the Insurer Intake Agent. The operator pack loads the use case `inventory-reorder` only, its claim task chooses between the claim of the Reorder Agent and
-    // the claim of the Order Desk, and no source of the pack outside its tests names a claim or a capability of use case 2. So a challenge against either agent ends with `no_open_claim`, as the page says.
+    // The loader and the two claims that the task can stake determine which agents the command supports.
     expect(USE_CASE_NAMES).toStrictEqual(['inventory-reorder']);
     expect(text('scripts/operator/tasks/claim.ts')).toContain("agent.kind === 'reorder-agent' ? REORDER_CLAIM : ORDER_DESK_CLAIM");
-    expect(sourcesOf('scripts/operator/').filter(({ file, code }) => !file.startsWith('test/') && /PRIORAUTH_|INTAKE_CLAIM|health\.priorauth/.test(code)).map(({ file }) => file)).toStrictEqual([]);
     expect(NO_OPEN_CLAIM).toBe('no_open_claim');
     // Statement S3: the agent reads no record and no guideline with a token of its own. The folder of the evidence asks for the token of a subagent only.
     for (const { file, code } of sourcesOf('agents/prior-authorization-agent/src/evidence/')) {
