@@ -22,6 +22,8 @@ COPY packages/service-kit ./packages/service-kit
 COPY packages/id-kit ./packages/id-kit
 COPY packages/hire-kit ./packages/hire-kit
 COPY packages/usecase-kit ./packages/usecase-kit
+# The offline bid trial reads the same public bytes as the three desks. Do not copy an agent source tree.
+COPY agents/bid-desk/price-lists/alfa.json agents/bid-desk/price-lists/bravo.json agents/bid-desk/price-lists/charlie.json ./agents/bid-desk/price-lists/
 COPY scripts/checks/tsconfig.json ./scripts/checks/tsconfig.json
 COPY scripts/checks/lib ./scripts/checks/lib
 COPY scripts/operator ./scripts/operator

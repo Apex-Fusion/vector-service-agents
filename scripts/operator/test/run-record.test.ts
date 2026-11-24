@@ -1,8 +1,12 @@
 // scripts/operator/test/run-record.test.ts - the run record of a run, the report file of a hire, and the reader of the block time of a transaction. The record is strict: an unknown member, a wrong
 // shape, a bad hash, a refusal without its facts and a key-shaped text are each refused with the name of the member. Each refusal has an accepted twin. No test uses the network.
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { RunRecordError, parseReport, parseRunRecord, txInfoOf, txTimeOf } from '../lib/run-record.ts';
+import { RunRecordError, UnknownTransactionError, hireRoleOf, parseReport, parseRunRecord, scriptTxInfoOf, txInfoOf, txTimeOf } from '../lib/run-record.ts';
+import type { RunRecordPolicy } from '../lib/run-record.ts';
+import { inventory } from '../lib/evidence/inventory.ts';
+import data from '../usecases/inventory-reorder.ts';
 import { KEY_TEXT } from './support/secrets.ts';
 
 type Json = string | number | boolean | null | Json[] | { [key: string]: Json };
@@ -29,6 +33,13 @@ const goodRecord = (): Json => ({
   ],
 });
 
+const approval = { role: 'approval', attestation: h('approval'), tx: h('approval tx'), valid_until: 1_800_000_000_000, revoked_tx: null, supersedes: null };
+const currentRecord = (): Json => edited(
+  goodRecord(), [['approval'], undefined], [['use_case'], data.name], [['approvals'], [approval]], [['challenged'], null], [['rfq_ids'], []],
+  [['sub_delegations', 0, 'subagent'], 'stock-reader'], [['sub_delegations', 0, 'hire'], 'propose'],
+);
+const parse = (value: unknown, policy: RunRecordPolicy = inventory) => parseRunRecord(value, data, policy);
+
 /** A copy of `base` with the edits made. */
 function edited(base: Json, ...edits: Edit[]): Json {
   const copy = structuredClone(base);
@@ -42,22 +53,91 @@ function edited(base: Json, ...edits: Edit[]): Json {
   return copy;
 }
 
-function refusedAt(value: unknown, member: string): void {
+function refusedAt(value: unknown, member: string, policy: RunRecordPolicy = inventory): void {
   let caught: unknown;
-  try { parseRunRecord(value); } catch (err) { caught = err; }
+  try { parse(value, policy); } catch (err) { caught = err; }
   expect(caught).toBeInstanceOf(RunRecordError);
   expect((caught as RunRecordError).member).toBe(member);
   expect((caught as RunRecordError).message.startsWith(`${member}: `)).toBe(true);
 }
 
 describe('parseRunRecord', () => {
-  it('takes a good record and gives back the same data', () => {
-    expect(parseRunRecord(goodRecord())).toEqual(goodRecord());
+  it('reads the declared example of the first inventory input format', () => {
+    // The original pack asked the operator to assemble this format. There is no run record writer.
+    const example: unknown = JSON.parse(readFileSync(new URL('./fixtures/inventory-run-v1.example.json', import.meta.url), 'utf8'));
+    expect(parse(example)).toMatchObject({
+      legacy: true, label: 'r1', use_case: data.name, approvals: [{ role: 'approval', attestation: '33'.repeat(32), valid_until: null }],
+      sub_delegations: [{ subagent: null, hire: null }], hires: [{ step: 'propose', report_file: 'propose.report.json' }],
+    });
+  });
+
+  it('normalizes the old record without inventing a validity end or a sub-delegation association', () => {
+    const old = goodRecord();
+    const before = JSON.stringify(old);
+    expect(parse(old)).toMatchObject({
+      legacy: true, use_case: data.name, challenged: null, approvals: [{ ...approval, valid_until: null }],
+      sub_delegations: [{ id: h('sub'), subagent: null, hire: null }], rfq_ids: [],
+    });
+    expect(JSON.stringify(old)).toBe(before);
+  });
+
+  it('reads every new member and validates its relation to the use-case data', () => {
+    expect(parse(currentRecord())).toMatchObject({
+      legacy: false, challenged: null, approvals: [approval],
+      sub_delegations: [{ subagent: 'stock-reader', hire: 'propose' }],
+    });
+    refusedAt(edited(currentRecord(), [['sub_delegations', 0, 'subagent'], undefined]), 'sub_delegations[0].subagent');
+    refusedAt(edited(currentRecord(), [['sub_delegations', 0, 'hire'], 'order-desk']), 'sub_delegations[0].hire');
+    refusedAt(edited(currentRecord(), [['use_case'], 'another-use-case']), 'use_case');
+    refusedAt(edited(currentRecord(), [['challenged'], 1]), 'challenged');
+    refusedAt(edited(currentRecord(), [['challenged'], 'order-desk']), 'challenged');
+    const failure = edited(currentRecord(), [['kind'], 'failure'], [['challenged'], 'order-desk'], [['approvals'], []]);
+    expect(parse(failure)).toMatchObject({ challenged: 'order-desk', approvals: [] });
+  });
+
+  it('rejects a hybrid shape and never migrates an unapproved module or a malformed old value', () => {
+    refusedAt(edited(goodRecord(), [['use_case'], data.name]), 'use_case');
+    refusedAt(goodRecord(), 'use_case', { ...inventory, readLegacy: false });
+    refusedAt(edited(goodRecord(), [['approval', 'valid_until'], 1]), 'approval.valid_until');
+  });
+
+  it('checks the list limits, roles, timestamps, unique request ids and the optional report scope', () => {
+    refusedAt(edited(currentRecord(), [['approvals'], Array.from({ length: 5 }, (_, i) => ({ ...approval, attestation: h(String(i)) }))]), 'approvals');
+    refusedAt(edited(currentRecord(), [['approvals', 0, 'role'], 'other']), 'approvals[0].role');
+    refusedAt(edited(currentRecord(), [['approvals', 0, 'valid_until'], null]), 'approvals[0].valid_until');
+    refusedAt(edited(currentRecord(), [['rfq_ids'], ['request-1']]), 'rfq_ids');
+    const bid = { ...inventory, allowRfqs: true, reportOptional: ['order-desk'] };
+    const withoutReport = edited(currentRecord(), [['hires', 1, 'report_file'], null], [['rfq_ids'], ['request-1', 'request-2']]);
+    expect(parse(withoutReport, bid)).toMatchObject({ rfq_ids: ['request-1', 'request-2'], hires: [{ step: 'propose' }, { report_file: null }] });
+    refusedAt(edited(withoutReport, [['rfq_ids', 1], 'request-1']), 'rfq_ids[1]', bid);
+    refusedAt(edited(currentRecord(), [['hires', 1, 'report_file'], null]), 'hires[1].report_file');
+    refusedAt(edited(withoutReport, [['hires', 1, 'reclaim_tx'], null]), 'hires[1].reclaim_tx', bid);
+  });
+
+  it('accepts each of the three agents of a module role and refuses another agent of the data', () => {
+    const agents = ['desk-one', 'desk-two', 'desk-three', 'desk-four'];
+    const use = { ...data, agents: [...data.agents, ...agents.map((id) => ({ ...data.agents[1]!, id }))] };
+    const bid: RunRecordPolicy = { ...inventory, hireRoles: ['propose', 'quote'], agentOf: (role) => role === 'quote' ? agents.slice(0, 3) : inventory.agentOf(role) };
+    const quote = (agent: string) => edited(currentRecord(), [['hires', 1, 'step'], 'quote-b'], [['hires', 1, 'agent'], agent]);
+    for (const agent of agents.slice(0, 3)) expect(parseRunRecord(quote(agent), use, bid).hires[1]?.agent).toBe(agent);
+    expect(() => parseRunRecord(quote('desk-four'), use, bid)).toThrow('hires[1].agent: is not an agent of the hire role quote');
+  });
+
+  it('reads only the named lifecycle fact ids and refuses a lifecycle record with any hire', () => {
+    const lifecycle = edited(currentRecord(),
+      [['kind'], 'lifecycle'], [['tenant'], null], [['lifecycle'], ['controller-change', 'retire']],
+      [['delegations'], []], [['vaults'], []], [['approvals'], []], [['sub_delegations'], []], [['hires'], []],
+    );
+    expect(parse(lifecycle)).toMatchObject({ kind: 'lifecycle', tenant: null, lifecycle: ['controller-change', 'retire'] });
+    refusedAt(edited(lifecycle, [['hires'], [1]]), 'hires');
+    refusedAt(edited(lifecycle, [['lifecycle', 1], 'controller-change']), 'lifecycle[1]');
+    expect(hireRoleOf('call-bid-a2', ['quote', 'call', 'call-bid'])).toBe('call-bid');
+    expect(hireRoleOf('quote-too-long', ['quote'])).toBeNull();
   });
 
   it('takes the empty lists that a run can have, and a hire that is neither accepted nor reclaimed', () => {
     const record = edited(goodRecord(), [['sub_delegations'], []], [['refusals'], []], [['hires', 1, 'reclaim_tx'], null]);
-    expect(parseRunRecord(record).hires[1]!.reclaim_tx).toBeNull();
+    expect(parse(record).hires[1]!.reclaim_tx).toBeNull();
   });
 
   const refusals: Array<[string, Edit[], string]> = [
@@ -119,7 +199,7 @@ describe('parseRunRecord', () => {
     const record = edited(
       goodRecord(), [['hires', 0, 'accept_tx'], null], [['hires', 0, 'reclaim_tx'], h('reclaim')], [['refusals', 0, 'transaction_body'], 'AbCdEf00'], [['refusals', 1, 'message'], 'The bearerless request was refused.'],
     );
-    expect(() => parseRunRecord(record)).not.toThrow();
+    expect(() => parse(record)).not.toThrow();
   });
 });
 
@@ -200,10 +280,35 @@ describe('txInfoOf and txTimeOf', () => {
     expect(await txTimeOf(koios([row()]).fetchImpl, 'https://koios.test', hash)).toBe(1_794_000_000_000);
   });
 
+  it('uses the script flags when the transaction row has no phase-two flag', async () => {
+    const script = { script_hash: 'ab'.repeat(28), valid_contract: true, spends_input: { tx_hash: h('in'), tx_index: 2 },
+      input: { redeemer: { purpose: 'spend', datum: { value: { constructor: 2, fields: [] } } } } };
+    const mint = { ...script, input: { redeemer: { purpose: 'mint' } } };
+    const world = koios([row({ fee: '250001', outputs: [], plutus_contracts: [script, mint] })]);
+    const proof = await scriptTxInfoOf(world.fetchImpl, 'https://koios.test', hash);
+    expect(proof.spends).toEqual([{ script: script.script_hash, input: `${h('in')}#2`, valid: true, action: 2, fields: [] }]);
+    expect(proof.fee).toBe(250_001n);
+    expect(world.calls[0]?.body).toMatchObject({ _scripts: true });
+  });
+
+  it.each(['mint', 'reward', 'spend'] as const)('refuses any false phase-two flag on a %s run, even when the other flags are true', async (purpose) => {
+    const spend = { script_hash: 'ab'.repeat(28), valid_contract: true, spends_input: { tx_hash: h('in'), tx_index: 2 },
+      input: { redeemer: { purpose: 'spend', datum: { value: { constructor: 2, fields: [] } } } } };
+    const failed = { ...spend, valid_contract: false, input: { redeemer: { ...spend.input.redeemer, purpose } } };
+    for (const fields of [
+      { plutus_contracts: [spend, failed] },
+      { valid_contract: true, plutus_contracts: [spend, failed] },
+      { valid_contract: false, plutus_contracts: [spend] },
+    ]) {
+      const world = koios([row({ outputs: [], ...fields })]);
+      await expect(scriptTxInfoOf(world.fetchImpl, 'https://koios.test', hash)).rejects.toThrow('does not show successful script validation');
+    }
+  });
+
   const failures: Array<[string, Record<string, unknown>[], number, string]> = [
     ['a status that is not 200', [row()], 503, 'Koios tx_info answered 503'],
     ['a transaction that Koios does not know', [], 200, 'Koios does not know the transaction'],
-    ['a row of another transaction', [row({ tx_hash: h('other') })], 200, 'Koios does not know the transaction'],
+    ['a row of another transaction', [row({ tx_hash: h('other') })], 200, 'did not return one row of the requested transaction'],
     ['a time that is no whole number', [row({ tx_timestamp: 'now' })], 200, 'no block time'],
     ['a time of zero', [row({ tx_timestamp: 0 })], 200, 'no block time'],
     ['inputs that are no list', [row({ inputs: null })], 200, 'no list of inputs'],
@@ -221,6 +326,7 @@ describe('txInfoOf and txTimeOf', () => {
       const err = await txInfoOf(koios(rows, status).fetchImpl, 'https://koios.secret.test', hash).then(() => new Error('it passed'), (e: unknown) => e as Error);
       expect(err.message).toContain(message);
       expect(err.message).not.toContain('koios.secret.test');
+      expect(err instanceof UnknownTransactionError).toBe(rows.length === 0);
     });
   }
 

@@ -1,7 +1,6 @@
 // scripts/operator/test/claim.test.ts - the task `claim` through the real runner, the real chain port of the kit (`createModule1Port`) and the real dispute code (`Dispute`), over the fixture world
 // of the kit tests: the Module-1 scripts run on every build, and a ledger takes the signed transactions. The guarded signer judges each transaction that the kit builds. Each refusal has an accepted twin.
-// The fixture world has one wallet key (the key of seed 0b), so the service key of the Reorder Agent has that seed. The service key of the Order Desk has the seed 0d, and the test gives it a wallet
-// and a record on the same ledger. No test uses the network or DNS: the fetch of the world serves the manifest and the status of the runtimes, and the host lookup of the manifest reader is replaced.
+// Each test gives the service keys synthetic wallets and records. No test uses the network or DNS: the fixture serves the manifest and the runtime status, and replaces the manifest reader's host lookup.
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
@@ -14,7 +13,7 @@ import { decodeClaimDatum, encodeChallengeDatum, encodeClaimDatum } from '../../
 import type { ChallengeDatum, ClaimState } from '../../../packages/buyer-core/src/vendored/mcp/jury-codec.ts';
 import { scriptAddress } from '../../../packages/buyer-core/src/vendored/mcp/jury-deployment.ts';
 import { createSerialQueue } from '../../../packages/usecase-kit/src/access/index.ts';
-import { Dispute } from '../../../packages/usecase-kit/src/dispute/index.ts';
+import { Dispute, claimDocument } from '../../../packages/usecase-kit/src/dispute/index.ts';
 import type { ClaimView, JurorDocument } from '../../../packages/usecase-kit/src/dispute/index.ts';
 import { LedgerProvider, WALLET_ADDRESS, forever, koiosOf, ledgerWorld, realPort } from '../../../packages/usecase-kit/test/dispute/ledger.ts';
 import { MANIFEST_SHA, SETTINGS as DISPUTE_SETTINGS } from '../../../packages/usecase-kit/test/dispute/support.ts';
@@ -33,14 +32,17 @@ import type { TxFacts } from '../../checks/lib/txfacts.ts';
 import { ApprovalError, Exposure } from '../lib/approval.ts';
 import type { GoFile } from '../lib/approval.ts';
 import { CLAIM_STAKE_LOVELACE, CLAIM_WINDOW_MS, claimTypeOf } from '../lib/claim-constants.ts';
-import type { ClaimFact, GuardedSignRequest, LandHost, OperatorSettings } from '../lib/contract.ts';
+import type { AgentSpec, ClaimFact, GuardedSignRequest, LandHost, OperatorSettings, UseCase } from '../lib/contract.ts';
 import { FactsFile } from '../lib/facts.ts';
 import { guardedSign, recordingProvider } from '../lib/guarded-sign.ts';
-import { ORDER_DESK_CLAIM, REORDER_CLAIM, withdrawableFrom } from '../lib/platform.ts';
+import { BID_DESK_CLAIM, INTAKE_CLAIM, ORDER_DESK_CLAIM, PRIORAUTH_CLAIM, REORDER_CLAIM, SOURCING_CLAIM, withdrawableFrom } from '../lib/platform.ts';
 import { loadRegistry } from '../lib/registry.ts';
 import { runTask } from '../lib/runner.ts';
-import claim, { claimRequest, readLiveClaims, trialDocument, withdrawRequest } from '../tasks/claim.ts';
+import { trialDocument } from '../lib/trials/shared.ts';
+import claim, { claimRequest, readLiveClaims, withdrawRequest } from '../tasks/claim.ts';
+import bids from '../usecases/bid-evaluation.ts';
 import data from '../usecases/inventory-reorder.ts';
+import priorAuth from '../usecases/prior-authorization.ts';
 import { MemoryOutput } from './support/fakes.ts';
 import { writeSeed } from './support/keys.ts';
 import { NOW, USE_CASE, taskWorld } from './support/task-world.ts';
@@ -57,7 +59,6 @@ const MANIFEST_BASE = 'https://raw.githubusercontent.com/Apex-Fusion/vector-agen
 const MANIFEST_URL = `${MANIFEST_BASE}/${COMMIT}/${data.moduleManifestPath}`;
 const REORDER = data.agents[0]!;
 const ORDER = data.agents[1]!;
-const SEEDS = { 'reorder-service': '0b'.repeat(32), 'order-desk-service': '0d'.repeat(32) } as const;
 const WALLET_1 = testKey(11);
 const WALLET_2 = testKey(13);
 const REORDER_STATUS = `${REORDER.endpoint}/status`;
@@ -117,6 +118,14 @@ class Web {
   };
 }
 
+interface Holder {
+  readonly agent: AgentSpec;
+  readonly id: string;
+  readonly address: string;
+  readonly key: { readonly publicKey: string; readonly keyHash: string };
+  readonly manifest: string;
+}
+
 interface Rig {
   readonly world: TaskWorld;
   readonly ledger: LedgerProvider;
@@ -126,6 +135,7 @@ interface Rig {
   containers: string[];
   readonly address1: string;
   readonly address2: string;
+  readonly holders: readonly Holder[];
   /** Runs the task through the real runner, after it wrote `running-images.json` with the time now. */
   run(...argv: string[]): Promise<number>;
   /** Runs the task through the real runner and writes no `running-images.json`. */
@@ -135,6 +145,7 @@ interface Rig {
 }
 
 interface RigOptions {
+  use?: UseCase;
   records?: LedgerProvider['live'];
   wallet1?: readonly bigint[];
   wallet2?: readonly bigint[];
@@ -144,33 +155,46 @@ interface RigOptions {
 }
 
 async function makeRig(options: RigOptions = {}): Promise<Rig> {
-  const names = ['run', 'reorder-service', 'order-desk-service'];
+  const use = options.use ?? data;
+  const names = ['run', ...use.agents.map((agent) => agent.serviceKey)];
   const world = await taskWorld({
-    keys: names, shared: ['run'], use: { agents: data.agents, runs: data.runs, moduleManifestPath: data.moduleManifestPath }, env: { OPERATOR_MODULE1_COMMIT: COMMIT, ...options.env },
+    keys: names, shared: ['run'], use: { name: use.name, agents: use.agents, runs: use.runs, moduleManifestPath: use.moduleManifestPath },
+    env: { OPERATOR_USE_CASE: USE_CASE, OPERATOR_MODULE1_COMMIT: COMMIT, ...options.env },
   });
-  for (const [name, seed] of Object.entries(SEEDS)) writeSeed(world.keys.root, USE_CASE, name, `${seed}\n`);
-  const registry = loadRegistry({ dir: world.keys.root, useCase: USE_CASE, specs: world.use.keys, need: names });
-  const address1 = registry.addressOf('reorder-service');
-  const address2 = registry.addressOf('order-desk-service');
-  const ledger = ledgerWorld([], options.records ?? [RECORD_1, RECORD_2]);
+  for (const [index, agent] of use.agents.entries()) {
+    const seed = (11 + 2 * index).toString(16).padStart(2, '0').repeat(32);
+    writeSeed(world.keys.root, use.name, agent.serviceKey, `${seed}\n`);
+  }
+  const registry = loadRegistry({ dir: world.keys.root, useCase: use.name, specs: world.use.keys, need: names });
+  const holders: Holder[] = use.agents.map((agent, index) => ({
+    agent, id: index === 0 ? CLAIMER_ID : index === 1 ? AUDITOR_ID : (0xc1 + index).toString(16).repeat(32),
+    address: registry.addressOf(agent.serviceKey), key: testKey(11 + 2 * index),
+    manifest: use === data ? MANIFEST_SHA : createHash('sha256').update(agent.id).digest('hex'),
+  }));
+  const ledger = ledgerWorld([], options.records ?? (use === data ? [RECORD_1, RECORD_2] : holders.map(({ id, key }) => (
+    recordUtxo(id, agentRecord({ keys: listing(key) }, key.publicKey))
+  ))));
+  const address1 = holders[0]!.address;
+  const address2 = holders[1]!.address;
   setWallet(ledger, address1, options.wallet1 ?? [5_000_000n, 190_000_000n]);
   setWallet(ledger, address2, options.wallet2 ?? [5_000_000n, 130_000_000n]);
+  for (const holder of holders.slice(2)) setWallet(ledger, holder.address, [5_000_000n, 130_000_000n]);
   const deployment = { ...DEPLOYMENT, identity: { ...DEPLOYMENT.identity, hash: IDENTITY_HASH, address: IDENTITY_ADDRESS } } as IdentityDeployment;
   const web = new Web();
   const chain: ChainAccess = {
     provider: ledger, deployment, koiosUrl: 'https://koios.test', fetchImpl: koiosOf(ledger),
     context: async (address) => ({ lucid: await lucidForAddress(ledger, address), provider: ledger, deployment }), liveVaultsOf: async () => [],
   };
-  const facts = FactsFile.open(join(world.stateDir, 'facts.json'), { useCase: USE_CASE, network: 'vector-mainnet' });
-  for (const [agent, id] of [[REORDER, CLAIMER_ID], [ORDER, AUDITOR_ID]] as const) {
+  const facts = FactsFile.open(join(world.stateDir, 'facts.json'), { useCase: use.name, network: 'vector-mainnet' });
+  for (const { agent, id, manifest } of holders) {
     if (options.recordFacts !== false) {
       facts.put('records', [agent.id], { did: `did:vector:${id}`, id, tx: 'aa'.repeat(32), recordRef: `${'aa'.repeat(32)}#0`, depositLovelace: '10000000', registeredAt: '2026-11-15T10:00:00.000Z' });
     }
-    if (options.manifests !== false) facts.put('manifests', [agent.id], { uri: `${agent.endpoint}/agent.json`, sha256: MANIFEST_SHA, bytes: 1200, readAt: '2026-11-15T10:00:00.000Z' });
+    if (options.manifests !== false) facts.put('manifests', [agent.id], { uri: `${agent.endpoint}/agent.json`, sha256: manifest, bytes: 1200, readAt: '2026-11-15T10:00:00.000Z' });
   }
   const runBare = (...argv: string[]): Promise<number> => runTask(claim, argv, world.deps({ chain, fetchImpl: web.fetch }));
   const rig: Rig = {
-    world, ledger, chain, web, containers: [], address1, address2, runBare,
+    world, ledger, chain, web, containers: [], address1, address2, holders, runBare,
     run: (...argv) => {
       mkdirSync(world.stateDir, { recursive: true, mode: 0o700 });
       chmodSync(world.stateDir, 0o700);
@@ -379,6 +403,61 @@ describe('claim run: a run that stakes', () => {
     expect(await stakeAll(rig)).toBe(0);
     expect(rig.ledger.accepted).toHaveLength(4);
     expect(rig.world.machine().outcome).toBe('finished');
+  }, SLOW);
+});
+
+describe('claim run: use cases 2 and 3', () => {
+  it.each([
+    { use: priorAuth, claims: [PRIORAUTH_CLAIM, INTAKE_CLAIM] },
+    { use: bids, claims: [SOURCING_CLAIM, BID_DESK_CLAIM, BID_DESK_CLAIM, BID_DESK_CLAIM] },
+  ])('stakes the exact claims of $use.name in data order', async ({ use, claims }) => {
+    const rig = await makeRig({ use });
+    approve(rig, 400);
+    const reserving = use === priorAuth ? rig.holders[1]! : rig.holders[0]!;
+    for (const { agent, address } of rig.holders) {
+      const float = agent.kind === 'bid-desk' ? 62_000_000n : 102_000_000n;
+      setWallet(rig.ledger, address, [5_000_000n, agent === reserving.agent ? float - 1n : float]);
+    }
+
+    // The Prior Authorization Agent has already signed when the Intake Agent refuses.
+    expect(await stakeAll(rig, 'failure'), rig.errors()).toBe(use === priorAuth ? 1 : 2);
+    expect(rig.errors()).toContain(`the agent ${reserving.agent.id} would hold 52.999999 units after the claim and its fees, and the run of the kind failure needs 53.000000 units for a challenge: 0.000001 units are missing`);
+    expect(rig.ledger.accepted).toHaveLength(use === priorAuth ? 2 : 0);
+    expect(rig.world.facts().claims[RUN]?.[reserving.agent.id]).toBeUndefined();
+    setWallet(rig.ledger, reserving.address, [5_000_000n, 102_000_000n]);
+
+    if (use === bids) {
+      const { origin, runtimeContainer } = rig.holders[3]!.agent.adverts[0]!;
+      rig.containers = [runtimeContainer];
+      rig.web.statuses.set(`${origin}/status`, 'working');
+      expect(await stakeAll(rig, 'failure')).toBe(2);
+      expect(rig.errors()).toContain(`the runtime ${runtimeContainer} says working`);
+      expect(rig.ledger.accepted).toHaveLength(0);
+      rig.web.statuses.set(`${origin}/status`, 'free');
+    }
+
+    expect(await stakeAll(rig, 'failure')).toBe(0);
+    expect(rig.world.machine()).toMatchObject({ outcome: 'finished' });
+    expect(Object.keys(rig.world.facts().claims[RUN]!)).toStrictEqual(use.agents.map(({ id }) => id));
+    expect(rig.ledger.accepted).toHaveLength(2 * use.agents.length);
+    const documentHashes: string[] = [];
+    for (const [index, { agent, id, address, key, manifest }] of rig.holders.entries()) {
+      const fact = claimOf(rig, agent);
+      const expected = claimDocument({ agent_did: `did:vector:${id}`, capability_id: agent.capability, manifest_sha256: manifest, claim: claims[index]! });
+      if (!expected.ok) throw new Error(expected.detail);
+      expect([fact.documentTx, fact.claimTx]).toStrictEqual(rig.ledger.accepted.slice(index * 2, index * 2 + 2));
+      expect(factsOf(rig.ledger.raw[index * 2]!)).toMatchObject({ witnesses: [key.keyHash], mint: {} });
+      const tx = factsOf(rig.ledger.raw[index * 2 + 1]!);
+      expect(tx.witnesses).toStrictEqual([key.keyHash]);
+      expect(tx.mint).toStrictEqual({ [`${MODULE1.claim.hash}${fact.claimToken}`]: 1n });
+      const destinations = tx.outputs.filter((output) => output.address !== address);
+      expect(destinations).toMatchObject([{ address: MODULE1.claim.address, lovelace: CLAIM_STAKE_LOVELACE }]);
+      const datum = decodeClaimDatum(destinations[0]!.inlineDatum!);
+      expect(datum).toMatchObject({ claimerDid: id, claimHash: expected.value.hash, stakeAmount: CLAIM_STAKE_LOVELACE, challengeWindow: CLAIM_WINDOW_MS });
+      expect(Buffer.from(datum.claimType, 'hex').toString('utf8')).toBe(agent.capability);
+      documentHashes.push(datum.claimHash);
+    }
+    expect(new Set(documentHashes).size).toBe(use.agents.length);
   }, SLOW);
 });
 

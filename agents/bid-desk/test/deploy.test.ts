@@ -20,6 +20,8 @@ import { afterAll, describe, expect, test } from 'vitest';
 import { parse, stringify } from 'yaml';
 import { BID_CAPABILITIES, BID_DESK_MODEL } from '@vsa/usecase-kit/bids';
 import { COUNTERPARTY_REFUSALS, ERROR_STATUS, FAULT_MODES } from '@vsa/usecase-kit/protocol';
+import { CLAIM_STAKE_LOVELACE, CLAIM_WINDOW_MS } from '../../../scripts/operator/lib/claim-constants.ts';
+import { USE_CASE_NAMES } from '../../../scripts/operator/usecases/names.ts';
 import { QUOTE_REFUSAL_STATUS } from '../src/job/refusal.ts';
 import { BOND_LOVELACE, INSTANCES, INSTANCE_NAMES, JOB_DEADLINE_MS, MIN_PROCESSING_WINDOW_MS, PORT_DEFAULT, PRICE_LIST_ROUTE, PRICE_LOVELACE, STATE_DIR_DEFAULT } from '../src/serve/settings.ts';
 import type { Instance } from '../src/serve/settings.ts';
@@ -1635,9 +1637,18 @@ describe('deploy/server/RUNBOOK-bid-desk.md', () => {
     for (const part of ['bid-desk-<name>-state', 'rfq-book.json']) expect(out).toContain(part);
   });
 
-  test('the operator pack makes the claim of each Bid Desk, and the service never does', () => {
+  test('the operator claim task uses the key of each Bid Desk and the CLI does not enable bid evaluation', () => {
     const note = sectionOf(runbookText, 'The operator pack');
-    for (const part of ['operator commands', 'never by the service', 'The stake of the claim and its record belong to the service key of that Bid Desk', 'The service has no claim code and no dispute code', 'Sourcing Agent', 'It never makes a stake, a claim or a record', 'behaviour.claim']) expect(note, part).toContain(part);
+    for (const part of [
+      '`claim` task of the operator pack supports one Module-1 claim for each Bid Desk',
+      'before each clean or failure run', 'signs with the service key of that Bid Desk',
+      `${CLAIM_STAKE_LOVELACE / 1_000_000n} units (${CLAIM_STAKE_LOVELACE.toLocaleString('en-US')} lovelace)`,
+      `challenge window is ${CLAIM_WINDOW_MS / 3_600_000} hours`, '`claim cleanup` withdraws the claim if nobody challenged it',
+      'The operator CLI does not enable use case 3 yet.',
+      'the claim document transaction and then the stake transaction, one Bid Desk at a time',
+      'The service has no claim code and no dispute code', 'Sourcing Agent', 'It never makes a stake, a claim or a record', 'behaviour.claim',
+    ]) expect(note).toContain(part);
+    expect(USE_CASE_NAMES).not.toContain('bid-evaluation');
   });
 
   const faults: readonly Fault[] = [

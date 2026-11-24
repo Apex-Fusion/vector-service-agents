@@ -19,6 +19,8 @@ import { BID_CAPABILITIES, SOURCING_MODEL } from '@vsa/usecase-kit/bids';
 import { COSIGN_STATUS } from '@vsa/usecase-kit/cosign';
 import { ERROR_STATUS, FAULT_MODES } from '@vsa/usecase-kit/protocol';
 import { testKey } from '../../../packages/buyer-core/test/fixtures/identity-world.ts';
+import { CLAIM_STAKE_LOVELACE, CLAIM_WINDOW_MS } from '../../../scripts/operator/lib/claim-constants.ts';
+import { USE_CASE_NAMES } from '../../../scripts/operator/usecases/names.ts';
 import { EXECUTE_FAILURES } from '../src/execute/index.ts';
 import { PROPOSE_FAILURES } from '../src/propose/index.ts';
 import { QUOTE_CODES } from '../src/quotes/index.ts';
@@ -1268,6 +1270,19 @@ describe('deploy/server/RUNBOOK-sourcing-agent.md', () => {
     for (const part of [SERVICE_CONTAINER, String(SERVICE_HOST_PORT), '/cosign/delegate', 'does one job at a time', 'scorer-1', 'scorer-2', 'scorer-3', 'use case 3 (supplier bid evaluation)', 'locked up to the window',
       'the stake and the claim of the agent', 'never makes a stake and never makes a claim', 'it files a challenge only', 'COMPLIANCE_ISSUER_PKH']) expect(what, part).toContain(part);
     expect(what, 'the status word, in lower case, until the first live run').toContain('stays `proposed` until the first live run');
+  });
+
+  test('the operator claim task uses the service key and the CLI does not enable bid evaluation', () => {
+    const what = sectionOf(runbookText, 'What it is');
+    for (const part of [
+      '`claim` task of the operator pack supports one Module-1 claim',
+      'before each clean or failure run', 'signs with the service key',
+      `${CLAIM_STAKE_LOVELACE / 1_000_000n} units (${CLAIM_STAKE_LOVELACE.toLocaleString('en-US')} lovelace)`,
+      `challenge window is ${CLAIM_WINDOW_MS / 3_600_000} hours`, '`claim cleanup` withdraws the claim if nobody challenged it',
+      'The operator CLI does not enable use case 3 yet.',
+    ]) expect(what).toContain(part);
+    expect(USE_CASE_NAMES).not.toContain('bid-evaluation');
+    expect(sectionOf(runbookText, 'The env file')).toContain("The operator pack uses this key to sign the agent's claim.");
   });
 
   test('the files named in the first table are the files of the pack, and the second section lists all of them', () => {
