@@ -17,7 +17,9 @@ import type { DelegationId, ProtocolResult } from '@vsa/usecase-kit/protocol';
 import {
   AGENT_KEY, BASES, DAY, FakeClock, FakeDelegations, NOW, OTHER_KEY, PARENT_ID, SCRIPT, SUBAGENT_ID, SUBAGENT_KEY, WALLET, markSigner, parentDatum, slotOf,
 } from '../../../../packages/usecase-kit/test/access/support.ts';
-import type { EvidenceDeps, EvidenceRequest, EvidenceRun, LeftEntry, LeftSink, SubagentName } from '../../src/evidence/ports.ts';
+import { readGuideline } from '../../src/evidence/guideline.ts';
+import type { EvidenceDeps, EvidenceRequest, EvidenceResult, EvidenceRun, LeftEntry, LeftSink, SubagentName } from '../../src/evidence/ports.ts';
+import { readEvidence } from '../../src/evidence/read.ts';
 import { readRecords } from '../../src/evidence/records.ts';
 import type { SubreadResult } from '../../src/evidence/subread.ts';
 
@@ -28,6 +30,8 @@ export const DRAFTER_DID = `did:vector:${'dd'.repeat(32)}`;
 export const DRAFTER_KEY = '23'.repeat(28);
 export const TENANT = 'run1';
 export const ORDER_ID = 'ORD-1001';
+/** The service of the order ORD-1001, and so the code of the guideline that the second read asks for. */
+export const SERVICE_CODE = 'SYN-MRI-LS';
 /** The resources of the two systems of the tenant: the one resource of each sub-delegation. */
 export const RECORDS_RESOURCE = `${BASES.publicBase}/t/${TENANT}/records`;
 export const GUIDELINES_RESOURCE = `${BASES.publicBase}/t/${TENANT}/guidelines`;
@@ -347,8 +351,34 @@ const RECORDS_READ = readCase({
   start: (w, over = {}) => readRecords({ ...w.deps, ...over.deps }, { ...w.request, ...over.request }, w.runOf(over)),
 });
 
+const GUIDELINES_READ = readCase({
+  name: 'drafter',
+  action: 'guideline.read',
+  resource: GUIDELINES_RESOURCE,
+  url: `${GUIDELINES_RESOURCE}/${SERVICE_CODE}`,
+  timeoutCode: 'guideline_read_timeout',
+  invalidCode: 'guideline_invalid',
+  notFound: 'guideline_not_found',
+  body: GUIDELINE_BODY,
+  expected: GUIDELINE,
+  wrong: { ...GUIDELINE, criteria: [] },
+  parser: (script) => script.parseGuideline,
+  setParser: (script, parse) => void (script.parseGuideline = parse as Script['parseGuideline']),
+  start: (w, over = {}) => readGuideline({ ...w.deps, ...over.deps }, { ...w.request, ...over.request }, w.runOf(over), SERVICE_CODE),
+});
+
 /** The reads of the evidence, in the order that they run. */
-export const READS: readonly ReadCase[] = [RECORDS_READ];
+export const READS: readonly ReadCase[] = [RECORDS_READ, GUIDELINES_READ];
+
+/** Starts both reads, one after the other, as the evidence does, and gives the promise. The clock does not move. */
+export function startEvidence(w: World, over: RunOptions = {}): Promise<EvidenceResult> {
+  return readEvidence({ ...w.deps, ...over.deps }, { ...w.request, ...over.request }, w.runOf(over));
+}
+
+/** Runs both reads to their end on the fake clock. */
+export function runEvidence(w: World, over: RunOptions = {}): Promise<EvidenceResult> {
+  return w.clock.run(startEvidence(w, over));
+}
 
 // --- what a test reads -----------------------------------------------------------------------------------------------------------------------------
 
