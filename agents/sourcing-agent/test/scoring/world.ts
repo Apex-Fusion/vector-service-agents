@@ -360,3 +360,22 @@ export function janitorOnce(w: World): Promise<JanitorReport> {
     }),
   );
 }
+
+/**
+ * Makes the ledger show each Delegate to the agent only `ms` after it was sent, as a node does that is slow to include it: the agent keeps the turn of the wallet queue meanwhile. The Delegate itself lands in
+ * the time that the fake ledger takes, and its 30 confirmations count from that landing.
+ */
+export function showAfter(w: World, ms: number): void {
+  const sentAt = new Map<string, number>();
+  const submit = w.chain.submit.bind(w.chain);
+  w.chain.submit = async (cbor) => {
+    const hash = await submit(cbor);
+    if (w.chain.submitted.at(-1)?.kind === 'delegate') sentAt.set(w.chain.builtDelegates.at(-1)!.id, w.clock.now());
+    return hash;
+  };
+  const readDelegation = w.chain.readDelegation.bind(w.chain);
+  w.chain.readDelegation = async (id) => {
+    const sent = sentAt.get(id);
+    return sent !== undefined && w.clock.now() < sent + ms ? null : readDelegation(id);
+  };
+}

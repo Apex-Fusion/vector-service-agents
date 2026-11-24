@@ -147,7 +147,8 @@ export type ScoreAnswer = { readonly ok: true; readonly decision: Decision; read
  * - `leftSink` and `inFlight` are the list of left sub-delegations and the set of the ids that a run still uses.
  * - `score` asks the model for the score of one quote. Its call is a paid hire: the signal of the caller is never passed into it.
  * - `fault` is the switch that the service made at its start. Its value is read one time for a scoring.
- * - `deadline_ms` is the time by which every wait of the scoring must end, in POSIX milliseconds by the clock of the deps. A scorer starts only with `SCORER_NEED_MS` left.
+ * - `deadline_ms` is the time by which every wait of the scoring must end, in POSIX milliseconds by the clock of the deps. A scorer starts only with `SCORER_NEED_MS` left, and the scoring of three subjects needs
+ *   `SCORERS_NEED_MS`: the turns of the Delegates before a scorer come out of its budget.
  * - `log` gets one line for each scorer that stops before its Delegate is sent or fails, with the cause. A line has codes, references and counts, and no key, token, quote or vendor entry. A function that
  *   throws changes no result.
  */

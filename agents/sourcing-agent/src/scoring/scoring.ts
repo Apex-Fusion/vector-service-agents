@@ -3,8 +3,8 @@
 // scorers start together. Nothing is paid here except the decisions, and a decision is a model hire through a port.
 //
 // One scorer, in this order. A failure of a step is a typed code, and no step reads success from a text.
-//   1. Before anything is sent: the caller still waits (`aborted`), and `deadline_ms` leaves `SCORER_NEED_MS` (`deadline`). The same two checks run again inside the hook before the Delegate is sent, after the
-//      turn of the wallet queue: a scorer that waited long for its turn may have no time left, and then it sends nothing.
+//   1. Before anything is sent: the caller still waits (`aborted`), and `deadline_ms` leaves `SCORER_NEED_MS` (`deadline`). The same checks run again inside the hook before the Delegate is sent, after the turn
+//      of the wallet queue and again after the read of the list: a scorer that waited long for its turn may have no time left, and then it sends nothing. The hook also holds the scorer to its budget (see Time).
 //   2. The sub-delegation, through `withSubDelegation` of the kit: one action (`vendor.read`) on one resource, one hop below the delegation of the hirer, no value, made by the live delegation key of the agent
 //      and the delegation key of the scorer. The three Delegates go through the one queue of the wallet, one at a time, and their waits for 30 confirmations overlap. The sub-delegation is ENDED in every case:
 //      after the score, after a refusal, after a failure, after a throw and after a timeout.
@@ -23,10 +23,14 @@
 // that is `not_ended` stores the entry again with the Undelegate that was tried. Then the id leaves the set, on every path. So the janitor never ends the sub-delegation of a run that still waits, and a run that
 // did not end its sub-delegation leaves an entry for the janitor. A failure to update the list after the run changes no result: the entry that the hook stored stays, and the janitor ends it or drops it.
 //
-// Time. A scorer needs `SCORER_NEED_MS` left when its Delegate is sent: the least wait for 30 confirmations, the job, and the end step. Every wait of a scorer is trimmed to `deadline_ms`. The update of the list
-// after the run has a bound of its own, because the end of a sub-delegation must be recorded also when the time is out.
+// Time. All the scorers start together, and their Delegates go one after the other through the queue of the wallet. A Delegate keeps its turn until the agent sees it on the ledger, at most `DEFAULT_LANDING_WAIT_MS`,
+// and the access folder takes the wait for the turn out of the budget `confirmationWaitMs` of a scorer. So the scorer with the index `k` gets the budget of the first scorer and `k` times `DEFAULT_LANDING_WAIT_MS`
+// more, and never more than leaves the job and the end step inside `deadline_ms`. A scorer needs `SCORER_NEED_MS` left when its Delegate is sent (the least wait for 30 confirmations, the job, and the end step),
+// and the hook sends only when its budget still holds `MIN_CONFIRMATION_WAIT_MS`. The scoring of three subjects needs `SCORERS_NEED_MS`. The update of the list after the run has a bound of its own, because the
+// end of a sub-delegation must be recorded also when the time is out.
 import {
-  DEFAULT_CONFIRMATION_WAIT_MS, DEFAULT_END_TIMEOUT_MS, DEFAULT_POLL_MS, DEFAULT_STEP_TIMEOUT_MS, SUB_DELEGATION_FAILURES, askWhileTooYoung, callWithToken, requestSubagentToken, tokenTarget, withSubDelegation, within,
+  DEFAULT_CONFIRMATION_WAIT_MS, DEFAULT_END_TIMEOUT_MS, DEFAULT_LANDING_WAIT_MS, DEFAULT_POLL_MS, DEFAULT_STEP_TIMEOUT_MS, SUB_DELEGATION_FAILURES, askWhileTooYoung, callWithToken, requestSubagentToken, tokenTarget,
+  withSubDelegation, within,
 } from '@vsa/usecase-kit/access';
 import type { RouteTokenResult, SubDelegationEnd, SubDelegationHandle, TokenTarget } from '@vsa/usecase-kit/access';
 import { parseComponents, parseScoreValue } from '@vsa/usecase-kit/bids';
@@ -51,6 +55,11 @@ export const END_TIMEOUT_MS = DEFAULT_END_TIMEOUT_MS;
  * its own steps after the scoring to this number.
  */
 export const SCORER_NEED_MS = MIN_CONFIRMATION_WAIT_MS + SCORER_JOB_TIMEOUT_MS + END_TIMEOUT_MS;
+/**
+ * The time that the scoring of three subjects needs: `SCORER_NEED_MS` and the turns of the two Delegates before the third, each at most `DEFAULT_LANDING_WAIT_MS`. The turns of the earlier Delegates come out of
+ * the budget of a later scorer, so a caller that starts three scorers keeps this time for the scoring, and not `SCORER_NEED_MS`.
+ */
+export const SCORERS_NEED_MS = SCORER_NEED_MS + 2 * DEFAULT_LANDING_WAIT_MS;
 
 /** The longest time that the scorer keeps asking for a token while the gateway says that the delegation is too young: the gateway reads the ledger by itself, and it may see the 30 confirmations later than this agent. */
 const TOKEN_PATIENCE_MS = 120_000;
@@ -116,12 +125,13 @@ function isDecision(value: unknown): value is Decision {
 }
 
 /**
- * Why a scorer must not send at the time `now`, or null. The caller hung up (`aborted`), or `deadline_ms` leaves less than `SCORER_NEED_MS` (`deadline`). A clock or a deadline that is not a number counts as no
- * time left: a time that is not known is never enough time.
+ * Why a scorer must not send at the time `now`, or null. The caller hung up (`aborted`), or `deadline_ms` leaves less than `SCORER_NEED_MS` (`deadline`), or the budget of the scorer, which started at `start` and
+ * is `waitMs` long, leaves less than `MIN_CONFIRMATION_WAIT_MS` (`deadline`). A clock or a deadline that is not a number counts as no time left: a time that is not known is never enough time.
  */
-function stopOf(run: Run, now: number): Stop | null {
+function stopOf(run: Run, now: number, budget: { readonly start: number; readonly waitMs: number } | null = null): Stop | null {
   if (run.signal?.aborted === true) return 'aborted';
-  return run.deadline - now >= SCORER_NEED_MS ? null : 'deadline';
+  if (!(run.deadline - now >= SCORER_NEED_MS)) return 'deadline';
+  return budget === null || budget.start + budget.waitMs - now >= MIN_CONFIRMATION_WAIT_MS ? null : 'deadline';
 }
 
 /**
@@ -289,8 +299,9 @@ async function runScorer(run: Run, index: number): Promise<ScorerOutcome> {
     const scorer = deps.scorers[index];
     const subject = input.subjects[index];
     if (scorer === undefined || subject === undefined) return failed('internal');
-    // One read of the clock decides both: a scorer that passes the check has at least `MIN_CONFIRMATION_WAIT_MS` for the confirmations. The wait for the turn of the wallet, the Delegate and the 30
-    // confirmations take what the budget says, and the job and the end step come after them, all inside `deadline_ms`.
+    // One read of the clock decides the start and the budget. The Delegates of the scorers go one after the other through the queue of the wallet, and the access folder takes the wait for the turn out of the
+    // budget `confirmationWaitMs` of a scorer: each Delegate before this one keeps its turn until the agent sees it on the ledger, at most `DEFAULT_LANDING_WAIT_MS`. So the scorer `index` gets that wait once for
+    // each scorer before it, and never more than leaves the job and the end step inside `deadline_ms`. The hook sends only when what is left of the budget is still the least wait for the confirmations.
     const now = deps.clock.now();
     const before = stopOf(run, now);
     if (before !== null) {
@@ -298,21 +309,24 @@ async function runScorer(run: Run, index: number): Promise<ScorerOutcome> {
       return failed(before);
     }
     const left = Math.floor(run.deadline - now);
-    const confirmationWaitMs = Math.min(DEFAULT_CONFIRMATION_WAIT_MS, left - SCORER_JOB_TIMEOUT_MS - END_TIMEOUT_MS);
+    const confirmationWaitMs = Math.min(DEFAULT_CONFIRMATION_WAIT_MS + index * DEFAULT_LANDING_WAIT_MS, left - SCORER_JOB_TIMEOUT_MS - END_TIMEOUT_MS);
     const result = await withSubDelegation(
       {
         ...deps.subDelegation,
         walletQueue: deps.agentKey.queue,
         beforeSend: async (reference) => {
-          // The turn of the wallet may have come late, so the checks of the start are made again right before the send. The hook throws before this run takes the id: nothing is sent, this run records nothing, and
-          // it removes nothing.
-          const stop = stopOf(run, deps.clock.now());
-          if (stop !== null) {
+          // The turn of the wallet may have come late, and the read of the list takes time too, so the checks of the start are made right before the send, and again after the read of the list. The hook throws before
+          // this run takes the id: nothing is sent, this run records nothing, and it removes nothing.
+          const refuseWhenStopped = (): void => {
+            const stop = stopOf(run, deps.clock.now(), { start: now, waitMs: confirmationWaitMs });
+            if (stop === null) return;
             flag.stop = stop;
             note(run, `${head}: no Delegate was sent for the sub-delegation ${reference.id}: ${stop}`);
             throw new Error(`no Delegate is sent: ${stop}`);
-          }
+          };
+          refuseWhenStopped();
           await checkFree(run, index + 1, reference.id);
+          refuseWhenStopped();
           sent.id = reference.id;
           deps.inFlight.add(reference.id);
           await deps.leftSink.put({ left: reference, signer_key_hash: deps.agentKey.signer.keyHash });

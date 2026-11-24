@@ -4,7 +4,7 @@
 import { createHash } from 'node:crypto';
 import { DamagedLeftEntriesError } from '@vsa/usecase-kit/janitor';
 import { describe, expect, it } from 'vitest';
-import { runScoring } from '../../src/scoring/index.ts';
+import { SCORER_NEED_MS, runScoring } from '../../src/scoring/index.ts';
 import type { LeftEntry } from '../../src/scoring/index.ts';
 import { AGENT_KEY, BASES, GOLDEN_SCORES, NOW, PARENT_ID, SCRIPT, TENANT, expectFailed, scoresOf } from './support.ts';
 import { expectRecordedAndEnded, expectSettled, idsOf, janitorOnce, opsOf, sentKinds, world } from './world.ts';
@@ -248,6 +248,28 @@ describe('the read of the list inside the hook', () => {
     const quick = world();
     quick.sink.listDelayMs = 19_000;
     expect(await quick.run(one(quick))).toStrictEqual({ ok: true, scores: GOLDEN_SCORES.slice(0, 1) });
+  });
+
+  it('reads the signal and the time again after the read of the list: a hang-up or a short time during the read sends nothing and takes no id', async () => {
+    const hungUp = world();
+    const controller = new AbortController();
+    hungUp.sink.listDelayMs = 10_000;
+    void hungUp.clock.sleep(5_000).then(() => controller.abort());
+    expectFailed(await hungUp.run({ ...one(hungUp), signal: controller.signal }), 'aborted');
+    expect(hungUp.chain.submitted).toStrictEqual([]);
+    expect(hungUp.steps).toStrictEqual([]);
+    expect(hungUp.sink.entries.size).toBe(0);
+    expect(hungUp.logs).toHaveLength(1);
+    const short = world();
+    short.sink.listDelayMs = 19_000;
+    expectFailed(await short.run({ ...one(short), deps: { deadline_ms: NOW + SCORER_NEED_MS + 5_000 } }), 'deadline');
+    expect(short.chain.submitted).toStrictEqual([]);
+    expect(short.steps).toStrictEqual([]);
+    expect(short.logs).toHaveLength(1);
+    // The twin: the same slow read, and exactly the time that a scorer needs is left after it.
+    const twin = world();
+    twin.sink.listDelayMs = 19_000;
+    expect(await twin.run({ ...one(twin), deps: { deadline_ms: NOW + SCORER_NEED_MS + 19_000 } })).toStrictEqual({ ok: true, scores: GOLDEN_SCORES.slice(0, 1) });
   });
 });
 

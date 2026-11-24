@@ -23,7 +23,7 @@ const TYPE_ONLY = ['@vsa/usecase-kit/fault', '@vsa/id-kit/client'];
 describe('the scoring folder', () => {
   test('exports these values, and no other', () => {
     expect(Object.keys(scoring).sort()).toStrictEqual([
-      'END_TIMEOUT_MS', 'MIN_CONFIRMATION_WAIT_MS', 'SCORER_JOB_TIMEOUT_MS', 'SCORER_NEED_MS', 'SCORING_FAILURES', 'SUB_DELEGATION_VALID_MS', 'parseVendors', 'runScoring', 'vendorFor',
+      'END_TIMEOUT_MS', 'MIN_CONFIRMATION_WAIT_MS', 'SCORERS_NEED_MS', 'SCORER_JOB_TIMEOUT_MS', 'SCORER_NEED_MS', 'SCORING_FAILURES', 'SUB_DELEGATION_VALID_MS', 'parseVendors', 'runScoring', 'vendorFor',
     ]);
   });
 

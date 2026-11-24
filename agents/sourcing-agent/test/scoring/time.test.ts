@@ -1,10 +1,11 @@
 // agents/sourcing-agent/test/scoring/time.test.ts: the time rule of a scorer, and the signal of the caller. The review question: does a Delegate go out with less than `SCORER_NEED_MS` left, and is the signal read
 // before each Delegate, each token request and each score call, and never passed into a score call? A scorer needs the least wait for 30 confirmations, the job and the end step: it is checked before its run and
 // again in the hook, after its turn in the queue of the wallet. With less left it ends `deadline`, and nothing is sent. Every wait of a scorer is trimmed to `deadline_ms`.
+import { DEFAULT_LANDING_WAIT_MS } from '@vsa/usecase-kit/access';
 import { describe, expect, it } from 'vitest';
-import { END_TIMEOUT_MS, MIN_CONFIRMATION_WAIT_MS, SCORER_JOB_TIMEOUT_MS, SCORER_NEED_MS } from '../../src/scoring/index.ts';
+import { END_TIMEOUT_MS, MIN_CONFIRMATION_WAIT_MS, SCORER_JOB_TIMEOUT_MS, SCORER_NEED_MS, SCORERS_NEED_MS } from '../../src/scoring/index.ts';
 import { BIDDERS, GOLDEN_SCORES, NOW, VENDORS_BODY, expectFailed, json, never, scoreAnswerFor, tooYoung } from './support.ts';
-import { expectRecordedAndEnded, expectSettled, expectUntouched, idsOf, opsOf, sentKinds, world } from './world.ts';
+import { expectRecordedAndEnded, expectSettled, expectUntouched, idsOf, opsOf, sentKinds, showAfter, world } from './world.ts';
 import type { World } from './world.ts';
 
 const FIRST = GOLDEN_SCORES[0]!.decision;
@@ -23,6 +24,8 @@ describe('the numbers of the rule', () => {
     expect(SCORER_JOB_TIMEOUT_MS).toBe(420_000);
     expect(SCORER_NEED_MS).toBe(MIN_CONFIRMATION_WAIT_MS + SCORER_JOB_TIMEOUT_MS + END_TIMEOUT_MS);
     expect(SCORER_NEED_MS).toBe(720_000);
+    expect(SCORERS_NEED_MS).toBe(SCORER_NEED_MS + 2 * DEFAULT_LANDING_WAIT_MS);
+    expect(SCORERS_NEED_MS).toBe(960_000);
   });
 });
 
@@ -189,6 +192,80 @@ describe('the waits of a scorer are trimmed to the deadline', () => {
     expect(spent).toBeGreaterThan(SCORER_NEED_MS - 20_000);
     expect(spent).toBeLessThanOrEqual(SCORER_NEED_MS);
     expect(w.sink.entries.size).toBe(1);
+    await expectSettled(w);
+  });
+});
+
+describe('the waits for the turns of the earlier Delegates', () => {
+  it('gives scorer k a wait of 360,000 ms and 120,000 ms more for each scorer before it, when much time is left', async () => {
+    const w = world();
+    w.chain.faults.neverConfirm = true;
+    expectFailed(await w.run({ deps: { deadline_ms: NOW + 3_000_000 } }), 'sub_delegation_confirmation_timeout');
+    expect(idsOf(w)).toHaveLength(3);
+    idsOf(w).forEach((id, index) => {
+      const polls = w.events.filter((event) => event.op === 'readiness' && event.detail === id).map((event) => event.at - NOW);
+      const budget = 360_000 + index * DEFAULT_LANDING_WAIT_MS;
+      expect(polls.at(-1)!).toBeGreaterThan(budget - 10_000);
+      expect(polls.at(-1)!).toBeLessThanOrEqual(budget);
+    });
+  });
+
+  it.each([0, 1, 2])('holds scorer %s to its own budget in the hook: it sends with exactly the least wait left, and sends nothing with a millisecond less', async (index) => {
+    // The turns of the earlier Delegates come out of the budget: the time at which this Delegate is built in a clean world.
+    const calibrated = world();
+    await calibrated.run();
+    const waited = calibrated.events.filter((event) => event.op === 'build')[index]!.at - NOW;
+    const room = 360_000 + index * DEFAULT_LANDING_WAIT_MS - MIN_CONFIRMATION_WAIT_MS - waited;
+    /** The scoring of `index + 1` subjects, in which the clock of the scoring jumps by `jump` milliseconds just before the hook of the last scorer. Much time is left, so only the budget decides. */
+    const attempt = async (jump: number) => {
+      const w = world();
+      let skew = 0;
+      let slots = 0;
+      const clock = { now: () => w.clock.now() + skew, sleep: (ms: number, signal?: AbortSignal) => w.clock.sleep(ms, signal) };
+      const slotAt = w.chain.slotAt.bind(w.chain);
+      w.chain.slotAt = async (ms) => {
+        slots += 1;
+        if (slots === index + 1) skew = jump;
+        return slotAt(ms);
+      };
+      const result = await w.run({ input: { subjects: w.input.subjects.slice(0, index + 1) }, deps: { clock, deadline_ms: NOW + 3_000_000 } });
+      return { w, result };
+    };
+    const sends = await attempt(room);
+    expect(sends.result).toStrictEqual({ ok: true, scores: GOLDEN_SCORES.slice(0, index + 1) });
+    const refuses = await attempt(room + 1);
+    expectFailed(refuses.result, 'deadline', GOLDEN_SCORES.slice(0, index).map((score) => score.decision));
+    expect(sentKinds(refuses.w)).toStrictEqual([...Array<string>(index).fill('delegate'), ...Array<string>(index).fill('undelegate')]);
+    expect(refuses.w.chain.builtDelegates).toHaveLength(index + 1);
+    expect(opsOf(refuses.w, refuses.w.chain.builtDelegates[index]!.id)).toStrictEqual([]);
+    expect(refuses.w.tokenRequests).toHaveLength(index);
+  });
+
+  it.each([
+    [61_000, true],
+    [120_000, false],
+  ])('scores all three subjects with SCORERS_NEED_MS left when each Delegate is shown to the agent %s ms after it was sent', async (turn, ended) => {
+    const w = world();
+    showAfter(w, turn);
+    const result = await w.run({ deps: { deadline_ms: NOW + SCORERS_NEED_MS } });
+    expect(result).toStrictEqual({ ok: true, scores: GOLDEN_SCORES });
+    expect(sentKinds(w).filter((kind) => kind === 'delegate')).toHaveLength(3);
+    expect(w.queue.maxActive).toBe(1);
+    expect(w.clock.now()).toBeLessThanOrEqual(NOW + SCORERS_NEED_MS);
+    if (ended) await expectRecordedAndEnded(w, 3);
+    await expectSettled(w);
+  });
+
+  it('refuses the later scorers before their send at the edge of SCORER_NEED_MS: only the first Delegate goes out, and the code is deadline', async () => {
+    const w = world();
+    const result = await w.run({ deps: { deadline_ms: NOW + SCORER_NEED_MS } });
+    expectFailed(result, 'deadline', [FIRST]);
+    expect(sentKinds(w)).toStrictEqual(['delegate', 'undelegate']);
+    expect(w.tokenRequests).toHaveLength(1);
+    expect(w.chain.builtDelegates).toHaveLength(3);
+    expect(w.steps.map((step) => step.id)).toStrictEqual(Array<string>(4).fill(idsOf(w)[0]!));
+    expect(w.logs).toHaveLength(2);
+    expect(w.logs.every((line) => line.includes('deadline'))).toBe(true);
     await expectSettled(w);
   });
 });
