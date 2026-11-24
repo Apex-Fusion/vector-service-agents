@@ -26,7 +26,7 @@ import type { Did, OutputRef, ProtocolResult, Refused } from '@vsa/usecase-kit/p
 export const INSURER_FAILURES = ['insurer_not_listed', 'insurer_unavailable'] as const;
 export type InsurerFailureCode = (typeof INSURER_FAILURES)[number];
 
-/** The time that the whole reading has, from its start, in milliseconds: two reads, each with a limit of ten seconds in the real ports. */
+/** The time that the reading has, in milliseconds. The reader starts no read after this time has passed since its start. A read that is under way ends by the limit of its own port. */
 export const INSURER_READ_BUDGET_MS = 20_000;
 
 /**
@@ -163,9 +163,19 @@ function problemWith(read: unknown, agent: string): Refused<InsurerFailureCode> 
 
 /**
  * Reads the insurer `insurer` (see the head of this file). It always gives a typed result and never throws: a source that cannot be read is `insurer_unavailable`, and a value that is not what a step needs is
- * the code of that step. An insurer that is not a DID is `insurer_not_listed`: no advert names it.
+ * the code of that step. An insurer that is not a DID is `insurer_not_listed`: no advert names it. An error that no step names, such as a member of an answer that throws when it is read, is
+ * `insurer_unavailable` too, and no word of that error goes into the detail.
  */
 export async function readInsurer(deps: InsurerDeps, insurer: Did): Promise<ProtocolResult<InsurerView, InsurerFailureCode>> {
+  try {
+    return await readSteps(deps, insurer);
+  } catch {
+    return refused('insurer_unavailable', 'the reading of the insurer ended in an unexpected error');
+  }
+}
+
+/** The steps of the reading. A port that throws is caught at its call. An answer with a member that throws when it is read is caught by `readInsurer`. */
+async function readSteps(deps: InsurerDeps, insurer: Did): Promise<ProtocolResult<InsurerView, InsurerFailureCode>> {
   const did = parseDid(insurer, 'insurer');
   if (!did.ok) return refused('insurer_not_listed', 'the insurer is not a DID, so no advert names it');
   const agent = agentIdOf(did.value);

@@ -333,6 +333,32 @@ describe('readInsurer: a source that cannot be read', () => {
       expect(refusal(result).code).toBe('insurer_unavailable');
     }
   });
+
+  // A copy of `value` with a member that throws when it is read. A real answer is JSON and has no such member: a stub can have one, and the reader must still give a typed result.
+  const throwing = <T extends object>(value: T, member: string): T => Object.defineProperty({ ...value }, member, { enumerable: true, get: boom });
+
+  test.each([
+    ['the agent id of a row', (world: World) => (world.rows = [throwing(rowOf(), 'agent_id')])],
+    ['the reference of a row', (world: World) => (world.rows = [throwing(rowOf(), 'utxo_ref')])],
+  ])('gives `insurer_unavailable` when %s throws as the reader reads it, repeats none of its words, and reads nothing on the chain', async (_name, change) => {
+    const world = goldenWorld();
+    change(world);
+    const { result, calls } = await read(world);
+    unavailable(result, 'unexpected error');
+    expect(calls.read).toStrictEqual([]);
+  });
+
+  test.each([
+    ['the spent flag of the reading', (world: World) => (world.reads[ADVERT_REF] = throwing(advertOf(), 'spent'))],
+    ['the advert of the reading', (world: World) => (world.reads[ADVERT_REF] = throwing(advertOf(), 'advert'))],
+    ['the model of the advert', (world: World) => (world.reads[ADVERT_REF] = { ...advertOf(), advert: throwing(advertOf().advert, 'model') })],
+  ])('gives `insurer_unavailable` when %s throws as the reader reads it, and repeats none of its words', async (_name, change) => {
+    const world = goldenWorld();
+    change(world);
+    const { result, calls } = await read(world);
+    unavailable(result, 'unexpected error');
+    expect(calls.read).toStrictEqual(GOLDEN_CALLS.read);
+  });
 });
 
 describe('readInsurer: the time of the reading', () => {
