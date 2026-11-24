@@ -3,7 +3,7 @@
 // A transaction that runs a script needs a collateral input: a pure output of units, with no token, of 5 units or more, in the wallet that pays. The builders refuse a wallet that has none,
 // but only after the build, and with their own words. A step that runs a script asks for the collateral first (`requireCollateral`). A wallet that has none stops the step with exit 2
 // and a text that names the wallet and says how to make one.
-import type { KeyRole } from './keys.ts';
+import type { CheckKeyRole } from './keys.ts';
 import type { Utxo } from './platform.ts';
 import { PreconditionError } from './session.ts';
 import type { Session } from './session.ts';
@@ -17,7 +17,7 @@ export const isCollateralOutput = (utxo: Utxo): boolean => Object.keys(utxo.asse
 export const collateralAdvice = (address: string): string => `Make one: send 5.5 units to ${address} in one transaction, from this wallet or from another wallet, and wait for the confirmation`;
 
 /** Stops the step, before it builds anything, when the wallet of the key `role` holds no collateral output. */
-export async function requireCollateral(session: Pick<Session, 'chain' | 'ring'>, role: KeyRole): Promise<void> {
+export async function requireCollateral(session: Pick<Session, 'chain' | 'ring'>, role: CheckKeyRole): Promise<void> {
   const key = session.ring.get(role);
   if ((await session.chain.provider.getUtxos(key.address)).some(isCollateralOutput)) return;
   throw new PreconditionError(

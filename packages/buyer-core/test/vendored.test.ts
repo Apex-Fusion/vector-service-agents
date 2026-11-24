@@ -76,7 +76,7 @@ describe('vendored files', () => {
         'buildVaultOpen', 'buildVaultPay', 'buildVaultClose', 'readVault', 'VaultPayEvaluationError', 'VaultPayImpossible', 'VaultPayNotEvaluated', 'VaultPayRefused', 'isLedgerRefusal',
         'judgeEvaluation',
       ]],
-      [await import('../src/vendored/mcp/attestation-build.ts'), ['buildAttest', 'buildWithdrawAttestation', 'ATT_TYPES']],
+      [await import('../src/vendored/mcp/attestation-build.ts'), ['buildAttest', 'buildWithdrawAttestation', 'ATT_TYPES', 'envelopeSigStructure', 'envelopeVerifies']],
       [await import('../src/vendored/mcp/identity-deployment.ts'), ['identityDeploymentFrom', 'makeIdentityDeployment']],
       [await import('../src/vendored/mcp/jury-codec.ts'), ['blake2b256Hex']],
       [await import('../src/vendored/mcp/identity-chain.ts'), ['findRecord']],

@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { encodeVaultDatum } from '../../../packages/vector-read/src/identity-codec.ts';
 import { KeyRing } from '../lib/keys.ts';
 import { failed, runGuards } from '../lib/guards.ts';
-import type { GuardName, StepPlan } from '../lib/guards.ts';
+import type { GuardName, RingView, StepPlan } from '../lib/guards.ts';
 import { factsOf } from '../lib/txfacts.ts';
 import type { TxFacts } from '../lib/txfacts.ts';
 import type { Utxo } from '../lib/platform.ts';
@@ -18,7 +18,7 @@ const HASH = 'ab'.repeat(32);
 const ref = (n: number, i = 0): string => `${n.toString(16).padStart(2, '0').repeat(32)}#${i}`;
 
 const facts = (over: Partial<TxFacts> = {}): TxFacts => ({
-  bodyHex: 'a4', txHash: HASH, feeLovelace: 400_000n, inputs: [], collateralInputs: [], referenceInputs: [], outputs: [], collateralReturn: null, totalCollateral: null,
+  bodyHex: 'a4', txHash: HASH, feeLovelace: 400_000n, validityEndSlot: null, inputs: [], collateralInputs: [], referenceInputs: [], outputs: [], collateralReturn: null, totalCollateral: null,
   requiredSigners: [], mint: {}, withdrawals: 0, certificates: 0, runsScripts: false, witnesses: [], ...over,
 });
 const output = (index: number, address: string, lovelace: bigint, over: Partial<TxFacts['outputs'][number]> = {}): TxFacts['outputs'][number] => ({
@@ -43,6 +43,14 @@ describe('runGuards', () => {
     const results = runGuards({ facts: tx, claims, inputs: [walletInput(1)], plan: plan(), ring });
     expect(results.map((g) => g.guard).sort()).toEqual(['body', 'collateral', 'destinations', 'fee', 'inputs', 'mint', 'nothing_else', 'outflow', 'signers', 'vault'].sort());
     expect(failed(results)).toEqual([]);
+  });
+  it('takes a ring that is any object with the key hashes, the wallets and a name for each key', () => {
+    const named: RingView = { keyHashes: () => new Set([member.keyHash]), wallets: () => new Map([[member.keyHash, member.address]]), roleOf: (keyHash) => (keyHash === member.keyHash ? 'run' : undefined) };
+    const tx = facts({ inputs: [ref(1)], outputs: [output(0, member.address, 19_600_000n)], requiredSigners: [member.keyHash] });
+    const results = runGuards({ facts: tx, claims, inputs: [walletInput(1)], plan: plan(), ring: named });
+    expect(failed(results)).toEqual([]);
+    expect(results.find((g) => g.guard === 'signers')?.message).toContain(`run ${member.keyHash}`);
+    expect(results.find((g) => g.guard === 'outflow')?.message).toContain(`the run wallet ${member.keyHash}`);
   });
 });
 
@@ -209,6 +217,26 @@ describe('nothing_else', () => {
     expect(judge(tx({}), [walletInput(1)]).nothing_else.ok).toBe(true);
     expect(judge(tx({ withdrawals: 1 }), [walletInput(1)]).nothing_else.ok).toBe(false);
     expect(judge(tx({ certificates: 2 }), [walletInput(1)]).nothing_else.ok).toBe(false);
+  });
+  it('accepts the withdrawals that the step names and refuses any other number, and the message names both numbers', () => {
+    const tx = (withdrawals: number) => facts({ inputs: [ref(1)], outputs: [output(0, member.address, 19_600_000n)], withdrawals });
+    expect(judge(tx(1), [walletInput(1)], plan({ withdrawals: 1 })).nothing_else.ok).toBe(true);
+    expect(judge(tx(2), [walletInput(1)], plan({ withdrawals: 2 })).nothing_else.ok).toBe(true);
+    const more = judge(tx(2), [walletInput(1)], plan({ withdrawals: 1 })).nothing_else;
+    expect(more.ok).toBe(false);
+    expect(more.message).toBe('the transaction has 2 withdrawal(s) and 0 certificate(s), and the step has 1 withdrawal(s) and no certificate');
+    expect(judge(tx(0), [walletInput(1)], plan({ withdrawals: 1 })).nothing_else.ok).toBe(false);
+    expect(judge(tx(1), [walletInput(1)], plan({ withdrawals: 0 })).nothing_else.ok).toBe(false);
+    const unnamed = judge(tx(1), [walletInput(1)]).nothing_else;
+    expect(unnamed.ok).toBe(false);
+    expect(unnamed.message).toBe('the transaction has 1 withdrawal(s) and 0 certificate(s), and the step has none');
+  });
+  it('refuses every certificate, also when the step names withdrawals', () => {
+    const tx = (over: Partial<TxFacts>) => facts({ inputs: [ref(1)], outputs: [output(0, member.address, 19_600_000n)], ...over });
+    expect(judge(tx({ withdrawals: 1 }), [walletInput(1)], plan({ withdrawals: 1 })).nothing_else.ok).toBe(true);
+    expect(judge(tx({ withdrawals: 1, certificates: 1 }), [walletInput(1)], plan({ withdrawals: 1 })).nothing_else.ok).toBe(false);
+    expect(judge(tx({ withdrawals: 0, certificates: 1 }), [walletInput(1)], plan({ withdrawals: 0 })).nothing_else.ok).toBe(false);
+    expect(judge(tx({ withdrawals: 0, certificates: 1 }), [walletInput(1)]).nothing_else.ok).toBe(false);
   });
 });
 

@@ -19,6 +19,8 @@ export interface TxFacts {
   /** The hash of the body. */
   txHash: string;
   feeLovelace: bigint;
+  /** The slot at which the transaction is no longer valid: the `ttl` of the body, the end of the validity interval and not its start. Null when the body has none, and then it can land at any time. */
+  validityEndSlot: bigint | null;
   inputs: string[];
   collateralInputs: string[];
   referenceInputs: string[];
@@ -87,7 +89,7 @@ export function factsOf(txCborHex: string): TxFacts {
   for (let i = 0; vkeys !== undefined && i < vkeys.len(); i++) witnesses.push(vkeys.get(i).vkey().hash().to_hex());
   const bodyHex = body.to_cbor_hex();
   return {
-    bodyHex, txHash: blake2b256Hex(Buffer.from(bodyHex, 'hex')), feeLovelace: body.fee(),
+    bodyHex, txHash: blake2b256Hex(Buffer.from(bodyHex, 'hex')), feeLovelace: body.fee(), validityEndSlot: body.ttl() ?? null,
     inputs: refsOf(body.inputs()), collateralInputs: refsOf(body.collateral_inputs()), referenceInputs: refsOf(body.reference_inputs()),
     outputs,
     collateralReturn: returned === undefined ? null : { address: returned.address().to_bech32(), lovelace: returned.amount().coin() },

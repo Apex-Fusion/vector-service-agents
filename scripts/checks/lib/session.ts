@@ -4,7 +4,7 @@ import type { EvidenceFile } from './evidence.ts';
 import type { StepPlan } from './guards.ts';
 import type { HostedTools } from './hosted.ts';
 import { recordLanded } from './inflight.ts';
-import type { KeyRing, KeyRole, LoadedKey } from './keys.ts';
+import type { CheckKeyRole, KeyRing, LoadedKey } from './keys.ts';
 import { LandRefused, landTransaction } from './land.ts';
 import type { LandIo, LandRequest, LandResult, NetworkGate } from './land.ts';
 import type { IdentityContext, IdentityDeployment } from './platform.ts';
@@ -77,10 +77,10 @@ export class PreconditionError extends Error {
 }
 
 /** The plan of a step: the limits of the settings, and what the step names. `outflow` names, by role, what may leave the wallet of that key. */
-export function stepPlan(session: Pick<Session, 'settings' | 'ring'>, over: Partial<Omit<StepPlan, 'maxOutflow' | 'maxFeeLovelace' | 'maxCollateralLossLovelace'>> & { outflow?: Partial<Record<KeyRole, bigint>> } = {}): StepPlan {
+export function stepPlan(session: Pick<Session, 'settings' | 'ring'>, over: Partial<Omit<StepPlan, 'maxOutflow' | 'maxFeeLovelace' | 'maxCollateralLossLovelace'>> & { outflow?: Partial<Record<CheckKeyRole, bigint>> } = {}): StepPlan {
   const { outflow, ...rest } = over;
   const maxOutflow: Record<string, bigint> = {};
-  for (const [role, amount] of Object.entries(outflow ?? {}) as Array<[KeyRole, bigint]>) maxOutflow[session.ring.get(role).keyHash] = amount;
+  for (const [role, amount] of Object.entries(outflow ?? {}) as Array<[CheckKeyRole, bigint]>) maxOutflow[session.ring.get(role).keyHash] = amount;
   return {
     maxFeeLovelace: session.settings.maxFeeLovelace, maxCollateralLossLovelace: session.settings.maxCollateralLossLovelace, maxOutflow,
     explained: new Set(), destinations: new Set(), mint: {}, ...rest,
