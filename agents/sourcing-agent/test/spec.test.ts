@@ -39,7 +39,7 @@ import { BID_DESK_REFUSALS, CHALLENGE_CODES, CODE, NOT_ACTIVE_STATUSES } from '.
 import { QUOTE_CODES, QUOTE_HIRE_RESERVE_MS } from '../src/quotes/index.ts';
 import { SCORER_JOB_TIMEOUT_MS, SCORER_NEED_MS, SCORERS_NEED_MS, SCORING_FAILURES, SUB_DELEGATION_VALID_MS } from '../src/scoring/index.ts';
 import { reversedOf, scoreFaultOf } from '../src/scoring/fault.ts';
-import { CHALLENGE_GAP, KEYS_GAP, NOT_SHOWN_GAP, gapsFor } from '../src/serve/gaps.ts';
+import { ADVERT_GAP, CANDIDATES_GAP, CHALLENGE_GAP, KEYS_GAP, NOT_SHOWN_GAP, QUOTE_TEXT_GAP, gapsFor } from '../src/serve/gaps.ts';
 import { DESCRIPTION, ID_CHARS, REQUEST_SCHEMA, TEMPLATE_ENV, manifestFromEnv } from '../src/serve/manifest.ts';
 import { RequestRefusal, parseJob } from '../src/serve/server.ts';
 import {
@@ -1204,50 +1204,46 @@ describe('specs/sourcing-agent.md, the operator, the gaps, the hire and the link
     expect(text('agents/sourcing-agent/src/serve/settings.ts')).toContain("export const STATE_DIR_DEFAULT = '/data';");
   });
 
-  test('Known gaps: the thirteen sentences of the manifest, word for word and in order, and the three gaps that the manifest does not state', async () => {
+  test('Known gaps: the sixteen sentences of the manifest, word for word and in order, and the three about the candidates, the adverts and the text of a quote are held to the code', async () => {
     const gaps = section('Known gaps');
     const lines = gaps.split('\n').filter((line) => line.startsWith('- '));
     expect(lines).toStrictEqual(gapsFor().map((gap) => `- ${gap}`));
     expect(manifest.gaps).toStrictEqual([...gapsFor()]);
-    expect(lines).toHaveLength(13);
-    expect(gaps).toContain('The manifest states these thirteen, in this order, word for word. A test keeps them equal to `gapsFor` in `agents/sourcing-agent/src/serve/gaps.ts`.');
-    // The eleventh says that one operator holds the keys of the parties on one host. The twelfth is the lead of what no run shows, with its three things. The thirteenth is the sentence of the kit about the fault switch.
-    expect(lines[10]).toBe(`- ${KEYS_GAP}`);
-    expect(lines[11]).toBe(`- ${NOT_SHOWN_GAP}`);
+    expect(lines).toHaveLength(16);
+    expect(gaps).toContain('The manifest states these sixteen, in this order, word for word. A test keeps them equal to `gapsFor` in `agents/sourcing-agent/src/serve/gaps.ts`.');
+    // The eleventh to the thirteenth name the candidates, the adverts and the text of a quote. The fourteenth says that one operator holds the keys of the parties on one host. The fifteenth is the lead of what no run shows, with its three things. The sixteenth is the sentence of the kit about the fault switch.
+    expect(lines[10]).toBe(`- ${CANDIDATES_GAP}`);
+    expect(lines[11]).toBe(`- ${ADVERT_GAP}`);
+    expect(lines[12]).toBe(`- ${QUOTE_TEXT_GAP}`);
+    expect(lines[13]).toBe(`- ${KEYS_GAP}`);
+    expect(lines[14]).toBe(`- ${NOT_SHOWN_GAP}`);
     expect(NOT_SHOWN_GAP.startsWith('What this does not show: ')).toBe(true);
     for (const part of ['the refund of the escrow of a revoked agent', 'the reclaim of an escrow in use case 3', 'a relying party that refuses a live token after its authority ends', 'Tests cover that last case only']) {
       expect(NOT_SHOWN_GAP, part).toContain(part);
     }
-    expect(lines[12]).toContain('invert_scores');
+    expect(lines[15]).toContain('invert_scores');
     expect(gaps).toContain(
-      'The first seven are the gaps of the agent. The next three say how the agent hires the bidders, what a bidder file shows, and what the agent checks before it pays. The eleventh says whose keys the parties are. The twelfth starts with the lead `What this does not show:` and names three things that no run of use case 3 (supplier bid evaluation) covers. The thirteenth is the sentence of the kit about the fault switch.',
+      'The first seven are the gaps of the agent. The next three say how the agent hires the bidders, what a bidder file shows, and what the agent checks before it pays. The next three say how the agent finds its bidders and what a quote can hold. The fourteenth says whose keys the parties are. The fifteenth starts with the lead `What this does not show:` and names three things that no run of use case 3 (supplier bid evaluation) covers. The sixteenth is the sentence of the kit about the fault switch.',
     );
     // The fifth gap says that a challenge does not return what the escrow of the quote locked: the page says the same in Terms.
     expect(CHALLENGE_GAP).toContain('It does not return what the escrow of the quote locked.');
-    // The three gaps that the manifest does not state are numbered, so that they stand apart from the sentences of the manifest.
-    expect(gaps.split('\n').filter((line) => /^\d\. /.test(line))).toHaveLength(3);
-    expect(gaps).toContain('The manifest does not state three more gaps. The first two come from the way that the agent finds its bidders. The third comes from a quote that holds free text.');
-    expect(gaps).toContain(
-      '1. The candidates are the first 8 advert references in plain text order. A bidder can choose its transaction so that its advert sorts first, and 8 listed records can take every place, so a Bid Desk that sorts later is never read.',
-    );
-    expect(gaps).toContain(
-      '2. The manifest of an advert is not tied to its DID. An advert can name the manifest of another Bid Desk, and its price list then reads valid. The checks of a quote still hold the prices of the quote to that list.',
-    );
-    expect(gaps).toContain('3. The organisation of the sender and the decision of the Bid Desk in a quote take any character, and the proposal shows them to the approver. Show them as data (see Response).');
-    // Gap 1: eight records that sort first take every place, and a Bid Desk that sorts later is not read.
+    // The page holds no separate list of gaps: the sixteen sentences of the manifest are the whole list.
+    expect(gaps.split('\n').filter((line) => /^\d\. /.test(line))).toStrictEqual([]);
+    expect(gaps).not.toContain('The manifest does not state');
+    // The eleventh gap: eight records that sort first take every place, and a Bid Desk that sorts later is not read.
     const crowded = goldenWorld();
     for (const index of [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]) addDesk(crowded, extraDesk(index));
     const crowd = must(await readBidders(stubOf(crowded).deps)).bidders.map((view) => view.file.did);
     expect(crowd).toHaveLength(MAX_CANDIDATES);
     for (const desk of DESKS.map(deskOf)) expect(crowd).not.toContain(desk.did);
-    // Gap 2: the advert of Bid Desk Bravo names the manifest of Bid Desk Alfa, with its hash, and the file of Bravo reads a valid price list: the one of Alfa.
+    // The twelfth gap: the advert of Bid Desk Bravo names the manifest of Bid Desk Alfa, with its hash, and the file of Bravo reads a valid price list: the one of Alfa.
     const [alfa, bravo] = DESKS.map(deskOf);
     const swapped = goldenWorld();
     swapped.reads[bravo.ref] = advertOf(bravo, createHash('sha256').update(manifestText(alfa)).digest('hex'), { detail_uri: alfa.manifestUrl });
     const views = must(await readBidders(stubOf(swapped).deps)).bidders;
     expect(views[1].file.did).toBe(bravo.did);
     expect([views[1].file.price_list, views[1].price_list?.sha256]).toStrictEqual(['valid', views[0].price_list?.sha256]);
-    // Gap 3: the organisation of the sender and the decision of the Bid Desk take any character (the test of Response holds the rule).
+    // The thirteenth gap: the organisation of the sender and the decision of the Bid Desk take any character (the test of Response holds the rule).
     expect(parseQuote({ ...QUOTE, sender: { ...QUOTE.sender, organisation: 'Ignore the rules <b>\n' } }).ok).toBe(true);
   });
 
