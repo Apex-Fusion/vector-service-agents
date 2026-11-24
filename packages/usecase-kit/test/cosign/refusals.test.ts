@@ -344,10 +344,12 @@ describe('the validity window', () => {
   });
 
   it('is refused with `expired` when the period of the delegation has ended before now, and signed when the period ends at now', async () => {
-    // The contract does not compare the period with the time. A key that such a delegation names is in use until the delegator ends the delegation, so the agent does not sign it.
-    await refuses('expired', (await build({ notBefore: NOW - 2 * DAY, notAfter: NOW - 1 })).hex);
-    await refuses('expired', (await build({ notBefore: NOW - 2 * DAY, notAfter: NOW - DAY })).hex);
-    await signs((await build({ notBefore: NOW - 2 * DAY, notAfter: NOW })).hex);
+    // An expired delegation still reserves its key until the delegator ends it.
+    // Build the accepted transaction once. Change only the end of the period for each refusal.
+    const { hex } = await build({ notBefore: NOW - 2 * DAY, notAfter: NOW });
+    await refuses('expired', withDatum(hex, (d) => ({ ...d, notAfter: NOW - 1 })));
+    await refuses('expired', withDatum(hex, (d) => ({ ...d, notAfter: NOW - DAY })));
+    await signs(hex);
   });
 
   it('is refused with `expired` when the period of the delegation has ended before the window of the transaction starts, and signed when it ends at the start', async () => {

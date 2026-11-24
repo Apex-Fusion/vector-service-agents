@@ -66,7 +66,7 @@ docker build -f agents/agent-history/Dockerfile -t ghcr.io/apex-fusion/vector-se
 cd deploy/host
 ```
 
-Then pin the image. The manifest that the service renders is hashed into the advert (step 12), and `:latest` moves with every merge to `main`, so a later pull could change the bytes behind that hash. The compose file therefore names the image by digest. It ships with the placeholder `@sha256:<digest>`, and compose refuses to start the service (`invalid reference format`) until the placeholder is replaced. Record the digest of the image that is on the box now:
+Then pin the image. The manifest that the service renders is hashed into the advert (step 12). CI can move `:latest` when it publishes an image on `main`. A later pull can change the bytes behind the hash. The compose file therefore names the image by digest. It ships with the placeholder `@sha256:<digest>`, and compose refuses to start the service (`invalid reference format`) until the placeholder is replaced. Record the digest of the image that is on the box now:
 
 ```sh
 docker image inspect --format '{{index .RepoDigests 0}}' ghcr.io/apex-fusion/vector-service-agents/agent-history:latest

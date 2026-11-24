@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { APPROVAL_TIMEOUT_MS, decideApproval } from '../src/approval.ts';
 import type { ApprovalAnswer, ApprovalCheck, ApprovalInput } from '../src/approval.ts';
 import { APPROVAL_CODES } from '../src/errors.ts';
-import { Child, childEnvironment } from './support/child.ts';
+import { CHILD_TEST_MS, mockChild } from './support/child.ts';
 
 const INPUT: ApprovalInput = {
   sender: `did:vector:${'a1'.repeat(32)}`, delegation: 'd1'.repeat(32), attestation: '07'.repeat(32), issuerDid: `did:vector:${'b2'.repeat(32)}`, document: { schema: 'x' }, salt: 'f6'.repeat(32), atMs: 1_000,
@@ -104,8 +104,12 @@ describe('decideApproval', () => {
     expect(unhandled).toEqual([]);
   });
   it('the timer of the limit does not keep a process alive: a process that only waits on a check that never answers ends at once', async () => {
-    const child = new Child('test/support/never-answers.ts', childEnvironment({}), 15_000);
-    expect(await child.exit).toEqual({ code: 0, signal: null });
-    expect(child.stdout).toContain('waiting on the check');
-  }, 20_000);
+    const child = mockChild('test/support/never-answers.ts', {});
+    try {
+      await child.waitFor(/^waiting on the check\r?\n/m, 'approval startup');
+      expect(await child.waitForExit('exit with an unanswered approval check'), child.diagnostics()).toEqual({ code: 0, signal: null });
+    } finally {
+      await child.cleanup();
+    }
+  }, CHILD_TEST_MS);
 });

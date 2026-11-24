@@ -158,12 +158,8 @@ function filesOf(agent: AgentSpec, problems: string[], table = AGENT_FILES): Age
 }
 
 const LOTS = JSON.parse(read('agents/order-desk/lots.json')) as { items: { sku: string; lots: Record<string, number> }[] };
-const CI = parseYaml(read('.github/workflows/ci.yml')) as { jobs: Record<string, { steps?: { with?: { repository?: string; ref?: string } }[] }> };
-const TEMPLATE_REPOSITORY = 'Apex-Fusion/vector-agent-template';
-const TEMPLATE_CHECKOUT_REFS: readonly string[] = Object.values(CI.jobs)
-  .flatMap((job) => job.steps ?? [])
-  .filter((step) => step.with?.repository === TEMPLATE_REPOSITORY)
-  .map((step) => String(step.with?.ref));
+const CI = parseYaml(read('.github/workflows/ci.yml')) as { env?: { AGENT_RUNTIME_TEMPLATE_COMMIT?: string } };
+const CI_RUNTIME_COMMIT = CI.env?.AGENT_RUNTIME_TEMPLATE_COMMIT;
 
 // ---- what the deployment fixes (the host ports of the containers, the locks, the least stake, the totals of the funding) ----
 
@@ -748,10 +744,7 @@ function fundingTieProblems(use: UseCase): string[] {
 function commitProblems(use: UseCase): string[] {
   const problems: string[] = [];
   if (!/^[0-9a-f]{40}$/.test(use.runtimeCommit)) problems.push(`the runtime commit ${use.runtimeCommit} is not 40 lower-case hex characters`);
-  if (TEMPLATE_CHECKOUT_REFS.length === 0) problems.push('the CI file has no checkout of the agent template');
-  for (const ref of TEMPLATE_CHECKOUT_REFS) {
-    if (ref !== use.runtimeCommit) problems.push(`the runtime commit is ${use.runtimeCommit} and a template checkout of the CI file has the ref ${ref}`);
-  }
+  if (use.runtimeCommit !== CI_RUNTIME_COMMIT) problems.push(`the runtime commit is ${use.runtimeCommit} and CI pins ${CI_RUNTIME_COMMIT}`);
   for (const file of ['.env.reorder-agent.example', '.env.order-desk.example'] as const) {
     const path = valueOf(file, 'VECTOR_MODULE1_MANIFEST').split('<commit>/')[1];
     if (path !== use.moduleManifestPath) problems.push(`the manifest path is ${use.moduleManifestPath} and ${file} gives ${path}`);
@@ -1217,12 +1210,12 @@ describe('the data of use case 1 (inventory reorder)', () => {
   });
 
   describe('the runtime commit and the manifest path', () => {
-    it('equal the ref of each checkout of the agent template in the CI file, and the path in both examples', () => {
+    const otherCommit = `${data.runtimeCommit.slice(0, -1)}${data.runtimeCommit.endsWith('0') ? '1' : '0'}`;
+    it('match the runtime image pin and the manifest path in both examples', () => {
       expect(commitProblems(data)).toEqual([]);
-      expect(TEMPLATE_CHECKOUT_REFS.length).toBeGreaterThan(0);
     });
     it.each<[string, UseCase, string]>([
-      ['a commit that the CI file does not check out', { ...data, runtimeCommit: `${data.runtimeCommit.slice(0, 39)}0` }, `the runtime commit is ${data.runtimeCommit.slice(0, 39)}0 and a template checkout of the CI file has the ref ${data.runtimeCommit}`],
+      ['a commit that CI does not pin', { ...data, runtimeCommit: otherCommit }, `the runtime commit is ${otherCommit} and CI pins ${data.runtimeCommit}`],
       ['a commit that is no hash', { ...data, runtimeCommit: 'main' }, 'the runtime commit main is not 40 lower-case hex characters'],
       ['a manifest path that the examples do not give', { ...data, moduleManifestPath: 'Module-1/deploy/identity/testnet/manifest.json' }, 'the manifest path is Module-1/deploy/identity/testnet/manifest.json and .env.reorder-agent.example gives Module-1/deploy/identity/mainnet/manifest.json'],
     ])('refuse %s', (_name, broken, problem) => {
