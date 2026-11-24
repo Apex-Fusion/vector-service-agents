@@ -8612,16 +8612,29 @@ test('use case 3 README: the section of a host whose proxy runs in a container n
   for (const name of BID_DESKS) assert.ok(joinRow.includes(`\`bid-desk-${name}_default\``) && parseYaml(srvRead(`docker-compose.bid-desk-${name}.yml`)).name === `bid-desk-${name}`, `the network of the project of Bid Desk ${name}`);
 });
 
-test('use case 3 RUNBOOK: step 7 points to the runbooks of the packs of use case 3, and says that they fit the marker block only, as the packs of use case 1 and of use case 2 do', () => {
+test('use case 3 RUNBOOK: step 7 directs both packs to the marker block and to the start order in their own runbooks', () => {
   const step = section(srvRead('RUNBOOK.md'), '7. Add an agent');
-  for (const file of ['RUNBOOK-sourcing-agent.md', 'RUNBOOK-bid-desk.md']) assert.ok(step.includes(`\`${file}\``) && existsSync(join(root, SRV, file)), file);
+  const runbooks = ['RUNBOOK-sourcing-agent.md', 'RUNBOOK-bid-desk.md'];
+  for (const file of runbooks) assert.ok(step.includes(`\`${file}\``) && existsSync(join(root, SRV, file)), file);
   const [paragraph, ways] = step.split('\n1. ');
   assert.ok(paragraph.includes('The packs of use case 3 (supplier bid evaluation) are the Sourcing Agent, with `RUNBOOK-sourcing-agent.md`, and the three Bid Desks, with `RUNBOOK-bid-desk.md`.'), 'the paragraph names the packs');
   const at = (part) => paragraph.indexOf(part);
   assert.ok(at('The packs of use case 2') > 0 && at('The packs of use case 2') < at('The packs of use case 3') && at('The packs of use case 3') < at('They fit the marker block only:'), 'the sentence about the marker block follows the lists of all the packs');
+  assert.ok(paragraph.includes('For every pack listed above, follow "The start order" in its runbook in place of steps 4 to 6 below. Start the runtime last. It needs the advert reference in `ADVERT_REF`.'), 'the pack uses its own start order instead of common steps 4 to 6');
+  assert.match(ways, /^4\. If the pack is listed above, follow its start order and then go to step 7\./m);
   const [snippetFolder, markerBlock] = ways.split('   - Marker block.');
   assert.ok(snippetFolder.includes('The packs of use case 3 do not fit this way either.'), 'the snippet folder is not for the packs of use case 3');
   assert.ok(markerBlock.includes('The packs of use case 3 use this way only.'), 'the marker block is for the packs of use case 3');
+  assert.ok(markerBlock.includes('For all these packs, install the block after you start the service and before you start the runtime.'), 'the block goes in between the two starts');
+  for (const file of runbooks) {
+    const order = section(srvRead(file), 'The start order');
+    let previous = -1;
+    for (const item of [' up -d service\n', 'Check the service', 'section "The Caddy block"', 'take the hash of', 'Post the advert', '`ADVERT_REF`', ' up -d --no-deps runtime\n']) {
+      const offset = order.indexOf(item);
+      assert.ok(offset > previous, `${file}: ${item.trim()} is missing or out of order`);
+      previous = offset;
+    }
+  }
 });
 
 // ======================================================================================================================================
