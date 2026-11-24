@@ -4,7 +4,7 @@
 // `fault_mode: ''`. This folder imports the kit, the workspace packages and itself, and no other folder of the package: the service imports the folder, so an import the other way would make a cycle.
 export { attestStep } from './attest.ts';
 export { COMPLETENESS_NAME, completenessDecision, completenessInput } from './completeness.ts';
-export { fileRequest } from './filing.ts';
+export { RUNTIME_MARGIN_MS, fileRequest } from './filing.ts';
 export type { FilingInput } from './filing.ts';
 export { runIntake } from './intake.ts';
 export { INTAKE_REFUSAL_STATUS, IntakeRefusal } from './refusal.ts';

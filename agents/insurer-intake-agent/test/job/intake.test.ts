@@ -720,12 +720,13 @@ describe('the log', () => {
 describe('the exports of the folder', () => {
   it('are the job, its steps and the refusal, and the types of its ports', () => {
     expect(Object.keys(exported).sort()).toStrictEqual(
-      ['COMPLETENESS_NAME', 'INTAKE_REFUSAL_STATUS', 'IntakeRefusal', 'attestStep', 'completenessDecision', 'completenessInput', 'fetchSvid', 'fileRequest', 'readRequirements', 'runIntake', 'takeJob'].sort(),
+      ['COMPLETENESS_NAME', 'INTAKE_REFUSAL_STATUS', 'IntakeRefusal', 'RUNTIME_MARGIN_MS', 'attestStep', 'completenessDecision', 'completenessInput', 'fetchSvid', 'fileRequest', 'readRequirements', 'runIntake', 'takeJob'].sort(),
     );
   });
 
   it('give the job that the rig runs', async () => {
     expect(exported.COMPLETENESS_NAME).toBe('completeness');
+    expect(exported.RUNTIME_MARGIN_MS).toBe(30_000);
     expect(exported.INTAKE_REFUSAL_STATUS.duplicate_request).toBe(403);
     const rig = makeRig();
     expect(await exported.runIntake(rig.deps, rig.request, rig.context, rig.gateway.now())).toStrictEqual(golden('intake-record-complete.json'));
