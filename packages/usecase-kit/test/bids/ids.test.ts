@@ -222,7 +222,10 @@ describe('the field rules and the rules of the inventory folder', () => {
   });
 });
 
-const NAMES = ['BID_CAPABILITIES', 'BID_DESK_MODEL', 'MAX_ITEM_QUANTITY', 'MAX_RFQ_ITEMS', 'SOURCING_MODEL', 'WEIGHT_NAMES', 'parseRfqDocument', 'parseRfqId', 'parseSku', 'parseWeights', 'rfqSha256'];
+const NAMES = [
+  'BID_CAPABILITIES', 'BID_DESK_CLAIM', 'BID_DESK_MODEL', 'MAX_ITEM_QUANTITY', 'MAX_RFQ_ITEMS', 'PRICE_LIST_SCHEMA', 'SOURCING_CLAIM', 'SOURCING_MODEL', 'WEIGHT_NAMES', 'parsePriceList', 'parseRfqDocument',
+  'parseRfqId', 'parseSku', 'parseWeights', 'priceFor', 'priceListSha256', 'rfqSha256',
+];
 
 describe('the subpath @vsa/usecase-kit/bids', () => {
   it('is the folder src/bids, and it exports the names of this part of the folder', () => {
