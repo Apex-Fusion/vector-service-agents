@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { iso } from '../../checks/lib/format.ts';
 import { FactsFile } from '../lib/facts.ts';
+import { loadTask } from '../lib/load.ts';
 import { MOCK_INSURER_DOMAIN, MOCK_PUBLIC_BASE } from '../lib/mock-hosts.ts';
 import task from '../tasks/tenant.ts';
 import USE from '../usecases/inventory-reorder.ts';
@@ -353,6 +354,10 @@ describe('the definition of the task', () => {
     expect(task.flags).toEqual(['reset']);
     expect(task.valued).toEqual(['name', 'kind']);
     expect(task.steps(USE, flags)).toEqual(['create']);
+  });
+
+  it('loads by its name through the loader of the pack, which checks the shape of a definition', async () => {
+    expect(await loadTask('tenant')).toMatchObject({ name: 'tenant', flags: ['reset'], valued: ['name', 'kind'], needs: { chain: false, approval: 'never' } });
   });
 
   it('has nothing to take back, and calls nothing', async () => {

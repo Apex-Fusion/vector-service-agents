@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, describe, expect, it } from 'vitest';
 import { iso } from '../../checks/lib/format.ts';
 import { EnvFile } from '../lib/envfile.ts';
+import { loadTask } from '../lib/load.ts';
 import task from '../tasks/fault.ts';
 import USE from '../usecases/inventory-reorder.ts';
 import { NOW, taskWorld } from './support/task-world.ts';
@@ -393,6 +394,10 @@ describe('the definition of the task', () => {
     expect(task.flags).toEqual([]);
     expect(task.valued).toEqual(['agent', 'set', 'check']);
     expect(task.steps(USE, flags)).toEqual(['run']);
+  });
+
+  it('loads by its name through the loader of the pack, which checks the shape of a definition', async () => {
+    expect(await loadTask('fault')).toMatchObject({ name: 'fault', flags: [], valued: ['agent', 'set', 'check'], needs: { chain: false, approval: 'submit' } });
   });
 
   it('has nothing to take back, and changes no file', async () => {

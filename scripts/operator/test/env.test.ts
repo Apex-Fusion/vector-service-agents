@@ -9,6 +9,7 @@ import { iso } from '../../checks/lib/format.ts';
 import type { AgentSpec, UseCase } from '../lib/contract.ts';
 import { EnvFile } from '../lib/envfile.ts';
 import { FactsFile } from '../lib/facts.ts';
+import { loadTask } from '../lib/load.ts';
 import { MOCK_MTLS_BASE, MOCK_PUBLIC_BASE } from '../lib/mock-hosts.ts';
 import task, { checkEnvFiles } from '../tasks/env.ts';
 import USE from '../usecases/inventory-reorder.ts';
@@ -602,6 +603,10 @@ describe('the definition of the task', () => {
     expect(task.flags).toEqual(['replace-advert']);
     expect(task.valued).toEqual([]);
     expect(task.steps(USE, flags)).toEqual(['reorder-agent', 'order-desk']);
+  });
+
+  it('loads by its name through the loader of the pack, which checks the shape of a definition', async () => {
+    expect(await loadTask('env')).toMatchObject({ name: 'env', flags: ['replace-advert'], valued: [], needs: { chain: true, approval: 'submit' } });
   });
 
   it('has nothing to take back', async () => {
