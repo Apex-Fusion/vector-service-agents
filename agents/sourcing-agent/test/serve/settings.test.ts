@@ -323,7 +323,7 @@ describe('the settings of the dispute code', () => {
   test('the stake, the least window left and the bound of a read are required, and each has a least value', () => {
     expect(disputeOf(completeEnv())).toStrictEqual({ challenge_stake_lovelace: 50_000_000n, min_window_left_ms: 600_000, read_timeout_ms: 20_000 });
     for (const variable of ['DISPUTE_CHALLENGE_STAKE_LOVELACE', 'DISPUTE_MIN_WINDOW_LEFT_MS', 'DISPUTE_READ_TIMEOUT_MS']) {
-      expect(messageOf(() => disputeOf(completeEnv({ [variable]: undefined })))).toMatch(new RegExp(`^environment variable ${variable} is required`));
+      expect(messageOf(() => disputeOf(completeEnv({ [variable]: undefined }))).startsWith(`environment variable ${variable} is required`)).toBe(true);
     }
     expect(messageOf(() => disputeOf(completeEnv({ DISPUTE_CHALLENGE_STAKE_LOVELACE: '0' })))).toMatch(/^environment variable DISPUTE_CHALLENGE_STAKE_LOVELACE must be a whole number of lovelace of more than 0/);
     expect(messageOf(() => disputeOf(completeEnv({ DISPUTE_MIN_WINDOW_LEFT_MS: '1999' })))).toMatch(/^environment variable DISPUTE_MIN_WINDOW_LEFT_MS must be a whole number of milliseconds of at least 2000/);
