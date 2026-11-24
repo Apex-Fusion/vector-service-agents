@@ -7,13 +7,14 @@
 // request and the time of the clock. The port reads the root delegator of the delegation itself, so the step never takes an issuer from the request.
 //
 // The time. The job must still decide and file after the report, so the report gets the time that leaves DECISION_AND_FILING_MS for those two steps, and at most REPORT_BUDGET_MS. With less than
-// REPORT_LEAST_MS of that time the report is skipped. A report that does not answer in its time is dropped, and the clock of the calls bounds the wait, so a port that never answers cannot hold the job.
+// REPORT_LEAST_MS of that time the report is skipped. A report that does not answer in its time is dropped, so a port that never answers cannot hold the job. The clock of the calls bounds the wait, and the
+// system clock of the kit bounds it when the deps have no clock of the calls.
 // A time that is not a number is never enough time: the test is written so that it skips the report.
 //
 // Every failure is `unreadable` for all three words, and a source that cannot be read is never a pass: a port that throws or rejects, a port that does not answer, an answer that is no object, and too little
 // time. A member of an answer that is not one of the four words is `unreadable`, and the other members keep their words. The result is a new object with the three members and no other. The log line holds the
 // reason as a fixed word or a number, never the message of an error, a value of the report, the sender or the delegation.
-import { within } from '@vsa/usecase-kit/access';
+import { systemClock, within } from '@vsa/usecase-kit/access';
 import { ATTESTATION_STATES } from '@vsa/usecase-kit/priorauth';
 import type { AttestationState } from '@vsa/usecase-kit/priorauth';
 import type { DelegationId, Did } from '@vsa/usecase-kit/protocol';
@@ -41,7 +42,7 @@ const kindOf = (error: unknown): string => (error instanceof Error ? error.name 
  * job, by which the decision and the filing must be done. It never throws and never refuses the job. See the head of this file for the time and the failures.
  */
 export async function attestStep(
-  deps: Pick<IntakeDeps, 'report' | 'clock' | 'log' | 'calls'>,
+  deps: Pick<IntakeDeps, 'report' | 'clock' | 'log'> & { readonly calls?: Pick<IntakeDeps['calls'], 'clock'> },
   input: { readonly sender: Did; readonly delegation: DelegationId },
   deadline: number,
 ): Promise<AttestationReport> {
@@ -59,7 +60,7 @@ export async function attestStep(
       note('the report of the attestations is skipped because too little time is left for it, so the three attestations are unreadable');
       return unreadable();
     }
-    const answered = await within(deps.calls.clock, left, () => deps.report({ sender: input.sender, delegation: input.delegation, atMs: now as number }));
+    const answered = await within(deps.calls?.clock ?? systemClock, left, () => deps.report({ sender: input.sender, delegation: input.delegation, atMs: now as number }));
     if (answered.timedOut) {
       note(`the report of the attestations did not answer in ${left} ms, so the three attestations are unreadable`);
       return unreadable();

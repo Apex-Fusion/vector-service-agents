@@ -2,7 +2,7 @@
 // three words of the intake record. It never refuses the job: a port that throws, a port that never answers, an answer that is no report and too little time all give `unreadable` for the three words, and
 // the job goes on. The report gets the time that leaves 150,000 ms for the decision and the filing, at most 45,000 ms, and it is skipped when less than 10,000 ms of that time are left. The report never
 // reaches the prompt. Each refusal has an accepted twin.
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { ATTESTATION_STATES } from '@vsa/usecase-kit/priorauth';
 import { DECISION_AND_FILING_MS, REPORT_BUDGET_MS, REPORT_LEAST_MS, attestStep } from '../../src/job/attest.ts';
 import type { AttestationReport, IntakeDeps } from '../../src/job/ports.ts';
@@ -160,7 +160,7 @@ describe('the time of the report', () => {
     expect(rig.logs).toHaveLength(1);
   });
 
-  it('keeps the numbers of the plan: 45,000 ms for the report, 150,000 ms for the decision and the filing, and 10,000 ms at the least', () => {
+  it('keeps its three numbers: 45,000 ms for the report, 150,000 ms for the decision and the filing, and 10,000 ms at the least', () => {
     expect([REPORT_BUDGET_MS, DECISION_AND_FILING_MS, REPORT_LEAST_MS]).toStrictEqual([45_000, 150_000, 10_000]);
   });
 
@@ -171,6 +171,22 @@ describe('the time of the report', () => {
     const waits: number[] = [];
     await attestStep(hangingDeps(rig, waits), INPUT, deadline);
     expect(waits).toStrictEqual([25_000]);
+  });
+
+  it('bounds the wait with the system clock when the deps have no clock of the calls: the report is dropped exactly when its time has passed', async () => {
+    vi.useFakeTimers();
+    try {
+      const rig = makeRig();
+      const deps = { report: (): Promise<AttestationReport> => new Promise<never>(() => undefined), clock: rig.deps.clock, log: rig.deps.log };
+      const settled = vi.fn();
+      void attestStep(deps, INPUT, deadlineFor(rig, REPORT_LEAST_MS)).then(settled);
+      await vi.advanceTimersByTimeAsync(REPORT_LEAST_MS - 1);
+      expect(settled).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(settled).toHaveBeenCalledWith(UNREADABLE);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it.each([
