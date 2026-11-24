@@ -38,7 +38,7 @@ const RANKING_INSTRUCTION = [
   '"weights" has four numbers that sum to 1: "price", "lead_time", "reliability" and "compliance". They say how much each part counts for the buyer.',
   '"scored" lists the scored bidders. Each entry has "desk_did" (the identifier of the bidder), "score" (the score of its quote, from 0 to 100), "components" (its four component scores, each from 0 to 100), "total" (the total price of its quote) and "lead_time_days" (the longest lead time of its quote).',
   'Put the best bidder first. A higher "score" is better. Use the other values of the entries only to settle bidders whose scores are equal or very near.',
-  `"choice" is an object with exactly two members: "order" (a list of the "desk_did" of every entry in "scored", each exactly one time, from the best to the worst) and "tie_break" (a text of at most ${MAX_TIE_BREAK_CHARS} characters that says how you settled equal or near scores; the empty text when you settled none).`,
+  `"choice" is an object with exactly two members: "order" (a list of the "desk_did" of every entry in "scored", each exactly one time, from the best to the worst) and "tie_break" (one line of plain text with no line break, tab or other control or invisible character, at most ${MAX_TIE_BREAK_CHARS} characters long, that says how you settled equal or near scores; the empty text when you settled none).`,
 ].join(' ');
 
 const parseRankingChoice: ChoiceParser<RankingChoice> = (given) => {

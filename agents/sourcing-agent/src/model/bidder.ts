@@ -124,5 +124,5 @@ export const BIDDER_FILE_TEXT = [
   '"compliance" is the compliance attestation about the bidder: "state" is "valid", "invalid", "absent" or "unreadable", "attestation_state" is "active", "revoked", "expired", "not_yet_valid" or null, "valid_until" and "revoked_at" are times or null, and "replied" is true when the bidder published a reply to the attestation.',
   '"credential" is the state of its identity credential: "valid", "invalid", "absent" or "unreadable".',
   'A time is written as YYYY-MM-DDTHH:MM:SSZ.',
-  'A value that is null or "unreadable" means that no source gave an answer.',
+  '"unreadable" means that no source gave an answer, and then the members from that source are null or false; else a null time, reason or attestation state means that there is none.',
 ].join(' ');
