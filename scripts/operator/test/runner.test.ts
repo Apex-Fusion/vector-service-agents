@@ -22,8 +22,8 @@ import { FactsConflict, FactsError, FactsFile } from '../lib/facts.ts';
 import { ToolRefused } from '../lib/land-hosted.ts';
 import { LoadError } from '../lib/load.ts';
 import { KeyStoreError, loadRegistry } from '../lib/registry.ts';
-import type { NodeAccess } from '../../checks/lib/ports.ts';
-import { FlagError, RunLockError, checkInputs, inputsToCheck, judgeInputs, parseArguments, reportError, runCli, runSteps, runTask, usageLines, waitFor } from '../lib/runner.ts';
+import type { Clock, NodeAccess } from '../../checks/lib/ports.ts';
+import { FlagError, RunLockError, checkEndOfValidity, checkInputs, inputsToCheck, judgeInputs, parseArguments, reportError, runCli, runSteps, runTask, usageLines, waitFor } from '../lib/runner.ts';
 import type { StepHandler } from '../lib/runner.ts';
 import { TASK_NAMES } from '../tasks/names.ts';
 import { MemoryOutput } from './support/fakes.ts';
@@ -842,6 +842,7 @@ describe('a transaction in flight', () => {
         const reads = w.node.reads.length;
         const tips = w.node.tipReads;
         const networks = w.node.networkReads;
+        const inputReads = w.node.inputReads.length;
         reset(w);
         expect(await w.run(def, 'cleanup', '--release', hash)).toBe(0);
         expect(w.screen.text).toContain(`the transaction ${hash} of the step one would be let go, and its reserve of the cap would be given back. A dry run lets nothing go.`);
@@ -859,9 +860,11 @@ describe('a transaction in flight', () => {
         expect(w.exposure()).toEqual([]);
         expect(w.evidence('toy')).toEqual([expect.objectContaining({ step: 'one', status: 'info', shows: { note: 'the operator lets the transaction go, and says that the chain was checked', transaction: hash, session: 's1' } })]);
         expect(w.machine()).toMatchObject({ command: 'cleanup', mode: 'submit', outcome: 'done', exit: 0, step: 'one' });
+        // The release reads no status and no inputs. It asks the network guard and the tip of the node once in each of its two runs.
         expect(w.node.reads).toHaveLength(reads);
-        expect(w.node.tipReads).toBe(tips);
-        expect(w.node.networkReads).toBe(networks);
+        expect(w.node.inputReads).toHaveLength(inputReads);
+        expect(w.node.tipReads).toBe(tips + 2);
+        expect(w.node.networkReads).toBe(networks + 2);
         reset(w);
         const rebuilt = await w.run(def, '--submit');
         expect(rebuilt, w.screen.errorText).toBe(0);
@@ -898,12 +901,101 @@ describe('a transaction in flight', () => {
       it('lets the transaction go for a task that needs no approval, and says that its reserve stays when no approval file is loaded', async () => {
         const w = await taskWorld();
         const { hash } = await strand(w, [], { applied: false });
+        w.clock.t = AFTER_VALIDITY;
         rmSync(w.goPath);
         expect(await w.run(unapproved([]), 'cleanup', '--release', hash, '--submit')).toBe(0);
         expect(w.screen.text).toContain('No approval file is loaded, so its reserve stays in the cap file of its session.');
         expect(w.state('toy').in_flight).toBeNull();
         expect(w.exposure().map((entry) => entry.tx_hash)).toEqual([hash]);
         expect(w.evidence('toy')).toEqual([expect.objectContaining({ status: 'info', shows: expect.objectContaining({ transaction: hash, session: null }) })]);
+      });
+    });
+    describe('the release of a transaction that may still land', () => {
+      /** The end of the validity of a transaction of `strand`, and the time after which the checks let it go: a minute later. */
+      const LAST_MS = NOW + 30 * 60_000;
+      const RELEASE_AT = LAST_MS + 60_000;
+      /** Runs `cleanup --release` for the hash. */
+      const release = (w: TaskWorld, def: TaskDefinition, hash: string, ...argv: string[]): Promise<number> => w.run(def, 'cleanup', `--release=${hash}`, ...argv);
+      /** What a release that was refused leaves: the transaction in flight, its reserve, and no entry of the evidence. */
+      const untouched = (w: TaskWorld, hash: string): void => {
+        expect(w.state('toy').in_flight?.tx_hash).toBe(hash);
+        expect(w.exposure().map((entry) => entry.tx_hash)).toEqual([hash]);
+        expect(w.evidence('toy')).toEqual([]);
+      };
+      it('refuses until the clock is past the end of the validity and the grace time of a minute, in a dry run and in a run with --submit, and lets the transaction go one millisecond after', async () => {
+        const w = await taskWorld();
+        const { hash, def } = await strand(w, [], { applied: false });
+        for (const now of [NOW, LAST_MS - 1, LAST_MS, RELEASE_AT]) {
+          for (const argv of [[], ['--submit']]) {
+            w.clock.t = now;
+            reset(w);
+            expect(await release(w, def, hash, ...argv), `${now} ${argv.join(' ')}`).toBe(2);
+            expect(w.screen.errorText).toContain(`the transaction ${hash} of the step one may still land, so nothing is let go: its validity ends at ${iso(LAST_MS)}, and a transaction is let go only after ${iso(RELEASE_AT)}, 1 min later`);
+            expect(w.machine()).toMatchObject({ command: 'cleanup', outcome: 'stopped', exit: 2, step: 'one' });
+            untouched(w, hash);
+          }
+        }
+        w.clock.t = RELEASE_AT + 1;
+        reset(w);
+        expect(await release(w, def, hash, '--submit')).toBe(0);
+        expect(w.state('toy').in_flight).toBeNull();
+        expect(w.exposure()).toEqual([]);
+      });
+      it('refuses when the clock says that the validity is over and the tip of the node does not: the tip must be past the end of the validity by 20 slots', async () => {
+        const w = await taskWorld();
+        const { hash, def, end } = await strand(w, [], { applied: false });
+        w.clock.t = AFTER_VALIDITY;
+        for (const tip of [end - 1n, end, end + 20n]) {
+          for (const argv of [[], ['--submit']]) {
+            w.node.tipSlot = Number(tip);
+            reset(w);
+            expect(await release(w, def, hash, ...argv), `${tip} ${argv.join(' ')}`).toBe(2);
+            expect(w.screen.errorText).toContain(`the clock says that the validity is over, but the tip of the node is at slot ${tip}, and it must be past slot ${end + 20n} (the end of the validity at slot ${end}, and 20 slots more)`);
+            untouched(w, hash);
+          }
+        }
+        w.node.tipSlot = Number(end + 21n);
+        reset(w);
+        expect(await release(w, def, hash, '--submit')).toBe(0);
+        expect(w.screen.text).toContain(`the clock is past the end of the validity by more than 1 min, and the tip of the node (slot ${end + 21n}) is past the end of the validity (slot ${end}) by more than 20 slots`);
+        expect(w.state('toy').in_flight).toBeNull();
+      });
+      it('lets the transaction go on the clock alone when the node gives no tip or is not on the network of the run, and says so', async () => {
+        const down = await taskWorld();
+        const first = await strand(down, [], { applied: false });
+        down.clock.t = AFTER_VALIDITY;
+        down.node.tipError = new Error('the node is down');
+        reset(down);
+        expect(await release(down, first.def, first.hash, '--submit')).toBe(0);
+        expect(down.screen.text).toContain('and the node was not used (it did not give its tip: the node is down)');
+        expect(down.state('toy').in_flight).toBeNull();
+        const other = await taskWorld();
+        const second = await strand(other, [], { applied: false });
+        other.clock.t = AFTER_VALIDITY;
+        other.node.facts = { magic: 9, systemStartMs: null };
+        const tips = other.node.tipReads;
+        reset(other);
+        expect(await release(other, second.def, second.hash, '--submit')).toBe(0);
+        expect(other.screen.text).toContain('and the node was not used (the network guard failed: the node is on the network with the magic 9');
+        expect(other.node.tipReads).toBe(tips);
+        expect(other.state('toy').in_flight).toBeNull();
+      });
+      it('refuses a transaction whose bytes cannot be read, and asks the node for nothing', async () => {
+        const w = await taskWorld();
+        const { hash, def } = await strand(w, [], { applied: false });
+        const path = join(w.stateDir, 'toy.state.json');
+        const state = JSON.parse(readFileSync(path, 'utf8'));
+        state.in_flight.signed_cbor = '84';
+        writeFileSync(path, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
+        w.clock.t = AFTER_VALIDITY;
+        const tips = w.node.tipReads;
+        const networks = w.node.networkReads;
+        expect(await release(w, def, hash, '--submit')).toBe(2);
+        expect(w.screen.errorText).toContain(`the bytes of the transaction ${hash} of the step one cannot be read`);
+        expect(w.screen.errorText).toContain('nothing is let go');
+        untouched(w, hash);
+        expect(w.node.tipReads).toBe(tips);
+        expect(w.node.networkReads).toBe(networks);
       });
     });
     it('keeps a transaction when the node cannot say whether its inputs are spent, and lets it go at the next run that can', async () => {
@@ -1222,6 +1314,52 @@ describe('the rule for the inputs of a lost transaction', () => {
     expect(await checkInputs(none.node, { ...facts, inputs: [] })).toEqual({ kind: 'unreadable', why: 'the transaction has no input' });
     expect(await checkInputs(none.node, { ...facts, validityEndSlot: null })).toMatchObject({ kind: 'unreadable', why: expect.stringContaining('no end of validity') });
     expect(none.asked).toEqual([]);
+  });
+});
+
+describe('the end of the validity of a transaction in flight', () => {
+  const FLIGHT = { valid_to: 1_000_000 };
+  const RELEASE_AT = FLIGHT.valid_to + 60_000;
+  const clockAt = (now: number): Clock => ({ now: () => now, sleep: async () => undefined });
+  /** A node that has its tip at the slot `tip`, or fails with it, and the count of the reads of its tip. */
+  const nodeAt = (tip: number | Error): { node: NodeAccess; reads: () => number } => {
+    let reads = 0;
+    const node: NodeAccess = {
+      networkFacts: async () => { throw new Error('not asked'); },
+      networkTip: async () => {
+        reads += 1;
+        if (tip instanceof Error) throw tip;
+        return { slot: tip };
+      },
+      resolveInputs: async () => { throw new Error('not asked'); },
+      submit: async () => { throw new Error('not asked'); },
+      txStatus: async () => { throw new Error('not asked'); },
+    };
+    return { node, reads: () => reads };
+  };
+  /** A network guard that gives its answer, and the count of its calls. */
+  const gate = (ok: boolean) => {
+    let calls = 0;
+    return { calls: () => calls, guard: async () => { calls += 1; return { guard: 'network' as const, ok, message: ok ? 'the node is on the network of the run' : 'the node is on the network with the magic 9' }; } };
+  };
+  it('says that a transaction with no end of validity may land at any time, whatever the clock and the node say, and asks neither the guard nor the node', async () => {
+    const node = nodeAt(1_000_000_000);
+    const network = gate(true);
+    expect(await checkEndOfValidity(FLIGHT, null, { node: node.node, network, clock: clockAt(RELEASE_AT + 1_000_000_000) })).toEqual({ kind: 'may', why: 'its bytes have no end of validity, so it can land at any time' });
+    expect([node.reads(), network.calls()]).toEqual([0, 0]);
+  });
+  it('counts the clock only after the grace time, and asks the guard and the node only then', async () => {
+    const early = { node: nodeAt(10_000), network: gate(true) };
+    expect((await checkEndOfValidity(FLIGHT, 100n, { node: early.node.node, network: early.network, clock: clockAt(RELEASE_AT) })).kind).toBe('may');
+    expect([early.node.reads(), early.network.calls()]).toEqual([0, 0]);
+    const late = { node: nodeAt(10_000), network: gate(true) };
+    expect((await checkEndOfValidity(FLIGHT, 100n, { node: late.node.node, network: late.network, clock: clockAt(RELEASE_AT + 1) })).kind).toBe('over');
+    expect([late.node.reads(), late.network.calls()]).toEqual([1, 1]);
+  });
+  it('counts the tip only past the end of the validity and the margin, and takes a tip that is not a whole number for a tip that is not past', async () => {
+    const verdict = async (tip: number): Promise<string> => (await checkEndOfValidity(FLIGHT, 100n, { node: nodeAt(tip).node, network: gate(true), clock: clockAt(RELEASE_AT + 1) })).kind;
+    expect([await verdict(99), await verdict(100), await verdict(120), await verdict(121)]).toEqual(['may', 'may', 'may', 'over']);
+    expect([await verdict(Number.NaN), await verdict(120.5), await verdict(Number.POSITIVE_INFINITY)]).toEqual(['may', 'may', 'may']);
   });
 });
 

@@ -9,6 +9,7 @@
 //   cleanup            Takes back what can come back. The task says what.
 //   cleanup --release=<hash>
 //                      Lets the transaction in flight with this hash go, after the operator checked the chain. It is the way out for a transaction that a run keeps because its inputs are spent.
+//                      It refuses while the transaction may still land, in a dry run too: the clock must be past the end of its validity by a minute, and the tip of the node, when the node answers, must be past it too.
 //                      It changes something only with --submit, and the cleanup of the task does not run then.
 //
 // A transaction that was signed and not seen confirmed is settled before anything is built. The network guard runs before the settle: a node of another network cannot say that a transaction is lost.
@@ -19,11 +20,11 @@ import { closeSync, existsSync, openSync, unlinkSync, writeSync } from 'node:fs'
 import { join } from 'node:path';
 import { collateralAdvice, isCollateralOutput } from '../../checks/lib/collateral.ts';
 import { EvidenceError, EvidenceFile } from '../../checks/lib/evidence.ts';
-import { iso, units } from '../../checks/lib/format.ts';
+import { duration, iso, units } from '../../checks/lib/format.ts';
 import type { GuardResult } from '../../checks/lib/guards.ts';
 import { DryStop } from '../../checks/lib/hire-types.ts';
 import { HostedError } from '../../checks/lib/hosted.ts';
-import { recordLanded, settleInFlight } from '../../checks/lib/inflight.ts';
+import { GRACE_MS, recordLanded, settleInFlight } from '../../checks/lib/inflight.ts';
 import { KeyFileError } from '../../checks/lib/keys.ts';
 import { GuardRefusal, LandRefused } from '../../checks/lib/land.ts';
 import { TxNotConfirmedError } from '../../checks/lib/platform.ts';
@@ -500,6 +501,12 @@ export function inputsToCheck(facts: { readonly inputs: readonly string[]; reado
 /** The slots by which the tip of the node must be past the end of the validity of a transaction before the answer of the node about its inputs counts: a small rollback must not undo that answer. */
 export const TIP_MARGIN_SLOTS = 20;
 
+/** The slot past which the tip of a node counts, for a transaction whose validity ends at slot `end`: the end and the margin. */
+const countsFrom = (end: bigint): bigint => end + BigInt(TIP_MARGIN_SLOTS);
+
+/** Whether the tip of a node is past that slot: the node has then seen every block in which the transaction could have landed. A tip that is not a whole number is not past. */
+const tipIsPast = (tip: number, end: bigint): boolean => Number.isSafeInteger(tip) && BigInt(tip) > countsFrom(end);
+
 /** What the unspent inputs say about a transaction that the indexer does not know: it did not land (`unspent`), or it may have landed (`spent`, with the reason). */
 export type InputsVerdict = { readonly kind: 'unspent' } | { readonly kind: 'spent'; readonly why: string };
 
@@ -529,8 +536,9 @@ export interface InputFacts { readonly inputs: readonly string[]; readonly colla
  * Asks the node, and not the indexer, which inputs of a signed transaction are still unspent, and judges them (`judgeInputs`). A transaction that landed has spent its inputs, so when they are unspent it
  * did not land, but only when the node has seen every block in which it could have landed. A node that is behind answers from a ledger before the landing, and says that every input is unspent. So the
  * node gives its tip first, and the slot of the tip must be past the end of the validity of the transaction by `TIP_MARGIN_SLOTS`: a node whose newest block is past that slot has all the blocks before
- * it. The tip is read before the inputs, so that the view of the inputs is at least as new as the tip. A node that does not answer, a tip that is not past the end, a transaction with no input and a
- * transaction with no end of validity tell nothing: they are `unreadable`, never `unspent`.
+ * it. The tip is read before the inputs, so that the view of the inputs is at least as new as the tip. This holds only when the tip and the inputs come from ONE node: the Ogmios URL of the settings
+ * must name one node and never a load balancer, because two reads can go to two nodes, and the node that is behind can answer the second read. A node that does not answer, a tip that is not past the
+ * end, a transaction with no input and a transaction with no end of validity tell nothing: they are `unreadable`, never `unspent`.
  */
 export async function checkInputs(node: NodeAccess, facts: InputFacts): Promise<InputsCheck> {
   if (facts.inputs.length === 0) return unreadable('the transaction has no input');
@@ -538,9 +546,8 @@ export async function checkInputs(node: NodeAccess, facts: InputFacts): Promise<
   if (end === null) return unreadable('the transaction has no end of validity, so no tip of the node shows that it cannot land');
   let tip: number;
   try { tip = (await node.networkTip()).slot; } catch (err) { return unreadable(`the node did not give its tip: ${errorText(err)}`); }
-  const counts = end + BigInt(TIP_MARGIN_SLOTS);
-  if (!Number.isSafeInteger(tip) || BigInt(tip) <= counts) {
-    return unreadable(`the tip of the node is at slot ${String(tip)}, and its answer about the inputs counts only past slot ${counts} (the validity of the transaction ended at slot ${end}): the node may not have seen the block of the transaction yet`);
+  if (!tipIsPast(tip, end)) {
+    return unreadable(`the tip of the node is at slot ${String(tip)}, and its answer about the inputs counts only past slot ${countsFrom(end)} (the validity of the transaction ended at slot ${end}): the node may not have seen the block of the transaction yet`);
   }
   let held: Utxo[];
   try { held = await node.resolveInputs(inputsToCheck(facts)); } catch (err) { return unreadable(`the node did not answer: ${errorText(err)}`); }
@@ -552,6 +559,34 @@ async function checkSigned(node: NodeAccess, signedCbor: string): Promise<Inputs
   let facts: TxFacts;
   try { facts = factsOf(signedCbor); } catch (err) { return unreadable(`the bytes of the transaction cannot be read: ${errorText(err)}`); }
   return checkInputs(node, facts);
+}
+
+/** What the clock and the node say about the end of the validity of a transaction in flight: it is over (`over`, with the words that show it), or the transaction may still land (`may`, with the reason). */
+export type EndOfValidity = { readonly kind: 'over'; readonly shown: string } | { readonly kind: 'may'; readonly why: string };
+
+/**
+ * Says whether a transaction in flight cannot land any more, for `cleanup --release`. A release while the transaction can still land pays twice: the step is built again, and both transactions pay.
+ * Two reads must show that its validity is over. The clock must be past the end of the validity by `GRACE_MS`, the rule of `settleInFlight`. And when the node answers and passes the network guard, its tip
+ * must be past the end of the validity (`end`, the slot of the signed bytes) by `TIP_MARGIN_SLOTS`, as `checkInputs` asks: a clock that is wrong, or a node that is behind, shows an end that has not come.
+ * A node that does not answer, or that is not on the network of the run, adds no check: the operator checked the chain, and the clock still holds. A transaction with no end of validity can land at
+ * any time, so it is never over. The guard and the node are not asked while the clock says that the transaction may still land.
+ */
+export async function checkEndOfValidity(flight: Pick<InFlight, 'valid_to'>, end: bigint | null, parts: { node: NodeAccess; network: { guard(): Promise<GuardResult> }; clock: Clock }): Promise<EndOfValidity> {
+  const { node, network, clock } = parts;
+  const releaseAt = flight.valid_to + GRACE_MS;
+  if (clock.now() <= releaseAt) {
+    return { kind: 'may', why: `its validity ends at ${iso(flight.valid_to)}, and a transaction is let go only after ${iso(releaseAt)}, ${duration(GRACE_MS)} later, because a node that is behind can still hold it` };
+  }
+  if (end === null) return { kind: 'may', why: 'its bytes have no end of validity, so it can land at any time' };
+  const clockSays = `the clock is past the end of the validity by more than ${duration(GRACE_MS)}`;
+  const gate = await network.guard();
+  if (!gate.ok) return { kind: 'over', shown: `${clockSays}, and the node was not used (the network guard failed: ${gate.message})` };
+  let tip: number;
+  try { tip = (await node.networkTip()).slot; } catch (err) { return { kind: 'over', shown: `${clockSays}, and the node was not used (it did not give its tip: ${errorText(err)})` }; }
+  if (!tipIsPast(tip, end)) {
+    return { kind: 'may', why: `the clock says that the validity is over, but the tip of the node is at slot ${String(tip)}, and it must be past slot ${countsFrom(end)} (the end of the validity at slot ${end}, and ${TIP_MARGIN_SLOTS} slots more). The node may be behind, or the clock may be wrong` };
+  }
+  return { kind: 'over', shown: `${clockSays}, and the tip of the node (slot ${tip}) is past the end of the validity (slot ${end}) by more than ${TIP_MARGIN_SLOTS} slots` };
 }
 
 /**
@@ -641,16 +676,24 @@ function loadKeys(read: NonNullable<RunDeps['readRegistry']>, where: { dir: stri
 
 /**
  * Lets the transaction in flight go at the word of the operator: `cleanup --release=<hash>`. It is the way out for a transaction that a run keeps because its inputs are spent, when the operator has
- * checked the chain and the transaction is not there. It lets go the transaction that is in flight and no other: the hash must be its hash. A dry run says what it would do and changes nothing. With
- * --submit it writes an entry of the evidence first, so that an override of the check leaves its trace before it changes anything, then gives the reserve back (when the approval is loaded), and lets the
- * transaction go. The node says nothing here, and the cleanup of the task does not run.
+ * checked the chain and the transaction is not there. It lets go the transaction that is in flight and no other: the hash must be its hash. It refuses while the transaction may still land, in a dry
+ * run too (`checkEndOfValidity`): a release before the end of its validity lets the step be built again while the first transaction can still land, and then both pay. A dry run that passes says what it
+ * would do and changes nothing. With --submit it writes an entry of the evidence first, so that an override of the check leaves its trace before it changes anything, then gives the reserve back (when
+ * the approval is loaded), and lets the transaction go. The cleanup of the task does not run.
  */
-function letGo(hash: string, flight: InFlight | null, parts: { state: StateFile; evidence: EvidenceFile; exposure: Exposure; go: GoFile | null; mode: Mode; out: Output; progress: { step: string | null } }): Ended {
-  const { state, evidence, exposure, go, mode, out, progress } = parts;
+async function letGo(hash: string, flight: InFlight | null, parts: { node: NodeAccess; network: { guard(): Promise<GuardResult> }; clock: Clock; state: StateFile; evidence: EvidenceFile; exposure: Exposure; go: GoFile | null; mode: Mode; out: Output; progress: { step: string | null } }): Promise<Ended> {
+  const { node, network, clock, state, evidence, exposure, go, mode, out, progress } = parts;
   if (flight === null) throw new PreconditionError('no transaction is in flight, so --release has nothing to let go');
   if (flight.tx_hash !== hash) throw new PreconditionError(`the transaction in flight is ${flight.tx_hash} of the step ${flight.step}, and --release names another transaction: nothing is let go`);
   const where = `the transaction ${flight.tx_hash} of the step ${flight.step}`;
   progress.step = flight.step;
+  let end: bigint | null;
+  try { end = factsOf(flight.signed_cbor).validityEndSlot; } catch (err) {
+    throw new PreconditionError(`the bytes of ${where} cannot be read (${errorText(err)}), so nothing shows when it cannot land any more: nothing is let go`);
+  }
+  const over = await checkEndOfValidity(flight, end, { node, network, clock });
+  if (over.kind === 'may') throw new PreconditionError(`${where} may still land, so nothing is let go: ${over.why}. A release now can pay twice. Run again when its validity is over.`);
+  out.out(`the validity of ${where} ended at ${iso(flight.valid_to)}: ${over.shown}.`);
   if (mode === 'dry') {
     out.out(`${where} would be let go, and its reserve of the cap would be given back. A dry run lets nothing go. Check the chain for the transaction and for its inputs first, and run again with --submit.`);
     return { exit: 0, outcome: 'dry' };
@@ -730,8 +773,9 @@ async function execute<Extra>(def: TaskDefinition<Extra>, argv: readonly string[
     }
   }
   const exposure = new Exposure(join(settings.stateDir, `exposure.${go === null ? 'none' : go.session}.json`), go);
-  // `cleanup --release=<hash>`: the operator lets the transaction in flight go. The node says nothing here, so the network guard above and the settle below are skipped.
-  if (args.release !== null) return letGo(args.release, flight, { state, evidence, exposure, go, mode: args.mode, out, progress: ctx.progress });
+  // `cleanup --release=<hash>`: the operator lets the transaction in flight go. The network guard above and the settle below are skipped: the release asks the guard and the tip of the node itself, and only
+  // after the clock says that the validity is over.
+  if (args.release !== null) return letGo(args.release, flight, { node: connections.node, network: connections.network, clock, state, evidence, exposure, go, mode: args.mode, out, progress: ctx.progress });
   // The lines of `settleInFlight` are kept: for a transaction that it lets go, the second read below can show that the transaction is on the chain, and its line says the opposite.
   const settleLines: string[] = [];
   const settled = await settleInFlight({ state, node: connections.node, clock, out: (line) => { settleLines.push(line); }, mode: args.mode, awaitMs, pollMs });
