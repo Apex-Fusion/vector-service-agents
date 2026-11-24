@@ -585,10 +585,12 @@ describe('register --all', () => {
     const f = await fixture();
     const first = await dry(f);
     publish(f, first);
-    expect(await f.run('--submit', '--all')).toBe(2);
+    // The run signed two records before it stopped, so the runner says that it failed (exit 1): exit 2 is for a run that signed nothing, as the run of the twin test above.
+    expect(await f.run('--submit', '--all')).toBe(1);
     expect(steps(f)).toEqual(['reorder-agent', 'stock-reader']);
     expect(errorText(f)).toContain('run the dry run, publish the TXT value, then run again');
-    expect(f.w.machine()).toMatchObject({ outcome: 'stopped', exit: 2, step: 'order-desk' });
+    expect(errorText(f)).toContain('landed in this run');
+    expect(f.w.machine()).toMatchObject({ outcome: 'failed', exit: 1, step: 'order-desk' });
     // Three lookups, all for the first record: the subagent has no TXT, and the Order Desk was not looked up.
     expect(f.net.lookups()).toHaveLength(3);
     expect(f.net.lookups().every((url) => url.searchParams.get('name') === first.txt!.name)).toBe(true);
@@ -609,7 +611,7 @@ describe('register --all', () => {
     const f = await fixture();
     const first = await dry(f);
     publish(f, first);
-    expect(await f.run('--submit', '--all')).toBe(2);
+    expect(await f.run('--submit', '--all')).toBe(1);
     const shown = await dry(f);
     expect(shown.subject).toBe('order-desk');
     expect(shown.txt).toEqual({ name: `_did.${ALFA.domain}`, value: shown.did });
