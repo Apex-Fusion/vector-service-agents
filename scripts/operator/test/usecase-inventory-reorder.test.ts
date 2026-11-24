@@ -596,6 +596,8 @@ function hostProblems(use: UseCase, table = AGENT_FILES): string[] {
     }
     for (const url of agent.statusUrls) if (parseUrl(url)?.pathname !== status) problems.push(`${agent.id}: the status URL ${url} does not end in ${status}`);
     const serviceName = SERVICE_CONTAINER[agent.id];
+    if (!files.compose.some((candidate) => candidate.container === agent.serviceContainer)) problems.push(`${agent.id}: the compose file has no container ${agent.serviceContainer}, the service container of the data`);
+    if (agent.adverts.some((advert) => advert.runtimeContainer === agent.serviceContainer)) problems.push(`${agent.id}: the service container ${agent.serviceContainer} of the data is the container of an advert`);
     const servicePort = EXPECTED_PORTS[serviceName];
     const serviceUrl = `http://${serviceName}:${servicePort}`;
     const containers = new Set<string>();
@@ -642,6 +644,30 @@ function hostProblems(use: UseCase, table = AGENT_FILES): string[] {
     }
   }
   return problems;
+}
+
+/** The example env file of an agent is the file that the data names, or the service env file with `.example`. It holds the lines of the mock origins and the line of the Module-1 manifest exactly when the data says so. */
+function managedProblems(use: UseCase): string[] {
+  const problems: string[] = [];
+  for (const agent of use.agents) {
+    const name = agent.exampleEnvFile ?? `${agent.serviceEnvFile}.example`;
+    const lines = (EXAMPLES as Partial<Record<string, ReadonlyMap<string, string>>>)[name];
+    if (lines === undefined) {
+      problems.push(`${agent.id}: the example env file ${name} is not one of the examples that this test reads`);
+      continue;
+    }
+    const mock = lines.has('MOCK_PUBLIC_BASE') && lines.has('MOCK_MTLS_BASE');
+    if (mock !== agent.envManaged.mock) problems.push(`${agent.id}: the data says mock ${String(agent.envManaged.mock)} and the example ${name} ${mock ? 'has' : 'lacks'} the lines of the mock origins`);
+    const manifest = lines.has('VECTOR_MODULE1_MANIFEST');
+    if (manifest !== agent.envManaged.module1) problems.push(`${agent.id}: the data says module1 ${String(agent.envManaged.module1)} and the example ${name} ${manifest ? 'has' : 'lacks'} the line of the Module-1 manifest`);
+  }
+  return problems;
+}
+
+/** The section "Not covered" of the data is the section of the golden results page of use case 1, word for word. */
+function notCoveredProblems(use: UseCase, page: string): string[] {
+  const section = `## Not covered\n\n${use.notCovered.lead}\n\n${use.notCovered.items.map((item) => `- ${item}`).join('\n')}\n`;
+  return page.includes(section) ? [] : ['the golden results page does not hold the section "Not covered" of the data'];
 }
 
 // ---- the lots and the runs ----
@@ -1032,6 +1058,32 @@ describe('the data of use case 1 (inventory reorder)', () => {
     });
   });
 
+  describe('the members that more than one use case has', () => {
+    const PAGE = readFileSync(new URL('./golden/results-page.md', import.meta.url), 'utf8');
+    it('hold the values of use case 1: the service containers, no example file of its own, the managed lines, no line of a key that the record lacks, the end of each agent, and no record, compliance, lifecycle or seed', () => {
+      expect(data.agents.map((agent) => [agent.id, agent.serviceContainer, agent.exampleEnvFile, agent.envManaged, agent.publicKeyLines, agent.end])).toEqual([
+        ['reorder-agent', 'reorder-service', null, { mock: true, module1: true }, [], { record: 'active', advert: 'listed', subagents: 'live', successor: null }],
+        ['order-desk', 'orders-service', null, { mock: true, module1: true }, [], { record: 'active', advert: 'listed', subagents: 'live', successor: null }],
+      ]);
+      expect([data.records, data.compliance, data.lifecycle, data.tenantSeed]).toEqual([[], null, null, null]);
+    });
+    it('hold the example env file of each agent to the managed lines that the data names', () => {
+      expect(managedProblems(data)).toEqual([]);
+    });
+    it.each<[string, UseCase, string]>([
+      ['mock origins that the example has and the data does not manage', mapAgent(data, 'reorder-agent', (agent) => ({ ...agent, envManaged: { mock: false, module1: true } })), 'reorder-agent: the data says mock false and the example .env.reorder-agent.example has the lines of the mock origins'],
+      ['a manifest line that the example has and the data does not manage', mapAgent(data, 'order-desk', (agent) => ({ ...agent, envManaged: { mock: true, module1: false } })), 'order-desk: the data says module1 false and the example .env.order-desk.example has the line of the Module-1 manifest'],
+      ['an example file that the test does not read', mapAgent(data, 'order-desk', (agent) => ({ ...agent, exampleEnvFile: '.env.nothing.example' })), 'order-desk: the example env file .env.nothing.example is not one of the examples that this test reads'],
+    ])('refuse %s', (_name, broken, problem) => {
+      expect(managedProblems(broken)).toContain(problem);
+    });
+    it('copy the section "Not covered" of the golden results page, and refuse a copy that differs by one word', () => {
+      expect(notCoveredProblems(data, PAGE)).toEqual([]);
+      const changed = { ...data, notCovered: { ...data.notCovered, items: data.notCovered.items.map((item, index) => (index === 1 ? `${item.slice(0, -1)} again.` : item)) } };
+      expect(notCoveredProblems(changed, PAGE)).toEqual(['the golden results page does not hold the section "Not covered" of the data']);
+    });
+  });
+
   describe('the hosts, the ports and the containers', () => {
     it('are the hosts of the Caddy snippet and the compose file of each agent, with the ports 8101 to 8104, 9101 and 9102', () => {
       expect(hostProblems(data)).toEqual([]);
@@ -1045,6 +1097,8 @@ describe('the data of use case 1 (inventory reorder)', () => {
       ['a status list that misses a host', mapAgent(data, 'order-desk', (agent) => ({ ...agent, statusUrls: agent.statusUrls.slice(0, 2) })), 'order-desk: statusUrls is not the list of the /status of its adverts'],
       ['a status URL with another path', mapAgent(data, 'reorder-agent', (agent) => ({ ...agent, statusUrls: ['https://mp-suppliers-reorder.vector.apexfusion.org/health'] })), 'reorder-agent: the status URL https://mp-suppliers-reorder.vector.apexfusion.org/health does not end in /status'],
       ['an env file of the runtime that the compose file does not read', mapAdvert(data, 'order-desk', 'lot-small', { runtimeEnvFile: '.env.order-desk-medium' }), 'order-desk lot-small: the env files of orders-small-runtime are ./.env.order-desk, ./.env.order-desk-small and the data has ./.env.order-desk, ./.env.order-desk-medium'],
+      ['a service container that the compose file does not have', mapAgent(data, 'order-desk', (agent) => ({ ...agent, serviceContainer: 'orders-tiny-service' })), 'order-desk: the compose file has no container orders-tiny-service, the service container of the data'],
+      ['a service container that is the container of an advert', mapAgent(data, 'reorder-agent', (agent) => ({ ...agent, serviceContainer: 'reorder-runtime' })), 'reorder-agent: the service container reorder-runtime of the data is the container of an advert'],
     ])('refuse %s', (_name, broken, problem) => {
       expect(hostProblems(broken)).toContain(problem);
     });
