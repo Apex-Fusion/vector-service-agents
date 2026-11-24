@@ -2,8 +2,9 @@
 // `GO.json` is the approval of one session: the tasks that may run, the wallet that pays, the cap on what the keys of the pack move out in the session, the steps that cannot be undone, and the
 // end of the approval. The cap is cumulative. `Exposure` keeps one file for the session: the landing reserves the net outflow of a transaction in it before the transaction is submitted, and a
 // transaction that cannot land any more gives its reserve back. A message of this file names a task, a tag or a field. It never shows a value of the approval file.
-import { readFileSync, statSync } from 'node:fs';
+import { closeSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync } from 'node:fs';
 import type { Stats } from 'node:fs';
+import { dirname } from 'node:path';
 import { keyCredentialOf } from '../../checks/lib/addresses.ts';
 import { writeFileAtomically } from '../../checks/lib/files.ts';
 import type { WriteIo } from '../../checks/lib/files.ts';
@@ -206,8 +207,8 @@ function externalOf(value: unknown): readonly { label: string; address: string; 
   }));
 }
 
-/** What a run needs from the approval: the task, the run wallet (null before the run key exists), the time now, and the irreversible tags of the step. */
-export interface GoNeed { task: string; runWallet: string | null; nowMs: number; irreversible?: readonly string[] }
+/** What a run needs from the approval: the task, the run wallet (null before the run key exists), the time now, and the irreversible tags of the step (an empty list when the step has none). */
+export interface GoNeed { task: string; runWallet: string | null; nowMs: number; irreversible: readonly IrreversibleTag[] }
 
 /**
  * Gives the approval back when it allows this run, and refuses when it does not: no approval, an approval that has expired, another run wallet, a task that it does not list, or a tag of an
@@ -216,6 +217,7 @@ export interface GoNeed { task: string; runWallet: string | null; nowMs: number;
  */
 export function requireGo(go: GoFile | null, need: GoNeed): GoFile {
   if (go === null) throw new ApprovalError(`the task ${need.task} needs an approval file, and none is loaded`);
+  if (!Array.isArray(need.irreversible)) throw new ApprovalError(`the run of the task ${need.task} did not say which irreversible tags its step carries: it gives an empty list when the step has none`);
   const end = parseIso(go.expiresAt);
   if (end === null) throw bad('expiresAt', 'is not an ISO 8601 time with a zone');
   if (!Number.isFinite(need.nowMs)) throw new ApprovalError('the clock gave no valid time, so the approval cannot be checked');
@@ -230,7 +232,7 @@ export function requireGo(go: GoFile | null, need: GoNeed): GoFile {
     throw new ApprovalError('the approval names another run wallet than the run key');
   }
   if (!go.tasks.includes(need.task)) throw new ApprovalError(`the approval does not list the task ${need.task} in tasks`);
-  for (const tag of need.irreversible ?? []) {
+  for (const tag of need.irreversible) {
     if (!go.irreversible.some((held) => held === tag)) throw new ApprovalError(`the approval does not list the irreversible tag ${tag} in irreversible`);
   }
   return go;
@@ -290,7 +292,8 @@ export class Exposure {
 
   /**
    * Checks the cap and appends the entry in one write. The landing calls it when it writes `in_flight`, before the submit, so a transaction that confirms after the run has ended is counted
-   * already. A transaction that is reserved already with the same amount is the same entry (nothing changes); with another amount it is refused.
+   * already. A transaction that is reserved already with the same amount is the same entry (nothing changes); with another amount it is refused. The read, the check and the write happen
+   * under the lock file, so two runs of one session cannot both pass the cap with the same room.
    */
   reserve(entry: ExposureEntry): void {
     const { step, txHash, netLovelace, at } = entry;
@@ -298,22 +301,47 @@ export class Exposure {
     if (typeof step !== 'string' || step === '' || step.length > MAX_STEP) throw new ApprovalError('an exposure entry needs a step of 1 to 200 characters');
     if (typeof txHash !== 'string' || !TX_HASH.test(txHash)) throw new ApprovalError('an exposure entry needs the hash of its transaction: 64 lower-case hex characters');
     if (parseIso(at) === null) throw new ApprovalError('an exposure entry needs the time as an ISO 8601 time with a zone');
-    const entries = this.#read();
-    const same = entries.find((held) => held.txHash === txHash);
-    if (same !== undefined) {
-      if (same.netLovelace !== netLovelace) throw new ApprovalError('this transaction is reserved already with another amount');
-      return;
-    }
-    this.#refuse(entries, netLovelace);
-    this.#write([...entries, { step, txHash, netLovelace, at }]);
+    this.#locked(() => {
+      const entries = this.#read();
+      const same = entries.find((held) => held.txHash === txHash);
+      if (same !== undefined) {
+        if (same.netLovelace !== netLovelace) throw new ApprovalError('this transaction is reserved already with another amount');
+        return;
+      }
+      this.#refuse(entries, netLovelace);
+      this.#write([...entries, { step, txHash, netLovelace, at }]);
+    });
   }
 
-  /** Removes the entry of this transaction and says whether it was there. The runner calls it for a transaction that cannot land any more, and for no other. */
+  /** Removes the entry of this transaction and says whether it was there. The runner calls it for a transaction that cannot land any more, and for no other. It holds the lock file as `reserve` does. */
   release(txHash: string): boolean {
-    const entries = this.#read();
-    if (!entries.some((held) => held.txHash === txHash)) return false;
-    this.#write(entries.filter((held) => held.txHash !== txHash));
-    return true;
+    return this.#locked(() => {
+      const entries = this.#read();
+      if (!entries.some((held) => held.txHash === txHash)) return false;
+      this.#write(entries.filter((held) => held.txHash !== txHash));
+      return true;
+    });
+  }
+
+  /**
+   * Runs a read, a check and a write of the file while this call holds the lock file next to it (made with the flag `wx`, removed when the call ends, also by an error). A lock that exists is
+   * another run, or a run that stopped and left it: the call refuses and names the file, and the operator removes it when no run is active.
+   */
+  #locked<T>(run: () => T): T {
+    const lock = `${this.#path}.lock`;
+    try {
+      mkdirSync(dirname(this.#path), { recursive: true, mode: 0o700 });
+      closeSync(openSync(lock, 'wx', FILE_MODE));
+    } catch (err) {
+      throw new ApprovalError(codeOf(err) === 'EEXIST'
+        ? `the lock file ${lock} exists: another run holds it, or a run stopped and left it. Wait for the run, or remove the file when no run is active`
+        : `the lock file ${lock} could not be made (${codeOf(err)})`);
+    }
+    try {
+      return run();
+    } finally {
+      try { unlinkSync(lock); } catch { /* the file is gone already: the next run finds no lock, or it names the file that stays */ }
+    }
   }
 
   #refuse(entries: readonly ExposureEntry[], netLovelace: bigint): void {
@@ -365,7 +393,9 @@ export class Exposure {
  * The net outflow of the registry that one transaction adds, in lovelace: the lovelace of the inputs whose payment credential is a key of the ring, minus the lovelace of the outputs at the
  * wallets of the ring. A transfer between two wallets of the ring is only its fee, and a transfer to any other address counts in full. The result is not below 0 (a withdrawal of rewards
  * brings in more than the inputs hold). `inputs` holds the outputs that the transaction spends, by reference `<hash>#<index>`, as the node gives them. An input that is missing from it is an
- * error and never a zero. An input at a script address is no input of the registry. Collateral inputs and reference inputs are not spent, so they do not count.
+ * error and never a zero. An input at a script address is no input of the registry. Reference inputs are not spent, so they do not count.
+ * A transaction that runs scripts can also fail in phase 2: then it spends its collateral and nothing else. So the result is the larger of the net outflow and the collateral that a failure takes:
+ * `totalCollateral` of the body, or, when the body has none, the collateral inputs of the ring less the collateral return to a wallet of the ring (these inputs must be in `inputs` then).
  */
 export function netRegistryOutflow(facts: TxFacts, inputs: ReadonlyMap<string, { address: string; lovelace: bigint }>, ring: RingView): bigint {
   const keyHashes = ring.keyHashes();
@@ -379,5 +409,19 @@ export function netRegistryOutflow(facts: TxFacts, inputs: ReadonlyMap<string, {
   }
   let returning = 0n;
   for (const output of facts.outputs) if (wallets.has(output.address)) returning += output.lovelace;
-  return leaving > returning ? leaving - returning : 0n;
+  const net = leaving > returning ? leaving - returning : 0n;
+  if (!facts.runsScripts) return net;
+  let collateral = facts.totalCollateral;
+  if (collateral === null) {
+    let pledged = 0n;
+    for (const reference of facts.collateralInputs) {
+      const held = inputs.get(reference);
+      if (held === undefined) throw new ApprovalError(`the collateral cannot be counted: the input ${reference} is not among the outputs that the node gave`);
+      const credential = keyCredentialOf(held.address);
+      if (credential !== null && keyHashes.has(credential)) pledged += held.lovelace;
+    }
+    const back = facts.collateralReturn !== null && wallets.has(facts.collateralReturn.address) ? facts.collateralReturn.lovelace : 0n;
+    collateral = pledged > back ? pledged - back : 0n;
+  }
+  return collateral > net ? collateral : net;
 }

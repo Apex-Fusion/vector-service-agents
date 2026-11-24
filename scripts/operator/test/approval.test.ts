@@ -1,14 +1,14 @@
 // The approval file of a session, the cap that it sets, and the net outflow of a transaction. Each refusal has an accepted twin. No test uses a real key, a real clock or the network.
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { enterpriseAddressOf } from '../../checks/lib/platform.ts';
 import type { RingView } from '../../checks/lib/guards.ts';
 import type { TxFacts } from '../../checks/lib/txfacts.ts';
 import { DEPLOYMENT } from '../../checks/test/support/world.ts';
 import { ApprovalError, Exposure, loadGo, lovelaceOfUnits, netRegistryOutflow, requireGo } from '../lib/approval.ts';
-import type { ExposureEntry, GoFile } from '../lib/approval.ts';
+import type { ExposureEntry, GoFile, GoNeed, IrreversibleTag } from '../lib/approval.ts';
 import { makeTestKeys, removeTestKeys } from './support/keys.ts';
 
 const folders: string[] = [];
@@ -228,7 +228,9 @@ describe('loadGo', () => {
 });
 
 describe('requireGo', () => {
-  const NEED = { task: 'fund', runWallet: RUN, nowMs: NOW };
+  const NEED: GoNeed = { task: 'fund', runWallet: RUN, nowMs: NOW, irreversible: [] };
+  /** Tags that the type does not allow, for a test of the check at run time. */
+  const tagsOf = (...tags: string[]): readonly IrreversibleTag[] => tags as unknown as readonly IrreversibleTag[];
 
   it('gives the file back when it holds the task, the run wallet and every tag, and the file has not expired', () => {
     const go = fileOf({ irreversible: ['record', 'stake'] });
@@ -277,12 +279,19 @@ describe('requireGo', () => {
     expect(refusal(() => requireGo(go, { ...NEED, irreversible: ['stake'] })).message).toContain('stake');
     expect(refusal(() => requireGo(go, { ...NEED, irreversible: ['record', 'attestation'] })).message).toContain('attestation');
     expect(refusal(() => requireGo(fileOf({ irreversible: [] }), { ...NEED, irreversible: ['record'] })).message).toContain('record');
-    expect(refusal(() => requireGo(go, { ...NEED, irreversible: ['something-else'] })).message).toContain('something-else');
+    expect(refusal(() => requireGo(go, { ...NEED, irreversible: tagsOf('something-else') })).message).toContain('something-else');
     expect(requireGo(fileOf({ irreversible: ['record', 'stake', 'attestation'] }), { ...NEED, irreversible: ['record', 'stake', 'attestation'] }).irreversible).toHaveLength(3);
+  });
+  it('refuses a run that does not say which tags its step carries: the type forbids it, and a call that skips the type is refused too', () => {
+    const withoutTags = { task: 'fund', runWallet: RUN, nowMs: NOW };
+    const err = refusal(() => requireGo(fileOf(), withoutTags as GoNeed));
+    expect(err.message).toContain('irreversible');
+    expect(err.message).toContain('fund');
+    expect(requireGo(fileOf(), { ...withoutTags, irreversible: [] }).session).toBe('test-session');
   });
 
   describe('before the run key exists', () => {
-    const FIRST = { task: 'keys', runWallet: null, nowMs: NOW };
+    const FIRST: GoNeed = { task: 'keys', runWallet: null, nowMs: NOW, irreversible: [] };
     const UNSET = fileOf({ runWallet: 'unset', tasks: ['keys'] });
     it('accepts only the task keys with a file that says unset and lists keys', () => {
       expect(requireGo(UNSET, FIRST)).toBe(UNSET);
@@ -307,7 +316,8 @@ describe('requireGo', () => {
   it('never shows a value of the file beyond the task, the tag and the field', () => {
     const MARK = 'MARKERVALUE';
     const go = fileOf({ approvedBy: MARK, session: 'marker-session', tasks: ['keys'], irreversible: [] });
-    for (const need of [{ ...NEED }, { ...NEED, task: 'keys', irreversible: ['stake'] }, { ...NEED, task: 'keys', runWallet: keys.registry.addressOf('fee') }, { ...NEED, task: 'keys', nowMs: NOW + 10 ** 12 }]) {
+    const needs: GoNeed[] = [{ ...NEED }, { ...NEED, task: 'keys', irreversible: ['stake'] }, { ...NEED, task: 'keys', runWallet: keys.registry.addressOf('fee') }, { ...NEED, task: 'keys', nowMs: NOW + 10 ** 12 }];
+    for (const need of needs) {
       const text = refusal(() => requireGo(go, need)).message;
       expect(text).not.toContain(MARK);
       expect(text).not.toContain('marker-session');
@@ -507,6 +517,47 @@ describe('Exposure', () => {
     expect(ok.total()).toBe(1n);
   });
 
+  it('holds a lock file around a reserve and a release, and refuses a call while another run holds the lock', () => {
+    const { path, exposure: e } = exposure();
+    const lock = `${path}.lock`;
+    e.reserve(entryOf(1, 1_000_000n));
+    expect(existsSync(lock)).toBe(false);
+    writeFileSync(lock, '', { mode: 0o600 });
+    const before = readFileSync(path, 'utf8');
+    for (const call of [() => e.reserve(entryOf(2, 1_000_000n)), () => e.release(hashOf(1))]) {
+      const err = refusal(call);
+      expect(err.message).toContain(lock);
+      expect(err.message).toContain('lock file');
+    }
+    expect(readFileSync(path, 'utf8')).toBe(before);
+    expect(e.total()).toBe(1_000_000n);
+    expect(() => e.refuseOver(1n)).not.toThrow();
+    expect(existsSync(lock)).toBe(true);
+    rmSync(lock);
+    e.reserve(entryOf(2, 1_000_000n));
+    expect(e.release(hashOf(2))).toBe(true);
+    expect(existsSync(lock)).toBe(false);
+  });
+
+  it('removes the lock file when a call ends, also when the call refuses and when its write fails', () => {
+    const { path, exposure: e } = exposure(fileOf({ capUnits: 1 }));
+    expect(() => e.reserve(entryOf(1, 1_000_001n))).toThrow(ApprovalError);
+    expect(existsSync(`${path}.lock`)).toBe(false);
+    e.reserve(entryOf(1, 1_000_000n));
+    expect(e.release(hashOf(9))).toBe(false);
+    expect(existsSync(`${path}.lock`)).toBe(false);
+    const failing = new Exposure(path, fileOf({ capUnits: 1 }), { rename: () => { throw new Error('the rename failed'); } });
+    expect(() => failing.release(hashOf(1))).toThrow('the rename failed');
+    expect(existsSync(`${path}.lock`)).toBe(false);
+  });
+
+  it('makes the folder of the file for the lock when the folder is not there', () => {
+    const path = join(folder(), 'state', 'exposure.test-session.json');
+    new Exposure(path, fileOf()).reserve(entryOf(1, 1n));
+    expect(existsSync(`${path}.lock`)).toBe(false);
+    expect(modeOf(dirname(path))).toBe(0o700);
+  });
+
   describe('a damaged file', () => {
     const good = (over: Record<string, unknown> = {}): string => JSON.stringify({
       format: 1, session: 'test-session', entries: [{ step: 'fund:float', tx_hash: hashOf(1), net_lovelace: '1000000', at: '2026-12-01T12:00:00.000Z' }], ...over,
@@ -640,6 +691,31 @@ describe('netRegistryOutflow', () => {
   it('does not count collateral inputs and reference inputs, and does not need them in the map', () => {
     const tx = facts({ inputs: [ref(1)], collateralInputs: [ref(5)], referenceInputs: [ref(6)], outputs: outputs([RUN_ADDRESS, 9_600_000n]), collateralReturn: { address: RUN_ADDRESS, lovelace: 4_000_000n } });
     expect(netRegistryOutflow(tx, spent([ref(1), RUN_ADDRESS, 10_000_000n]), ring)).toBe(400_000n);
+  });
+
+  it('counts the larger of the net outflow and the collateral when the transaction runs scripts', () => {
+    const plain = facts({ inputs: [ref(1)], outputs: outputs([RUN_ADDRESS, 9_600_000n]) });
+    const script = (over: Partial<TxFacts> = {}): TxFacts => ({ ...plain, runsScripts: true, ...over });
+    const held = spent([ref(1), RUN_ADDRESS, 10_000_000n]);
+    expect(netRegistryOutflow(plain, held, ring)).toBe(400_000n);
+    expect(netRegistryOutflow(script({ totalCollateral: 5_000_000n }), held, ring)).toBe(5_000_000n);
+    expect(netRegistryOutflow(script({ totalCollateral: 400_000n }), held, ring)).toBe(400_000n);
+    expect(netRegistryOutflow(script({ totalCollateral: 300_000n }), held, ring)).toBe(400_000n);
+    expect(netRegistryOutflow({ ...plain, totalCollateral: 5_000_000n }, held, ring)).toBe(400_000n);
+    expect(netRegistryOutflow(script({ totalCollateral: 5_000_000n, collateralInputs: [ref(5)] }), held, ring)).toBe(5_000_000n);
+  });
+
+  it('works out the collateral from the collateral inputs of the ring and the collateral return when the body has no total, and refuses a collateral input that the node did not give', () => {
+    const script = (over: Partial<TxFacts> = {}): TxFacts => facts({ runsScripts: true, inputs: [ref(1)], outputs: outputs([RUN_ADDRESS, 9_600_000n]), collateralInputs: [ref(5)], ...over });
+    const held = spent([ref(1), RUN_ADDRESS, 10_000_000n], [ref(5), RUN_ADDRESS, 5_000_000n]);
+    expect(netRegistryOutflow(script(), held, ring)).toBe(5_000_000n);
+    expect(netRegistryOutflow(script({ collateralReturn: { address: RUN_ADDRESS, lovelace: 4_000_000n } }), held, ring)).toBe(1_000_000n);
+    expect(netRegistryOutflow(script({ collateralReturn: { address: STRANGER, lovelace: 4_000_000n } }), held, ring)).toBe(5_000_000n);
+    expect(netRegistryOutflow(script({ collateralReturn: { address: RUN_ADDRESS, lovelace: 5_000_000n } }), held, ring)).toBe(400_000n);
+    expect(netRegistryOutflow(script(), spent([ref(1), RUN_ADDRESS, 10_000_000n], [ref(5), STRANGER, 5_000_000n]), ring)).toBe(400_000n);
+    const err = refusal(() => netRegistryOutflow(script(), spent([ref(1), RUN_ADDRESS, 10_000_000n]), ring));
+    expect(err.message).toContain(ref(5));
+    expect(err.message).toContain('collateral');
   });
 
   it('gives 0 for a transaction with no input and no output', () => {
