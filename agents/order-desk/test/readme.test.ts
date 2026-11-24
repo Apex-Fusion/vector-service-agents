@@ -98,6 +98,12 @@ describe('agents/order-desk/README.md: the settings', () => {
     expect(cell('SMALL_SUPPLIER_PUB_KEY_HEX', 1)).toContain('The service stops at start unless its key hash is `SMALL_SUPPLIER_PKH`');
     expect(message(() => loadConfig(envWith({ SMALL_SUPPLIER_PUB_KEY_HEX: LARGE.pubKeyHex })))).toMatch(/^environment variable SMALL_SUPPLIER_PUB_KEY_HEX is not the public key of SMALL_SUPPLIER_PKH/);
   });
+
+  test('IDENTITY_POLICY_ID must be the identity policy that VECTOR_IDENTITY_LEGACY_ROOT and VECTOR_IDENTITY_CONFIG_SEED give, as the table says and as the start says', () => {
+    expect(cell('IDENTITY_POLICY_ID', 1)).toContain('It must be the identity policy that `VECTOR_IDENTITY_LEGACY_ROOT` and `VECTOR_IDENTITY_CONFIG_SEED` give, or the service stops at start');
+    expect(message(() => loadConfig(envWith({ IDENTITY_POLICY_ID: 'ab'.repeat(28) })))).toMatch(/^environment variable IDENTITY_POLICY_ID is not the identity policy that VECTOR_IDENTITY_LEGACY_ROOT and VECTOR_IDENTITY_CONFIG_SEED give/);
+    expect(() => loadConfig(FULL_ENV)).not.toThrow();
+  });
 });
 
 describe('agents/order-desk/README.md: Run it', () => {

@@ -122,7 +122,7 @@ On SIGTERM (`docker stop` sends it) or SIGINT the service takes no new job and n
 |---|---|---|
 | `OPERATOR_CONTACT` | `operator.contact` | none. Required: the service stops at start without it |
 | `AGENT_DID` | `identity.did`, in the canonical form `did:vector:<identifier>`. It is the supplier that a purchase order must name, and the agent whose key asks for the X.509-SVID | none. Required |
-| `IDENTITY_POLICY_ID` | `identity.registry_address`, the address of the identity registry derived from this policy: 56 lowercase hex characters. It must be the identity policy that the four `VECTOR_IDENTITY_` values below give, or the service stops at start | none. Required |
+| `IDENTITY_POLICY_ID` | `identity.registry_address`, the address of the identity registry derived from this policy: 56 lowercase hex characters. It must be the identity policy that `VECTOR_IDENTITY_LEGACY_ROOT` and `VECTOR_IDENTITY_CONFIG_SEED` give, or the service stops at start | none. Required |
 | `IDENTITY_ADDRESS` | the address of the identity registry. It may be left out. When it is set, it must be the address of `IDENTITY_POLICY_ID` | derived from the policy |
 | `AGENT_VERSION` | `version` | `0.1.0` |
 | `AGENT_STATUS_CHIP` | `status.chip`, in lower case. It must be live, deployed or proposed, in any case | `proposed` |
