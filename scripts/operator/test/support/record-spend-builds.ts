@@ -6,6 +6,8 @@ import { utf8Hex } from '../../../../packages/vector-read/src/identity-codec.ts'
 import type { IdentityDatum, Party } from '../../../../packages/vector-read/src/identity-codec.ts';
 import { iso } from '../../../checks/lib/format.ts';
 import { HostedError } from '../../../checks/lib/hosted.ts';
+import type { Utxo } from '../../../checks/lib/platform.ts';
+import { factsOf } from '../../../checks/lib/txfacts.ts';
 import type { AgentSpec, OrganisationSpec, TaskDefinition, UseCase } from '../../lib/contract.ts';
 import { FactsFile } from '../../lib/facts.ts';
 import { ensureSlotConfig, findRecord } from '../../lib/platform.ts';
@@ -33,6 +35,13 @@ export interface SpendWorldOptions {
   failResolver?: boolean;
 }
 
+interface ArchiveOutput { tx_hash: string; tx_index: number; payment_addr: { bech32: string }; value: string }
+interface ArchiveSpend { tx_hash: string; fee: string; inputs: ArchiveOutput[]; outputs: ArchiveOutput[] }
+
+function archiveOutput(utxo: Utxo): ArchiveOutput {
+  return { tx_hash: utxo.txHash, tx_index: utxo.outputIndex, payment_addr: { bech32: utxo.address }, value: String(utxo.assets.lovelace) };
+}
+
 export interface SpendWorld {
   w: TaskWorld;
   agent: AgentSpec;
@@ -49,6 +58,7 @@ export interface SpendWorld {
   accountableHash: string;
   hosted: PackHosted;
   answers: ReadonlyMap<string, HandlerAnswer>;
+  archive: Map<string, ArchiveSpend>;
   signed: string[];
   statusUrls: readonly string[];
   store: FactsFile;
@@ -70,17 +80,35 @@ export async function spendWorld(options: SpendWorldOptions): Promise<SpendWorld
   const childIds = new Map(children.map(({ id: name }) => [name, hashOf(`record of ${name}`)]));
   const statusUrls: string[] = [];
   let runtimeStatus = 'free';
+  const archive = new Map<string, ArchiveSpend>();
   const w = await taskWorld({
     keys: options.use.keys.map(({ name }) => name), shared: options.use.keys.filter(({ scope }) => scope === 'shared').map(({ name }) => name), use: options.use,
     // The runner uses the test loader below. Its environment still needs an active default.
     env: { OPERATOR_USE_CASE: 'inventory-reorder' },
-    fetchImpl: async (input) => {
+    fetchImpl: async (input, init) => {
       const url = String(input);
+      if (new URL(url).pathname === '/api/v1/tx_info') {
+        const request = JSON.parse(String(init?.body)) as { _tx_hashes: string[]; _inputs?: boolean };
+        if (request._inputs !== true) throw new Error('The archive request needs transaction inputs.');
+        return Response.json(request._tx_hashes.flatMap((hash) => {
+          const found = archive.get(hash);
+          return found === undefined ? [] : [found];
+        }));
+      }
       statusUrls.push(url);
       if (!agent.statusUrls.includes(url)) throw new Error('Unexpected status URL.');
       return Response.json({ status: runtimeStatus });
     },
   });
+  const submit = w.node.submit.bind(w.node);
+  w.node.submit = async (hex) => {
+    const facts = factsOf(hex);
+    const inputs = facts.inputs.map((ref) => archiveOutput(w.world.chain.find(ref)!));
+    const hash = await submit(hex);
+    const outputs = w.world.chain.held.filter((utxo) => utxo.txHash === hash).map(archiveOutput);
+    archive.set(hash, { tx_hash: hash, fee: String(facts.feeLovelace), inputs, outputs });
+    return hash;
+  };
   const { registry } = w.keys;
   const fee = registry.addressOf('fee');
   const accountableHash = registry.hashOf(organisation.accountableKey);
@@ -140,7 +168,7 @@ export async function spendWorld(options: SpendWorldOptions): Promise<SpendWorld
     },
   }));
   return {
-    w, agent, organisation, parent, defaultParty, moduleParty, id, did, childIds, parentOutput, registry, fee, accountableHash, hosted, answers, signed, statusUrls, store, context, run,
+    w, agent, organisation, parent, defaultParty, moduleParty, id, did, childIds, parentOutput, registry, fee, accountableHash, hosted, answers, archive, signed, statusUrls, store, context, run,
     setRuntime(status: string): void { runtimeStatus = status; },
     showRunning(containers: readonly string[]): void {
       mkdirSync(w.stateDir, { recursive: true, mode: 0o700 });

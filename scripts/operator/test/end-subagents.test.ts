@@ -1,10 +1,14 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { buildEndSubagents } from '../../../packages/buyer-core/src/vendored/mcp/identity-build.ts';
 import { DAY, M1, recordUtxo } from '../../../packages/buyer-core/test/fixtures/identity-world.ts';
+import * as layout from '../../../packages/usecase-kit/src/cosign/layout.ts';
 import type { Status } from '../../../packages/vector-read/src/identity-codec.ts';
-import { effectiveStatus } from '../lib/platform.ts';
+import { plutusAddressToBech32 } from '../../../packages/vector-read/src/vendored/shared/cbor/address.ts';
+import { factsOf } from '../../checks/lib/txfacts.ts';
+import { effectiveStatus, formatOutRef } from '../lib/platform.ts';
 import type { RecordUtxo } from '../lib/platform.ts';
 import endSubagents from '../tasks/end-subagents.ts';
+import inventory from '../usecases/inventory-reorder.ts';
 import priorAuth from '../usecases/prior-authorization.ts';
 import { spendWorld, TOOLS } from './support/record-spend-builds.ts';
 import type { SpendWorldOptions } from './support/record-spend-builds.ts';
@@ -26,6 +30,7 @@ describe('end-subagents', () => {
     const built = await buildEndSubagents(await f.context(), { changeAddress: f.fee, id: f.id, nowMs: NOW });
     f.prepare(TOOLS.end, built);
     expect(await f.run(endSubagents, 'run', '--submit')).toBe(0);
+    expect(factsOf(built.txCbor).requiredSigners).toEqual([f.registry.hashOf('controller')]);
     expect(f.hosted.calls[0]).toEqual({ name: TOOLS.end, args: { changeAddress: f.fee, did: f.did } });
     expect(f.signed.sort()).toEqual(['controller', 'fee']);
     const current = await f.record();
@@ -47,8 +52,81 @@ describe('end-subagents', () => {
     } });
     expect(await f.run(endSubagents, 'run', '--submit')).toBe(2);
     expect(await f.run(endSubagents, 'run', '--run', 'again', '--submit')).toBe(2);
+    expect(f.w.screen.errorText).toContain('takes no --run label');
     expect(f.w.node.submitted).toHaveLength(1);
     expect(f.hosted.calls.filter(({ name }) => name === TOOLS.end)).toHaveLength(1);
+  });
+
+  it('does not end the subagents of a record that the data keeps live', async () => {
+    const f = await setup({ use: inventory, agent: 'reorder-agent' });
+    expect(await f.run(endSubagents, 'run', '--agent', f.agent.id, '--submit')).toBe(2);
+    expect(f.w.screen.errorText).toContain('does not mark the selected agent to end its subagents');
+    expect(f.hosted.calls).toEqual([]);
+    expect(f.signed).toEqual([]);
+  });
+
+  it.each([
+    ['invalid flag', 'is marked invalid'],
+    ['unsupported body field', 'is not in the supported form'],
+  ])('refuses a decoded layout with an %s before signing', async (problem, detail) => {
+    const f = await setup();
+    const built = await buildEndSubagents(await f.context(), { changeAddress: f.fee, id: f.id, nowMs: NOW });
+    f.prepare(TOOLS.end, built);
+    const frame = layout.readFrame(Buffer.from(built.txCbor, 'hex'))!;
+    // This changes only the scanner result in the test, not the transaction bytes.
+    const read = vi.spyOn(layout, 'readFrame').mockReturnValueOnce(problem === 'invalid flag'
+      ? { ...frame, isValid: false }
+      : { ...frame, body: { ...frame.body, entries: [...frame.body.entries, { ...frame.body.entries[0]!, key: 22 }] } });
+    try {
+      expect(await f.run(endSubagents, 'run', '--submit')).toBe(2);
+      expect(f.w.screen.errorText).toContain(detail);
+      expect(f.signed).toEqual([]);
+      expect(f.w.node.submitted).toEqual([]);
+    } finally {
+      read.mockRestore();
+    }
+    expect(await f.run(endSubagents, 'run', '--submit')).toBe(0);
+  });
+
+  it('checks the exact fee wallet and the original deposit against the node inputs', async () => {
+    const f = await setup();
+    const built = await buildEndSubagents(await f.context(), { changeAddress: f.fee, id: f.id, nowMs: NOW });
+    f.prepare(TOOLS.end, built);
+    const facts = factsOf(built.txCbor);
+    const { node } = f.w;
+    const resolve = node.resolveInputs.bind(node);
+    const otherAddress = plutusAddressToBech32({
+      paymentCredential: { type: 'VerificationKey', hash: f.registry.hashOf('fee') },
+      stakeCredential: { type: 'Inline', credential: { type: 'VerificationKey', hash: f.registry.hashOf('controller') } },
+    }, 1);
+    expect(otherAddress).not.toBe(f.fee);
+    node.resolveInputs = async (refs) => (await resolve(refs)).map((u) => facts.collateralInputs.includes(formatOutRef(u.txHash, u.outputIndex)) ? { ...u, address: otherAddress } : u);
+    expect(await f.run(endSubagents, 'run', '--submit')).toBe(2);
+    expect(f.w.screen.errorText).toContain('not a pure lovelace output of the exact fee wallet');
+    node.resolveInputs = async (refs) => (await resolve(refs)).map((u) => u === f.parentOutput ? { ...u, assets: { ...u.assets, lovelace: u.assets.lovelace + 1n } } : u);
+    expect(await f.run(endSubagents, 'run', '--submit')).toBe(2);
+    expect(f.w.screen.errorText).toContain('not the selected record, with its deposit');
+    expect(f.signed).toEqual([]);
+    node.resolveInputs = resolve;
+    expect(await f.run(endSubagents, 'run', '--submit')).toBe(0);
+  });
+
+  it('does not sign when a required reference is absent from the node', async () => {
+    const f = await setup();
+    const built = await buildEndSubagents(await f.context(), { changeAddress: f.fee, id: f.id, nowMs: NOW });
+    f.prepare(TOOLS.end, built);
+    const refs = factsOf(built.txCbor).referenceInputs;
+    expect(refs).toHaveLength(2);
+    const { chain } = f.w.world;
+    for (const ref of refs) {
+      const held = chain.held;
+      chain.held = held.filter((u) => formatOutRef(u.txHash, u.outputIndex) !== ref);
+      expect(await f.run(endSubagents, 'run', '--submit')).toBe(2);
+      expect(f.w.screen.errorText).toMatch(/required record-spend references|configuration record is not on the node/);
+      expect(f.signed).toEqual([]);
+      chain.held = held;
+    }
+    expect(await f.run(endSubagents, 'run', '--submit')).toBe(0);
   });
 
   it('verifies a confirmed spend on the next run without building it again', async () => {
