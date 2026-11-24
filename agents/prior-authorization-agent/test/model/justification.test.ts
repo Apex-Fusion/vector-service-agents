@@ -274,7 +274,7 @@ describe('the parser of justification', () => {
     expect(must(SPEC.parse(given))).toBe(given);
   });
 
-  test('accepts the edges of the shape: the shortest and the longest justification, no reference, every reference, references in any order, and a justification that cites none of them', () => {
+  test('accepts the edges of the shape: the shortest and the longest justification, no reference, every reference, references in any order, a justification that cites none of them, and one letter between white space', () => {
     for (const given of [
       { ...choice(), justification: 'x' },
       { ...choice(), justification: 'a'.repeat(MAX_JUSTIFICATION_CHARS) },
@@ -282,6 +282,7 @@ describe('the parser of justification', () => {
       { ...choice(), guideline_refs: [], record_refs: [] },
       { ...choice(), guideline_refs: [...IDS.criterion_ids].reverse(), record_refs: [...IDS.record_ids].reverse() },
       { ...choice(), justification: 'No criterion is met.', guideline_refs: ['C1'], record_refs: ['REC-0003'] },
+      { ...choice(), justification: ' \n\u00a0x\u3000\n ' },
     ]) expect(must(parse(given))).toBe(given);
   });
 
@@ -319,6 +320,7 @@ describe('the parser of justification', () => {
 
   test.each([
     ['an empty justification', ''],
+    ['a justification of white space only: spaces, line feeds and the white space that trim removes', ' \n\u00a0 \n\u3000'],
     ['a justification of 4,001 characters', 'a'.repeat(MAX_JUSTIFICATION_CHARS + 1)],
     ['a justification of 4,001 characters outside the BMP', '\u{1F600}'.repeat(MAX_JUSTIFICATION_CHARS + 1)],
     ['a justification of 100,000 characters', 'a'.repeat(100_000)],
@@ -343,9 +345,9 @@ describe('the parser of justification', () => {
     expectNames(detail, 'choice.justification');
   });
 
-  // The decision folder gives the document parser the NFC copy of the justification, so the rule that the choice parser holds is the rule of `parsePriorAuthRequest`. A text that the choice parser takes and
-  // the request parser refuses would end a paid decision as a bad document, and the other way round would refuse a text that the request takes.
-  test('agrees with the request parser of the kit on the justification: each text that the one takes, the other takes, and the same for each text that the one refuses', () => {
+  // The decision folder gives the document parser the NFC copy of the justification, so the rule that the choice parser holds is the rule of `parsePriorAuthRequest`, with one more rule: a text that is blank after trim is
+  // refused (see above). A text that the choice parser takes and the request parser refuses would end a paid decision as a bad document, and the other way round would refuse a text that the request takes. No text of the list is blank.
+  test('agrees with the request parser of the kit on each text that is not blank: each text that the one takes, the other takes, and the same for each text that the one refuses', () => {
     const request = golden('request.json');
     const texts = [
       'x', 'a'.repeat(MAX_JUSTIFICATION_CHARS), 'a'.repeat(MAX_JUSTIFICATION_CHARS + 1), '', '\u{1F600}'.repeat(MAX_JUSTIFICATION_CHARS), '\u{1F600}'.repeat(MAX_JUSTIFICATION_CHARS + 1),
@@ -450,6 +452,7 @@ describe('decide with the stub model supplier', () => {
     ['an extra member', () => ({ ...GOOD(), note: 'x' })],
     ['a justification of 4,001 characters', () => ({ ...GOOD(), justification: 'a'.repeat(MAX_JUSTIFICATION_CHARS + 1) })],
     ['an empty justification', () => ({ ...GOOD(), justification: '' })],
+    ['a blank justification', () => ({ ...GOOD(), justification: ' \n  \n ' })],
     ['a control character in the justification', () => ({ ...GOOD(), justification: 'Criterion C1 is met.\u0000' })],
     ['a number in guideline_refs', () => ({ ...GOOD(), guideline_refs: ['C1', 2] })],
     ['a duplicate in guideline_refs', () => ({ ...GOOD(), guideline_refs: ['C1', 'C1'] })],
