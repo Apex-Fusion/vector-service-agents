@@ -3,23 +3,27 @@
 // the same bytes.
 //
 // One manifest for each instance. The three Bid Desks run one code base, and each has its own record, its own advert and its own manifest: the name of the instance, the address of its price list and the SHA-256
-// of the file of its instance. So the three manifests have three hashes. The price list is served at `<origin>/price-list.json`, and the manifest names that address and holds the hash of the bytes.
+// of the file of its instance. So the three manifests have three hashes. The price list is served at `<origin>/price-list.json`, and the manifest names that address and holds the hash of the bytes. The builder
+// checks that the hash is the hash of the file of the instance that the settings name, so that the manifest of one instance never holds the hash of the list of another.
 //
 // The fault switch never reaches the manifest. The builder takes the settings of the operator and never FAULT_MODE, `renderManifest` of the kit renders it for every setting of the fault switch and refuses a
 // manifest whose bytes change, and the kit gives the one gap sentence that names the possible values. The active value is in each result only.
 //
 // No controller. A Bid Desk reads, stores and checks no controller of its own record. The manifest holds its DID, the address of the identity registry and the supplier key, and no member names a controller, so the
 // manifest and the advert that holds its hash stay the same when the controller of the record changes.
+import { readFileSync } from 'node:fs';
 import { given, hexOf, requiredEnv, shown, statusChip, statusSince } from '@vsa/service-kit';
 import type { StatusChip } from '@vsa/service-kit';
-import { BID_CAPABILITIES, BID_DESK_CLAIM, MAX_ITEM_QUANTITY, MAX_RFQ_ITEMS } from '@vsa/usecase-kit/bids';
+import { BID_CAPABILITIES, BID_DESK_CLAIM, MAX_ITEM_QUANTITY, MAX_RFQ_ITEMS, priceListSha256 } from '@vsa/usecase-kit/bids';
 import { parseMaxPrice, parseModelAllowlist } from '@vsa/usecase-kit/decision';
 import { buildBehaviour, renderManifest } from '@vsa/usecase-kit/manifest';
 import { MAX_REQUEST_BYTES, RFQ_SCHEMA } from '@vsa/usecase-kit/protocol';
 import type { BehaviourAdditions } from '@vsa/usecase-kit/protocol';
 import { identityRegistryOf, manifestIdentity } from '@vsa/vector-read';
 import { GAPS } from './gaps.ts';
-import { BOND_LOVELACE, INSTANCE_NAMES, PRICE_LIST_ROUTE, PRICE_LOVELACE, agentDidOf, instanceOf, processingWindowOf, publicOriginOf, supplierKeyOf } from './settings.ts';
+import { keyClashOf } from './keys.ts';
+import { BOND_LOVELACE, INSTANCE_NAMES, PRICE_LIST_ROUTE, PRICE_LOVELACE, agentDidOf, instanceOf, priceListFileOf, processingWindowOf, publicOriginOf, supplierKeyOf } from './settings.ts';
+import type { Instance } from './settings.ts';
 
 export const SPEC_URL = 'https://github.com/Apex-Fusion/vector-service-agents/blob/main/specs/bid-desk.md';
 export const SOURCE_URL = 'https://github.com/Apex-Fusion/vector-service-agents/tree/main/agents/bid-desk';
@@ -141,15 +145,23 @@ export interface BidDeskManifest {
   readonly links: { readonly spec: string; readonly source: string; readonly explorer_advert: string };
 }
 
+/** The SHA-256 of the price list file of an instance: the hash of the bytes that the service serves for it. */
+function hashOfFile(instance: Instance): string {
+  return priceListSha256(readFileSync(priceListFileOf(instance), 'utf8'));
+}
+
 /**
  * The manifest from the settings of the operator and the price list that the service serves. It reads the public settings only: the contact, the DID, the identity registry, the supplier key, the key hash of the
- * service key, the instance, the origin of the host, the window, the model limits, the version, the status and the link to the advert. `priceList` holds the hash that the manifest names: the hash of the file of
- * the instance. A value that is a name in angle brackets stands for itself, so the same function makes the template (TEMPLATE_ENV); `renderManifest` refuses a served manifest that has one. Any other value of the
- * DID, of the supplier key and of the key hash of the service key must be of the form that its reader takes, so that a key in the wrong line of the environment is refused here and never published.
+ * service key, the instance, the origin of the host, the window, the model limits, the version, the status and the link to the advert. `priceList` holds the hash that the manifest names, and a served manifest
+ * takes only the hash of the file of its own instance. A value that is a name in angle brackets stands for itself, so the same function makes the template (TEMPLATE_ENV); `renderManifest` refuses a served
+ * manifest that has one. Any other value of the DID, of the supplier key and of the key hash of the service key must be of the form that its reader takes, so that a key in the wrong line of the environment is
+ * refused here and never published. The key hash of the service is not the key hash of the supplier.
  */
 export function manifestFromEnv(env: NodeJS.ProcessEnv, priceList: ServedPriceList): BidDeskManifest {
   const template = stands(env.BID_DESK_PUBLIC_ORIGIN);
-  const name = stands(env.BID_DESK_INSTANCE) ? '<BID_DESK_NAME>' : INSTANCE_NAMES[instanceOf(env)];
+  // The template names the instance by a placeholder. A served manifest names one of the three instances, and any other value stops here.
+  const instance = template && stands(env.BID_DESK_INSTANCE) ? null : instanceOf(env);
+  const name = instance === null ? '<BID_DESK_NAME>' : INSTANCE_NAMES[instance];
   const window = processingWindowOf(env);
   const allowlist = parseModelAllowlist(requiredEnv('LLM_MODEL_ALLOWLIST', env.LLM_MODEL_ALLOWLIST, 'the models that the service may hire for its decision'));
   if (!allowlist.ok) throw new Error(`environment variable ${allowlist.detail}`);
@@ -160,6 +172,9 @@ export function manifestFromEnv(env: NodeJS.ProcessEnv, priceList: ServedPriceLi
   const servicePkh = stands(env.BID_DESK_SERVICE_PKH)
     ? given(env.BID_DESK_SERVICE_PKH)
     : hexOf('BID_DESK_SERVICE_PKH', requiredEnv('BID_DESK_SERVICE_PKH', env.BID_DESK_SERVICE_PKH, 'the key hash of the service key, published in the manifest'), 28);
+  if (keyClashOf({ pkh: servicePkh }, supplier)) {
+    throw new Error("environment variable BID_DESK_SERVICE_PKH names the supplier key: the supplier key is the runtime's, and the service key must be a key of its own");
+  }
   const [first, second, third] = BID_DESK_CLAIM.statements;
   const additions = buildBehaviour('bid-desk', {
     claim: [first.text, second.text, third.text],
@@ -168,6 +183,10 @@ export function manifestFromEnv(env: NodeJS.ProcessEnv, priceList: ServedPriceLi
     price_list: { uri: template ? '<PRICE_LIST_URI>' : `${publicOriginOf(env)}${PRICE_LIST_ROUTE}`, sha256: priceList.sha256 },
   }, { template });
   if (!additions.ok) throw new Error(`the behaviour of the manifest is refused: ${additions.detail}`);
+  // A served manifest names the price list file of its own instance. The hash of the list of another instance would put the prices of one desk in the record of another.
+  if (!template && instance !== null && priceList.sha256 !== hashOfFile(instance)) {
+    throw new Error(`the price list hash is not the hash of the file of the instance ${instance}: the manifest of an instance names the price list file of that instance`);
+  }
   return {
     schema: 'vector.agent-manifest.v2',
     name,

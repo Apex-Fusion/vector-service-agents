@@ -61,4 +61,10 @@ describe('keyClashOf', () => {
     expect(keyClashOf({ pkh: near }, supplier)).toBe(false);
     expect(keyClashOf({ pkh: SUPPLIER.pkh }, { pkh: SUPPLIER.pkh, pubKeyHex: SERVICE.pubKeyHex })).toBe(true);
   });
+
+  test('the two key hashes are compared in lower case: a hash in capitals is the same key, on either side', () => {
+    expect(keyClashOf({ pkh: SUPPLIER.pkh.toUpperCase() }, supplier)).toBe(true);
+    expect(keyClashOf({ pkh: SUPPLIER.pkh }, { pkh: SUPPLIER.pkh.toUpperCase(), pubKeyHex: SUPPLIER.pubKeyHex })).toBe(true);
+    expect(keyClashOf({ pkh: SERVICE.pkh.toUpperCase() }, supplier)).toBe(false);
+  });
 });

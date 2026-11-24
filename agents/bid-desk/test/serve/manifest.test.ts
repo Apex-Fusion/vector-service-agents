@@ -127,6 +127,21 @@ describe('the three manifests', () => {
     expect(differing(alfa, bravo)).toStrictEqual(['behaviour.price_list.sha256', 'behaviour.price_list.uri', 'name']);
     expect([...leaves(alfa).values()]).not.toContain(JSON.stringify('alfa.example.test'));
   });
+
+  test('a served manifest takes only the hash of the file of its own instance: the hash of another instance and a hash of no file are refused, and its own hash is accepted', () => {
+    for (const instance of INSTANCES) {
+      expect(() => manifestFromEnv(settings(instance), { sha256: PRICE_LIST_SHA256[instance] }), instance).not.toThrow();
+      const others = [...INSTANCES.filter((name) => name !== instance).map((name) => PRICE_LIST_SHA256[name]), 'ab'.repeat(32)];
+      for (const sha of others) {
+        expect(message(() => manifestFromEnv(settings(instance), { sha256: sha })), `${instance} with ${sha.slice(0, 8)}`).toBe(
+          `the price list hash is not the hash of the file of the instance ${instance}: the manifest of an instance names the price list file of that instance`,
+        );
+      }
+    }
+    // The template is not tied to a file: a placeholder stands in the template, and so does a hash.
+    expect(() => manifestFromEnv(TEMPLATE_ENV, TEMPLATE_PRICE_LIST)).not.toThrow();
+    expect(() => manifestFromEnv(TEMPLATE_ENV, { sha256: PRICE_LIST_SHA256.bravo })).not.toThrow();
+  });
 });
 
 describe('the terms', () => {
@@ -234,15 +249,23 @@ const REFUSALS: readonly Row[] = [
   ['SUPPLIER_PUB_KEY_HEX', SUPPLIER.privateKeyHex, 'environment variable SUPPLIER_PUB_KEY_HEX is not the public key of SUPPLIER_PKH', SUPPLIER.pubKeyHex],
   ['BID_DESK_SERVICE_PKH', undefined, 'environment variable BID_DESK_SERVICE_PKH is required (', SERVICE.pkh],
   ['BID_DESK_SERVICE_PKH', 'ab', 'environment variable BID_DESK_SERVICE_PKH must be 56 hex characters', SERVICE.pkh],
+  ['BID_DESK_SERVICE_PKH', SUPPLIER.pkh, 'environment variable BID_DESK_SERVICE_PKH names the supplier key', SERVICE.pkh],
+  ['BID_DESK_SERVICE_PKH', SUPPLIER.pkh.toUpperCase(), 'environment variable BID_DESK_SERVICE_PKH names the supplier key', SERVICE.pkh],
   ['IDENTITY_POLICY_ID', 'zz', 'environment variable IDENTITY_POLICY_ID must be 56 lowercase hex characters', POLICY],
   ['IDENTITY_ADDRESS', 'addr1abc', 'environment variable IDENTITY_ADDRESS addr1abc is not the address of IDENTITY_POLICY_ID', undefined],
 ];
 
 describe('every refusal of the builder, with its accepted twin', () => {
+  /** The manifest of the first instance with one setting replaced, with the price list file of the instance that the settings name at the end, as the start reads it. */
+  const withSetting = (setting: string, value: string | undefined): BidDeskManifest => {
+    const env = settings('alfa', { [setting]: value });
+    return manifestFromEnv(env, priceListOf(INSTANCES.find((instance) => instance === env.BID_DESK_INSTANCE) ?? 'alfa'));
+  };
+
   test.each(REFUSALS)('%s = %j is refused, and the same setting with %j is accepted', (setting, bad, refusal, good) => {
-    const text = message(() => build('alfa', { [setting]: bad }));
+    const text = message(() => withSetting(setting, bad));
     expect(text.startsWith(refusal), text).toBe(true);
-    expect(() => build('alfa', { [setting]: good }), `${setting} = ${String(good)}`).not.toThrow();
+    expect(() => withSetting(setting, good), `${setting} = ${String(good)}`).not.toThrow();
   });
 
   test('a key or a long value in the line of a published value is never shown by the message, and a key in the line of the DID, the supplier key or the key hash of the service never reaches the manifest', () => {
@@ -409,8 +432,11 @@ describe('the template', () => {
     expect(refused.ok).toBe(false);
     if (!refused.ok) expect(refused.code).toBe('manifest_has_placeholder');
     expect(renderManifest('bid-desk', () => manifestFromEnv(TEMPLATE_ENV, TEMPLATE_PRICE_LIST), { template: true }).ok).toBe(true);
-    // A served manifest with a real origin and the placeholder instance, or a placeholder in any other value, is refused as well.
-    const named = renderManifest('bid-desk', () => manifestFromEnv({ ...settings('alfa'), BID_DESK_INSTANCE: '<BID_DESK_INSTANCE>' }, priceListOf('alfa')));
+    // A served manifest with a real origin and the placeholder instance is refused by the builder, and a placeholder in any other published value is refused by the kit.
+    expect(message(() => manifestFromEnv({ ...settings('alfa'), BID_DESK_INSTANCE: '<BID_DESK_INSTANCE>' }, priceListOf('alfa')))).toBe(
+      `environment variable BID_DESK_INSTANCE must be alfa, bravo or charlie, and it has ${'<BID_DESK_INSTANCE>'.length} characters`,
+    );
+    const named = renderManifest('bid-desk', () => manifestFromEnv({ ...settings('alfa'), OPERATOR_CONTACT: '<OPERATOR_CONTACT>' }, priceListOf('alfa')));
     expect(named.ok).toBe(false);
     if (!named.ok) expect(named.code).toBe('manifest_has_placeholder');
   });

@@ -28,8 +28,8 @@ export function serviceKeyOf(privateKeyHex: string): ServiceKey {
 
 /**
  * True when the service key is the supplier key. The supplier key is the runtime's: a service that held it could sign as the runtime, and the runtime and the service would spend the same outputs. A key is
- * known by its key hash.
+ * known by its key hash, and the two hashes are compared in lower case.
  */
 export function keyClashOf(service: Pick<ServiceKey, 'pkh'>, supplier: SupplierKey): boolean {
-  return service.pkh === supplier.pkh;
+  return service.pkh.toLowerCase() === supplier.pkh.toLowerCase();
 }
