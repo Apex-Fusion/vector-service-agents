@@ -1183,8 +1183,22 @@ describe('deploy/server/RUNBOOK-insurer-intake-agent.md', () => {
     expect(what, 'six budgets of one read stay under the limit of the hook').toContain(`${(HOOK_READS * CHECKS_READ_BUDGET_DEFAULT_MS).toLocaleString('en-US')} ms`);
     expect(what).toContain(`${HOOK_READS_LIMIT_MS.toLocaleString('en-US')} ms`);
     expect(what, 'the number of the checks of the hook').toContain(`${INTAKE_CHECKS.length} checks`);
-    for (const part of [SERVICE_CONTAINER, String(SERVICE_HOST_PORT), 'does one job at a time', 'no co-sign route', 'use case 2 (prior authorization)', 'insurer', 'operator pack', 'claim of the run', 'tenant']) expect(what, part).toContain(part);
+    for (const part of [SERVICE_CONTAINER, String(SERVICE_HOST_PORT), 'does one job at a time', 'no co-sign route', 'use case 2 (prior authorization)', 'insurer', 'claim of the run', 'tenant']) expect(what, part).toContain(part);
     expect(what, 'the status word, in lower case, until the first live run').toContain('stays `proposed` until the first live run');
+  });
+
+  test('the runbook says what the page of the agent says about the claim of the run: no command of this repository stakes it yet, and the service key signs it only once a command does', () => {
+    const what = sectionOf(runbookText, 'What it is');
+    // The page holds the fact, and its test reads the operator pack. The runbook says it in the same two sentences, so a change of the page that a new command causes fails this test until the runbook follows.
+    const noCommand = 'No command of this repository stakes a claim for this agent yet. Until one does, a challenge against it ends with `no_open_claim`.';
+    expect(readFileSync(join(root, 'specs', 'insurer-intake-agent.md'), 'utf8')).toContain(noCommand);
+    expect(what).toContain(noCommand);
+    expect(what, 'the operator pack makes no claim for this agent').not.toContain('operator pack');
+    expect(sectionOf(runbookText, 'The env file')).toContain('it signs the challenges of the dispute code and the request for the JWT-SVID. It signs the claim of the agent too, once a command stakes one.');
+    // The tenant is made with the call of RUNBOOK.md, in its step 6.
+    expect(what).toContain('The operator makes the tenant with the call of RUNBOOK.md (step 6, "Make or reset a tenant").');
+    const host = readPack('RUNBOOK.md');
+    expect(host.slice(host.indexOf('\n## 6. '), host.indexOf('\n## 7. '))).toContain('\n### Make or reset a tenant\n');
   });
 
   test('the files named in the first table are the files of the pack, and the second section lists all of them', () => {

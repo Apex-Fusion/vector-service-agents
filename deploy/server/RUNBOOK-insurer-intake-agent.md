@@ -32,7 +32,7 @@ The deadline of a job is inside the timeout of the runtime, and the timeout is i
 
 The operator makes three things outside this pack: the keys, the agent record, and the advert (with the hosted tools of the Vector marketplace). This runbook says when each one is needed and where its result goes. The service does not start without its key and `AGENT_DID`. The runtime does not start without its advert.
 
-The first run of this agent needs two more things, and no step of this runbook makes them: the claim of the run, and the tenant on the mock systems, with the organisation of the insurer. The operator pack makes both.
+The first run of this agent needs two more things, and no step of this runbook makes them: the claim of the run, and the tenant on the mock systems, with the organisation of the insurer. No command of this repository stakes a claim for this agent yet. Until one does, a challenge against it ends with `no_open_claim`. The operator makes the tenant with the call of RUNBOOK.md (step 6, "Make or reset a tenant").
 
 The status word of the agent is `proposed`, in lower case. It stays `proposed` until the first live run. `AGENT_STATUS_CHIP` in the env file holds it.
 
@@ -111,7 +111,7 @@ cp .env.insurer-intake-agent.example .env.insurer-intake-agent
 The keys come from the operator pack, and the key rules of RUNBOOK.md (section "Keys") hold for them. A key is never typed in a shell, and no command here prints one. There are two keys, and the two are different:
 
 - The supplier key goes in the four `SUPPLIER_` lines. It is the key of the runtime. The service reads only the two public lines, `SUPPLIER_PKH` and `SUPPLIER_PUB_KEY_HEX`: the compose file blanks `SUPPLIER_PRIV_KEY_HEX` for the service.
-- The service key goes in `INTAKE_SERVICE_PRIV_KEY_HEX`. It pays the model hire of each decision, and it signs the claims and the challenges of the dispute code and the request for the JWT-SVID. The compose file blanks it for the runtime.
+- The service key goes in `INTAKE_SERVICE_PRIV_KEY_HEX`. It pays the model hire of each decision, and it signs the challenges of the dispute code and the request for the JWT-SVID. It signs the claim of the agent too, once a command stakes one. The compose file blanks it for the runtime.
 - The service key has a line for its key hash after it, `INTAKE_SERVICE_PKH`. The line is public and optional. When it has a value, the service checks it against the key at start.
 
 The two keys have two wallets: the wallet of the supplier key and the wallet of the service key. Each wallet needs two transfers. The first is one pure output of 5 units, alone, as collateral. The second is a float for the fees of its jobs. A wallet that gets both in one transfer can have its collateral merged into change by an ordinary transaction. The wallet of the service key also holds the stake of a challenge, `DISPUTE_CHALLENGE_STAKE_LOVELACE`, while a challenge is open.
