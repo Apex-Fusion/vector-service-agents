@@ -249,7 +249,7 @@ Run each `docker compose` command as the service user, in `/srv/agents/insurer-i
 
 3. Join the Caddy container to the network, and add the block of the host name (section "The Caddy block"). The DNS record must resolve to the host first.
 4. Check the public name, and take the hash of the manifest (section "The checks"). It is the `detail_hash` of the advert.
-5. Post the advert with the task `advert` of the operator pack. It uses the served manifest and the supplier key of the runtime, with the `AGENT_ID` of the agent record. The manual way is the hosted tools of the Vector marketplace. The terms of the advert are:
+5. Post the advert with the task `advert` of the operator pack. It posts in the order of the use-case data. Confirm the post for the Prior Authorization Agent before this one in the same state stream. The task has no selector for posting. Use `--agent` for cleanup only. The task uses the served manifest and the supplier key of the runtime, with the `AGENT_ID` of the agent record. The manual way is the hosted tools of the Vector marketplace. The terms of the advert are:
    - the capability `health.priorauth.intake.v1`;
    - the model `insurer-intake-agent-v1`;
    - the price 2 units, with a supplier bond of 1 unit and a buyer bond of 1 unit;
@@ -258,7 +258,11 @@ Run each `docker compose` command as the service user, in `/srv/agents/insurer-i
    - `detail_uri`: that origin and `/agent.json`;
    - `detail_hash`: the hash of step 4.
 
-   Run `env` again to write the confirmed `ADVERT_REF`. In the manual flow, set `ADVERT_REF` in `.env.insurer-intake-agent` to the confirmed `<transaction hash>#<output index>`. A change to the manifest needs retirement and a new advert. Use `--replace-advert` with `env` only to set the confirmed replacement. Create the runtime again with `up -d --no-deps --force-recreate runtime` under the restart rule. A runtime with a retired reference refuses with 503 `advert_not_active`.
+   After a confirmed pack post, run `env` again to set `ADVERT_REF`. In the manual flow, set the existing `ADVERT_REF` in `.env.insurer-intake-agent` to the confirmed `<transaction hash>#<output index>`.
+
+   A change to the manifest needs retirement and a new advert. The pack does not replace one selected listing. `env --replace-advert` copies only the reference that `advert` already recorded in the facts after a confirmed post. See [Advert replacement](../../scripts/operator/README.md#advert-replacement) for the limits of the default stream and a new run label.
+
+   To replace this listing manually, confirm retirement of the old advert before you post again. Post with the new manifest hash. Verify the new output on the ledger. Set the confirmed reference in the existing `ADVERT_REF` line. Create the runtime again with `up -d --no-deps --force-recreate runtime` under the restart rule. A runtime with a retired reference refuses with 503 `advert_not_active`.
 6. Start the runtime. Pass the memory gate first. After the start, wait 30 seconds, and check that the runtime is up and says `free`:
 
    ```sh
