@@ -14,6 +14,8 @@ import { RESULT_SCHEMA as KIT_RESULT, PROPOSAL_SCHEMA as KIT_PROPOSAL } from '..
 import { CONFIRMATION_SCHEMA as KIT_CONFIRMATION } from '../../../packages/usecase-kit/src/inventory/confirmation.ts';
 import { RUN_APPROVAL_VALIDITY_MS } from '../lib/claim-constants.ts';
 import { FactsFile } from '../lib/facts.ts';
+import { canonicalize } from '../../../packages/vector-read/src/index.ts';
+import { parseKeyText } from '../../checks/lib/keys.ts';
 import { MOCK_PUBLIC_BASE } from '../lib/mock-hosts.ts';
 import { runTask } from '../lib/runner.ts';
 import evidence, { CASE_DURATION_MS, CONFIRMATION_SCHEMA, EXPLORER_TX, JURY_HOLD_REASON, MARKETPLACE_INDEXER, PROPOSAL_SCHEMA, RESULT_SCHEMA, RULE_STEP_IDS, secretMarkIn } from '../tasks/evidence.ts';
@@ -56,13 +58,17 @@ interface Scenario {
   digest: string; approval: Obj; approvalVisible: boolean; delegations: Array<{ id: string; live: boolean }>; vaults: Array<{ utxo: Utxo | null }>;
   log: Obj[]; dropped: number; poOrders: number; supplierOrders: number; mockStatus: number;
   faultEntries: Obj[] | null; cases: Obj[]; deskHold: 'held' | 'none'; juryFailed: boolean; unconfirmed: Set<string>; extraRows: TxRow[]; skipKoiosTx: Set<string>; eventualDeskFault: string;
-  challengeKnown: boolean; spendOverride: Map<string, string>; indexed: Obj[]; indexerStatus: number; indexerBody: unknown; holdSince?: number; payFromWallet: boolean;
+  challengeKnown: boolean; spendOverride: Map<string, string>; indexed: Obj[]; indexerStatus: number; indexerBody: unknown; holdSince?: number; payFromWallet: boolean; recordsHoldKeys: boolean;
 }
 
 const txOf = (step: string, what: 'post' | 'claim' | 'submit' | 'accept' | 'reclaim'): string => h(`${what} of ${step}`);
 const escrowOf = (step: string): string => `${txOf(step, 'post')}#0`;
 const AGENTS = { 'reorder-agent': hashOf('reorder id'), 'order-desk': hashOf('desk id') };
 const CLAIM_TOKEN = (agent: string): string => h(`claim token ${agent}`);
+
+/** The supplier key of each agent: it signs the receipts of the hires of the agent. It comes from a text, so the golden files stay the same from one run to the next. */
+const keyOf = (label: string) => parseKeyText(createHash('sha256').update(`evidence test supplier key ${label}`).digest('hex'), 'run');
+const SUPPLIERS = { 'reorder-agent': keyOf('reorder-agent'), 'order-desk': keyOf('order-desk') };
 
 const decision = (name: string, n: number): Obj => ({
   name, choice: { lot: 'lot-medium' }, reasoning: `The decision ${name} of the test run.`,
@@ -137,7 +143,7 @@ function scenario(kind: 'clean' | 'failure'): Scenario {
     vaults: kind === 'clean' ? [{ utxo: null }] : [{ utxo: live }, { utxo: null }],
     log: [logLine('GET /erp/stock/{sku}', 'token', ['did:vector:one', 'did:vector:two']), logLine('POST /supplier/orders', 'x509-svid', []), logLine('POST /po', 'token', ['did:vector:one'])],
     dropped: 0, poOrders: 1, supplierOrders: 1, mockStatus: 200, faultEntries: null, cases: [], deskHold: 'none', juryFailed: false, unconfirmed: new Set(), extraRows: [], skipKoiosTx: new Set(),
-    eventualDeskFault: '', challengeKnown: true, spendOverride: new Map(), indexed: [], indexerStatus: 200, indexerBody: undefined, payFromWallet: false,
+    eventualDeskFault: '', challengeKnown: true, spendOverride: new Map(), indexed: [], indexerStatus: 200, indexerBody: undefined, payFromWallet: false, recordsHoldKeys: true,
   };
 }
 
@@ -198,10 +204,14 @@ async function go(s: Scenario, argv: string[] = ['run', '--run', s.label, '--num
     const end = one.accepted ? txOf(one.step, 'accept') : null;
     const resultText = JSON.stringify(one.result);
     entries.push({ step: one.step, agent, advert_ref: advert, escrow_ref: `${post}#0`, post_tx: post, accept_tx: end, reclaim_tx: null, report_file: `${one.step}.report.json`, ...one.entryOver });
+    const signer = SUPPLIERS[agent];
+    const receipt = {
+      prompt_hash: h(`prompt ${one.step}`), response_hash: createHash('sha256').update(resultText, 'utf8').digest('hex'), model, prompt_tokens: 0, completion_tokens: 0, escrow_ref: `${post}#0`,
+      supplier_pkh: signer.keyHash, wallclock_ms: 900, ...one.receiptOver,
+    };
     const report = {
       verdict: 'VERIFIED', checks: { escrow_ref_matches: 'pass', response_hash_matches: 'pass', supplier_key_matches: 'pass', signature_valid: 'pass' },
-      receipt: { prompt_hash: h(`prompt ${one.step}`), response_hash: createHash('sha256').update(resultText, 'utf8').digest('hex'), model, prompt_tokens: 0, completion_tokens: 0, escrow_ref: `${post}#0`, supplier_pkh: 'dd'.repeat(28), wallclock_ms: 900, ...one.receiptOver },
-      receipt_signature: 'ab'.repeat(64), result: resultText, ...one.reportOver,
+      receipt, receipt_signature: signer.signMessage(Buffer.from(canonicalize(receipt), 'utf8')), result: resultText, ...one.reportOver,
     };
     writeFileSync(join(dir, s.label, `${one.step}.report.json`), JSON.stringify(report));
     const claim = txOf(one.step, 'claim'); const submit = txOf(one.step, 'submit');
@@ -223,7 +233,7 @@ async function go(s: Scenario, argv: string[] = ['run', '--run', s.label, '--num
     if (end !== null) row(end, one.minute + 3, [input(s.spendOverride.get(end) ?? `${submit}#0`, ESCROW_CREDENTIAL)]);
     for (const hash of [post, end]) if (hash !== null) confirmed.add(hash);
     for (const decided of (one.result.decisions as Obj[])) confirmed.add(((decided.inference as Obj).sub_job as Obj).escrow_ref!.toString().slice(0, 64));
-    const datum = identityEscrow(CAPTURE_MS, { advert_ref: { txHash: advert.slice(0, 64), index: 0 }, agent_id: AGENTS[agent] });
+    const datum = identityEscrow(CAPTURE_MS, { advert_ref: { txHash: advert.slice(0, 64), index: 0 }, agent_id: AGENTS[agent], supplier_pkh: signer.keyHash });
     posted.push(koiosRow(escrowUtxo(post, datum, { address: MAINNET.escrow.address }), { is_spent: true }));
   }
   // -- the delegations, the sub-delegation and the vaults: the transactions of the record, as the chain shows them
@@ -246,7 +256,9 @@ async function go(s: Scenario, argv: string[] = ['run', '--run', s.label, '--num
   }
   const holdSince = s.holdSince ?? CAPTURE_MS + 3600_000;
   const held = { status: { type: 'Suspended' as const, holds: [{ by: { type: 'Script' as const, hash: 'ab'.repeat(28) }, reason: JURY_HOLD_REASON, since: holdSince, until: holdSince + 7 * DAY }] } };
-  utxos.push({ ...recordUtxo(AGENTS['order-desk'], liveRecord(s.deskHold === 'held' ? held : {})), txHash: h('order desk record output') });
+  const listed = (agent: 'reorder-agent' | 'order-desk'): string[] => (s.recordsHoldKeys ? [SUPPLIERS[agent].publicKeyHex] : []);
+  utxos.push({ ...recordUtxo(AGENTS['order-desk'], liveRecord(s.deskHold === 'held' ? held : {}, listed('order-desk'))), txHash: h('order desk record output') });
+  utxos.push({ ...recordUtxo(AGENTS['reorder-agent'], liveRecord({}, listed('reorder-agent'))), txHash: h('reorder agent record output') });
   if (kind(s) === 'failure') {
     const challengeTx = CHALLENGE.challenge.slice(0, 64);
     row(challengeTx, 45, []);
@@ -739,6 +751,34 @@ describe('check 10: the step of the payment from the vault rests on a read of th
       { utxo: null },
     ];
     expect((await go(s)).exit).toBe(0);
+  });
+});
+
+describe('check 3: the receipt of a hire is read against the escrow and the key of the agent', () => {
+  it('refuses a receipt that names another supplier than the escrow datum, although a key of the record signed it', async () => {
+    const s = scenario('clean');
+    s.hires[1]!.receiptOver = { supplier_pkh: 'ff'.repeat(28) };
+    await refuses(s, ['hires[1].report_file: receipt.supplier_pkh is not the supplier_pkh of the escrow datum']);
+  });
+  it('refuses a signature that is not the signature of the supplier over the receipt', async () => {
+    const s = scenario('clean');
+    s.hires[1]!.reportOver = { receipt_signature: '00'.repeat(64) };
+    await refuses(s, ['hires[1].report_file: the check signature_valid of the receipt fails']);
+    const other = scenario('clean');
+    other.hires[2]!.reportOver = { receipt_signature: SUPPLIERS['reorder-agent'].signMessage(Buffer.from('another text', 'utf8')) };
+    await refuses(other, ['hires[2].report_file: the check signature_valid of the receipt fails']);
+  });
+  it('refuses a receipt when no key of the record of the agent hashes to the supplier of the escrow', async () => {
+    const s = scenario('clean');
+    s.recordsHoldKeys = false;
+    await refuses(s, ['hashes to the supplier_pkh of the escrow, so the signature of the receipt cannot be verified']);
+  });
+  it('takes receipts that each agent signed with the key that its record lists', async () => {
+    const r = await go(scenario('clean'));
+    expect(r.exit).toBe(0);
+    const doc = JSON.parse(r.read(publicFile())!) as { receipt: Obj; receipt_signature: string };
+    expect(doc.receipt.supplier_pkh).toBe(SUPPLIERS['reorder-agent'].keyHash);
+    expect(doc.receipt_signature).toMatch(/^[0-9a-f]{128}$/);
   });
 });
 

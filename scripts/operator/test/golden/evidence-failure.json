@@ -26,10 +26,10 @@
     "prompt_tokens": 0,
     "completion_tokens": 0,
     "escrow_ref": "f9fcb0f8afd24deea0c5106d7a413727bbabf391dad6b521da21329a85ce84fd#0",
-    "supplier_pkh": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "supplier_pkh": "d6cad97d8cae12f24b1a1ff2473bac5b4a3b8e1f831f1ee164f8ec61",
     "wallclock_ms": 900
   },
-  "receipt_signature": "abababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab",
+  "receipt_signature": "fcacb34e88a7add3f4b8bcb7b9183f4920544f4b6b8c7e0789d3cbf4fd61192a8af4d9dbf52d352f6575edfd8b5176b152281a3cf806f02da22022d247cfa206",
   "result_sha256": "1405a3b963863075c19b0710a069bfcfa8cf939cf0a636b8d3530c4865d89022",
   "result": "{\"schema\":\"vector.usecase.result.v1\",\"use_case\":\"inventory-reorder\",\"proposal_digest\":\"b09b85f926e942194eb16f72b3daa1333e34a4948092e4ebaa077fbc07af0d22\",\"handoff\":{\"counterparty_did\":\"did:vector:15d1b0a4d07108b11c5c61b0f4971756ebc56bbcbc50ed9d78b0bf7b26317a5c\",\"advert_ref\":\"2888815d5efc3284872419b6c1816ac482bc2d3482b11fd5f800c9df684027a0#0\",\"escrow_ref\":\"857c900de81733b6e24644d1d04a9c53fda7f6a734ec2ea15611b1d5cedc5a2a#0\",\"paid_from_vault\":true,\"receipt\":{},\"receipt_signature\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"verification\":{},\"result\":{},\"accepted\":\"confirmed\"},\"writes\":[],\"decisions\":[{\"name\":\"accept_delivery\",\"choice\":{\"lot\":\"lot-medium\"},\"reasoning\":\"The decision accept_delivery of the test run.\",\"inference\":{\"path\":\"marketplace\",\"accepted\":\"confirmed\",\"sub_job\":{\"capability_id\":\"model.chat.v1\",\"advert_ref\":\"8e0e02fe425f47ba6f45b8ba45387d73a168c8b6db42e43bc04818c3d7f286a8#0\",\"escrow_ref\":\"f6520d4e16fee946b7bd6c49e47f6bdc7121dc87cd7240550011da1357f3a45e#0\",\"supplier_pkh\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"receipt\":{},\"receipt_signature\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"verification\":{}}}}],\"fault_mode\":\"\",\"outcome\":\"disputed\",\"reason\":null,\"challenge\":{\"claim\":\"a224b707614ee7b3eb2577f555ba65545bafd1fc1c4b93dc371e4ea321b0bb60#0\",\"evidence\":\"ee8a4b6b0682782ed0227d2e835493fc484c19e702b1ac1587046435bb2cf578\",\"challenge\":\"dbd67a8dbcb8ea316387e807fd5c3b30e021f425ec4df0bb9657192f2edc6100#0\"},\"exit_state\":\"Escalated\"}",
   "hires": [

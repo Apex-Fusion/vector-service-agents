@@ -26,10 +26,10 @@
     "prompt_tokens": 0,
     "completion_tokens": 0,
     "escrow_ref": "8dc29c32a074fbf317345c9a7747409608990ef310b8d8bbfbddd711ec492142#0",
-    "supplier_pkh": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "supplier_pkh": "d6cad97d8cae12f24b1a1ff2473bac5b4a3b8e1f831f1ee164f8ec61",
     "wallclock_ms": 900
   },
-  "receipt_signature": "abababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab",
+  "receipt_signature": "b3bfa47590461032b7e48f337648c44ab96210008777b6f2fdd140bcdb2bebf3cbfc6a6bd38dc5e64077ad700f9b2d79fbebd689fd591364f158922596874708",
   "result_sha256": "19c7ab41823349bf98e1f9314ac44a3e17474201fada40257586261d5784b864",
   "result": "{\"schema\":\"vector.usecase.result.v1\",\"use_case\":\"inventory-reorder\",\"proposal_digest\":\"0daf75ed45347fb0e612a6de0588aebdb01dccaf130f33b2f3ea987f96e86eb3\",\"handoff\":{\"counterparty_did\":\"did:vector:15d1b0a4d07108b11c5c61b0f4971756ebc56bbcbc50ed9d78b0bf7b26317a5c\",\"advert_ref\":\"2888815d5efc3284872419b6c1816ac482bc2d3482b11fd5f800c9df684027a0#0\",\"escrow_ref\":\"8642cf17da1c3b8a80034ba08fc5fb88e6356a6dfac17bc134f017bf76bc3af0#0\",\"paid_from_vault\":true,\"receipt\":{},\"receipt_signature\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"verification\":{},\"result\":{},\"accepted\":\"confirmed\"},\"writes\":[],\"decisions\":[{\"name\":\"accept_delivery\",\"choice\":{\"lot\":\"lot-medium\"},\"reasoning\":\"The decision accept_delivery of the test run.\",\"inference\":{\"path\":\"marketplace\",\"accepted\":\"confirmed\",\"sub_job\":{\"capability_id\":\"model.chat.v1\",\"advert_ref\":\"8e0e02fe425f47ba6f45b8ba45387d73a168c8b6db42e43bc04818c3d7f286a8#0\",\"escrow_ref\":\"681f13c3f09bfcecd6faef69b2d75b71f4807ba6da1a142a5e0a471e77a500f1#0\",\"supplier_pkh\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"receipt\":{},\"receipt_signature\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"verification\":{}}}}],\"fault_mode\":\"\",\"outcome\":\"completed\",\"reason\":null,\"challenge\":null,\"exit_state\":\"Completed\"}",
   "hires": [

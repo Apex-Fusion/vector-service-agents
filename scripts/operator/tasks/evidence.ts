@@ -17,9 +17,9 @@ import { HostedError } from '../../checks/lib/hosted.ts';
 import { PreconditionError } from '../../checks/lib/session.ts';
 import { EnvReader } from '../../checks/lib/settings.ts';
 import { RUN_APPROVAL_VALIDITY_MS } from '../lib/claim-constants.ts';
-import type { AgentSpec, ClaimFact, Facts, StepOutcome, TaskDefinition, TaskSession, UseCase } from '../lib/contract.ts';
+import type { AgentSpec, ClaimFact, Facts, RecordFact, StepOutcome, TaskDefinition, TaskSession, UseCase } from '../lib/contract.ts';
 import { MOCK_PUBLIC_BASE } from '../lib/mock-hosts.ts';
-import { checkAttestation, escrowPaidFromVault, findRecord, isFaultSetting, readDelegation, readVaults, resolveEscrowLineage } from '../lib/platform.ts';
+import { checkAttestation, escrowPaidFromVault, findRecord, isFaultSetting, keyHashOf, readDelegation, readVaults, resolveEscrowLineage, verifyReceipt } from '../lib/platform.ts';
 import type { LedgerEnv } from '../lib/platform.ts';
 import { FlagError } from '../lib/runner.ts';
 import { hireRoleOf, parseReport, parseRunRecord, readJsonFile, txInfoOf, txTimeOf } from '../lib/run-record.ts';
@@ -225,8 +225,49 @@ async function spendsEscrow(session: TaskSession<Extra>, endTx: string, escrowRe
 /** What the lineage of an escrow says: it is finished (spent, and no live continuation). */
 interface LineageView { readonly finished: boolean }
 
+/** The public keys of the record of an agent on the node: its controller and each Ed25519 key that it lists. The record lists the supplier keys of the agent. */
+async function recordKeysOf(session: TaskSession<Extra>, fact: RecordFact): Promise<readonly string[]> {
+  const found = await findRecord(session.chain.provider, session.chain.deployment, fact.id);
+  if (found === null) throw new Error(`the record ${fact.did} is not in the identity registry`);
+  return [found.record.controller, ...found.record.keys.filter((one) => one.keyType === 'Ed25519').map((one) => one.key)];
+}
+
+/**
+ * The receipt of a hire is the account that the supplier gives of the job, so the task reads it against the chain. Its supplier_pkh is the one of the escrow datum, and its signature verifies with a key of the record
+ * of the agent that hashes to that supplier_pkh (`verifyReceipt` of buyer-core: Ed25519 over the canonical receipt, by the rules of the ledger).
+ */
+async function checkReceipt(session: TaskSession<Extra>, view: HireView, posted: Obj, fact: RecordFact | undefined, keys: Map<string, Promise<readonly string[]>>, problems: Problems): Promise<void> {
+  const member = `hires[${view.index}].report_file`;
+  const supplier = posted.supplier_pkh;
+  if (typeof supplier !== 'string' || view.report.receipt.supplier_pkh !== supplier) {
+    problems.add(member, 'receipt.supplier_pkh is not the supplier_pkh of the escrow datum on the chain');
+    return;
+  }
+  if (fact === undefined) return;
+  const known = keys.get(fact.id) ?? recordKeysOf(session, fact);
+  keys.set(fact.id, known);
+  let listed: readonly string[];
+  try { listed = await known; } catch (err) {
+    problems.add(member, `the record of the agent cannot be read to find the key of the supplier (${shown(err)})`);
+    return;
+  }
+  const key = listed.find((one) => keyHashOf(one) === supplier);
+  if (key === undefined) {
+    problems.add(member, 'no key of the record of the agent hashes to the supplier_pkh of the escrow, so the signature of the receipt cannot be verified');
+    return;
+  }
+  const { checks } = verifyReceipt({
+    receipt: view.report.receipt, signature: view.report.receipt_signature, escrowRef: view.entry.escrow_ref, result: view.report.result, supplierPubKeyHex: key, escrowSupplierPkh: supplier,
+    escrowPromptHash: String(posted.prompt_hash), escrowAgentId: typeof posted.agent_id === 'string' ? posted.agent_id : null, resultReceiptHashOnChain: null,
+  });
+  for (const name of ['supplier_key_matches', 'signature_valid'] as const) {
+    if (checks[name].state !== 'pass') problems.add(member, `the check ${name} of the receipt fails: ${shown(checks[name].note)}`);
+  }
+}
+
 async function checkHires(session: TaskSession<Extra>, loaded: Loaded, facts: Readonly<Facts>, problems: Problems): Promise<Map<string, LineageView>> {
   const lineages = new Map<string, LineageView>();
+  const keys = new Map<string, Promise<readonly string[]>>();
   for (const view of loaded.hires) {
     const { entry, index } = view;
     const where = `hires[${index}]`;
@@ -246,6 +287,7 @@ async function checkHires(session: TaskSession<Extra>, loaded: Loaded, facts: Re
       if (advertRef !== entry.advert_ref) problems.add(`${where}.advert_ref`, 'is not the advert that the escrow on the chain was posted for');
       const record = facts.records[agent.id];
       if (record === undefined || posted.agent_id !== record.id) problems.add(`${where}.escrow_ref`, `the escrow on the chain is not for the agent ${agent.id}`);
+      await checkReceipt(session, view, posted, record, keys, problems);
     }
     for (const member of ['accept_tx', 'reclaim_tx'] as const) {
       const end = entry[member];
