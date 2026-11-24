@@ -3,12 +3,13 @@
 // with a value that the rule takes. The agent has no fault value, so any value of the switch stops the start. A limit has no default, and the time of the hook has the range that keeps its six reads inside the
 // wait of the runtime. No test here starts a service or uses the network.
 import { describe, expect, test } from 'vitest';
-import { VECTOR_KOIOS_URL, VECTOR_OGMIOS_URL, VECTOR_SUBMIT_URL } from '@vsa/buyer-core';
+import { MAX_ESCROW_LOVELACE, VECTOR_KOIOS_URL, VECTOR_OGMIOS_URL, VECTOR_SUBMIT_URL } from '@vsa/buyer-core';
 import { LEAST_RESOLUTION_DEADLINE_MS } from '@vsa/usecase-kit/dispute';
 import { AGENT_KINDS, FAULT_MODES } from '@vsa/usecase-kit/protocol';
 import {
   BUYER_BOND_LOVELACE, CALL_TIMEOUT_MS, CHECKS_READ_BUDGET_DEFAULT_MS, CHECKS_READ_BUDGET_MAX_MS, CHECKS_READ_BUDGET_MIN_MS, GATEWAY_DEFAULT, HOOK_READS, HOOK_READS_LIMIT_MS, HOST_DEFAULT, JOB_DEADLINE_MS,
-  MIN_PROCESSING_WINDOW_MS, PORT_DEFAULT, PRICE_DEFAULT_LOVELACE, RUNTIME_PRECHECK_WAIT_MS, STATE_DIR_DEFAULT, SUPPLIER_BOND_LOVELACE, agentDidOf, checksReadBudgetOf, disputeOf, endpointsFromEnv, faultOf,
+  MAX_PRICE_LOVELACE, MAX_PROCESSING_WINDOW_MS, MIN_PROCESSING_WINDOW_MS, PORT_DEFAULT, PRICE_DEFAULT_LOVELACE, RUNTIME_PRECHECK_WAIT_MS, STATE_DIR_DEFAULT, SUPPLIER_BOND_LOVELACE, agentDidOf, checksReadBudgetOf,
+  disputeOf, endpointsFromEnv, faultOf,
   hostOf, httpsOriginOf, limitsOf, mockBasesOf, modelOf, module1SourceOf, portOf, priceOf, processingWindowOf, stateDirOf, supplierKeyOf,
 } from '../../src/serve/settings.ts';
 import { AGENT_DID, FULL_ENV, MODULE1_COMMIT, MODULE1_URL, OTHER, SERVICE, SUPPLIER, envWith, message, shows } from './support.ts';
@@ -37,7 +38,9 @@ const NOT_THE_KEY = /^environment variable SUPPLIER_PUB_KEY_HEX is not the publi
 const BUDGET_RANGE = /^environment variable CHECKS_READ_BUDGET_MS must be a whole number of milliseconds from 500 to 1499$/;
 const BUDGET_TOO_WIDE = /^environment variable CHECKS_READ_BUDGET_MS must be a whole number of milliseconds from 500 to 1499: the hook makes 6 timed reads one after the other, and the runtime waits 10000 ms for it, so 6 times the budget must be under 9000 ms$/;
 const WINDOW_RULE = /^environment variable ADVERT_MAX_PROCESSING_MS must be at least 480000 \(the window of 8 min that the deadline of a job, 300000 ms, assumes\)$/;
+const WINDOW_MAX = /^environment variable ADVERT_MAX_PROCESSING_MS must be at most 86400000 \(24 h, the longest window that a Post accepts\)$/;
 const PRICE_RULE = lovelaceRule('ADVERT_PRICE_LOVELACE');
+const PRICE_CAP = /^environment variable ADVERT_PRICE_LOVELACE must be at most 9998000000 \(with both bonds, the lock of an escrow stays inside its value cap of 10000000000 lovelace\)$/;
 const SAME_HOST = /^environment variable MOCK_MTLS_BASE must name another host than MOCK_PUBLIC_BASE: the mock service tells the two hosts apart by the Host header$/;
 const OGMIOS_HTTPS = /^environment variable VECTOR_OGMIOS_URL must be an https address: the tip reader of the janitor takes https only, and it has \d+ characters$/;
 const MODULE1_FORM = /^environment variable VECTOR_MODULE1_MANIFEST must be an https URL with no user, query or fragment, and it has \d+ characters$/;
@@ -65,10 +68,14 @@ const ROWS: readonly Row[] = [
   ['CHECKS_READ_BUDGET_MS', checksReadBudgetOf, '99999999999999999999', digitsRule('CHECKS_READ_BUDGET_MS'), '1200'],
   ['ADVERT_MAX_PROCESSING_MS', processingWindowOf, '479999', WINDOW_RULE, '480000', '479731'],
   ['ADVERT_MAX_PROCESSING_MS', processingWindowOf, 'long', digitsRule('ADVERT_MAX_PROCESSING_MS'), '900000'],
+  ['ADVERT_MAX_PROCESSING_MS', processingWindowOf, '86400001', WINDOW_MAX, '86400000', '86407391'],
+  ['ADVERT_MAX_PROCESSING_MS', processingWindowOf, '9007199254740991', WINDOW_MAX, '86400000'],
   ['ADVERT_PRICE_LOVELACE', priceOf, '0', PRICE_RULE, '1'],
   ['ADVERT_PRICE_LOVELACE', priceOf, '1.5', PRICE_RULE, '2000000', '2.7731'],
   ['ADVERT_PRICE_LOVELACE', priceOf, 'free', PRICE_RULE, '2000000'],
-  ['ADVERT_PRICE_LOVELACE', priceOf, '9007199254740993', PRICE_RULE, '9007199254740991'],
+  ['ADVERT_PRICE_LOVELACE', priceOf, '9007199254740993', PRICE_RULE, '9998000000'],
+  ['ADVERT_PRICE_LOVELACE', priceOf, '9998000001', PRICE_CAP, '9998000000', '9998007391'],
+  ['ADVERT_PRICE_LOVELACE', priceOf, '9007199254740991', PRICE_CAP, '9998000000'],
   ['SUPPLIER_PKH', supplierKeyOf, undefined, required('SUPPLIER_PKH'), SUPPLIER.pkh],
   ['SUPPLIER_PKH', supplierKeyOf, 'ab', /^environment variable SUPPLIER_PKH must be 56 hex characters, and it has 2 characters$/, SUPPLIER.pkh],
   ['SUPPLIER_PKH', supplierKeyOf, 'zz'.repeat(28), /^environment variable SUPPLIER_PKH must be 56 hex characters, and some of its 56 characters are not hex$/, SUPPLIER.pkh],
@@ -175,6 +182,21 @@ describe('the numbers of the service', () => {
     expect([portOf({ PORT: '' }), hostOf({ HOST: ' ' }), stateDirOf({ INTAKE_STATE_DIR: ' ' }), processingWindowOf({ ADVERT_MAX_PROCESSING_MS: '' }), priceOf({ ADVERT_PRICE_LOVELACE: ' ' })]).toStrictEqual([9104, '0.0.0.0', '/data', 480_000, 2_000_000]);
     expect([portOf({ PORT: '9200' }), hostOf({ HOST: '127.0.0.1' }), stateDirOf({ INTAKE_STATE_DIR: ' /var/state ' }), processingWindowOf({ ADVERT_MAX_PROCESSING_MS: '600000' }), priceOf({ ADVERT_PRICE_LOVELACE: '3000000' })])
       .toStrictEqual([9200, '127.0.0.1', '/var/state', 600_000, 3_000_000]);
+  });
+
+  test('the window of the advert is from 480000 ms to 24 hours: both ends are accepted, and one millisecond outside either end is refused', () => {
+    expect([MIN_PROCESSING_WINDOW_MS, MAX_PROCESSING_WINDOW_MS]).toStrictEqual([480_000, 86_400_000]);
+    for (const ms of [MIN_PROCESSING_WINDOW_MS, 600_000, 3_600_000, MAX_PROCESSING_WINDOW_MS]) expect(processingWindowOf({ ADVERT_MAX_PROCESSING_MS: String(ms) }), String(ms)).toBe(ms);
+    expect(() => processingWindowOf({ ADVERT_MAX_PROCESSING_MS: String(MIN_PROCESSING_WINDOW_MS - 1) })).toThrow(WINDOW_RULE);
+    expect(() => processingWindowOf({ ADVERT_MAX_PROCESSING_MS: String(MAX_PROCESSING_WINDOW_MS + 1) })).toThrow(WINDOW_MAX);
+  });
+
+  test('the price of the advert is from 1 lovelace to the price that leaves the lock of an escrow, with both bonds, at its value cap: the cap is accepted, and one lovelace more is refused', () => {
+    expect(MAX_PRICE_LOVELACE).toBe(9_998_000_000);
+    // The price and both bonds are the lock of the escrow, and the lock stays inside the value cap of buyer-core.
+    expect(BigInt(MAX_PRICE_LOVELACE) + BigInt(SUPPLIER_BOND_LOVELACE + BUYER_BOND_LOVELACE)).toBe(MAX_ESCROW_LOVELACE);
+    for (const price of [1, PRICE_DEFAULT_LOVELACE, MAX_PRICE_LOVELACE]) expect(priceOf({ ADVERT_PRICE_LOVELACE: String(price) }), String(price)).toBe(price);
+    expect(() => priceOf({ ADVERT_PRICE_LOVELACE: String(MAX_PRICE_LOVELACE + 1) })).toThrow(PRICE_CAP);
   });
 });
 

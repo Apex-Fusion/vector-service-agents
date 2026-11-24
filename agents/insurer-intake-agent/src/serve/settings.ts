@@ -7,7 +7,7 @@
 // silence as a refusal, and a go would reach no one.
 //
 // The agent has no limit with a default. The three limits of a model hire (the price and each bond), the models, and the settings of the dispute code are required: a limit that is not set is never "no limit".
-import { VECTOR_KOIOS_URL, VECTOR_OGMIOS_URL, VECTOR_SUBMIT_URL } from '@vsa/buyer-core';
+import { MAX_ESCROW_LOVELACE, VECTOR_KOIOS_URL, VECTOR_OGMIOS_URL, VECTOR_SUBMIT_URL } from '@vsa/buyer-core';
 import { envInt, given, hexOf, requiredEnv } from '@vsa/service-kit';
 import type { MockBases } from '@vsa/usecase-kit/access';
 import { checkLimits, parseMaxPrice, parseModelAllowlist } from '@vsa/usecase-kit/decision';
@@ -30,6 +30,11 @@ export const GATEWAY_DEFAULT = 'https://id.vector.apexfusion.org';
 export const JOB_DEADLINE_MS = 300_000;
 /** The least window of the advert (ADVERT_MAX_PROCESSING_MS) and its default: the deadline of a job and the timeout of the runtime fit inside it. */
 export const MIN_PROCESSING_WINDOW_MS = 480_000;
+/**
+ * The longest window of the advert: 24 hours. A Post of the marketplace refuses an advert with a longer window (buyer-core does not export its ceiling, so the number is written here, and a test plans a Post at this
+ * window and one millisecond above it). An advert that nobody can hire is no advert.
+ */
+export const MAX_PROCESSING_WINDOW_MS = 86_400_000;
 /** The longest time of one call to the insurer portal. The read of the requirements and the filing of the request fit the deadline of the job. */
 export const CALL_TIMEOUT_MS = 20_000;
 
@@ -38,6 +43,11 @@ export const PRICE_DEFAULT_LOVELACE = 2_000_000;
 /** The two bonds of the advert, in lovelace. The lock of the escrow is the price and both bonds: 4 units for the default price. */
 export const SUPPLIER_BOND_LOVELACE = 1_000_000;
 export const BUYER_BOND_LOVELACE = 1_000_000;
+/**
+ * The highest price of the advert: with both bonds, the lock of an escrow stays inside its value cap (`MAX_ESCROW_LOVELACE` of buyer-core). A Post refuses an advert above the cap, and an advert that nobody can hire
+ * is no advert. The number is 9998000000 lovelace.
+ */
+export const MAX_PRICE_LOVELACE = Number(MAX_ESCROW_LOVELACE - BigInt(SUPPLIER_BOND_LOVELACE + BUYER_BOND_LOVELACE));
 
 /** How long the runtime waits for the hook, in milliseconds. */
 export const RUNTIME_PRECHECK_WAIT_MS = 10_000;
@@ -150,7 +160,7 @@ export function checksReadBudgetOf(env: NodeJS.ProcessEnv): number {
   return ms;
 }
 
-/** The window that the advert gives a job: at least MIN_PROCESSING_WINDOW_MS. The manifest publishes it. */
+/** The window that the advert gives a job: from MIN_PROCESSING_WINDOW_MS to MAX_PROCESSING_WINDOW_MS. The manifest publishes it. */
 export function processingWindowOf(env: NodeJS.ProcessEnv): number {
   const ms = wholeNumberOf('ADVERT_MAX_PROCESSING_MS', given(env.ADVERT_MAX_PROCESSING_MS), MIN_PROCESSING_WINDOW_MS);
   if (ms < MIN_PROCESSING_WINDOW_MS) {
@@ -158,13 +168,21 @@ export function processingWindowOf(env: NodeJS.ProcessEnv): number {
       `environment variable ADVERT_MAX_PROCESSING_MS must be at least ${MIN_PROCESSING_WINDOW_MS} (the window of ${MIN_PROCESSING_WINDOW_MS / 60_000} min that the deadline of a job, ${JOB_DEADLINE_MS} ms, assumes)`,
     );
   }
+  if (ms > MAX_PROCESSING_WINDOW_MS) {
+    throw new Error(`environment variable ADVERT_MAX_PROCESSING_MS must be at most ${MAX_PROCESSING_WINDOW_MS} (24 h, the longest window that a Post accepts)`);
+  }
   return ms;
 }
 
-/** The price of the advert, in lovelace: a whole number of more than 0. The two bonds are fixed. */
+/** The price of the advert, in lovelace: a whole number of more than 0, and at most MAX_PRICE_LOVELACE. The two bonds are fixed. */
 export function priceOf(env: NodeJS.ProcessEnv): number {
   const text = given(env.ADVERT_PRICE_LOVELACE);
-  return text === '' ? PRICE_DEFAULT_LOVELACE : Number(lovelaceOf('ADVERT_PRICE_LOVELACE', text));
+  if (text === '') return PRICE_DEFAULT_LOVELACE;
+  const price = lovelaceOf('ADVERT_PRICE_LOVELACE', text);
+  if (price > BigInt(MAX_PRICE_LOVELACE)) {
+    throw new Error(`environment variable ADVERT_PRICE_LOVELACE must be at most ${MAX_PRICE_LOVELACE} (with both bonds, the lock of an escrow stays inside its value cap of ${MAX_ESCROW_LOVELACE} lovelace)`);
+  }
+  return Number(price);
 }
 
 // --- the supplier key (public values) --------------------------------------------------------------------------------------------------------------------

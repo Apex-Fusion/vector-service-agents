@@ -19,6 +19,7 @@ import {
 import { keyOf } from '../../src/serve/keys.ts';
 import { DESCRIPTION, REQUEST_SCHEMA, SOURCE_URL, SPEC_URL, STATUS_SINCE_DEFAULT, TEMPLATE_ENV, manifestFromEnv, renderTemplate } from '../../src/serve/manifest.ts';
 import type { IntakeManifest } from '../../src/serve/manifest.ts';
+import { MAX_PRICE_LOVELACE, MAX_PROCESSING_WINDOW_MS } from '../../src/serve/settings.ts';
 import { AGENT_DID, FULL_ENV, FakeClock, OTHER, POLICY, SERVICE, SERVICE_ADDRESS, SUPPLIER, TOKEN, envWith, message, shows } from './support.ts';
 
 const sha256 = (text: string): string => createHash('sha256').update(text).digest('hex');
@@ -366,6 +367,20 @@ describe('the terms', () => {
     const manifest = manifestOf({ ADVERT_PRICE_LOVELACE: '6000000', ADVERT_MAX_PROCESSING_MS: '600000' });
     expect([manifest.terms.price_lovelace, manifest.terms.max_processing_ms]).toStrictEqual([6_000_000, 600_000]);
     expect(planFleetPostEscrow(advert(manifest), REF, buyer.pkh, PROMPT, NOW.now()).lockLovelace).toBe(8_000_000n);
+  });
+
+  test('the longest window and the highest price that the settings take are the longest window and the highest price that a Post plans, and one step more is refused by buyer-core as the settings refuse it', () => {
+    expect([MAX_PROCESSING_WINDOW_MS, MAX_PRICE_LOVELACE]).toStrictEqual([86_400_000, 9_998_000_000]);
+    const longest = manifestOf({ ADVERT_MAX_PROCESSING_MS: String(MAX_PROCESSING_WINDOW_MS) });
+    expect(longest.terms.max_processing_ms).toBe(MAX_PROCESSING_WINDOW_MS);
+    expect(() => planFleetPostEscrow(advert(longest), REF, buyer.pkh, PROMPT, NOW.now())).not.toThrow();
+    expect(() => planFleetPostEscrow(advert(longest, { max_processing_ms: MAX_PROCESSING_WINDOW_MS + 1 }), REF, buyer.pkh, PROMPT, NOW.now())).toThrow(/longer than the 86400000 ms/);
+    expect(message(() => manifestFromEnv(envWith({ ADVERT_MAX_PROCESSING_MS: String(MAX_PROCESSING_WINDOW_MS + 1) })))).toContain('must be at most 86400000');
+    const dearest = manifestOf({ ADVERT_PRICE_LOVELACE: String(MAX_PRICE_LOVELACE) });
+    expect(dearest.terms.price_lovelace).toBe(MAX_PRICE_LOVELACE);
+    expect(planFleetPostEscrow(advert(dearest), REF, buyer.pkh, PROMPT, NOW.now()).lockLovelace).toBe(10_000_000_000n);
+    expect(() => planFleetPostEscrow(advert(dearest, { price_lovelace: BigInt(MAX_PRICE_LOVELACE) + 1n }), REF, buyer.pkh, PROMPT, NOW.now())).toThrow(/value cap/);
+    expect(message(() => manifestFromEnv(envWith({ ADVERT_PRICE_LOVELACE: String(MAX_PRICE_LOVELACE + 1) })))).toContain('must be at most 9998000000');
   });
 
   test('the deadline of a Post follows the clock of the tests, which moves by hand and never by itself', async () => {
