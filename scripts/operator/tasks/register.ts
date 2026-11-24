@@ -309,7 +309,11 @@ function signerMatches(registry: Registry, have: Datum['parties'][number]['signe
   return have.type === 'KeyHash' && have.hash.toLowerCase() === registry.hashOf(want.key);
 }
 
-/** What differs between the record on the node and the data: the controller, the profile, the listed keys with their purposes, the parties with their rights, and the lineage. Empty when none differs. */
+/**
+ * What differs between a record and the data: the controller, the profile, the listed keys with their purposes, the parties with their rights and their times, the lineage, and the members that
+ * the data does not have and a new record leaves empty (the framework, a pending recovery, the subagent epoch). Empty when none differs. It reads the record that the build holds, before any
+ * signature, and the record on the node after the landing.
+ */
 function differences(session: Session, subject: Subject, datum: Datum, parent: RecordUtxo | null): string[] {
   const registry = session.registry;
   const problems: string[] = [];
@@ -328,6 +332,13 @@ function differences(session: Session, subject: Subject, datum: Datum, parent: R
   }
   if (datum.keys.length !== wanted.size) problems.push(`the record lists ${datum.keys.length} keys, and the data names ${wanted.size}`);
   if (datum.parties.length !== subject.parties.length) problems.push(`the record has ${datum.parties.length} parties, and the data names ${subject.parties.length}`);
+  // A new record has no framework, no pending recovery, no subagent epoch and the status Active. Each party starts at the start of the validity window (the creation time less the validity and
+  // the minute before now that the window opens with), and has no end and no removal time: a party with an end would stop counting when the end comes.
+  const start = datum.createdAt - (VALID_MINUTES + 1) * 60_000;
+  if (datum.framework !== '') problems.push(`the framework of the record is ${textOfHex(datum.framework)}, and the data names none`);
+  if (datum.pendingRecovery !== null) problems.push('the record has a pending recovery, and a new record has none');
+  if (datum.subagentEpoch !== 0) problems.push(`the record has the subagent epoch ${datum.subagentEpoch}, and a new record has the epoch 0`);
+  if (datum.status.type !== 'Active') problems.push(`the status of the record is ${datum.status.type}, and a new record is Active`);
   subject.parties.forEach((want, index) => {
     const have = datum.parties[index];
     if (have === undefined) return;
@@ -337,6 +348,9 @@ function differences(session: Session, subject: Subject, datum: Datum, parent: R
     const organisation = have.organisation === null ? null : textOfHex(have.organisation);
     if (organisation !== want.organisation) problems.push(`${who} has the organisation ${organisation ?? 'none'} in the record, and the data says ${want.organisation ?? 'none'}`);
     if (have.rights !== rightBits(want)) problems.push(`${who} has the rights ${rightsText(have.rights)} in the record, and the data says ${rightsText(rightBits(want))}`);
+    if (have.notBefore !== start) problems.push(`${who} starts at ${iso(have.notBefore)} in the record, and the data says the start of the validity window (${iso(start)})`);
+    if (have.notAfter !== null) problems.push(`${who} ends at ${iso(have.notAfter)} in the record, and the data names no end`);
+    if (have.removalAfter !== null) problems.push(`${who} has the removal time ${iso(have.removalAfter)} in the record, and the data names none`);
   });
   if (subject.parent === null) {
     if (datum.lineage.type !== 'Root') problems.push('the record is a subagent, and the data says a root record');

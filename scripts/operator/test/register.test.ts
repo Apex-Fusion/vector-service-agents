@@ -714,6 +714,10 @@ describe('register: the record in the build is the record of the data, before an
     ['the guardian threshold', (args) => ({ ...args, guardian_threshold: 1 }), 'guardian threshold'],
     ['the controller: the key reorder-service in place of the controller key', (args, keys) => ({ ...args, controller: keys.publicKeyOf('reorder-service') }), 'the controller of the record'],
     ['the signers of the Accountable and the Provider party swapped', swapped, 'has another signer'],
+    ['an end of 2 hours for the Accountable party', (args) => ({ ...args, parties: args.parties.map((party) => (party.role === 'Accountable' ? { ...party, not_after: NOW + 2 * 3_600_000 } : party)) }), 'names no end'],
+    ['a removal time for the Provider party', (args) => ({ ...args, parties: args.parties.map((party) => (party.role === 'Provider' ? { ...party, removal_after: NOW + 30 * 86_400_000 } : party)) }), 'the removal time'],
+    ['a start in the future for the Provider party', (args) => ({ ...args, parties: args.parties.map((party) => (party.role === 'Provider' ? { ...party, not_before: NOW + 86_400_000 } : party)) }), 'starts at'],
+    ['a framework', (args) => ({ ...args, framework: 'LangChain' }), 'the framework of the record'],
   ];
   for (const [label, change, phrase] of TAMPERS) {
     it(`refuses a build with another record than the data (${label}), in a dry run with no note and in a submit run before any signature, and lands the honest twin`, async () => {
