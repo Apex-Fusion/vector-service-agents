@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { BID_CAPABILITIES } from '@vsa/usecase-kit/bids';
 import { QUOTE_HIRE_RESERVE_MS } from '../../src/quotes/index.ts';
 import type { BidderStatus, QuotesDeps, QuotesInput } from '../../src/quotes/index.ts';
-import { ALFA, BRAVO, CHARLIE, DESKS, LIST, LIST_SHA, bidderOf, quoteDocument, rightAnswer } from './support.ts';
+import { ALFA, BRAVO, CHARLIE, DESKS, LIST, LIST_SHA, bidderOf, priced, quoteDocument, quoteText, rightAnswer } from './support.ts';
 import { NOTHING, T0, cleanWorlds, footprint, words, world } from './world.ts';
 import type { World } from './world.ts';
 
@@ -132,6 +132,13 @@ describe('the price list of a bidder', () => {
     expect(result.outcomes.map(words)).toStrictEqual(['accepted']);
     expect(footprint(w).paid).toBe(1);
   });
+
+  it('does not pay a bidder whose price list has no hash that is a digest: a quote could never be checked against that list, so it would fail a check after the Pay', async () => {
+    const w = await world();
+    const result = await w.run(w.input({ invited: [bidderOf(BRAVO, { price_list: { list: LIST, sha256: 'not a digest' } })] }));
+    expect(result.outcomes.map(words)).toStrictEqual(['excluded failed no_price_list']);
+    expect(footprint(w)).toStrictEqual(NOTHING);
+  });
 });
 
 describe('the deadline', () => {
@@ -244,5 +251,22 @@ describe('an input that no hire can carry', () => {
   it('twin: the same input with checked limits, a request and a deadline is carried', async () => {
     const w = await world();
     expect((await w.run()).outcomes.map(words)).toStrictEqual(['accepted', 'accepted', 'accepted']);
+  });
+});
+
+describe('the log', () => {
+  it('holds counts, codes and references, and no quote, no price list, no credential and no text of a bidder', async () => {
+    const w = await world();
+    w.desks.bravo.answer = () => quoteText(BRAVO, priced('SYR-10ML', 30));
+    w.desks.charlie.refuse = { status: 403, code: 'duplicate_rfq' };
+    await w.run();
+    const log = w.log.join('\n');
+    expect(w.log.length).toBeGreaterThan(5);
+    for (const secret of ['All lines are at the listed price', 'eyJhbGciOiJFZERTQSIs', '"breaks"', 'min_quantity', 'unit_price', 'alfa.example.org', 'echo.example']) {
+      expect(log, secret).not.toContain(secret);
+    }
+    expect(log).toContain('the model does not accept the quote');
+    expect(log).toContain('challenge filed against claim');
+    expect(log).toContain('the bidder refused (duplicate_rfq, before_claim)');
   });
 });

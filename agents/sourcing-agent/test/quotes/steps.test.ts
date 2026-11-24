@@ -188,6 +188,21 @@ describe('an error after the Pay was confirmed', () => {
   });
 });
 
+describe('a fee that the ledger does not book', () => {
+  it('is still an accepted quote when the ledger throws while it books the fee of the Accept: the failure goes to the log and changes nothing', async () => {
+    const w = await world();
+    const booked = w.deps.hire.ledger.accepted;
+    w.deps.hire.ledger.accepted = (accept) => {
+      w.deps.hire.ledger.accepted = booked;
+      throw new Error('the ledger is closed');
+    };
+    const result = await w.run(w.input({ invited: [bidderOf(ALFA)] }));
+    expect(result.outcomes.map(words)).toStrictEqual(['accepted']);
+    expect(w.log.some((line) => line.includes('the ledger did not book the fee of the Accept'))).toBe(true);
+    expect(w.log.some((line) => line.includes('the ledger is closed'))).toBe(false);
+  });
+});
+
 describe('a decision that does not answer in time', () => {
   it('is excluded failed decision_timeout when the model does not answer before the limit: the escrow stays Submitted, nothing is challenged, and no decision is recorded', async () => {
     vi.useFakeTimers();
