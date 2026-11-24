@@ -10,8 +10,8 @@
 //
 // A transaction that was signed and not seen confirmed is settled before anything is built. The network guard runs before the settle: a node of another network cannot say that a transaction is lost.
 // One run lock file in the state folder keeps two runs from writing the state, the facts and the cap file at the same time.
-// Exit: 0 the step is done, shown or finished; 1 a step failed; 2 a flag, a setting, a key, a file, an approval, a guard or a precondition stopped the run before a signature; 3 the hosted tools cannot
-// be used; 4 a wait is open: the output says how long is left. The last line of stdout is the machine line.
+// Exit: 0 the step is done, shown or finished; 1 a step failed, or an error came after the run signed a transaction; 2 a flag, a setting, a key, a file, an approval, a guard or a precondition stopped the
+// run before a signature; 3 the hosted tools cannot be used; 4 a wait is open: the output says how long is left. The last line of stdout is the machine line.
 import { closeSync, existsSync, openSync, unlinkSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 import { collateralAdvice, isCollateralOutput } from '../../checks/lib/collateral.ts';
@@ -274,8 +274,8 @@ export async function verifyStep<Extra>(session: TaskSession<Extra>, handler: St
 
 // ---- the exit code of an error ----
 
-/** A transaction that landed in this run: the step and the hash. */
-export interface Landing { readonly step: string; readonly txHash: string }
+/** A transaction that this run signed: the step and the hash. `unconfirmed` is true for a transaction that is still in flight, and it is not there for one that landed. */
+export interface Landing { readonly step: string; readonly txHash: string; readonly unconfirmed?: true }
 
 interface Classified {
   readonly exit: number;
@@ -283,6 +283,8 @@ interface Classified {
   readonly lines: readonly string[];
   /** The stream of the lines: a refusal goes to `err`, and the dry message of a task that stopped at its first transaction goes to `out`. */
   readonly stream: 'out' | 'err';
+  /** True when the run had signed a transaction before the error came, and that is why the error is a failure: the evidence file names the transaction. */
+  readonly afterSigning?: true;
 }
 
 const DRY_MESSAGE = 'dry run: nothing was signed or submitted. Run again with --submit to sign, submit and wait for the confirmation.';
@@ -290,15 +292,12 @@ const errorText = (err: unknown): string => (err instanceof Error ? err.message 
 const stopped = (...lines: string[]): Classified => ({ exit: 2, outcome: 'stopped', lines, stream: 'err' });
 const failedWith = (...lines: string[]): Classified => ({ exit: 1, outcome: 'failed', lines, stream: 'err' });
 
-function classify(err: unknown, landed: readonly Landing[], usage: readonly string[]): Classified {
+/** The exit code and the lines of an error for a run that signed nothing. Exit 2 says that nothing was signed. */
+function classifyAlone(err: unknown, usage: readonly string[]): Classified {
   if (err instanceof FlagError) return stopped(err.message, ...usage);
   if (err instanceof SettingsError) return stopped(...err.problems);
-  if (err instanceof FactsError) {
-    // The facts file could not be read or written. When a transaction landed in this run, money moved or a record was made, and the facts of it may be missing: that is a failure.
-    return landed.length === 0 ? stopped(err.message) : failedWith(err.message, ...landed.map((one) => `the transaction ${one.txHash} of the step ${one.step} landed in this run, and the facts file may lack its facts. The evidence file names the transaction. Repair the facts file before another task reads it.`));
-  }
   if (err instanceof KeyStoreError || err instanceof KeyFileError || err instanceof StateError || err instanceof EvidenceError || err instanceof GuardRefusal || err instanceof PreconditionError
-    || err instanceof ApprovalError || err instanceof LoadError || err instanceof RunLockError || err instanceof ToolRefused) return stopped(err.message);
+    || err instanceof ApprovalError || err instanceof LoadError || err instanceof RunLockError || err instanceof ToolRefused || err instanceof FactsError) return stopped(err.message);
   if (err instanceof HostedError) return { exit: err.kind === 'bad_arguments' ? 2 : 3, outcome: 'stopped', lines: [err.message], stream: 'err' };
   if (err instanceof LandRefused) return failedWith(err.message, 'The evidence file holds the evaluation error and the body of the transaction. The state is unchanged.');
   if (err instanceof TxNotConfirmedError) return failedWith(err.message, 'The signed transaction is kept in the state file: the next run settles it before it builds anything.');
@@ -306,20 +305,45 @@ function classify(err: unknown, landed: readonly Landing[], usage: readonly stri
   return failedWith(errorText(err));
 }
 
-/** Prints the lines of an error and gives its classification. */
-function present(err: unknown, out: Output, landed: readonly Landing[], usage: readonly string[]): Classified {
-  const classified = classify(err, landed, usage);
+/** The line that tells of a transaction that the run signed. For a facts error it says that the facts file may lack the facts of the transaction. */
+function signedLine(one: Landing, facts: boolean): string {
+  const because = facts ? ', and the facts file may lack its facts' : '';
+  return one.unconfirmed === true
+    ? `the transaction ${one.txHash} of the step ${one.step} was signed in this run and is not confirmed${because}. The next run settles it before it builds anything.`
+    : `the transaction ${one.txHash} of the step ${one.step} landed in this run${because}. The evidence file names the transaction.`;
+}
+
+/**
+ * The exit code and the lines of an error. `signed` holds the transactions that the run signed before the error came. Exit 2 says that nothing was signed, so an error of that kind that comes after a
+ * signature is a failure (exit 1): the transaction is on the chain or may land, and the run must not look like a run that changed nothing.
+ */
+function classify(err: unknown, signed: readonly Landing[], usage: readonly string[]): Classified {
+  const alone = classifyAlone(err, usage);
+  if (alone.exit !== 2 || signed.length === 0) return alone;
+  const facts = err instanceof FactsError;
+  return {
+    exit: 1, outcome: 'failed', stream: 'err', afterSigning: true,
+    lines: [
+      ...alone.lines, ...signed.map((one) => signedLine(one, facts)),
+      facts ? 'Repair the facts file before another task reads it.' : 'A transaction was signed in this run, so this is a failure and not a stop before a signature.',
+    ],
+  };
+}
+
+/** Prints the lines of a classified error. */
+function print(classified: Classified, out: Output): void {
   for (const line of classified.lines) (classified.stream === 'out' ? out.out(line) : out.err(line));
-  return classified;
 }
 
 /**
  * Prints an error and gives its exit code: 2 for a flag, a setting, a key, a file, an approval, a guard, a precondition or a hosted tool that refused a call (nothing was signed), 3 for hosted tools
- * that cannot be used, 1 for a transaction that was refused or not confirmed and for any other error. A `DryStop` is a dry result and gives 0. A facts error gives 1 when `context.landed` holds a transaction of the run,
- * and 2 when it holds none.
+ * that cannot be used, 1 for a transaction that was refused or not confirmed and for any other error. A `DryStop` is a dry result and gives 0. An error that gives 2 gives 1 instead when
+ * `context.landed` holds a transaction that the run signed (landed, or in flight with `unconfirmed`): a run that signed is not a stop before a signature.
  */
 export function reportError(err: unknown, out: Output, context: { landed?: readonly Landing[]; usage?: readonly string[] } = {}): number {
-  return present(err, out, context.landed ?? [], context.usage ?? usageLines()).exit;
+  const classified = classify(err, context.landed ?? [], context.usage ?? usageLines());
+  print(classified, out);
+  return classified.exit;
 }
 
 // ---- status ----
@@ -403,6 +427,8 @@ interface Context<Extra> {
   /** The transactions that the state file held when the task started, by name of a step or of a part, and the steps that it held. Null until the task starts. */
   before: ReadonlyMap<string, string> | null;
   stepsBefore: ReadonlySet<string>;
+  /** The hash of the transaction in flight when the run started, or null. A flight with this hash is no transaction that this run signed. */
+  flightAtStart: string | null;
 }
 
 const RUN_LOCK = 'run.lock';
@@ -435,36 +461,54 @@ function landingsSince(state: StateFile, before: ReadonlyMap<string, string>): L
   return [...transactionsOf(state)].filter(([name]) => !before.has(name)).map(([step, txHash]) => ({ step, txHash }));
 }
 
+/** The transactions that this run signed: those that landed since the task started, and the transaction in flight now when it is not the one that was in flight when the run started. */
+function signedBy<Extra>(ctx: Context<Extra>): Landing[] {
+  if (ctx.state === null || ctx.before === null) return [];
+  const flight = ctx.state.snapshot().in_flight;
+  const unconfirmed: Landing[] = flight === null || flight.tx_hash === ctx.flightAtStart ? [] : [{ step: flight.step, txHash: flight.tx_hash, unconfirmed: true }];
+  return [...landingsSince(ctx.state, ctx.before), ...unconfirmed];
+}
+
 /** The first step of the task that the state file does not hold, or null. A task that fails to list its steps gives null. */
 function firstOpenStep<Extra>(def: TaskDefinition<Extra>, session: TaskSession<Extra>): string | null {
   try { return def.steps(session.use, session.flags).find((step) => recordOf(session.state, step) === undefined) ?? null; } catch { return null; }
 }
 
-/** Says what happened to the transaction of a cleared `in_flight`, after the second read of its status. The runner gives a reserve back only when that read worked and did not know the hash. */
-async function reconcile(flight: InFlight, parts: { node: NodeAccess; state: StateFile; clock: Clock; exposure: Exposure; go: GoFile | null; out: Output }): Promise<void> {
-  const { node, state, clock, exposure, go, out } = parts;
+/**
+ * Reads the status of the transaction of a flight that `settleInFlight` let go, a second time (a read that failed makes `settleInFlight` let a transaction go too), and says what to do. The record goes
+ * back into the state file first, before the read: while the read waits for the indexer, the file holds the transaction, so a run that is stopped in that time loses nothing. Then:
+ *   - a number of confirmations, 0 included (the indexer counts the blocks on top of the block of the transaction, so 0 is the newest block): the transaction is on the chain. The step is recorded
+ *     and its reserve of the cap stays.
+ *   - a read that fails: nobody knows. The transaction stays in flight and the run stops, so that no step is built that may have landed.
+ *   - a read that works and does not know the transaction: it cannot land any more, because its validity ended. A dry run leaves it in flight and stops. A run with --submit gives its reserve back
+ *     (when the approval is loaded) and lets it go, and the run goes on.
+ * It gives the reason to stop, or null when the run goes on.
+ */
+async function reconcile(flight: InFlight, parts: { node: NodeAccess; state: StateFile; clock: Clock; exposure: Exposure; go: GoFile | null; mode: Mode; out: Output }): Promise<string | null> {
+  const { node, state, clock, exposure, go, mode, out } = parts;
   const where = `the transaction ${flight.tx_hash} of the step ${flight.step}`;
+  state.setInFlight(flight);
   let confirmations: number | null;
   try { confirmations = (await node.txStatus(flight.tx_hash)).confirmations; } catch (err) {
-    out.out(`the status of ${where} could not be read (${errorText(err)}): its reserve of the cap stays`);
-    return;
-  }
-  if (confirmations !== null && confirmations >= 1) {
-    recordLanded(state, { step: flight.step, tx_hash: flight.tx_hash, refs: flight.refs, facts: flight.facts }, clock.now());
-    out.out(`${where} is confirmed: the step is recorded, and its reserve of the cap stays`);
-    return;
+    return `the status of ${where} could not be read (${errorText(err)}). The transaction stays in flight, and nothing is built. Run again when the indexer answers.`;
   }
   if (confirmations !== null) {
-    out.out(`the indexer knows ${where} and shows no confirmation: its reserve of the cap stays`);
-    return;
+    recordLanded(state, { step: flight.step, tx_hash: flight.tx_hash, refs: flight.refs, facts: flight.facts }, clock.now());
+    out.out(`${where} ${confirmations >= 1 ? 'is confirmed' : 'is in the newest block'}: the step is recorded, and its reserve of the cap stays`);
+    return null;
   }
+  const lost = `${where} is not on the chain, and its validity ended at ${iso(flight.valid_to)}: it cannot land any more`;
+  if (mode === 'dry') return `${lost}. A dry run does not let it go. Run again with --submit to let it go and to build the step again.`;
   if (go === null) {
-    out.out(`${where} cannot land, and no approval file is loaded: its reserve stays in the cap file of its session`);
-    return;
+    state.clearInFlight();
+    out.out(`${lost}. No approval file is loaded, so its reserve stays in the cap file of its session.`);
+    return null;
   }
-  out.out(exposure.release(flight.tx_hash)
-    ? `${where} is not on the chain and cannot land: its reserve of the cap is released`
-    : `${where} is not on the chain and cannot land: the cap file of the session ${go.session} holds no reserve for it`);
+  // The reserve goes first and the record second: a stop between them leaves the record, and the next run lets it go again.
+  const released = exposure.release(flight.tx_hash);
+  state.clearInFlight();
+  out.out(released ? `${lost}. Its reserve of the cap is released.` : `${lost}. The cap file of the session ${go.session} holds no reserve for it.`);
+  return null;
 }
 
 /** The end of a step: the exit code and the line that tells it. */
@@ -531,6 +575,7 @@ async function execute<Extra>(def: TaskDefinition<Extra>, argv: readonly string[
   // The network guard runs first, once. A transaction in flight is settled with what the node says, and a node of another network says wrong things: so a run that has a transaction in flight stops
   // when the guard failed, and the state stays as it is. A run with none goes on, and the landing refuses to sign on a failed guard.
   const flight = state.snapshot().in_flight;
+  ctx.flightAtStart = flight === null ? null : flight.tx_hash;
   if (def.needs.chain || flight !== null) {
     const guard = await connections.network.guard();
     networkResult = Object.freeze({ ...guard });
@@ -539,32 +584,40 @@ async function execute<Extra>(def: TaskDefinition<Extra>, argv: readonly string[
       throw new PreconditionError(`the step ${flight.step} has a transaction in flight, and the network guard failed: the answers of the node cannot be trusted, so nothing is settled and nothing is built`);
     }
   }
-  // The approval and the transaction in flight, before anything is built. A run that needs the approval loads it here, and a file that does not load stops the run with the state as it is.
-  // Any other run loads the file only when a transaction is in flight and the file is there: the release of a reserve names the cap file of the session of the approval.
+  // The approval and the transaction in flight, before anything is built. A run that needs the approval loads it and checks it in full here, before the status of any transaction is read: a file that does
+  // not load, or that no longer allows the task or the run wallet, stops the run with the state as it is, and the transaction in flight is not submitted again. A run with --submit of a task that needs no
+  // approval loads the file only when a transaction is in flight and the file is there: the release of a reserve names the cap file of the session of the approval. A dry run lets no transaction go and
+  // releases no reserve, so it reads no approval file.
   let go: GoFile | null = null;
   if (approvalNeeded) {
-    go = loadGo(settings.goFile, clock.now());
-  } else if (flight !== null && existsSync(settings.goFile)) {
+    go = requireGo(loadGo(settings.goFile, clock.now()), { task: def.name, runWallet: registry.has('run') ? registry.addressOf('run') : null, nowMs: clock.now(), irreversible: [] });
+  } else if (submit && flight !== null && existsSync(settings.goFile)) {
     try { go = loadGo(settings.goFile, clock.now()); } catch (err) {
       if (!(err instanceof ApprovalError)) throw err;
       out.out(`the approval file could not be used (${err.message}): the reserve of a transaction that cannot land stays in its cap file`);
     }
   }
   const exposure = new Exposure(join(settings.stateDir, `exposure.${go === null ? 'none' : go.session}.json`), go);
-  const settled = await settleInFlight({ state, node: connections.node, clock, out: (line) => out.out(line), mode: args.mode, awaitMs, pollMs });
+  // The lines of `settleInFlight` are kept: for a transaction that it lets go, the second read below can show that the transaction is on the chain, and its line says the opposite.
+  const settleLines: string[] = [];
+  const settled = await settleInFlight({ state, node: connections.node, clock, out: (line) => { settleLines.push(line); }, mode: args.mode, awaitMs, pollMs });
+  if (settled.kind !== 'cleared') for (const line of settleLines) out.out(line);
   if (settled.kind === 'wait') {
     ctx.progress.step = settled.step;
     return endOf({ kind: 'wait', message: settled.message, untilMs: settled.untilMs }, args.mode, out);
   }
-  // `settleInFlight` also clears a transaction when its own read of the status fails, and a cleared result has no hash: read the status again before any reserve is given back.
-  if (settled.kind === 'cleared' && flight !== null) await reconcile(flight, { node: connections.node, state, clock, exposure, go, out });
+  // `settleInFlight` also lets a transaction go when its own read of the status fails, and a cleared result has no hash: read the status again, and let the second read decide.
+  if (settled.kind === 'cleared' && flight !== null) {
+    const stop = await reconcile(flight, { node: connections.node, state, clock, exposure, go, mode: args.mode, out });
+    if (stop !== null) {
+      ctx.progress.step = flight.step;
+      throw new PreconditionError(stop);
+    }
+  }
 
   const session = sessionWith(go, exposure);
   PROGRESS.set(session, ctx.progress);
-  if (approvalNeeded) {
-    const held = requireGo(go, { task: def.name, runWallet: registry.has('run') ? registry.addressOf('run') : null, nowMs: clock.now(), irreversible: [] });
-    out.out(`approval: session ${held.session}, cap ${units(exposure.cap() ?? 0n)}, ${units(exposure.total())} reserved`);
-  }
+  if (approvalNeeded && go !== null) out.out(`approval: session ${go.session}, cap ${units(exposure.cap() ?? 0n)}, ${units(exposure.total())} reserved`);
 
   ctx.session = session;
   ctx.before = transactionsOf(state);
@@ -609,11 +662,15 @@ async function release<Extra>(ctx: Context<Extra>, out: Output): Promise<void> {
   }
 }
 
-/** Writes an entry of the evidence for each transaction that landed before a facts error, so that the evidence names it. */
-function noteLandings<Extra>(ctx: Context<Extra>, landed: readonly Landing[], err: FactsError, out: Output): void {
-  for (const one of landed) {
+/** Writes an entry of the evidence for each transaction that the run signed, before an error that says "nothing was signed" and before a facts error, so that the evidence names it. */
+function noteSigned<Extra>(ctx: Context<Extra>, signed: readonly Landing[], err: unknown, out: Output): void {
+  for (const one of signed) {
+    const what = one.unconfirmed === true ? 'the transaction is in flight' : 'the transaction landed';
+    const shows = err instanceof FactsError
+      ? { note: `${what}, and the facts file could not be written`, transaction: one.txHash, facts_error: err.reason }
+      : { note: `${what}, and the run then stopped with an error`, transaction: one.txHash, error: err instanceof Error ? err.name : 'not an error' };
     try {
-      ctx.evidence?.add({ step: one.step, status: 'info', shows: { note: 'the transaction landed, and the facts file could not be written', transaction: one.txHash, facts_error: err.reason } });
+      ctx.evidence?.add({ step: one.step, status: 'info', shows });
     } catch (writeError) {
       out.err(`the evidence file could not be written (${errorText(writeError)})`);
     }
@@ -626,16 +683,17 @@ function noteLandings<Extra>(ctx: Context<Extra>, landed: readonly Landing[], er
  */
 export async function runTask<Extra>(def: TaskDefinition<Extra>, argv: readonly string[], deps: RunDeps): Promise<number> {
   const ctx: Context<Extra> = {
-    command: null, mode: null, usage: usageLines(def), lock: null, connections: null, state: null, evidence: null, session: null, progress: { step: null }, before: null, stepsBefore: new Set(),
+    command: null, mode: null, usage: usageLines(def), lock: null, connections: null, state: null, evidence: null, session: null, progress: { step: null }, before: null, stepsBefore: new Set(), flightAtStart: null,
   };
   let ended: Ended;
   try {
     try {
       ended = await execute(def, argv, deps, ctx);
     } catch (err) {
-      const landed = ctx.state !== null && ctx.before !== null ? landingsSince(ctx.state, ctx.before) : [];
-      if (err instanceof FactsError && landed.length > 0) noteLandings(ctx, landed, err, deps.out);
-      const classified = present(err, deps.out, landed, ctx.usage);
+      const signed = signedBy(ctx);
+      const classified = classify(err, signed, ctx.usage);
+      if (classified.afterSigning === true) noteSigned(ctx, signed, err, deps.out);
+      print(classified, deps.out);
       ended = { exit: classified.exit, outcome: classified.outcome };
     }
   } finally {
@@ -662,7 +720,8 @@ export async function runCli(argv: readonly string[], deps: CliDeps): Promise<nu
   }
   let def: TaskDefinition;
   try { def = await (deps.loadTask ?? ((task) => loadTask(task)))(name); } catch (err) {
-    const classified = present(err, deps.out, [], usageLines());
+    const classified = classify(err, [], usageLines());
+    print(classified, deps.out);
     emit(deps.out, { task: name, command: null, mode: null, outcome: classified.outcome === 'dry' ? 'stopped' : classified.outcome, exit: classified.exit, step: null, result: {} });
     return classified.exit;
   }

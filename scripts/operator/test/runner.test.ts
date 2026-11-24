@@ -15,6 +15,7 @@ import { PreconditionError } from '../../checks/lib/session.ts';
 import { SettingsError } from '../../checks/lib/settings.ts';
 import { StateError } from '../../checks/lib/state.ts';
 import { ApprovalError } from '../lib/approval.ts';
+import type { GoFile } from '../lib/approval.ts';
 import type { TaskDefinition, TaskSession } from '../lib/contract.ts';
 import { FactsConflict, FactsError, FactsFile } from '../lib/facts.ts';
 import { ToolRefused } from '../lib/land-hosted.ts';
@@ -602,6 +603,8 @@ describe('a transaction in flight', () => {
   });
 
   describe('the reserve of a transaction that cannot land any more', () => {
+    /** The toy task with no need of an approval: its steps record themselves and land nothing, so it runs with --submit and no approval file. */
+    const unapproved = (ran: string[]): TaskDefinition => toyTask(twoSteps(ran), { needs: { keys: () => ['run', 'fee'], chain: true, hosted: [], approval: 'never' } });
     it('is given back when the validity ended, and a second read that works does not know the hash: the step is built again with its own reserve', async () => {
       const w = await taskWorld();
       const ran: string[] = [];
@@ -611,22 +614,34 @@ describe('a transaction in flight', () => {
       w.node.script.push({ confirmations: null }, { confirmations: null });
       expect(await w.run(def, '--submit')).toBe(0);
       expect(w.node.reads.filter((read) => read === hash)).toHaveLength(2);
-      expect(w.screen.text).toContain(`the transaction ${hash} of the step one is not on the chain and cannot land: its reserve of the cap is released`);
+      expect(w.screen.text).toContain(`the transaction ${hash} of the step one is not on the chain, and its validity ended at ${iso(NOW + 30 * 60_000)}: it cannot land any more. Its reserve of the cap is released.`);
+      expect(w.screen.text).not.toContain('the step can be built again');
       expect(ran).toEqual(['one', 'one']);
       expect(w.state('toy').steps.one!.tx_hash).not.toBe(hash);
       expect(w.exposure().map((entry) => entry.tx_hash)).toEqual([w.state('toy').steps.one!.tx_hash]);
     });
-    it('is given back in a dry run too, when the approval file loads', async () => {
+    it('is kept by a dry run: it stops with exit 2 and names the way out, nothing is built or submitted, the record and the reserve stay, and a run with --submit then lets it go and builds the step again', async () => {
       const w = await taskWorld();
-      const { hash, def } = await strand(w, []);
+      const ran: string[] = [];
+      const { hash, def } = await strand(w, ran);
       w.clock.t = AFTER_VALIDITY;
       w.node.neverConfirm = false;
+      const submitted = w.node.submitted.length;
       w.node.script.push({ confirmations: null }, { confirmations: null });
-      expect(await w.run(def)).toBe(0);
-      expect(w.exposure()).toEqual([]);
-      expect(w.screen.text).toContain('its reserve of the cap is released');
+      expect(await w.run(def)).toBe(2);
+      expect(w.screen.errorText).toContain(`the transaction ${hash} of the step one is not on the chain, and its validity ended at ${iso(NOW + 30 * 60_000)}: it cannot land any more. A dry run does not let it go. Run again with --submit`);
+      expect(w.screen.text).not.toContain('is released');
+      expect(w.state('toy').in_flight?.tx_hash).toBe(hash);
+      expect(w.exposure().map((entry) => entry.tx_hash)).toEqual([hash]);
+      expect(w.node.submitted).toHaveLength(submitted);
+      expect(ran).toEqual(['one']);
+      expect(w.machine()).toMatchObject({ outcome: 'stopped', exit: 2, step: 'one' });
+      reset(w);
+      w.node.script.push({ confirmations: null }, { confirmations: null });
+      expect(await w.run(def, '--submit')).toBe(0);
+      expect(w.screen.text).toContain('Its reserve of the cap is released.');
       expect(w.state('toy').in_flight).toBeNull();
-      expect(w.node.reads.filter((read) => read === hash)).toHaveLength(2);
+      expect(ran).toEqual(['one', 'one']);
     });
     it('is given back when the first read failed and the second read works and does not know the hash: only the second read counts', async () => {
       const w = await taskWorld();
@@ -634,27 +649,44 @@ describe('a transaction in flight', () => {
       w.clock.t = AFTER_VALIDITY;
       w.node.neverConfirm = false;
       w.node.script.push(new Error('the indexer is down'), { confirmations: null });
-      expect(await w.run(def)).toBe(0);
+      expect(await w.run(def, '--submit')).toBe(0);
       expect(w.exposure().map((entry) => entry.tx_hash)).not.toContain(hash);
     });
-    it('stays when the second read fails: the entry is kept, a line says so, and the first read alone gives nothing back', async () => {
-      const w = await taskWorld();
-      const { hash, def } = await strand(w, []);
-      w.clock.t = AFTER_VALIDITY;
-      w.node.neverConfirm = false;
-      w.node.script.push({ confirmations: null }, new Error('the indexer is down'));
-      expect(await w.run(def)).toBe(0);
-      expect(w.exposure().map((entry) => entry.tx_hash)).toEqual([hash]);
-      expect(w.screen.text).toContain(`the status of the transaction ${hash} of the step one could not be read (the indexer is down): its reserve of the cap stays`);
-      expect(w.screen.text).not.toContain('is released');
+    it('stops when the second read fails, in a dry run and in a run with --submit: the record and the reserve stay, nothing is built or submitted, and the next run that can read the status records the step', async () => {
+      for (const argv of [[], ['--submit']]) {
+        const w = await taskWorld();
+        const ran: string[] = [];
+        const { hash, def } = await strand(w, ran);
+        w.clock.t = AFTER_VALIDITY;
+        w.node.neverConfirm = false;
+        const submitted = w.node.submitted.length;
+        const applied = w.world.chain.applied.length;
+        w.node.script.push({ confirmations: null }, new Error('the indexer is down'));
+        expect(await w.run(def, ...argv), argv.join(' ')).toBe(2);
+        expect(w.screen.errorText).toContain(`the status of the transaction ${hash} of the step one could not be read (the indexer is down). The transaction stays in flight, and nothing is built.`);
+        expect(w.state('toy').in_flight?.tx_hash).toBe(hash);
+        expect(w.state('toy').steps).toEqual({});
+        expect(w.exposure().map((entry) => entry.tx_hash)).toEqual([hash]);
+        expect(w.node.submitted).toHaveLength(submitted);
+        expect(w.world.chain.applied).toHaveLength(applied);
+        expect(ran).toEqual(['one']);
+        expect(w.machine()).toMatchObject({ outcome: 'stopped', exit: 2, step: 'one' });
+        reset(w);
+        expect(await w.run(def, ...argv), argv.join(' ')).toBe(0);
+        expect(w.state('toy').steps.one!.tx_hash).toBe(hash);
+        expect(w.state('toy').in_flight).toBeNull();
+        expect(ran).toEqual(['one', 'two']);
+      }
     });
-    it('stays when both reads fail', async () => {
+    it('stops when both reads fail', async () => {
       const w = await taskWorld();
       const { hash, def } = await strand(w, []);
       w.clock.t = AFTER_VALIDITY;
       w.node.neverConfirm = false;
       w.node.script.push(new Error('down'), new Error('down'));
-      expect(await w.run(def)).toBe(0);
+      expect(await w.run(def, '--submit')).toBe(2);
+      expect(w.screen.errorText).toContain('could not be read (down)');
+      expect(w.state('toy').in_flight?.tx_hash).toBe(hash);
       expect(w.exposure().map((entry) => entry.tx_hash)).toEqual([hash]);
     });
     it('stays when the second read shows the transaction confirmed: the step is recorded as landed and the entry is kept', async () => {
@@ -670,15 +702,21 @@ describe('a transaction in flight', () => {
       expect(w.screen.text).toContain('is confirmed: the step is recorded, and its reserve of the cap stays');
       expect(w.screen.text).toContain('step two: dry mode');
     });
-    it('stays when the indexer knows the transaction and shows no confirmation', async () => {
+    it('records the step when the second read gives 0 confirmations, because the transaction is in the newest block: its reserve stays, the step is not built again, and a run with --submit goes on to the next step', async () => {
       const w = await taskWorld();
-      const { hash, def } = await strand(w, []);
+      const ran: string[] = [];
+      const { hash, def } = await strand(w, ran);
       w.clock.t = AFTER_VALIDITY;
       w.node.neverConfirm = false;
+      const submitted = w.node.submitted.length;
       w.node.script.push({ confirmations: null }, { confirmations: 0 });
-      expect(await w.run(def)).toBe(0);
-      expect(w.exposure().map((entry) => entry.tx_hash)).toEqual([hash]);
-      expect(w.screen.text).toContain('shows no confirmation: its reserve of the cap stays');
+      expect(await w.run(def, '--submit')).toBe(0);
+      expect(w.screen.text).toContain(`the transaction ${hash} of the step one is in the newest block: the step is recorded, and its reserve of the cap stays`);
+      expect(w.state('toy').steps.one!.tx_hash).toBe(hash);
+      expect(w.state('toy').in_flight).toBeNull();
+      expect(ran).toEqual(['one', 'two']);
+      expect(w.node.submitted).toHaveLength(submitted + 1);
+      expect(w.exposure().map((entry) => entry.tx_hash)).toContain(hash);
     });
     it('stays when the first read shows the transaction confirmed late: it is recorded and its entry is kept', async () => {
       const w = await taskWorld();
@@ -691,29 +729,33 @@ describe('a transaction in flight', () => {
       expect(w.exposure().map((entry) => entry.tx_hash)).toEqual([hash]);
       expect(w.node.reads.filter((read) => read === hash)).toHaveLength(1);
     });
-    it('stays when no approval file is loaded, and a line says so', async () => {
+    it('stays when no approval file is loaded, and a line says so: a run with --submit of a task that needs no approval lets the transaction go and goes on', async () => {
       const w = await taskWorld();
-      const { hash, def } = await strand(w, []);
+      const ran: string[] = [];
+      const { hash } = await strand(w, []);
       rmSync(w.goPath);
       w.clock.t = AFTER_VALIDITY;
       w.node.neverConfirm = false;
       w.node.script.push({ confirmations: null }, { confirmations: null });
-      expect(await w.run(def)).toBe(0);
+      expect(await w.run(unapproved(ran), '--submit')).toBe(0);
       expect(w.exposure().map((entry) => entry.tx_hash)).toEqual([hash]);
-      expect(w.screen.text).toContain(`the transaction ${hash} of the step one cannot land, and no approval file is loaded: its reserve stays in the cap file of its session`);
+      expect(w.screen.text).toContain(`the transaction ${hash} of the step one is not on the chain, and its validity ended at ${iso(NOW + 30 * 60_000)}: it cannot land any more. No approval file is loaded, so its reserve stays in the cap file of its session.`);
       expect(w.state('toy').in_flight).toBeNull();
+      expect(ran).toEqual(['one']);
     });
     it('stays when the approval file does not load in a run that needs none, and the line says why', async () => {
       const w = await taskWorld();
-      const { hash, def } = await strand(w, []);
+      const ran: string[] = [];
+      const { hash } = await strand(w, []);
       writeFileSync(w.goPath, 'this is not JSON', { mode: 0o600 });
       w.clock.t = AFTER_VALIDITY;
       w.node.neverConfirm = false;
       w.node.script.push({ confirmations: null }, { confirmations: null });
-      expect(await w.run(def)).toBe(0);
+      expect(await w.run(unapproved(ran), '--submit')).toBe(0);
       expect(w.exposure().map((entry) => entry.tx_hash)).toEqual([hash]);
       expect(w.screen.text).toContain('the approval file could not be used (the approval file is not JSON)');
-      expect(w.screen.text).toContain('no approval file is loaded');
+      expect(w.screen.text).toContain('No approval file is loaded');
+      expect(ran).toEqual(['one']);
     });
     it('stops a submit run with exit 2 before the settle when the approval file does not load, and leaves the transaction in flight with no read of its status', async () => {
       const w = await taskWorld();
@@ -728,6 +770,26 @@ describe('a transaction in flight', () => {
       expect(w.machine()).toMatchObject({ outcome: 'stopped', exit: 2 });
     });
   });
+
+  /** A transaction in flight, and an approval file that loads and does not allow this run: the run stops before the settle, and the bytes are not submitted again. */
+  async function stopsBeforeTheSettle(change: (w: TaskWorld) => Partial<GoFile>, message: string): Promise<void> {
+    const w = await taskWorld();
+    const { hash, def } = await strand(w, []);
+    w.writeGo(change(w));
+    w.node.neverConfirm = false;
+    w.node.script.push({ confirmations: null });
+    const submitted = w.node.submitted.length;
+    expect(await w.run(def, '--submit'), message).toBe(2);
+    expect(w.screen.errorText).toContain(message);
+    expect(w.node.submitted).toHaveLength(submitted);
+    expect(w.node.reads).toEqual([]);
+    expect(w.state('toy').in_flight?.tx_hash).toBe(hash);
+    expect(w.state('toy').steps).toEqual({});
+    expect(w.exposure().map((entry) => entry.tx_hash)).toEqual([hash]);
+    expect(w.machine()).toMatchObject({ outcome: 'stopped', exit: 2 });
+  }
+  it('stops a submit run with exit 2 before the settle when the approval file no longer lists the task: the bytes are not submitted again', () => stopsBeforeTheSettle(() => ({ tasks: ['other'] }), 'does not list the task toy'));
+  it('stops a submit run with exit 2 before the settle when the approval file names another run wallet: the bytes are not submitted again', () => stopsBeforeTheSettle((w) => ({ runWallet: w.keys.registry.addressOf('fee') }), 'another run wallet'));
 });
 
 describe('the status', () => {
@@ -939,6 +1001,109 @@ describe('the exit code of each kind of error', () => {
       expect(w.machine()).toMatchObject({ task: 'toy', command: 'run', mode: 'dry', outcome, exit: code, step: 'one' });
     });
   }
+});
+
+describe('an error that comes after the run signed a transaction', () => {
+  const signedHash = hashOf('signed');
+  const stops: Array<[string, unknown]> = [
+    ['a flag', new FlagError('unknown argument --x')],
+    ['the settings', new SettingsError(['set OPERATOR_KEYS_DIR'])],
+    ['the key store', new KeyStoreError('missing', 'the key run is missing')],
+    ['a key file', new KeyFileError('run', 'mode', 'a bad mode')],
+    ['the state file', new StateError('invalid', 'the state file is not JSON')],
+    ['the evidence file', new EvidenceError('the evidence file is not JSON')],
+    ['a guard', new GuardRefusal('two', [{ guard: 'fee', ok: false, message: 'the fee is too high' }])],
+    ['a precondition', new PreconditionError('the record is not Active')],
+    ['the approval', new ApprovalError('the cap is passed')],
+    ['a load', new LoadError('missing', 'the file of the task does not exist')],
+    ['the run lock', new RunLockError('the run lock file exists')],
+    ['a hosted tool that refused a call', new ToolRefused('vector_get_vault', 'REFUSED: not found')],
+    ['a call that does not match a hosted tool', new HostedError('bad_arguments', 'x has no argument y')],
+    ['the facts file', new FactsError('damaged', 'the facts file is damaged')],
+  ];
+  it('takes each error that gives exit 2 alone for a failure, exit 1, when a transaction of the run landed or is in flight, and the screen names the transaction', () => {
+    for (const [name, error] of stops) {
+      expect(reportError(error, new MemoryOutput()), `${name} alone`).toBe(2);
+      for (const one of [{ step: 'one', txHash: signedHash }, { step: 'one', txHash: signedHash, unconfirmed: true as const }]) {
+        const out = new MemoryOutput();
+        expect(reportError(error, out, { landed: [one] }), name).toBe(1);
+        expect(out.errors.join('\n'), name).toContain(`the transaction ${signedHash} of the step one ${one.unconfirmed === true ? 'was signed in this run and is not confirmed' : 'landed in this run'}`);
+        expect(out.lines, name).toEqual([]);
+      }
+    }
+  });
+  it('keeps the exit code of every other error: 3 for hosted tools that cannot be used, 1 for a refused or an unconfirmed transaction and any other error, and 0 for a dry stop', () => {
+    const others: Array<[unknown, number]> = [
+      [new HostedError('unreachable', 'the hosted server could not be used'), 3],
+      [new HostedError('missing_tool', 'the hosted server lacks the tool x'), 3],
+      [new LandRefused('refused', { txHash: hashOf('r'), escrowRef: '', deliverBy: null, validTo: 1 }, 'BadInputsUTxO', 'abcd'), 1],
+      [new TxNotConfirmedError('not confirmed', { txHash: hashOf('n'), escrowRef: '', deliverBy: null, validTo: 1, mayLand: true }), 1],
+      [new Error('a step failed'), 1],
+      [new DryStop('one'), 0],
+    ];
+    for (const [error, code] of others) expect(reportError(error, new MemoryOutput(), { landed: [{ step: 'one', txHash: signedHash }] })).toBe(code);
+  });
+  it('is a failure when step one lands with --all and step two is refused: the screen and the evidence name the transaction, and the machine line says failed', async () => {
+    const w = await taskWorld();
+    w.writeGo();
+    const ran: string[] = [];
+    const refusing: StepHandler = { name: 'two', run: async () => { ran.push('two'); throw new PreconditionError('the record is not Active'); } };
+    expect(await w.run(toyTask([landingStep('one', ran, 'run', 'fee', 3_000_000n), refusing]), '--submit', '--all')).toBe(1);
+    const hash = w.state('toy').steps.one!.tx_hash!;
+    expect(ran).toEqual(['one', 'two']);
+    expect(w.node.submitted).toHaveLength(1);
+    expect(w.screen.errorText).toContain('the record is not Active');
+    expect(w.screen.errorText).toContain(`the transaction ${hash} of the step one landed in this run. The evidence file names the transaction.`);
+    expect(w.screen.errorText).toContain('A transaction was signed in this run, so this is a failure and not a stop before a signature.');
+    expect(w.evidence('toy')).toContainEqual(expect.objectContaining({ step: 'one', status: 'info', shows: { note: 'the transaction landed, and the run then stopped with an error', transaction: hash, error: 'PreconditionError' } }));
+    expect(w.machine()).toMatchObject({ outcome: 'failed', exit: 1, step: 'two' });
+  });
+  it('stays a stop, exit 2, when the same refusal comes before any signature: no entry in the evidence, and nothing submitted', async () => {
+    const w = await taskWorld();
+    w.writeGo();
+    const refusing: StepHandler = { name: 'one', run: async () => { throw new PreconditionError('the record is not Active'); } };
+    expect(await w.run(toyTask([refusing, landingStep('two', [], 'run', 'fee', 3_000_000n)]), '--submit', '--all')).toBe(2);
+    expect(w.evidence('toy')).toEqual([]);
+    expect(w.node.submitted).toEqual([]);
+    expect(w.machine()).toMatchObject({ outcome: 'stopped', exit: 2, step: 'one' });
+  });
+  it('is a failure when a hosted tool refuses the verification of the step that landed', async () => {
+    const w = await taskWorld();
+    w.writeGo();
+    const one: StepHandler = { ...landingStep('one', [], 'run', 'fee', 3_000_000n), verify: async () => { throw new ToolRefused('vector_get_vault', 'REFUSED: not found'); } };
+    expect(await w.run(toyTask([one]), '--submit')).toBe(1);
+    const hash = w.state('toy').steps.one!.tx_hash!;
+    expect(w.state('toy').steps.one!.verified_at).toBeNull();
+    expect(w.evidence('toy')).toContainEqual(expect.objectContaining({ step: 'one', status: 'info', shows: expect.objectContaining({ transaction: hash, error: 'ToolRefused' }) }));
+    expect(w.machine()).toMatchObject({ outcome: 'failed', exit: 1, step: 'one' });
+  });
+  it('is a failure when the evidence file fails after the step landed', async () => {
+    const w = await taskWorld();
+    w.writeGo();
+    const base = landingStep('one', [], 'run', 'fee', 3_000_000n);
+    const one: StepHandler = { name: 'one', run: async (session) => { await base.run(session); throw new EvidenceError('the evidence file could not be written'); } };
+    expect(await w.run(toyTask([one]), '--submit')).toBe(1);
+    const hash = w.state('toy').steps.one!.tx_hash!;
+    expect(w.screen.errorText).toContain(`the transaction ${hash} of the step one landed in this run. The evidence file names the transaction.`);
+    expect(w.machine()).toMatchObject({ outcome: 'failed', exit: 1, step: 'one' });
+  });
+  it('is a failure when a transaction of the run is in flight, and the line says that it is not confirmed', async () => {
+    const w = await taskWorld();
+    w.writeGo();
+    const flight = hashOf('in flight');
+    const signing: StepHandler = {
+      name: 'one',
+      run: async (session) => {
+        session.state.setInFlight({ step: 'one', tx_hash: flight, signed_cbor: '84', valid_to: NOW + 30 * 60_000, signed_at: NOW, refs: {}, facts: {} });
+        throw new GuardRefusal('one', [{ guard: 'fee', ok: false, message: 'the fee is too high' }]);
+      },
+    };
+    expect(await w.run(toyTask([signing]), '--submit')).toBe(1);
+    expect(w.screen.errorText).toContain(`the transaction ${flight} of the step one was signed in this run and is not confirmed. The next run settles it before it builds anything.`);
+    expect(w.evidence('toy')).toContainEqual(expect.objectContaining({ step: 'one', status: 'info', shows: { note: 'the transaction is in flight, and the run then stopped with an error', transaction: flight, error: 'GuardRefusal' } }));
+    expect(w.state('toy').in_flight?.tx_hash).toBe(flight);
+    expect(w.machine()).toMatchObject({ outcome: 'failed', exit: 1, step: 'one' });
+  });
 });
 
 describe('the facts file in a run', () => {
