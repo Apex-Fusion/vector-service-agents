@@ -5,10 +5,10 @@
 // word for word, what each model decision receives, and the files that the page links.
 // The tests read the page, the manifest, the env example, the compose file of the pack and some source files, and no network.
 import { createHash } from 'node:crypto';
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { describe, expect, test } from 'vitest';
 import { parse } from 'yaml';
-import { ACCEPT_WINDOW_MS } from '@vsa/buyer-core';
+import { ACCEPT_WINDOW_MS, ATT_TYPES, HIRE_ACTION } from '@vsa/buyer-core';
 import { STRANDED_FILE, isRuntimeRefusal } from '@vsa/hire-kit';
 import { MAX_BODY, RESERVATION_MS } from '@vsa/service-kit';
 import { CONFIRMATIONS_REQUIRED, GATEWAY_FAILURES, SUB_DELEGATION_FAILURES, tokenTarget } from '@vsa/usecase-kit/access';
@@ -26,11 +26,12 @@ import {
   parsePriorAuthRequest, parseRecordSet, recordSetSha256, requestNumberOf,
 } from '@vsa/usecase-kit/priorauth';
 import {
-  AFTER_CLAIM_REFUSALS, COSIGN_ROUTE, COSIGN_RULE, COUNTERPARTY_REFUSALS, ERROR_STATUS, EXECUTE_OUTCOMES, EXIT_STATES, FAULT_MODES, MAX_REQUEST_BYTES, PROPOSE_OUTCOMES, RECEIPT_CHECKS, RUNTIME_BODY_LIMIT_BYTES,
+  AFTER_CLAIM_REFUSALS, APPROVAL_ATT_TYPE, APPROVAL_DEPOSIT_LOVELACE, COSIGN_ROUTE, COSIGN_RULE, COUNTERPARTY_REFUSALS, ERROR_STATUS, EXECUTE_OUTCOMES, EXIT_STATES, FAULT_MODES, MAX_REQUEST_BYTES, PROPOSE_OUTCOMES,
+  RECEIPT_CHECKS, RUNTIME_BODY_LIMIT_BYTES,
   canonicalJson, checkRequestSize, exitStateOf, makeProposal, parseOutputRef, parseProposal, parseRequest,
 } from '@vsa/usecase-kit/protocol';
 import type { Decision, ExecuteOutcome, ExecuteRequest, ExecuteResult, HandoffRecord, JsonObject, ProtocolResult, ReceiptVerification, SubJob, WriteRecord } from '@vsa/usecase-kit/protocol';
-import { CLAIM_STAKE_LOVELACE, CLAIM_WINDOW_MS } from '../../../scripts/operator/lib/claim-constants.ts';
+import { CLAIM_STAKE_LOVELACE, CLAIM_WINDOW_MS, RUN_APPROVAL_VALIDITY_MS } from '../../../scripts/operator/lib/claim-constants.ts';
 import { EVIDENCE_FAILURES } from '../src/evidence/index.ts';
 import { MOCK_CODES } from '../src/evidence/subread.ts';
 import { NOT_ACCEPTED } from '../src/execute/decision.ts';
@@ -1024,5 +1025,88 @@ describe('specs/prior-authorization-agent.md, the operator, the data and the gap
     expect(lines[9]).toBe(`- ${faultGap('prior-authorization-agent')}`);
     // The fifth gap says when a delivery that the agent refuses can still be released: the window of the Accept.
     expect(CHALLENGE_GAP).toContain(`released to the Insurer Intake Agent ${ACCEPT_WINDOW_MS / 1000} s after its Submit`);
+  });
+});
+
+describe('specs/prior-authorization-agent.md, the hire and the links', () => {
+  test('How to hire it: seven steps, the tools of the hosted server, the actions and the resources of the delegation, and the codes and the limits that the steps name', () => {
+    const how = section('How to hire it');
+    const hosted = text('scripts/specs.test.mjs');
+    const tools = [...how.matchAll(/`(vector_[a-z_]+)`/g)].map((hit) => hit[1]);
+    expect(tools).toStrictEqual([
+      'vector_build_delegation_delegate', 'vector_delegation_request_cosign', 'vector_build_attestation_attest', 'vector_build_vault_open', 'vector_build_attestation_attest', 'vector_build_vault_close',
+      'vector_build_delegation_undelegate',
+    ]);
+    for (const tool of tools) expect(hosted.includes(`'${tool}'`), tool).toBe(true);
+    expect(how.split('\n').filter((line) => /^\d\. \*\*/.test(line))).toHaveLength(7);
+    // The four actions of the delegation, and the resource of each mock route. The write of the submission uses the resource of the records system, as the read of the order does.
+    const bases = { publicBase: 'https://mock.example', mtlsBase: 'https://mtls.example' };
+    const records = must(tokenTarget(bases, TENANT, 'records.order', { order_id: order.order_id }));
+    const guidelines = must(tokenTarget(bases, TENANT, 'guidelines.read', { code: order.service_code }));
+    const submission = must(tokenTarget(bases, TENANT, 'records.submission', { order_id: order.order_id }));
+    expect([HIRE_ACTION, records.action, guidelines.action, submission.action]).toStrictEqual(['marketplace.hire.v1', 'record.read', 'guideline.read', 'priorauth.submit']);
+    expect([records.resource, guidelines.resource, submission.resource]).toStrictEqual([`${bases.publicBase}/t/${TENANT}/records`, `${bases.publicBase}/t/${TENANT}/guidelines`, `${bases.publicBase}/t/${TENANT}/records`]);
+    expect(how).toContain('The actions are `marketplace.hire.v1`, `record.read`, `guideline.read` and `priorauth.submit`.');
+    expect(how).toContain('The resources are the escrow script, `<mock base>/t/<tenant>/records` and `<mock base>/t/<tenant>/guidelines`, where `<mock base>` is the origin of the mock systems that the operator gives you.');
+    expect(how).toContain('The action `priorauth.submit` is for the write of the submission to the records system, and it uses the same resource as `record.read`.');
+    expect(manifest.keys.delegation_pkhs).toHaveLength(2);
+    expect(how).toContain('a free one of its two delegation keys, which `keys.delegation_pkhs` of the manifest lists');
+    // The codes that the steps name are the codes of the jobs and of the co-sign route.
+    expect(SUB_DELEGATION_FAILURES).toContain('parent_exhausted');
+    expect(EVIDENCE_FAILURES).toContain('sub_delegation_parent_exhausted');
+    expect(PROPOSE_FAILURES).toContain('delegation_not_found');
+    expect([COSIGN_STATUS.principal_not_allowed, COSIGN_STATUS.key_in_use]).toStrictEqual([403, 409]);
+    expect(COUNTERPARTY_REFUSALS['insurer-intake-agent']).toContain('approval_wrong_issuer');
+    for (const code of ['sub_delegation_parent_exhausted', 'delegation_not_found', 'principal_not_allowed', 'key_in_use', 'no_live_vault', 'several_live_vaults', 'approval_wrong_issuer']) {
+      expect(how, code).toContain(`\`${code}\``);
+    }
+    expect(how).toContain('Set `remaining` to 1 or more: `propose` makes a sub-delegation under your delegation for each of the two subagents, and a delegation with `remaining` 0 ends that job with `sub_delegation_parent_exhausted`.');
+    expect(how).toContain('Set the value limit to the price and both bonds of the advert of the Insurer Intake Agent, 4 units, for each job that you mean to pay for.');
+    // The principal-binding attestation is type 4 and the approval is type 5. The intake record reports the binding, and the Insurer Intake Agent refuses no job for it.
+    expect([ATT_TYPES.principal_binding, APPROVAL_ATT_TYPE, APPROVAL_DEPOSIT_LOVELACE]).toStrictEqual([4, 5, 5_000_000n]);
+    expect(Object.keys(must(parseIntakeRecord(INTAKE_JSON)).attestations)).toContain('principal_binding');
+    expect(how).toContain('the type is 4, and the subject is this agent');
+    expect(how).toContain('its intake record says in `attestations.principal_binding` whether it found one. It never refuses a job for it.');
+    expect(how).toContain('the type is 5, the subject is this agent, and the digest is the `proposal_digest`');
+    // The approval: the two validity constants of the kit have no reader, and the hosted tool sets no end, so the hirer sets `valid_until`. The runs of the operator use 4 hours.
+    const validityReaders = [...sourcesOf('packages/usecase-kit/src/'), ...sourcesOf('agents/prior-authorization-agent/src/'), ...sourcesOf('agents/insurer-intake-agent/src/')].filter(({ code }) => code.includes('APPROVAL_VALIDITY'));
+    expect(validityReaders.map(({ file }) => file)).toStrictEqual(['protocol/approval.ts']);
+    expect(text('packages/usecase-kit/src/protocol/approval.ts')).toContain('It returns 90 days after the attestation ends.');
+    expect(RUN_APPROVAL_VALIDITY_MS).toBe(4 * 60 * 60 * 1000);
+    expect(how).toContain('Set `valid_until` yourself: the tool sets no end. The runs use 4 hours. The attestation holds a deposit of 5000000 lovelace, and the deposit returns 90 days after the attestation ends.');
+    // Step 1: a delegation that the ledger does not show ends `propose` with `delegation_not_found`, and the sub-delegation needs 30 confirmations on every link of its chain.
+    expect(how).toContain('Submit the transaction that comes back. Wait until the ledger shows the delegation: a `propose` job on a delegation that the ledger does not show ends with `delegation_not_found`. Then wait for 30 confirmations of the delegation. Each sub-delegation of `propose` needs 30 confirmations on every link of its chain, and a subagent gets no token before that.');
+    expect(text('packages/usecase-kit/src/live/chain.ts')).toContain('Every link of the chain must have 30 confirmations or more for `ready`.');
+    // Step 5: the model writes the justification, and nothing in the agent checks it against the guideline.
+    expect(how).toContain('Read the authorization request: the justification, the criteria and the records that it cites, and `record_set_sha256`, the hash of the record set that the agent read. Nothing in the agent checks the justification against the guideline, so your reading is the check.');
+    expect(how).toContain('The agent has no advert yet, so nobody can hire it today.');
+  });
+});
+
+describe('specs/prior-authorization-agent.md, the headings, the changelog and the links', () => {
+  test('the page has the thirteen headings of its profile in order, and Interface has the five sub-headings that the tests above read', () => {
+    expect([...page.matchAll(/^## (.+)$/gm)].map((hit) => hit[1])).toStrictEqual([
+      'Status', 'Identity', 'Capability id', 'Terms', 'Interface', 'What the receipt commits to', 'Claim statements', 'Fault switch', 'Operator and data handling', 'Known gaps', 'How to hire it', 'Changelog', 'Links',
+    ]);
+    expect([...page.matchAll(/^### (.+)$/gm)].map((hit) => hit[1])).toStrictEqual(['Request', 'Response', 'Outcomes', 'Errors', 'The co-sign route']);
+  });
+
+  test('the Changelog is the version of the manifest, and the links name files that exist', () => {
+    expect(manifest.version).toBe('0.1.0');
+    expect(section('Changelog').trim()).toBe(`- ${manifest.version}, ${PAGE_DATE}: built`);
+    const links = section('Links');
+    const targets = [...links.matchAll(/\[([^\]]+)\]\(\.\.\/([^)]+)\)/g)].map((hit) => ({ label: hit[1], target: hit[2] }));
+    expect(targets.length).toBeGreaterThanOrEqual(4);
+    for (const { label, target } of targets) {
+      expect(existsSync(new URL(target, root)), target).toBe(true);
+      expect(label, target).toBe(target);
+    }
+    expect(manifest.links.spec.endsWith('/specs/prior-authorization-agent.md')).toBe(true);
+    expect(manifest.links.source.endsWith('/agents/prior-authorization-agent')).toBe(true);
+    expect(links).toContain('[agents/prior-authorization-agent/agent.json.template](../agents/prior-authorization-agent/agent.json.template)');
+    expect(links).toContain('[docs/HIRE.md](../docs/HIRE.md)');
+    // The page of the counterparty is the page of the other agent of use case 2. It lands in the same pull request as this page, and the list of pages of the repository holds one page for each agent.
+    expect(links).toContain('Counterparty: [Insurer Intake Agent](insurer-intake-agent.md)');
+    expect(section('Status')).toContain('[Insurer Intake Agent](insurer-intake-agent.md)');
   });
 });
