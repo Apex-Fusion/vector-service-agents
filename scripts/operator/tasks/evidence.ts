@@ -56,8 +56,10 @@ export const MARKETPLACE_INDEXER = 'https://mp-indexer.vector.apexfusion.org';
 const INDEXER_TIMEOUT_MS = 30_000;
 const MOST_INDEXER_CHARS = 16 * 1024 * 1024;
 const VERDICTS: readonly string[] = ['ClaimerWins', 'AuditorWins', 'Inconclusive'];
-/** A vault lineage is one output after the other: the open, then one output for each payment. A run has a few payments, so the walk back along it stops after this many transactions. */
-const DEPTH_OF_VAULT_CHAIN = 8;
+// A run can use one vault for ten quote payments. Bound both the length and the work of a walk from a close with several inputs.
+const MAX_VAULT_DEPTH = 32;
+const MAX_VAULT_TRANSACTIONS = 32;
+const MAX_VAULT_INPUTS = 8;
 const NUMBER = /^[1-9][0-9]?$/;
 const REF = /^[0-9a-f]{64}#(?:0|[1-9][0-9]{0,5})$/;
 const HASH = /^[0-9a-f]{64}$/;
@@ -683,41 +685,56 @@ async function movesDelegation(session: EvidenceSession, tx: string, id: string,
   return info.minted.some((one) => one.policy === policy && one.name === id && one.quantity === quantity);
 }
 
-/**
- * True when a vault input of `startTx`, or of a transaction before it in the chain of vault outputs, satisfies `wanted`. A payment spends one vault output and makes the next one, and a close spends the last
- * output (a close can spend the outputs of several vaults), so the vault inputs of a transaction are followed back, at most DEPTH_OF_VAULT_CHAIN transactions deep.
- */
-async function vaultInputsReach(session: EvidenceSession, startTx: string, wanted: (input: string) => boolean): Promise<boolean> {
+async function vaultInputs(session: EvidenceSession, tx: string): Promise<string[]> {
   const credential = session.chain.deployment.vault.hash;
-  const seen = new Set<string>();
-  let level = [startTx];
-  for (let depth = 0; depth < DEPTH_OF_VAULT_CHAIN && level.length > 0; depth += 1) {
-    const before: string[] = [];
-    for (const tx of level) {
-      if (seen.has(tx)) continue;
-      seen.add(tx);
-      for (const input of (await txInfoOf(session.fetchImpl, session.settings.urls.koios, tx)).inputs) {
-        if (input.credential !== credential) continue;
-        if (wanted(input.ref)) return true;
-        before.push(txOf(input.ref));
-      }
-    }
-    level = before;
+  const refs: string[] = [];
+  for (const input of (await txInfoOf(session.fetchImpl, session.settings.urls.koios, tx)).inputs) {
+    if (input.credential !== credential) continue;
+    if (refs.length === MAX_VAULT_INPUTS) throw new PreconditionError('a vault transaction has more than eight vault inputs');
+    if (txOf(input.ref) === tx) throw new PreconditionError('the vault lineage contains a cycle');
+    refs.push(input.ref);
   }
-  return false;
+  return refs;
+}
+
+/** Check for the exact output in the ancestry of a close. A failed branch is read only once. */
+async function vaultInputsReach(session: EvidenceSession, startTx: string, wanted: string): Promise<boolean> {
+  const seen = new Set<string>();
+  const path = new Set<string>();
+  async function visit(tx: string, depth: number): Promise<boolean> {
+    if (path.has(tx)) throw new PreconditionError('the vault lineage contains a cycle');
+    if (seen.has(tx)) return false;
+    if (depth === MAX_VAULT_DEPTH) throw new PreconditionError('the vault lineage exceeds its depth limit of 32 transactions');
+    if (seen.size === MAX_VAULT_TRANSACTIONS) throw new PreconditionError('the vault lineage exceeds its read limit of 32 distinct transactions');
+    seen.add(tx);
+    path.add(tx);
+    const inputs = await vaultInputs(session, tx);
+    for (const input of inputs) {
+      if (path.has(txOf(input))) throw new PreconditionError('the vault lineage contains a cycle');
+    }
+    if (inputs.includes(wanted)) return true;
+    for (const input of inputs) {
+      if (await visit(txOf(input), depth + 1)) return true;
+    }
+    path.delete(tx);
+    return false;
+  }
+  return visit(startTx, 0);
 }
 
 /** The transaction that opened the vault lineage that holds `vaultRef`: the first transaction of the chain of vault outputs behind it, which is the one that spends no vault output. A payment spends one. */
 async function openingOf(session: EvidenceSession, vaultRef: string): Promise<string | null> {
-  const credential = session.chain.deployment.vault.hash;
+  const seen = new Set<string>();
   let tx = txOf(vaultRef);
-  for (let depth = 0; depth < DEPTH_OF_VAULT_CHAIN; depth += 1) {
-    const spent = (await txInfoOf(session.fetchImpl, session.settings.urls.koios, tx)).inputs.filter((input) => input.credential === credential);
+  for (let depth = 0; depth < MAX_VAULT_DEPTH; depth += 1) {
+    if (seen.has(tx)) throw new PreconditionError('the vault lineage contains a cycle');
+    seen.add(tx);
+    const spent = await vaultInputs(session, tx);
     if (spent.length === 0) return tx;
     if (spent.length > 1) return null;
-    tx = txOf(spent[0]!.ref);
+    tx = txOf(spent[0]!);
   }
-  return null;
+  throw new PreconditionError('the vault lineage exceeds its depth limit of 32 transactions');
 }
 
 async function checkLedger(session: EvidenceSession, record: RunRecord, problems: Problems): Promise<Reads> {
@@ -747,7 +764,7 @@ async function checkLedger(session: EvidenceSession, record: RunRecord, problems
     await mustHold(problems, `vaults[${i}].open_tx`, 'is not the transaction that opened the vault lineage of ref: the chain of vault outputs behind ref does not start with it', async () => (await openingOf(session, entry.ref)) === entry.open_tx);
     const closeTx = entry.close_tx;
     if (closeTx !== null) {
-      await mustHold(problems, `vaults[${i}].close_tx`, 'does not spend the vault lineage of ref: no vault input of the transaction is ref, and none descends from it', () => vaultInputsReach(session, closeTx, (input) => input === entry.ref));
+      await mustHold(problems, `vaults[${i}].close_tx`, 'does not spend the vault lineage of ref: no vault input of the transaction is ref, and none descends from it', () => vaultInputsReach(session, closeTx, entry.ref));
       await mustHold(problems, `vaults[${i}].close_tx`, 'makes an output at the vault script: a close leaves no vault output, so the vault is still Live', async () => !(await txInfoOf(session.fetchImpl, session.settings.urls.koios, closeTx)).outputs.some((output) => output.credential === session.chain.deployment.vault.hash));
       vaults.push({ ...entry, state: 'closed' });
       continue;

@@ -102,6 +102,7 @@ interface Scenario {
   reclaimWrongOwner?: boolean;
   reclaimParts?: RefundPart[];
   reclaimFlow?: ReclaimFlow;
+  vaultWalk?: { additionalPayments: number; invalid?: 'cycle' | 'width' | 'budget' };
   receiptDiscovery?: 'missing' | 'wrong_escrow';
   release?: 'missing' | 'false_label' | 'early' | 'failed';
   receiptRevoked?: boolean;
@@ -398,7 +399,39 @@ async function go(s: Scenario, argv: string[] = ['run', '--run', s.label, '--num
   movement(h('sub undelegate tx'), h('sub delegation'), '-1');
   s.vaults.forEach((v, i) => {
     row(h(`vault open ${i}`), 0, [input(ref('wallet', 3), WALLET_CREDENTIAL)]);
-    if (v.utxo === null) row(h(`vault close ${i}`), 0, [vaultInput(vaultHead[i]!)]);
+    if (v.utxo !== null) return;
+    const more = i === 0 ? s.vaultWalk : undefined;
+    if (more === undefined) {
+      row(h(`vault close ${i}`), 0, [vaultInput(vaultHead[i]!)]);
+      return;
+    }
+    const extend = (start: string, payments: number, label: string): string => {
+      let head = start;
+      for (let j = 0; j < payments; j++) {
+        const next = ref(`${label} ${j}`);
+        const spent = vaultInput(head);
+        row(next.slice(0, 64), 60 + j, [spent], { outputs: [vaultInput(next)], plutus_contracts: [spend(VAULT_CREDENTIAL, spent, 0)] });
+        head = next;
+      }
+      return head;
+    };
+    const head = extend(vaultHead[i]!, more.additionalPayments, 'extra vault payment');
+    const other: string[] = [];
+    if (more.invalid === 'cycle') {
+      const a = ref('cyclic vault A'), b = ref('cyclic vault B');
+      row(a.slice(0, 64), 1, [vaultInput(b)]);
+      row(b.slice(0, 64), 2, [vaultInput(a)]);
+      other.push(a);
+    } else if (more.invalid === 'width') {
+      for (let j = 0; j < 8; j++) other.push(ref(`other vault input ${j}`));
+    } else if (more.invalid === 'budget') {
+      for (let j = 0; j < 4; j++) {
+        const open = ref(`other vault open ${j}`);
+        row(open.slice(0, 64), 0, [input(ref('wallet', j), WALLET_CREDENTIAL)]);
+        other.push(extend(open, 8, `other vault ${j} payment`));
+      }
+    }
+    row(h(`vault close ${i}`), 160, [...other, head].map(vaultInput));
   });
   // -- the ledger: delegations, vaults, the approval, the record of the Order Desk
   const utxos = liveEscrows;
@@ -1470,6 +1503,27 @@ describe('check 4: each ended or closed entry is tied to its id by a read of its
     wrong.record = { vaults: [{ ref: `${txOf('order-desk-c', 'post')}#1`, open_tx: h('vault open 1'), close_tx: null }, { ref: `${h('vault open 1')}#0`, open_tx: h('vault open 1'), close_tx: h('vault close 1') }] };
     await refuses(wrong, ['vaults[0].open_tx: is not the transaction that opened']);
   });
+  it('proves a vault ancestry with ten payments in each direction and a terminal close', async () => {
+    const s = scenario('clean');
+    s.vaultWalk = { additionalPayments: 9 }; // The Order Desk uses the first payment.
+    expect((await go(s)).exit).toBe(0); // Walk back from the close to the opening output.
+    s.record = { vaults: [{ ref: ref('extra vault payment 8'), open_tx: h('vault open 0'), close_tx: h('vault close 0') }] };
+    expect((await go(s)).exit).toBe(0); // Walk back to the opening from the final payment.
+  });
+  it('refuses a vault ancestry beyond the depth bound', async () => {
+    const s = scenario('clean');
+    s.vaultWalk = { additionalPayments: 32 };
+    await refuses(s, ['vaults[0].close_tx', 'exceeds its depth limit']);
+    s.record = { vaults: [{ ref: ref('extra vault payment 31'), open_tx: h('vault open 0'), close_tx: h('vault close 0') }] };
+    await refuses(s, ['vaults[0].open_tx', 'exceeds its depth limit']);
+  });
+  it.each([['cycle', 'contains a cycle'], ['width', 'more than eight vault inputs'], ['budget', 'exceeds its read limit']] as const)(
+    'refuses a vault ancestry that exceeds the %s bound', async (invalid, detail) => {
+      const s = scenario('clean');
+      s.vaultWalk = { additionalPayments: 0, invalid };
+      await refuses(s, ['vaults[0].close_tx', detail]);
+    },
+  );
   it('refuses a payment of the Order Desk given as the close of the vault: a close leaves no vault output, and the node holds the vault Live at the next output', async () => {
     const s = scenario('clean');
     s.record = { vaults: [{ ref: `${h('vault open 0')}#0`, open_tx: h('vault open 0'), close_tx: txOf('order-desk', 'post') }] };
