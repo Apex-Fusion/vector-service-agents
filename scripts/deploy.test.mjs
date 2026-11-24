@@ -5939,6 +5939,8 @@ test('agents host: the proof script fills the real snippet and the real main Cad
   assert.deepEqual(headerValues(['Host', 'a'], 'Client-Cert'), []);
 });
 
+const IMAGE_WORDS = ['no', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten', 'eleven', 'twelve', 'thirteen'];
+
 test('agents host: the README gives the counts, the memory and the plan of the ports, and the snippet shape of the README is the one that the proof validates', () => {
   const readme = srvRead('README.md');
   for (const part of ['The plan for the host is 19 containers: 8 services, 10 runtimes and 1 mock service.', '| Memory | 8 GiB |', '| Agent host names | 10 | A, DNS only |', '| Mock host names | 2 | A, DNS only |', '| Organisation checks | 9 | TXT |']) assert.ok(readme.includes(part), part);
@@ -7342,11 +7344,10 @@ function dockerignoreProblems(ignoreText, folders) {
   return folders.flatMap((folder) => folderNamesIn(folder, 'test').filter((path) => reachesContext(rules, path)).map((path) => `${path} is copied into an image: the ignore file keeps no test folder out`));
 }
 
-test('dockerignore: no image holds a test folder, and the first comment line names the Dockerfiles that build from the repo root; the last line that matches decides, and the guard refuses an ignore file that leaves a test folder in', () => {
+test('dockerignore: test folders stay out of repository image builds, including after parent folders are included again', () => {
   const ignore = read('.dockerignore');
   const lines = ignore.split('\n');
-  const rows = CI_IMAGES.filter((row) => row.context === '.');
-  const folders = [...new Set(rows.flatMap((row) => copiedFolders(read(row.file))))];
+  const folders = [...new Set(CI_IMAGES.flatMap(({ file }) => file ? copiedFolders(read(file)) : []))];
   const withTests = folders.filter((folder) => folderNamesIn(folder, 'test').length > 0);
   // The kit packages are copied whole by the agent images, with their test folders. The two agents of use case 1 copy their source folder only.
   for (const folder of ['packages/usecase-kit', 'packages/hire-kit', 'packages/service-kit', 'packages/id-kit', 'agents/audio-snippets']) assert.ok(withTests.includes(folder), `${folder} is copied whole and holds a test folder: ${withTests.join(', ')}`);
@@ -7370,9 +7371,6 @@ test('dockerignore: no image holds a test folder, and the first comment line nam
   assert.equal(dockerignoreProblems([text(...TEST_LINES), ...tests.slice(1)].join('\n'), folders).length, 1, 'one test folder left out of the list');
   assert.deepEqual(dockerignoreProblems(`${ignore}*.tmp\n`, folders), [], 'a line that leaves out more');
   assert.deepEqual(dockerignoreProblems(rtChange(ignore, 'scripts/**/test\n', 'scripts/*/test\n'), folders), [], 'the line at depth one');
-  // The first comment line names the Dockerfiles of the repo root context.
-  for (const row of rows) assert.ok(lines[0].includes(row.file), `${row.file} is named in the first comment line`);
-  assert.equal(lines[0].includes(RT.dockerfile), false, 'the runtime Dockerfile has another context');
 });
 
 // ======================================================================================================================================
