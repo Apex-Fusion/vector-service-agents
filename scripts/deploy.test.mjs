@@ -8385,6 +8385,21 @@ function bidDeskProblems(texts, listFiles) {
     if (set.size > 1) problems.push(`the three Bid Desks must name one image of the ${kind}, and they name ${set.size}`);
     for (const image of set) if (typeof image !== 'string' || !image.startsWith(wanted[kind])) problems.push(`the image of the ${kind} must be ${wanted[kind]}<digest>`);
   }
+  // The three files are one file: the file of another Bid Desk is the file of alfa with the name of the instance and the two host ports replaced everywhere. The compose file of alfa gives the container ports.
+  const first = serverCompose(`bid-desk-${BID_DESKS[0]}`);
+  if (texts[first] !== undefined) {
+    const mapping = (kind) => parseYaml(texts[first]).services[kind]?.ports?.[0];
+    const [runtimeMapping, serviceMapping] = [mapping('runtime'), mapping('service')];
+    for (const name of BID_DESKS.slice(1)) {
+      const file = serverCompose(`bid-desk-${name}`);
+      if (texts[file] === undefined || typeof runtimeMapping !== 'string' || typeof serviceMapping !== 'string') continue;
+      const ports = (compose) => [`127.0.0.1:${PACK_PORTS[compose].runtime[0]}:${runtimeMapping.split(':')[2]}`, `127.0.0.1:${PACK_PORTS[compose].service[0]}:${serviceMapping.split(':')[2]}`];
+      const [fromRuntime, fromService] = ports(first);
+      const [toRuntime, toService] = ports(file);
+      const expected = texts[first].split(fromRuntime).join(toRuntime).split(fromService).join(toService).split(BID_DESKS[0]).join(name);
+      if (texts[file] !== expected) problems.push(`${file} is not the file of ${BID_DESKS[0]} with the name of the instance and the two host ports changed`);
+    }
+  }
   const expected = BID_DESKS.map((name) => `${name}.json`);
   if (!isDeepStrictEqual([...listFiles].sort(), expected)) problems.push(`the folder of the price lists must hold ${expected.join(', ')} and no other file`);
   return problems;
@@ -8406,6 +8421,8 @@ test('use case 3 Bid Desks: the three compose files are there and name one image
     ['an instance that has no price list', { ...texts, [charlie]: srvReplace(texts[charlie], 'BID_DESK_INSTANCE: charlie', 'BID_DESK_INSTANCE: delta') }, listFiles, /bid-desk-charlie\.yml selects the price list delta\.json, and no such file is there/],
     ['a folder of price lists with a fourth file', texts, [...listFiles, 'delta.json'], /the folder of the price lists must hold alfa\.json, bravo\.json, charlie\.json and no other file/],
     ['a folder of price lists without the file of charlie', texts, listFiles.filter((name) => name !== 'charlie.json'), /bid-desk-charlie\.yml selects the price list charlie\.json, and no such file is there/],
+    ['a limit that one Bid Desk has and the others lack', { ...texts, [charlie]: srvReplace(texts[charlie], 'mem_limit: 1024m', 'mem_limit: 2048m') }, listFiles, /bid-desk-charlie\.yml is not the file of alfa with the name of the instance and the two host ports changed/],
+    ['a service port inside the container that differs', { ...texts, [bravo]: srvReplace(texts[bravo], '127.0.0.1:9107:9106', '127.0.0.1:9107:9107') }, listFiles, /bid-desk-bravo\.yml is not the file of alfa/],
   ];
   for (const [name, given, files, expected] of faults) {
     const problems = bidDeskProblems(given, files);
@@ -8482,6 +8499,9 @@ test('use case 3 README: the table of the files has a row for each of the ten fi
   for (const name of BID_DESKS.slice(1)) {
     assert.ok(rows.some((row) => row.startsWith(`| \`docker-compose.bid-desk-${name}.yml\` |`) && row.includes('It is the file of alfa with the name of the instance, the two host ports, the host name and the organisation changed.')), `the row of Bid Desk ${name} says how it differs from alfa`);
   }
+  // The rows of the snippets name the routes that each snippet sends to the service.
+  assert.ok(srvRead('Caddyfile.sourcing-agent.snippet').includes('handle /cosign/delegate') && rows.some((row) => row.startsWith('| `Caddyfile.sourcing-agent.snippet` |') && row.includes('the co-sign route')), 'the row of the snippet of the Sourcing Agent names the co-sign route that the snippet sends to the service');
+  assert.ok(srvRead('Caddyfile.bid-desk.snippet').includes('handle /price-list.json') && rows.some((row) => row.startsWith('| `Caddyfile.bid-desk.snippet` |') && row.includes('`/price-list.json`')), 'the row of the snippet of the Bid Desks names the price list that each block sends to the service');
 });
 
 test('use case 3 README: the plan of the ports has a row for the runtime and the service of the Sourcing Agent and for the runtimes and the services of the Bid Desks, and each row holds the ports of its compose files; the guard refuses each copy that breaks one rule', () => {
@@ -8497,7 +8517,7 @@ test('use case 3 README: the plan of the ports has a row for the runtime and the
     ['a README plan that leaves out the row of the Bid Desk runtimes', srvReplace(readme, `${rowLine('Bid Desk runtimes')}\n`, ''), /bid-desk-alfa\.yml#runtime publishes 8108, and no row of the plan/],
     ['a README plan that leaves out the row of the Bid Desk services', srvReplace(readme, `${rowLine('Bid Desk services')}\n`, ''), /bid-desk-alfa\.yml#service publishes 9106, and no row of the plan/],
     ['a README plan that leaves out the row of the Sourcing Agent service', srvReplace(readme, `${rowLine('Sourcing Agent service')}\n`, ''), /sourcing-agent\.yml#service publishes 9105, and no row of the plan/],
-    ['a row of the Bid Desk runtimes with a wrong count', srvReplace(readme, rowLine('Bid Desk runtimes'), rowLine('Bid Desk runtimes').replace(/\((\d+)\)/, '(99)')), /a row of the plan in the README gives 99 ports/],
+    ['a row of the Bid Desk runtimes with a wrong count', srvReplace(readme, rowLine('Bid Desk runtimes'), rowLine('Bid Desk runtimes').replace(/\((\d+)\)/g, '(99)')), /a row of the plan in the README gives 99 ports/],
     ['two rows of the README plan that overlap', srvReplace(readme, `${rowLine('Sourcing Agent runtime')}\n`, `${rowLine('Sourcing Agent runtime')}\n| Overlap (1) | 8108 |\n`), /two rows of the plan in the README overlap: 8108 to 8108 and 8108 to 8110/],
     ['a row of the Bid Desk services that stops one port short', srvReplace(readme, rowLine('Bid Desk services'), '| Bid Desk services (2) | 9106 to 9107 |'), /bid-desk-charlie\.yml#service publishes 9108, and no row of the plan/],
   ];
