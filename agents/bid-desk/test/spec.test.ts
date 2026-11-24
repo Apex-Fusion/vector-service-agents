@@ -23,6 +23,8 @@ import { faultGap } from '@vsa/usecase-kit/manifest';
 import { COUNTERPARTY_REFUSALS, ERROR_STATUS, FAULT_MODES, MAX_REQUEST_BYTES, NO_OPEN_CLAIM, RFQ_SCHEMA, RUNTIME_BODY_LIMIT_BYTES, accepted, isPlainObject } from '@vsa/usecase-kit/protocol';
 import type { FaultSetting, ProtocolResult } from '@vsa/usecase-kit/protocol';
 import { blake2b224Hex } from '@vsa/vector-read';
+import { TASK_NAMES } from '../../../scripts/operator/tasks/names.ts';
+import bidEvaluation from '../../../scripts/operator/usecases/bid-evaluation.ts';
 import { USE_CASE_NAMES } from '../../../scripts/operator/usecases/names.ts';
 import { MemoryRfqBook, PASSED_CHECKS_TTL_MS, PassedChecks, createPrecheck, loadPriceList, rfqChecks } from '../src/checks/index.ts';
 import { QUOTE_DECISION, QUOTE_REFUSAL_STATUS, RUNTIME_MARGIN_MS, faultyPriceOf, runQuote } from '../src/job/index.ts';
