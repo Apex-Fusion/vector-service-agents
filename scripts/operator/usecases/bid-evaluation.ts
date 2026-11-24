@@ -258,8 +258,8 @@ const USE_CASE: UseCase = {
       what: 'Before the hold starts, the compliance registry revokes its attestation about Bid Desk Charlie, and the controller publishes a reply. A new `propose` shows the revoked attestation and the hash of the reply in the file of Bid Desk Charlie.',
     },
     {
-      id: 'r2-c', run: 'failure', actor: 'agent', primitive: 'Hold removes the agent from the listing',
-      what: 'A new request for quotation during the hold. Bid Desk Charlie has no listed advert, and the ranking has two bidders.',
+      id: 'r2-c', run: 'failure', actor: 'agent', primitive: 'Proposal during a verified hold',
+      what: 'Check which Bid Desks the signed proposal names during the hold.',
     },
     {
       id: 'r2-d', run: 'failure', actor: 'agent', primitive: 'Refusal by a system with no approval',
