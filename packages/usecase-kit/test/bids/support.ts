@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
 import { expect } from 'vitest';
 import type { ProtocolResult } from '@vsa/usecase-kit/protocol';
 
-export type GoldenName = 'rfq' | 'weights';
+export type GoldenName = 'rfq' | 'weights' | 'price-list';
 export type Json = Record<string, unknown>;
 type Step = string | number;
 

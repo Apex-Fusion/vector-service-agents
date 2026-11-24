@@ -10,3 +10,5 @@ export { MAX_RFQ_ITEMS, parseRfqDocument, rfqSha256 } from './rfq.ts';
 export type { RfqDocument, RfqItem } from './rfq.ts';
 export { WEIGHT_NAMES, parseWeights } from './weights.ts';
 export type { Weights } from './weights.ts';
+export { PRICE_LIST_SCHEMA, parsePriceList, priceFor, priceListSha256 } from './pricelist.ts';
+export type { PriceBreak, PriceEntry, PriceList } from './pricelist.ts';
