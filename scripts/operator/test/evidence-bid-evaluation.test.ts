@@ -160,6 +160,22 @@ describe('bid evidence module', () => {
     expect(steps(got.doc).find((s) => s.id === id)?.note).not.toBe('');
   });
 
+  it.each([
+    [{ holdSpend: 'after-submit' }, 'shown'],
+    [{ holdSpend: 'before-post' }, 'not_run'],
+    [{ holdSpend: 'during-proposal' }, 'not_run'],
+    [{ holdSpend: 'at-submit' }, 'not_run'],
+    [{ holdProposal: 'at-apply' }, 'not_run'],
+  ] as const)('checks the actual hold interval: %j', async (options, status) => {
+    const got = await bidRun('failure', options);
+    expect(got.exit, got.error).toBe(0);
+    const byId = new Map(steps(got.doc).map((step) => [step.id, step]));
+    expect(byId.get('r2-a-hold')?.status).toBe('shown');
+    expect(byId.get('r2-e')?.status).toBe('shown');
+    expect(byId.get('r2-c')?.status).toBe(status);
+    if (status === 'not_run') expect(byId.get('r2-c')).toMatchObject({ refs: [], note: expect.stringContaining('Post and Submit') });
+  });
+
   it.each(['pending', 'identity'] as const)('proves the settled model hires for %s from the exact chain', async (model) => {
     const got = await bidRun('clean', { model });
     expect(got.exit, got.error).toBe(0);

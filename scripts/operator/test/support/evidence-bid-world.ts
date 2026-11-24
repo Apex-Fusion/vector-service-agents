@@ -100,7 +100,8 @@ interface Options {
   readonly wrongRequestDigest?: boolean; readonly wrongRanking?: boolean; readonly failureWrite?: boolean; readonly fault?: 'off' | 'different';
   readonly release?: 'absent' | 'early' | 'not-release'; readonly case?: 'waiting' | 'claimed' | 'wrong-resolution';
   readonly wrongEvidenceQuote?: boolean;
-  readonly compliance?: 'wrong-hash' | 'after-hold' | 'wrong-issuer' | 'wrong-contest'; readonly holdProposal?: 'with-target' | 'outside-hold' | 'before-apply';
+  readonly compliance?: 'wrong-hash' | 'after-hold' | 'wrong-issuer' | 'wrong-contest'; readonly holdProposal?: 'with-target' | 'outside-hold' | 'before-apply' | 'at-apply';
+  readonly holdSpend?: 'after-submit' | 'before-post' | 'during-proposal' | 'at-submit';
   readonly revocation?: 'wrong-author' | 'wrong-configured-key' | 'late-invalid-from' | 'resolver-active' | 'resolver-other' | 'resolver-unbound' | 'resolver-error' | 'no-tombstone';
   readonly model?: 'missing-output' | 'wrong-output' | 'wrong-model' | 'wrong-buyer' | 'no-accept' | 'wrong-spend' | 'bad-signature' | 'reused' | 'pending' | 'late-confirmed' | 'identity';
   readonly correlation?: 'wrong-digest' | 'missing-digest' | 'after-submit' | 'before-post' | 'unauthorized' | 'dropped' | 'duplicate';
@@ -360,10 +361,18 @@ export async function bidRun(kind: 'clean' | 'failure', options: Options = {}) {
     vaultHead = asRef(replacement);
   }
   const holdAt = 160;
+  const holdApplied = holdAt + 1;
+  const holdPost = options.holdProposal === 'outside-hold' ? 150 : options.holdProposal === 'before-apply' ? holdAt
+    : options.holdProposal === 'at-apply' ? holdApplied : 180;
+  const proposalWindow = 35;
+  const holdSubmit = holdPost + proposalWindow - 1;
+  const holdSpend = options.holdSpend === undefined ? 295 : ({
+    'after-submit': holdSubmit + 1, 'before-post': holdPost - 1, 'during-proposal': holdSubmit - 1, 'at-submit': holdSubmit,
+  })[options.holdSpend];
   const invalidFrom = options.revocation === 'late-invalid-from' ? 250 : 20;
   const juryHold = { by: { type: 'Script' as const, hash: M1 }, reason: 64, since: ms(holdAt), until: ms(holdAt) + 7 * DAY };
   const oldHold: Status = { type: 'Suspended', holds: [juryHold] };
-  const revoked: Status = { type: 'Revoked', by: { type: 'KeyHash', hash: actualAccountable.keyHash }, reason: 9, at: ms(294), invalidFrom: ms(invalidFrom), successor: null };
+  const revoked: Status = { type: 'Revoked', by: { type: 'KeyHash', hash: actualAccountable.keyHash }, reason: 9, at: ms(holdSpend - 1), invalidFrom: ms(invalidFrom), successor: null };
   for (const agent of data.agents) {
     const maker = makers.get(agent.id)!;
     const record = liveRecord({ controller: controller.publicKeyHex,
@@ -460,8 +469,8 @@ export async function bidRun(kind: 'clean' | 'failure', options: Options = {}) {
   let faulty: Quoted | null = null;
   const weights = { price: 0.25, lead_time: 0.25, reliability: 0.25, compliance: 0.25 };
   for (const [index, step] of PROPOSE_STAGES[kind].entries()) {
-    const start = failure ? [10, 70, options.holdProposal === 'outside-hold' ? 150 : options.holdProposal === 'before-apply' ? 160 : 180, 230][index]! : 10;
-    const end = start + 35;
+    const start = failure ? [10, 70, holdPost, 230][index]! : 10;
+    const end = start + proposalWindow;
     const rfq = `RFQ-${index + 1}`;
     const rfqHash = hash(`request ${index}`);
     rfqs.push(rfq);
@@ -675,14 +684,14 @@ export async function bidRun(kind: 'clean' | 'failure', options: Options = {}) {
       live.push({ txHash: hash('config seal'), outputIndex: 0, address: MAINNET.configHolder.address,
         assets: { lovelace: 5_000_000n, [`${MAINNET.configSeal.hash}${CONFIG_TOKEN_NAME}`]: 1n }, datum: encodePlutusDataHex(bytes(M1)) });
       historical(previous, options.revocation !== 'no-tombstone');
-      tx(apply, holdAt + 1, [io(before), io(verdictOut)], [io(previous)], [spend(MAINNET.identity.hash, io(before), 2, [{ constructor: 1, fields: [{ int: 0 }] }])], [movement(M1, token, '-1')]);
+      tx(apply, holdApplied, [io(before), io(verdictOut)], [io(previous)], [spend(MAINNET.identity.hash, io(before), 2, [{ constructor: 1, fields: [{ int: 0 }] }])], [movement(M1, token, '-1')]);
       if (options.revocation === 'no-tombstone') live.push(previous);
       else {
         const ended = { ...recordUtxo(id(target.id), tombstone(held, revoked)), txHash: hash('revoked record') };
         historical(ended, false);
         live.push(ended);
-        tx(ended.txHash, 295, [io(previous)], [io(ended)], [spend(MAINNET.identity.hash, io(previous), 4, [{ constructor: 1, fields: [{ int: 0 }] }])]);
-        store.put('revocations', [target.id], { tx: ended.txHash, reason: 9, invalidFrom: iso(invalidFrom), revokedAt: iso(294) });
+        tx(ended.txHash, holdSpend, [io(previous)], [io(ended)], [spend(MAINNET.identity.hash, io(previous), 4, [{ constructor: 1, fields: [{ int: 0 }] }])]);
+        store.put('revocations', [target.id], { tx: ended.txHash, reason: 9, invalidFrom: iso(invalidFrom), revokedAt: iso(holdSpend - 1) });
       }
       if (verdictRef !== asRef(verdictOut)) throw new Error('fixture verdict reference mismatch');
     }

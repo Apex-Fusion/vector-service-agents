@@ -120,7 +120,12 @@ type KeyNames = (name: string) => string | undefined;
 interface ScorerRead {
   readonly id: string; readonly did: string; readonly record: string; readonly delegateKey: string; readonly registeredAt: number;
 }
-interface BidHold { readonly candidate: HistoricalHoldCandidate; readonly appliedAt: number }
+interface BidHold {
+  readonly candidate: HistoricalHoldCandidate;
+  readonly appliedAt: number;
+  /** Null only when the node still shows the exact hold output. */
+  readonly consumedAt: Proof<number | null>;
+}
 interface BidReads {
   readonly proposals: ReadonlyMap<string, Proof<Proposal>>;
   readonly orderedRfqs: boolean;
@@ -630,7 +635,14 @@ async function locateHold(s: EvidenceReadSession, a: Assembly, agent: string, re
   need(apply.outputs.some((one) => one.ref === output && one.credential === site.hash), 'hold: the ledger does not show the application output');
   const consumed = single(apply.inputs, (one) => one.credential === config.m1);
   need(consumed, 'hold: the application has no exact consumed verdict output');
-  return { appliedAt: apply.timeMs, candidate: { reason: JURY_REASON, since: hold.since, until: hold.until,
+  const replacement = revoked.value;
+  const consumedAt = replacement === null ? proved(null) : await proof('hold consumption', async () => {
+    const spend = single(replacement.tx.spends, (one) => one.script === site.hash && one.input === output && one.valid);
+    need(spend, 'hold: the transaction does not prove the spend of the exact hold output');
+    await confirmed(s, txOf(replacement.output), 'hold consumption');
+    return replacement.tx.timeMs;
+  });
+  return { appliedAt: apply.timeMs, consumedAt, candidate: { reason: JURY_REASON, since: hold.since, until: hold.until,
     record_output: output, gateway_status: null, verdict_output: consumed.ref } };
 }
 
@@ -1014,12 +1026,18 @@ const RULES: EvidenceModule['rules'] = {
     if (!get(a).scores.get('propose-c')?.ok) return 'held proposal: the ranked quote scores are unproven';
     const post = at(a, p.value.hire.entry.post_tx);
     const submitted = get(a).submissions.get(p.value.hire.entry.escrow_ref);
+    const { appliedAt, consumedAt } = observed.value;
+    if (!consumedAt.ok) return consumedAt.why;
+    const end = Math.min(hold.until, consumedAt.value ?? hold.until);
+    // Block times cannot prove order when a proposal boundary shares the block time of Apply or the spend.
+    if (post === undefined || submitted === undefined || post <= appliedAt || post < hold.since || post > submitted || submitted >= end) {
+      return 'held proposal: the Post and Submit are not proven inside the applied hold';
+    }
     const challenged = a.loaded.record.challenged;
     const other = desks(a.use).filter(({ id }) => id !== challenged);
-    if (post === undefined || submitted === undefined || post <= observed.value.appliedAt || post < hold.since || post > submitted || submitted >= hold.until
-      || challenged === null || other.length !== 2 || p.value.ranking.ranked.length !== other.length || p.value.bidders.length !== other.length
+    if (challenged === null || other.length !== 2 || p.value.ranking.ranked.length !== other.length || p.value.bidders.length !== other.length
       || !other.every(({ id }) => p.value.bidders.some(({ agent }) => agent.id === id))) {
-      return 'held proposal: the signed result does not name just the two other desks within the verified hold';
+      return 'held proposal: the signed result does not name just the two other desks';
     }
     return [...hireRefs(p.value.hire), ref('hold', hold.record_output)];
   },
