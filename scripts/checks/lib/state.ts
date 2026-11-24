@@ -125,21 +125,24 @@ export class StateFile {
    * state file and a link (the look at the path does not follow a link, so a link to a file that is not there is refused too, and the write never replaces it). A refused file is left as it is.
    */
   static open(path: string, identity: StateIdentity, io: Partial<WriteIo> = {}): StateFile {
-    if (lstatSync(path, { throwIfNoEntry: false }) === undefined) {
-      const state: CheckState = { format: STATE_FORMAT, ...identity, created_at: new Date().toISOString(), steps: {}, in_flight: null, notes: {} };
+    let state = StateFile.peek(path, identity);
+    if (state === null) {
+      state = { format: STATE_FORMAT, ...identity, created_at: new Date().toISOString(), steps: {}, in_flight: null, notes: {} };
       writeFileAtomically(path, `${JSON.stringify(state, null, 2)}\n`, io);
-      return new StateFile(path, state, io);
-    }
-    const state = readState(path);
-    for (const field of ['check', 'network', 'record'] as const) {
-      if (state[field] !== identity[field]) throw new StateError('mismatch', `${path} is the state of another ${field} (${field}: ${state[field]}), and this run is for ${identity[field]}: use another folder or another record`);
     }
     return new StateFile(path, state, io);
   }
 
-  /** Reads the state file of a check, for another check that needs a fact of it. It makes nothing: a file that is not there gives null. */
-  static peek(path: string): CheckState | null {
-    return lstatSync(path, { throwIfNoEntry: false }) === undefined ? null : readState(path);
+  /** Reads a state file without creating it. Pass an identity to refuse a file that belongs to another check, network or record. */
+  static peek(path: string, identity?: StateIdentity): CheckState | null {
+    if (lstatSync(path, { throwIfNoEntry: false }) === undefined) return null;
+    const state = readState(path);
+    if (identity !== undefined) {
+      for (const field of ['check', 'network', 'record'] as const) {
+        if (state[field] !== identity[field]) throw new StateError('mismatch', `${path} is the state of another ${field} (${field}: ${state[field]}), and this run is for ${identity[field]}: use another folder or another record`);
+      }
+    }
+    return state;
   }
 
   snapshot(): CheckState {

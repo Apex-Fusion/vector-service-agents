@@ -13,6 +13,8 @@ import {
 } from '../lib/build-record.ts';
 import { canonicalSha256 } from '../lib/platform.ts';
 import data from '../usecases/inventory-reorder.ts';
+import UC2 from '../usecases/prior-authorization.ts';
+import UC3 from '../usecases/bid-evaluation.ts';
 
 const folders: string[] = [];
 afterAll(() => { for (const folder of folders.splice(0)) rmSync(folder, { recursive: true, force: true }); });
@@ -210,6 +212,18 @@ describe('the images of an agent that runs', () => {
   it('ignore the containers of the other agent', () => {
     expect(runningImagesOf(REORDER, without(without(runningImages(), 'orders-service'), 'orders-large-runtime')).service.digest).toBe(digestOf(1));
   });
+  it('reads each Bid Desk from its own container even though the three services share one image digest', () => {
+    const desks = UC3.agents.filter(({ kind }) => kind === 'bid-desk');
+    const service = `${IMAGE_REPOSITORY}/bid-desk@${digestOf(4)}`;
+    const running = new Map(desks.flatMap((desk) => [
+      [desk.serviceContainer, service], ...desk.adverts.map((advert) => [advert.runtimeContainer, `${RUNTIME_IMAGE}@${digestOf(2)}`]),
+    ] as [string, string][]));
+    expect(desks.map((desk) => runningImagesOf(desk, running).service.container)).toEqual(['bids-alfa-service', 'bids-bravo-service', 'bids-charlie-service']);
+    expect(desks.map((desk) => runningImagesOf(desk, running).service.digest)).toEqual([digestOf(4), digestOf(4), digestOf(4)]);
+    running.set('bids-bravo-service', `${IMAGE_REPOSITORY}/sourcing-agent@${digestOf(4)}`);
+    expect(() => runningImagesOf(desks[1]!, running)).toThrow('bids-bravo-service');
+    expect(runningImagesOf(desks[0]!, running).service.reference).toBe(service);
+  });
   const BAD: readonly (readonly [string, Map<string, string>, string])[] = [
     ['a service container that is not in the file', without(runningImages(), 'reorder-service'), 'reorder-service'],
     ['a runtime container that is not in the file', without(runningImages(), 'reorder-runtime'), 'reorder-runtime'],
@@ -242,9 +256,11 @@ interface Compose { services: Record<string, { container_name: string; image: st
 const composeOf = (agent: string): Compose => parseYaml(readFileSync(fileURLToPath(new URL(`../../../deploy/server/docker-compose.${agent}.yml`, import.meta.url)), 'utf8')) as Compose;
 
 describe('the names of the images and the compose files', () => {
-  for (const agent of data.agents) {
+  for (const agent of [...data.agents, ...UC2.agents, ...UC3.agents]) {
     it(`hold the containers and the image repositories of ${agent.id}: the service and each runtime of its adverts`, () => {
-      const names = imageNamesOf(agent.kind);
+      const names = imageNamesOf(agent);
+      expect(names.serviceContainer).toBe(agent.serviceContainer);
+      expect(names.serviceRepository).toBe(`${IMAGE_REPOSITORY}/${agent.kind}`);
       const repositories = new Map(Object.values(composeOf(agent.id).services).map((service) => [service.container_name, service.image.slice(0, service.image.indexOf('@'))]));
       expect(repositories.get(names.serviceContainer)).toBe(names.serviceRepository);
       for (const advert of agent.adverts) expect(repositories.get(advert.runtimeContainer)).toBe(names.runtimeRepository);

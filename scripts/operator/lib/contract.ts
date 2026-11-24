@@ -11,6 +11,7 @@ import type { StateFile } from '../../checks/lib/state.ts';
 import type { TxFacts } from '../../checks/lib/txfacts.ts';
 import type { Exposure, GoFile, IrreversibleTag } from './approval.ts';
 import type { DohLookup } from './dns.ts';
+import type { ResultCommand } from './output.ts';
 import type { KeySpec, Registry } from './registry.ts';
 import type { AgentKind } from '../../../packages/usecase-kit/src/protocol/index.ts';
 export type { StepOutcome };
@@ -81,6 +82,8 @@ export interface EvidenceStepSpec {
 }
 export interface UseCase {
   readonly name: string; readonly title: string; readonly keys: readonly KeySpec[]; readonly organisations: readonly OrganisationSpec[];
+  /** Name in the released register journals that used organisation ids as fact keys. Absent for data with no such writer. */
+  readonly legacyOrganisationWriter?: string;
   readonly agents: readonly AgentSpec[]; readonly subagents: readonly SubagentSpec[]; readonly funding: readonly FundingLine[];
   readonly attestations: readonly AttestationSpec[]; readonly runs: readonly RunSpec[]; readonly evidenceSteps: readonly EvidenceStepSpec[];
   readonly moduleManifestPath: string; readonly runtimeCommit: string;
@@ -108,6 +111,14 @@ export interface OperatorSettings {
 export interface TaskFlags { has(name: string): boolean; value(name: string): string | undefined }
 export interface RecordFact { did: string; id: string; tx: string; recordRef: string; depositLovelace: string; registeredAt: string }
 export interface OrganisationFact { txtName: string; txtValue: string; verifiedAt: string | null }
+export interface OrganisationMove {
+  readonly from: string;
+  readonly to: string;
+  readonly fact: Readonly<OrganisationFact>;
+  readonly record: Readonly<RecordFact>;
+  /** A fresh verification of the same DID and TXT when the old journal was incomplete. */
+  readonly recheckedAt?: string;
+}
 export interface StakeFact { openingRef: string; stakeRef: string | null; tokenUnit: string | null; amountLovelace: string }
 export interface AdvertFact { ref: string; tx: string; detailUri: string; detailHash: string; endpoint: string; postedAt: string }
 export interface ManifestFact { uri: string; sha256: string; bytes: number; readAt: string }
@@ -135,6 +146,8 @@ export interface FactsStore {
   read(): Readonly<Facts>;
   /** Sets one fact at `path` below `section`, or one field of a fact when `path` ends with a field name (the fact must exist; a null field counts as not set). A second value that differs from the first is an error unless `replace` is true. */
   put<S extends keyof Facts>(section: S, path: readonly string[], value: unknown, options?: { replace?: boolean }): void;
+  /** Moves organisation facts to subject keys only if the expected facts and records still agree. */
+  moveOrganisations(moves: readonly OrganisationMove[]): void;
 }
 
 // ---- landing (the landing files implement the functions over LandHost; the runner builds the TaskSession that satisfies it) ----
@@ -198,6 +211,24 @@ export interface TaskSession<Extra = unknown> extends LandHost {
   readonly use: UseCase; readonly extra: Extra; readonly flags: TaskFlags; readonly facts: FactsStore; readonly fetchImpl: typeof fetch; readonly all: boolean;
   readonly dohLookup: DohLookup;
 }
+/** A local document writer gets public data only. It does not get the transaction session. */
+export interface OfflineTaskInput<Extra> {
+  readonly extra: Extra; readonly use: UseCase; readonly facts: Readonly<Facts>; readonly stateDir: string; readonly out: Output;
+}
+export interface OfflineTaskResult { readonly message: string; readonly result: Readonly<Record<string, unknown>> }
+
+export type TaskCommand = ResultCommand;
+export type ResubmitSession<Extra> = Pick<TaskSession<Extra>, 'task' | 'use' | 'extra' | 'settings' | 'go' | 'clock' | 'chain' | 'fetchImpl' | 'registry' | 'facts' | 'out' | 'networkResult'> & {
+  readonly node: Pick<NodeAccess, 'resolveInputs' | 'txStatus'>;
+  readonly state: Pick<StateFile, 'step'>;
+};
+export interface ResubmitFlight {
+  readonly step: string;
+  readonly txHash: string;
+  readonly inputRefs: readonly string[];
+  readonly refs: Readonly<Record<string, string>>;
+  readonly facts: Readonly<Record<string, unknown>>;
+}
 export interface TaskDefinition<Extra = unknown> {
   readonly name: string; readonly title: string;
   /** The boolean flags besides --submit and --all. */
@@ -205,10 +236,16 @@ export interface TaskDefinition<Extra = unknown> {
   /** The flags that take a value. */
   readonly valued: readonly string[];
   readonly needs: { keys(use: UseCase, flags: TaskFlags): readonly string[]; readonly chain: boolean; readonly hosted: readonly string[]; readonly approval: 'submit' | 'never' };
+  readonly offline?: {
+    matches(extra: Extra): boolean;
+    run(input: OfflineTaskInput<Extra>): OfflineTaskResult | Promise<OfflineTaskResult>;
+  };
   steps(use: UseCase, flags: TaskFlags): readonly string[];
-  parse(env: Readonly<Record<string, string | undefined>>, settings: OperatorSettings, use: UseCase, flags: TaskFlags): Extra;
+  parse(env: Readonly<Record<string, string | undefined>>, settings: OperatorSettings, use: UseCase, flags: TaskFlags, command?: TaskCommand): Extra;
   next(session: TaskSession<Extra>): Promise<StepOutcome>;
   cleanup(session: TaskSession<Extra>): Promise<StepOutcome>;
+  /** Runs only before a resend. It reads the current flight, but never receives its signed bytes. */
+  beforeResubmit?(session: ResubmitSession<Extra>, command: TaskCommand, flight: ResubmitFlight): Promise<void>;
   status?(session: TaskSession<Extra>): Promise<readonly string[]>;
   /** The public `result` object of the `operator-result:` line. Public values only. */
   result?(session: TaskSession<Extra>): Readonly<Record<string, unknown>>;

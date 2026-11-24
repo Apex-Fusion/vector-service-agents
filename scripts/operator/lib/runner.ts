@@ -428,7 +428,7 @@ export interface RunDeps {
 }
 
 /** What a run ended with, before the machine line is made. */
-interface Ended { readonly exit: number; readonly outcome: ResultOutcome }
+interface Ended { readonly exit: number; readonly outcome: ResultOutcome; readonly result?: Readonly<Record<string, unknown>> }
 
 interface RunLock { readonly path: string; release(): void }
 
@@ -591,8 +591,7 @@ export async function checkEndOfValidity(flight: Pick<InFlight, 'valid_to'>, end
 }
 
 /**
- * Reads the status of the transaction of a flight that `settleInFlight` let go, a second time (a read that failed makes `settleInFlight` let a transaction go too), and says what to do. The record goes
- * back into the state file first, before the read: while the read waits for the indexer, the file holds the transaction, so a run that is stopped in that time loses nothing. Then:
+ * Rechecks an expired transaction without removing its record. The record stays on disk until the status or the original inputs show the result:
  *   - a number of confirmations, 0 included (the indexer counts the blocks on top of the block of the transaction, so 0 is the newest block): the transaction is on the chain. The step is recorded
  *     and its reserve of the cap stays.
  *   - a read that fails: nobody knows. The transaction stays in flight and the run stops, so that no step is built that may have landed.
@@ -607,7 +606,6 @@ export async function checkEndOfValidity(flight: Pick<InFlight, 'valid_to'>, end
 async function reconcile(flight: InFlight, parts: { node: NodeAccess; state: StateFile; clock: Clock; exposure: Exposure; go: GoFile | null; mode: Mode; out: Output }): Promise<string | null> {
   const { node, state, clock, exposure, go, mode, out } = parts;
   const where = `the transaction ${flight.tx_hash} of the step ${flight.step}`;
-  state.setInFlight(flight);
   let confirmations: number | null;
   try { confirmations = (await node.txStatus(flight.tx_hash)).confirmations; } catch (err) {
     return `the status of ${where} could not be read (${errorText(err)}). The transaction stays in flight, and nothing is built. Run again when the indexer answers.`;
@@ -726,18 +724,29 @@ async function execute<Extra>(def: TaskDefinition<Extra>, argv: readonly string[
   const settings: OperatorSettings = parseOperatorSettings(deps.env);
   ctx.lock = takeRunLock(join(settings.stateDir, RUN_LOCK), `${def.name} ${args.command} in ${args.mode} mode, started ${iso(clock.now())}`);
   const use = await (deps.loadUseCase ?? loadUseCase)(args.useCase ?? settings.useCase);
-  const extra = def.parse(deps.env, settings, use, args.flags);
+  const extra = def.parse(deps.env, settings, use, args.flags, args.command);
+  const base = join(settings.stateDir, args.run === null ? def.name : `${def.name}.${args.run}`);
+  const identity = { check: def.name, network: settings.network.name, record: args.run === null ? use.name : `${use.name}:${args.run}` };
+  const factsPath = join(settings.stateDir, 'facts.json');
+  const factsIdentity = { useCase: use.name, network: settings.network.name };
+  if (def.offline?.matches(extra)) {
+    if (args.command !== 'run' || args.mode !== 'dry') throw new FlagError('the local document writer takes only run without --submit');
+    const flight = StateFile.peek(`${base}.state.json`, identity)?.in_flight;
+    if (flight != null) throw new PreconditionError(`the step ${flight.step} has a transaction in flight; settle it with the normal command before writing documents`);
+    const facts = FactsFile.open(factsPath, factsIdentity).read();
+    const { message, result } = await def.offline.run({ extra, use, facts, stateDir: settings.stateDir, out });
+    out.out(message);
+    return { exit: 0, outcome: 'done', result };
+  }
   const submit = args.mode === 'submit';
   const approvalNeeded = submit && def.needs.approval === 'submit';
   const named = def.needs.keys(use, args.flags);
   const registry = loadKeys(deps.readRegistry ?? ((options) => loadRegistry(options)), { dir: settings.keysDir, useCase: use.name, specs: use.keys }, named, approvalNeeded);
-  const base = join(settings.stateDir, args.run === null ? def.name : `${def.name}.${args.run}`);
-  const identity = { check: def.name, network: settings.network.name, record: args.run === null ? use.name : `${use.name}:${args.run}` };
   const state = StateFile.open(`${base}.state.json`, identity);
   ctx.state = state;
   const evidence = EvidenceFile.open(`${base}.evidence.json`, identity);
   ctx.evidence = evidence;
-  const facts = FactsFile.open(join(settings.stateDir, 'facts.json'), { useCase: use.name, network: settings.network.name });
+  const facts = FactsFile.open(factsPath, factsIdentity);
   const awaitMs = deps.awaitMs ?? AWAIT_MS;
   const pollMs = deps.pollMs ?? POLL_MS;
   const connections = connect(def, settings, deps);
@@ -786,19 +795,27 @@ async function execute<Extra>(def: TaskDefinition<Extra>, argv: readonly string[
   // `cleanup --release=<hash>`: the operator lets the transaction in flight go. The network guard above and the settle below are skipped: the release asks the guard and the tip of the node itself, and only
   // after the clock says that the validity is over.
   if (args.release !== null) return letGo(args.release, flight, { node: connections.node, network: connections.network, clock, state, evidence, exposure, go, mode: args.mode, out, progress: ctx.progress });
-  // The lines of `settleInFlight` are kept: for a transaction that it lets go, the second read below can show that the transaction is on the chain, and its line says the opposite.
-  const settleLines: string[] = [];
-  const settled = await settleInFlight({ state, node: connections.node, clock, out: (line) => { settleLines.push(line); }, mode: args.mode, awaitMs, pollMs });
-  if (settled.kind !== 'cleared') for (const line of settleLines) out.out(line);
+  const settled = await settleInFlight({
+    state, node: connections.node, clock, out: (line) => out.out(line), mode: args.mode, awaitMs, pollMs, onExpired: 'reconcile',
+    beforeResubmit: def.beforeResubmit === undefined ? undefined : (pending, inputRefs) => {
+      const session = sessionWith(go, exposure);
+      const { task, use, extra, settings, go: approval, clock, chain, fetchImpl, registry, facts, out, networkResult, node } = session;
+      return def.beforeResubmit!({
+        task, use, extra, settings, go: approval, clock, chain, fetchImpl, registry, facts, out, networkResult,
+        node: { resolveInputs: (refs) => node.resolveInputs(refs), txStatus: (hash) => node.txStatus(hash) },
+        state: { step: (name) => state.step(name) },
+      }, args.command, { step: pending.step, txHash: pending.tx_hash, inputRefs, refs: pending.refs, facts: pending.facts });
+    },
+  });
   if (settled.kind === 'wait') {
     ctx.progress.step = settled.step;
     return endOf({ kind: 'wait', message: settled.message, untilMs: settled.untilMs }, args.mode, out);
   }
-  // `settleInFlight` also lets a transaction go when its own read of the status fails, and a cleared result has no hash: read the status again, and let the second read decide.
-  if (settled.kind === 'cleared' && flight !== null) {
-    const stop = await reconcile(flight, { node: connections.node, state, clock, exposure, go, mode: args.mode, out });
+  if (settled.kind === 'reconcile') {
+    const { flight: pending } = settled;
+    const stop = await reconcile(pending, { node: connections.node, state, clock, exposure, go, mode: args.mode, out });
     if (stop !== null) {
-      ctx.progress.step = flight.step;
+      ctx.progress.step = pending.step;
       throw new PreconditionError(stop);
     }
   }
@@ -887,7 +904,7 @@ export async function runTask<Extra>(def: TaskDefinition<Extra>, argv: readonly 
   } finally {
     await release(ctx, deps.out);
   }
-  emit(deps.out, { task: def.name, command: ctx.command, mode: ctx.mode, outcome: ended.outcome, exit: ended.exit, step: stepOf(def, ctx, ended.outcome), result: resultOf(def, ctx, deps.out) });
+  emit(deps.out, { task: def.name, command: ctx.command, mode: ctx.mode, outcome: ended.outcome, exit: ended.exit, step: stepOf(def, ctx, ended.outcome), result: ended.result ?? resultOf(def, ctx, deps.out) });
   return ended.exit;
 }
 

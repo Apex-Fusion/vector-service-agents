@@ -70,15 +70,20 @@ The approval check is the check of the use-case kit. See "The approval check of 
 - `tenant` is 1 to 48 lower case letters, digits or hyphens. It starts with a letter or a digit.
 - `organisations.supplier` is the organisation that an agent of the supplier portal must name in its record. `organisations.insurer` is the same for the insurer portal.
 - `seed` is optional. It replaces whole parts of the data: `erp`, `catalogue`, `records`, `guidelines`, `requirements` and `vendors`. A part that it does not name keeps the default data. A name that is not a part is a 400.
+- `operation` and `owner` are optional together. Use `operation: "create"` or `operation: "reset"` with `owner: { "use_case": "<use case>", "run": "<run label>" }`. The use case has at most 48 lower-case letters, digits or hyphens and starts with a letter. The run label has the same characters. It has at most 32 characters and starts with a letter or a digit.
 
 The answer is 201 with `created: true` for a new tenant. It has `base`, `resources` (the resource of each system), `audiences` (the audience of a JWT-SVID) and `counts` (the entries of each part).
 
-The same call with the name of a tenant that exists **resets** the tenant. The answer is 200 with `created: false`. The tenant is made again from its seed. Its writes and its log are gone.
+With `operation: "create"`, the service checks the name and creates the tenant in one step. It does not change an existing tenant (409 `tenant_exists`), even if the owner matches.
+With `operation: "reset"`, the service requires an existing tenant with the same use case and run. It refuses a missing tenant (404 `tenant_not_found`) or an unowned tenant or different owner (409 `tenant_owner_mismatch`).
+Without `operation` and `owner`, the legacy request can make or reset only an unowned tenant. It cannot reset an owned tenant (409 `tenant_owner_mismatch`).
+
+A reset answers 200 with `created: false`. It makes the tenant again from the seed and removes its writes and log.
 A call that began before the reset, and checked its caller for the old tenant, is refused (409 `tenant_changed`). It writes nothing.
 
 The service holds at most 100 tenants (409 `tenant_limit`). A tenant keeps the last 5,000 lines of its log. The field `dropped` of the log counts the lines that it lost.
 
-`GET /t/<tenant>/state` gives the organisations, the seed data and every write. It holds no credential and no salt.
+`GET /t/<tenant>/state` gives the organisations, the seed data and every write. It holds no credential, salt or owner. The log and the admin response also omit the owner.
 `GET /t/<tenant>/log` gives `{ tenant, dropped, lines }`. See "The log".
 
 ### What the default seed holds

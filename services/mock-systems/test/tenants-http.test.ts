@@ -16,6 +16,7 @@ const logOf = async (s: Scenario, tenant: string): Promise<Array<{ decision: str
   return body.lines;
 };
 const ORGS = { supplier: SUPPLIER_ORG, insurer: INSURER_ORG };
+const OWNER = { use_case: 'inventory-reorder', run: 'test-run' };
 
 describe('POST /admin/tenants', () => {
   it('makes a tenant with the operator token, and says where its systems are', async () => {
@@ -42,6 +43,56 @@ describe('POST /admin/tenants', () => {
     // A token that was made before the reset names the same resource, and the order that was written before is possible again: it is a new run.
     expect((await callWithToken(s, agent, 'po', 'POST', '/po', purchaseOrder('run1', 'run1-1'))).status).toBe(201);
   });
+  it('creates at most one tenant for concurrent guarded creates', async () => {
+    const s = await scenario();
+    const owners = [OWNER, { ...OWNER, use_case: 'prior-authorization' }];
+    refused(await s.harness.call({ path: '/t/contested/state' }), 404, 'tenant_not_found');
+    const results = await Promise.all(owners.map((owner) => s.harness.seed('contested', { operation: 'create', owner })));
+    expect(results.map((reply) => reply.status).sort()).toEqual([201, 409]);
+    const winner = results.findIndex((reply) => reply.status === 201);
+    const loser = 1 - winner;
+    expect(results[winner]!.json).toMatchObject({ tenant: 'contested', created: true });
+    expect(results[winner]!.json).not.toHaveProperty('owner');
+    refused(results[loser]!, 409, 'tenant_exists');
+    refused(await s.harness.seed('contested', { operation: 'reset', owner: owners[loser] }), 409, 'tenant_owner_mismatch');
+    const reset = await s.harness.seed('contested', { operation: 'reset', owner: owners[winner] });
+    expect([reset.status, reset.json?.created]).toEqual([200, false]);
+  });
+
+  it('keeps an owned tenant, its writes and its log until the matching owner resets it', async () => {
+    const s = await scenario('owned', { operation: 'create', owner: OWNER });
+    const agent = delegateTo(s, 'reorder', [['po.write', 'po']]);
+    expect((await callWithToken(s, agent, 'po', 'POST', '/po', purchaseOrder('owned', 'po-1'))).status).toBe(201);
+    const state = async () => (await s.harness.call({ path: '/t/owned/state' })).json;
+    const log = async () => (await s.harness.call({ path: '/t/owned/log' })).json;
+    const before = { state: await state(), log: await log() };
+    expect(before.state).not.toHaveProperty('owner');
+    expect(before.log).not.toHaveProperty('owner');
+    expect((before.log?.lines as unknown[])).toHaveLength(1);
+
+    refused(await s.harness.seed('owned', { operation: 'create', owner: OWNER }), 409, 'tenant_exists');
+    refused(await s.harness.seed('owned', { operation: 'reset', owner: { ...OWNER, run: 'another-run' } }), 409, 'tenant_owner_mismatch');
+    refused(await s.harness.seed('owned'), 409, 'tenant_owner_mismatch');
+    expect({ state: await state(), log: await log() }).toEqual(before);
+
+    const reset = await s.harness.seed('owned', { operation: 'reset', owner: OWNER });
+    expect([reset.status, reset.json?.created]).toEqual([200, false]);
+    expect(reset.json).not.toHaveProperty('owner');
+    expect(await state()).toMatchObject({ po_store: { orders: [] } });
+    expect(await log()).toEqual({ tenant: 'owned', dropped: 0, lines: [] });
+    refused(await s.harness.seed('owned'), 409, 'tenant_owner_mismatch');
+    expect(JSON.stringify(s.harness.logged())).not.toContain(OWNER.run);
+  });
+
+  it('does not claim a legacy tenant or make a missing tenant as a reset', async () => {
+    const s = await scenario('legacy');
+    refused(await s.harness.seed('legacy', { operation: 'create', owner: OWNER }), 409, 'tenant_exists');
+    refused(await s.harness.seed('legacy', { operation: 'reset', owner: OWNER }), 409, 'tenant_owner_mismatch');
+    refused(await s.harness.seed('missing', { operation: 'reset', owner: OWNER }), 404, 'tenant_not_found');
+    expect((await s.harness.seed('legacy')).status).toBe(200);
+    expect((await s.harness.seed('missing', { operation: 'create', owner: OWNER })).status).toBe(201);
+  });
+
   it('takes a seed that replaces parts of the data, and the tenant serves that data and no other', async () => {
     const s = await scenario('run1');
     const erp = [{ sku: 'ONLY-ONE', on_hand: 1, threshold: 5, daily_usage: 2, lead_time_days: 3, open_orders: 0 }];
@@ -112,6 +163,13 @@ describe('POST /admin/tenants', () => {
       ['one organisation only', { tenant: 'run2', organisations: { supplier: SUPPLIER_ORG } }, /body\.organisations\.insurer is required/],
       ['a third organisation', { tenant: 'run2', organisations: { ...ORGS, buyer: 'buyer.example.test' } }, /body\.organisations\.buyer is not a field/],
       ['a field that is not named', { tenant: 'run2', organisations: ORGS, reset: true }, /body\.reset is not a field/],
+      ['operation without owner', { tenant: 'run2', organisations: ORGS, operation: 'create' }, /body must contain operation and owner together/],
+      ['owner without operation', { tenant: 'run2', organisations: ORGS, owner: OWNER }, /body must contain operation and owner together/],
+      ['unknown operation', { tenant: 'run2', organisations: ORGS, operation: 'replace', owner: OWNER }, /body\.operation must be one of create, reset/],
+      ['owner is null', { tenant: 'run2', organisations: ORGS, operation: 'create', owner: null }, /body\.owner must be a JSON object/],
+      ['extra owner field', { tenant: 'run2', organisations: ORGS, operation: 'create', owner: { ...OWNER, extra: 'value' } }, /body\.owner\.extra is not a field/],
+      ['invalid use case', { tenant: 'run2', organisations: ORGS, operation: 'create', owner: { ...OWNER, use_case: '1-case' } }, /body\.owner\.use_case must be a lower case use case name/],
+      ['invalid run label', { tenant: 'run2', organisations: ORGS, operation: 'create', owner: { ...OWNER, run: 'Run' } }, /body\.owner\.run must be a lower case run label/],
       ['a seed part that is not a part', { tenant: 'run2', organisations: ORGS, seed: { stock: [] } }, /body\.seed\.stock is not a field/],
       ['a seed value of the wrong type', { tenant: 'run2', organisations: ORGS, seed: { erp: [{ ...defaultSeed().erp[0], on_hand: '60' }] } }, /body\.seed\.erp\[0\]\.on_hand must be a whole number/],
       ['a list', [], /body must be a JSON object/],

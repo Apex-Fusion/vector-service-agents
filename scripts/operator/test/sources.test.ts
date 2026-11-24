@@ -49,8 +49,8 @@ const RULES: readonly Rule[] = [
     refused: ['registry.secretHexForEnv(name);'], accepted: ['const secretHex = 1;'],
   },
   {
-    name: 'the text .seed', pattern: /\.seed/, allowed: ['lib/registry.ts', 'tasks/keys.ts'],
-    refused: ['const file = `${name}.seed`;'], accepted: ['const seed = 1;', 'const file = `${name}.key`;'],
+    name: 'the text .seed', pattern: /\.seed\b/, allowed: ['lib/registry.ts', 'tasks/keys.ts'],
+    refused: ['const file = `${name}.seed`;', 'const backup = `${name}.seed.bak`;'], accepted: ['const seed = 1;', 'const file = `${name}.key`;', 'const kind = tenant.seedKind;'],
   },
   {
     name: 'a run of 64 hex characters', pattern: /[0-9a-fA-F]{64}/, allowed: [],
