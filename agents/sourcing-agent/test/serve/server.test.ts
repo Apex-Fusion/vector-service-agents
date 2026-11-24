@@ -8,21 +8,23 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, test } from 'vitest';
 import { marketplace, vaultChainWith } from '@vsa/hire-kit/testing';
 import type { OpenRoute } from '@vsa/service-kit';
+import { parseRanking } from '@vsa/usecase-kit/bids';
 import type { CosignRoute } from '@vsa/usecase-kit/cosign';
 import { readFaultSwitch } from '@vsa/usecase-kit/fault';
-import { refused } from '@vsa/usecase-kit/protocol';
+import { makeProposal, refused } from '@vsa/usecase-kit/protocol';
 import {
   AGENT_DID as KIT_AGENT_DID, DELEG_A, NOW, STRANGER, build, hostedToolTakes, plainRequestOf, requestOf, world as cosignWorld,
 } from '../../../../packages/usecase-kit/test/cosign/support.ts';
 import { ExecuteRefusal } from '../../src/execute/index.ts';
-import { ProposeRefusal } from '../../src/propose/index.ts';
+import { ProposeRefusal, TENANT_RULE } from '../../src/propose/index.ts';
 import { keyOf } from '../../src/serve/keys.ts';
+import { REQUEST_SCHEMA } from '../../src/serve/manifest.ts';
 import { RequestRefusal, parseJob, refusalOf } from '../../src/serve/server.ts';
 import { cosignSettingsOf } from '../../src/serve/settings.ts';
 import { wire } from '../../src/serve/wiring.ts';
 import { DELEGATION as EXECUTE_DELEGATION, READ_ONLY, UNTOUCHED, footprint, world as executeWorld } from '../execute/world.ts';
-import { golden as executeGolden } from '../execute/fixtures.ts';
-import { ALFA, NOW as PROPOSE_NOW, RFQ, REQUEST as PROPOSE_REQUEST, TENANT, WEIGHTS, goldenQuotes, readGolden, world as proposeWorld } from '../propose/support.ts';
+import { SALT, golden as executeGolden, rankingDocument } from '../execute/fixtures.ts';
+import { ALFA, NOW as PROPOSE_NOW, RFQ, REQUEST as PROPOSE_REQUEST, TENANT, WEIGHTS, goldenQuotes, readGolden, thrownBy, world as proposeWorld } from '../propose/support.ts';
 import { closeAll, closeServers, gate, hangingCall, post, serve, until } from './serve.ts';
 import type { Answer, Json, Running } from './serve.ts';
 import { PRINCIPAL, TOKEN, cleanDirs, completeEnv, secretsOf, tempDir, withModule1, wiringSettingsOf } from './support.ts';
@@ -186,6 +188,70 @@ describe('the intake', () => {
     expect(refusalOf(new ExecuteRefusal('internal', 'x'))).toStrictEqual({ code: 'internal', status: 500, message: 'x', kind: 'job' });
     expect(refusalOf(new Error('boom'))).toBeNull();
     expect(refusalOf('boom')).toBeNull();
+  });
+});
+
+describe('the tenant of the schema', () => {
+  /** A tenant and whether the schema of the manifest takes it: 1 to 48 lower-case letters, digits and hyphens, the first a letter or a digit. */
+  const TENANTS: Array<[string, boolean]> = [
+    ['run1', true], ['a', true], ['0', true], ['run-1', true], ['9-lives', true], ['a'.repeat(48), true],
+    ['', false], ['a'.repeat(49), false], ['Acme', false], ['run_1', false], ['run.1', false], ['-run', false], ['run 1', false], ['run/1', false], ['r\u00fcn', false],
+  ];
+  /** The tenants that the protocol takes and the schema does not: the intake refuses them with the words of the tenant rule. */
+  const PROTOCOL_ONLY = ['a'.repeat(49), 'Acme', 'run_1', 'run.1'];
+  const made = makeProposal(rankingDocument(), SALT);
+  if (!made.ok) throw new Error(made.detail);
+  const proposeOf = (tenant: string): unknown => ({ ...PROPOSE_REQUEST, tenant });
+  const executeOf = (tenant: string): unknown => ({ op: 'execute', authority: PROPOSE_REQUEST.authority, tenant, proposal: made.value, approval: null });
+  /** What the intake throws for a request, or null when it takes it. */
+  const intakeOf = (request: unknown): unknown => {
+    try {
+      parseJob(JSON.stringify(request));
+      return null;
+    } catch (error) {
+      return error;
+    }
+  };
+
+  test('the published pattern, the intake and the two jobs agree for each tenant, and the protocol takes more', async () => {
+    const pattern = new RegExp(REQUEST_SCHEMA.oneOf[0].properties.tenant.pattern);
+    expect(new RegExp(REQUEST_SCHEMA.oneOf[1].properties.tenant.pattern).source).toBe(pattern.source);
+    for (const [tenant, holds] of TENANTS) {
+      expect(pattern.test(tenant), `the published pattern for ${JSON.stringify(tenant)}`).toBe(holds);
+      for (const [op, request] of [['propose', proposeOf(tenant)], ['execute', executeOf(tenant)]] as const) {
+        const refusal = intakeOf(request);
+        if (holds) expect(refusal, `${op} ${JSON.stringify(tenant)}`).toBeNull();
+        else expect(refusal, `${op} ${JSON.stringify(tenant)}`).toBeInstanceOf(RequestRefusal);
+      }
+      // The jobs hold the same rule: `propose` refuses a tenant outside the form before it does anything, and the kit takes a ranking only for a tenant inside it.
+      const job = await thrownBy(proposeWorld().front({ request: { tenant } }));
+      if (holds) expect(job, `the job for ${JSON.stringify(tenant)}`).toBeNull();
+      else expect(job, `the job for ${JSON.stringify(tenant)}`).toBeInstanceOf(ProposeRefusal);
+      expect(parseRanking(rankingDocument({ tenant })).ok, `the ranking for ${JSON.stringify(tenant)}`).toBe(holds);
+    }
+    for (const tenant of PROTOCOL_ONLY) {
+      for (const request of [proposeOf(tenant), executeOf(tenant)]) expect(intakeOf(request)).toMatchObject({ code: 'bad_shape', status: 400, message: TENANT_RULE });
+    }
+  });
+
+  test('refuses a tenant outside the schema with bad_shape (400) on POST / and on POST /precheck, for both operations, so that no escrow is claimed for it, and a tenant inside the schema is the twin on both routes', async () => {
+    const w = proposeWorld();
+    const { origin } = await serve({ proposeDeps: () => w.deps, clock: () => w.clock.ms });
+    const precheck = async (request: unknown, escrow: string): Promise<Answer> => {
+      const res = await fetch(`${origin}/precheck`, { method: 'POST', body: wireOf(request), headers: { authorization: TOKEN, ...contextOf(escrow) } });
+      return { status: res.status, body: (await res.json()) as Json };
+    };
+    const refusal = { status: 400, body: { error: 'bad_shape', message: TENANT_RULE } };
+    for (const tenant of ['Acme', 'a_b', 'a'.repeat(49)]) {
+      for (const [op, request] of [['propose', proposeOf(tenant)], ['execute', executeOf(tenant)]] as const) {
+        expect(await post(origin, request), `${op} ${tenant} on POST /`).toStrictEqual(refusal);
+        expect(await precheck(request, 'aa'), `${op} ${tenant} on POST /precheck`).toStrictEqual(refusal);
+      }
+    }
+    expect(w.trace).toStrictEqual([]);
+    // The refused pre-checks reserved nothing: another escrow gets its go, and the tenant that the schema takes is the twin on both routes.
+    expect(await precheck(proposeOf('acme'), 'bb')).toStrictEqual({ status: 200, body: { go: true, reserved_ms: 120_000 } });
+    expect((await post(origin, proposeOf('acme'), TOKEN, undefined, contextOf('bb'))).status).toBe(200);
   });
 });
 

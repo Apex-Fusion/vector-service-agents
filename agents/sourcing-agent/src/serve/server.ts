@@ -2,8 +2,9 @@
 // The service behind the template runtime, on the HTTP surface of packages/service-kit (`createJobServer`): GET /healthz, GET /agent.json, POST / (the job, with the token of the runtime), POST /precheck (the
 // reservation of the job slot, with no check of its own) and one open route, POST /cosign/delegate. The runtime holds the supplier key, claims the escrow of a hirer, and posts the job to this service as the body of
 // POST /. A member hires the Sourcing Agent, so no counterparty check applies to it: the server has no pre-check hook, and a call to /precheck is a go whenever the job slot is free. The request is parsed by
-// `parseRequest` of the kit with the two fields of `propose` (the request for quotation and the weights), and the job is `runPropose` or `runExecute` by its operation. Every result gets the member `fault_mode` from
-// the one switch of the process: the empty text in a clean run, and `invert_scores` when the operator set it.
+// `parseRequest` of the kit with the two fields of `propose` (the request for quotation and the weights), and the tenant must have the form that the schema of the manifest publishes. The runtime claims the escrow
+// when /precheck says go, so a request that the job would refuse for its tenant after the Claim is refused by the intake, on POST / and on POST /precheck. The job is `runPropose` or `runExecute` by its operation.
+// Every result gets the member `fault_mode` from the one switch of the process: the empty text in a clean run, and `invert_scores` when the operator set it.
 //
 // A job whose caller hangs up is stopped (`abortOnClose`). `propose` reads the signal before each step, and the fan-out and the scoring read it before each commitment of their own, so a caller that is gone gets no
 // Pay after the hang-up, and what the job paid for before stays in the result. `execute` reads it before the token and before the call to the sourcing record, and never gives it to the call: a call that was sent runs
@@ -22,8 +23,9 @@ import { ExecuteRefusal, runExecute } from '../execute/index.ts';
 import type { ExecuteDeps } from '../execute/index.ts';
 import { parseProposeFields } from '../model/index.ts';
 import type { ProposeFields } from '../model/index.ts';
-import { ProposeRefusal, runPropose } from '../propose/index.ts';
+import { ProposeRefusal, TENANT_RULE, runPropose } from '../propose/index.ts';
 import type { ProposeDeps, SourcingResult } from '../propose/index.ts';
+import { REQUEST_SCHEMA } from './manifest.ts';
 
 /** The log of the process: one line each on stdout, with the name of the service. */
 export const defaultLog = (line: string): void => { console.log(`[sourcing-agent] ${line}`); };
@@ -46,7 +48,14 @@ export type JobRequest = UseCaseRequest<ProposeFields>;
 /** The result of a job as the service answers it: the result of the job, with the member `fault_mode` of the one switch. */
 export type JobAnswer = WithFaultMode<SourcingResult | ExecuteResult, 'sourcing-agent'>;
 
-/** The request JSON of a job as a request of the agent. It throws `RequestRefusal` for a text that is too large, that is not JSON, or that breaks a rule of the intake. */
+/**
+ * The form of a tenant that the schema of the manifest publishes: 1 to 48 lower-case letters, digits and hyphens, the first a letter or a digit. The protocol takes more (up to 64 characters, with upper-case letters,
+ * `_` and `.`), and the job refuses a tenant that is not in this form, but only after the runtime has claimed the escrow. So the intake holds both operations to the published form, and the pattern is read from the
+ * manifest, so that the two cannot differ.
+ */
+const TENANT_FORM = new RegExp(REQUEST_SCHEMA.oneOf[0].properties.tenant.pattern);
+
+/** The request JSON of a job as a request of the agent. It throws `RequestRefusal` for a text that is too large, that is not JSON, or that breaks a rule of the intake, the tenant form of the schema among them. */
 export function parseJob(requestJson: string): JobRequest {
   const size = checkRequestSize(requestJson);
   if (!size.ok) throw new RequestRefusal(size.code === 'request_too_large' ? 'request_too_large' : 'bad_shape', size.detail);
@@ -54,6 +63,7 @@ export function parseJob(requestJson: string): JobRequest {
   if (!json.ok) throw new RequestRefusal('bad_shape', json.detail);
   const request = parseRequest(json.value, parseProposeFields);
   if (!request.ok) throw new RequestRefusal('bad_shape', request.detail);
+  if (!TENANT_FORM.test(request.value.tenant)) throw new RequestRefusal('bad_shape', TENANT_RULE);
   return request.value;
 }
 

@@ -14,7 +14,7 @@ const importsOf = (text: string): string[] => [...text.matchAll(/^(?:import|expo
 
 describe('the propose folder', () => {
   test('exports these values, and no other', () => {
-    expect(Object.keys(propose).sort()).toStrictEqual(['PROPOSE_DEADLINE_MS', 'PROPOSE_FAILURES', 'ProposeRefusal', 'RANKING_RESERVE_MS', 'SCORING_RESERVE_MS', 'runPropose']);
+    expect(Object.keys(propose).sort()).toStrictEqual(['PROPOSE_DEADLINE_MS', 'PROPOSE_FAILURES', 'ProposeRefusal', 'RANKING_RESERVE_MS', 'SCORING_RESERVE_MS', 'TENANT_RULE', 'runPropose']);
   });
 
   test('has these source files, and no other', () => {
