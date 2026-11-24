@@ -38,8 +38,12 @@ const MODULE1 = module1FromManifest(await readManifest(MANIFEST_FILE, 'The copy 
 const STAKE_UNITS = CLAIM_STAKE_LOVELACE / UNIT;
 const WINDOW_HOURS = CLAIM_WINDOW_MS / HOUR_MS;
 const APPROVAL_HOURS = RUN_APPROVAL_VALIDITY_MS / HOUR_MS;
+const BID_CLAIM_TERMS = `The stake is ${STAKE_UNITS} units (${CLAIM_STAKE_LOVELACE.toLocaleString('en-US')} lovelace). The challenge window is ${WINDOW_HOURS} hours.`;
 
-interface PageSentence { readonly page: string; readonly what: string; readonly text: string }
+interface PageSentence {
+  readonly page: string; readonly what: string; readonly text: string;
+  readonly section?: 'Identity' | 'Claim statements';
+}
 
 /** The sentences that state the claim and the approval of a run, each with the page that holds it. */
 const SENTENCES: readonly PageSentence[] = [
@@ -64,11 +68,22 @@ const SENTENCES: readonly PageSentence[] = [
     page: 'specs/insurer-intake-agent.md', what: 'the claim of the Insurer Intake Agent',
     text: `an operator command stakes a claim with the service key of the agent: ${STAKE_UNITS} units, which is ${CLAIM_STAKE_LOVELACE} lovelace, with a challenge window of ${WINDOW_HOURS} hours. After the window, the same command withdraws the claim when nobody challenged it.`,
   },
+  ...['specs/sourcing-agent.md', 'specs/bid-desk.md'].flatMap((page) =>
+    (['Identity', 'Claim statements'] as const).map((section) => ({ page, what: `the claim in ${section}`, text: BID_CLAIM_TERMS, section })),
+  ),
 ];
+
+function claimText(page: string, section: PageSentence['section']): string {
+  if (section === undefined) return page;
+  const body = (page.split(`\n## ${section}\n`)[1] ?? '').split('\n## ', 1)[0];
+  if (section === 'Identity') return body.split('\n').find((line) => line.startsWith('| Claim |')) ?? '';
+  return body.trimStart().split('\n\n', 1)[0];
+}
 
 /** The problems of a set of pages: each sentence that its page does not hold. `pages` maps the path of a page to its text. */
 function pageProblems(pages: Readonly<Record<string, string>>): string[] {
-  return SENTENCES.filter(({ page, text }) => !(pages[page] ?? '').includes(text)).map(({ page, what }) => `${page} does not state ${what} with the numbers of the constants`);
+  return SENTENCES.filter(({ page, section, text }) => !claimText(pages[page] ?? '', section).includes(text))
+    .map(({ page, what }) => `${page} does not state ${what} with the numbers of the constants`);
 }
 
 const PAGES: Readonly<Record<string, string>> = Object.fromEntries([...new Set(SENTENCES.map(({ page }) => page))].map((page) => [page, read(page)]));
@@ -143,6 +158,14 @@ describe('the agent pages', () => {
     ]);
     expect(pageProblems({ ...PAGES, 'specs/reorder-agent.md': reorder.replaceAll(`The runs use ${APPROVAL_HOURS} hours.`, `The runs use ${APPROVAL_HOURS * 2} hours.`) })).toEqual([
       'specs/reorder-agent.md does not state the approval of a run with the numbers of the constants',
+    ]);
+  });
+
+  it('does not take the right claim window in one section as proof for the other', () => {
+    const page = 'specs/bid-desk.md';
+    const differentWindow = BID_CLAIM_TERMS.replace(`${WINDOW_HOURS} hours`, `${WINDOW_HOURS + 1} hours`);
+    expect(pageProblems({ ...PAGES, [page]: PAGES[page].replace(BID_CLAIM_TERMS, differentWindow) })).toEqual([
+      `${page} does not state the claim in Identity with the numbers of the constants`,
     ]);
   });
 

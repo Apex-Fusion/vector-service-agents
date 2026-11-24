@@ -23,7 +23,6 @@ import { faultGap } from '@vsa/usecase-kit/manifest';
 import { COUNTERPARTY_REFUSALS, ERROR_STATUS, FAULT_MODES, MAX_REQUEST_BYTES, NO_OPEN_CLAIM, RFQ_SCHEMA, RUNTIME_BODY_LIMIT_BYTES, accepted, isPlainObject } from '@vsa/usecase-kit/protocol';
 import type { FaultSetting, ProtocolResult } from '@vsa/usecase-kit/protocol';
 import { blake2b224Hex } from '@vsa/vector-read';
-import { CLAIM_STAKE_LOVELACE, CLAIM_WINDOW_MS } from '../../../scripts/operator/lib/claim-constants.ts';
 import { USE_CASE_NAMES } from '../../../scripts/operator/usecases/names.ts';
 import { MemoryRfqBook, PASSED_CHECKS_TTL_MS, PassedChecks, createPrecheck, loadPriceList, rfqChecks } from '../src/checks/index.ts';
 import { QUOTE_DECISION, QUOTE_REFUSAL_STATUS, RUNTIME_MARGIN_MS, faultyPriceOf, runQuote } from '../src/job/index.ts';
@@ -61,6 +60,15 @@ function memberNames(value: unknown): string[] {
   if (typeof value !== 'object' || value === null) return [];
   return Object.entries(value).flatMap(([key, member]) => (Array.isArray(value) ? [] : [key]).concat(memberNames(member)));
 }
+
+const CLAIM_SUPPORT = [
+  '`claim` task of the operator pack supports one Module-1 claim for each Bid Desk per clean or failure run',
+  'The operator CLI does not enable use case 3 yet.',
+  "stakes the claim before the run and signs with that Bid Desk's service key",
+  'After the window, the operator can withdraw an unchallenged claim with `claim cleanup`.',
+  'The service stakes no claim.',
+  `If the challenge lookup finds no eligible open claim, it returns \`${NO_OPEN_CLAIM}\`.`,
+];
 
 /** The day of the page. The status line of the page holds it, and it is the default date of the status in the manifest. */
 const PAGE_DATE = '2026-11-24';
@@ -227,12 +235,8 @@ describe('specs/bid-desk.md: the frame, the identity and the capability', () => 
     expect(Object.keys(template)).not.toContain('subagents');
     expect(row(identity, 'Parties')).toBe('| Parties | Accountable: the Accountable key of the organisation, with its domain. Responsible: Module-1. Provider: the Provider key. Guardians: the guardian key of the organisation and a controller key of this deployment, with threshold 2 |');
     expect(row(identity, 'Reputation stake')).toBe('| Reputation stake | a Module-3 self-stake on the capability, owned by the service key |');
-    // The claim: the numbers are the constants of the operator pack. The service stakes none.
-    expect(CLAIM_STAKE_LOVELACE).toBe(50_000_000n);
-    expect(CLAIM_WINDOW_MS).toBe(86_400_000);
-    expect(row(identity, 'Claim')).toBe(
-      `| Claim | a Module-1 claim for each run. The service stakes none. No command of this repository stakes a claim for this agent yet. Until one does, a challenge against it ends with \`${NO_OPEN_CLAIM}\`. The design is that the operator stakes the claim with the service key before each run, once such a command exists: ${CLAIM_STAKE_LOVELACE / 1_000_000n} units, which is ${CLAIM_STAKE_LOVELACE} lovelace, with a challenge window of ${CLAIM_WINDOW_MS / 3_600_000} hours. The operator then withdraws it after the window, when nobody challenged it. See Claim statements |`,
-    );
+    const claim = row(identity, 'Claim');
+    for (const part of CLAIM_SUPPORT) expect(claim).toContain(part);
   });
 
   test('the second table of Identity gives, for each Bid Desk, its instance word, its name, its organisation and its public origin from its compose file, and the manifest names no controller', () => {
@@ -1044,7 +1048,8 @@ describe('specs/bid-desk.md: the receipt, the claim and the fault switch', () =>
     expect(table).toStrictEqual(BID_DESK_CLAIM.statements.map((statement) => `| ${statement.id} | ${statement.text} |`));
     for (const instance of INSTANCES) expect(manifests[instance].behaviour.claim.statements, instance).toStrictEqual(BID_DESK_CLAIM.statements);
     expect(BID_DESK_CLAIM.statements.map((statement) => statement.id)).toStrictEqual(['S1', 'S2', 'S3']);
-    expect(claim).toContain(`The service stakes no claim: no code of the service calls the staking. No command of this repository stakes a claim for this agent yet. Until one does, a challenge against it ends with \`${NO_OPEN_CLAIM}\`. The design is a Module-1 claim for each Bid Desk and each run. The operator stakes it with the service key of that Bid Desk before the run, once such a command exists: ${CLAIM_STAKE_LOVELACE / 1_000_000n} units, which is ${CLAIM_STAKE_LOVELACE} lovelace, with a challenge window of ${CLAIM_WINDOW_MS / 3_600_000} hours. After the window, the operator withdraws the claim when nobody challenged it.`);
+    const opening = claim.trimStart().split('\n\n', 1)[0];
+    for (const part of CLAIM_SUPPORT) expect(opening).toContain(part);
     expect(claim).toContain('The claim has three statements, and the three Bid Desks have the same three. The manifest of each holds the same three texts in `behaviour.claim`, with no reference to a claim. A challenge names the text of a statement.');
     expect(sources.filter(([, text]) => text.includes('stakeRunClaim')).map(([file]) => file)).toStrictEqual([]);
     expect(NO_OPEN_CLAIM).toBe('no_open_claim');
@@ -1086,7 +1091,7 @@ describe('specs/bid-desk.md: the receipt, the claim and the fault switch', () =>
     expect(await refusalOf(none.run())).toMatchObject({ code: 'internal', status: 500 });
     expect(none.booked).toHaveLength(0);
     expect(fault).toContain('When no line can take the new price, the job ends with `internal` (500): a run never says that a fault was on when it changed nothing.');
-    // The failure run is a plan. The operator pack has the data of use case 1 only, so no command runs use case 3: the data file of another use case fails this test and forces a change of the page.
+    // The CLI enables only inventory reorder, even when the pack has data for another use case.
     expect([...USE_CASE_NAMES]).toStrictEqual(['inventory-reorder']);
     expect(fault).toContain('The planned failure run sets the switch on one Bid Desk only, Bid Desk Charlie, to test whether the Sourcing Agent\'s model identifies the off-list price. No command of this repository runs use case 3 yet. The switch of one Bid Desk never changes another: each Bid Desk reads an env file of its own.');
   });
