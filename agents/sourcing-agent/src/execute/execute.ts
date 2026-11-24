@@ -123,16 +123,12 @@ async function waited<T>(run: Run, work: () => Promise<T>): Promise<Waited<T>> {
 }
 
 /**
- * The body of the call: the ranking as the hirer holds it, the salt, and the approval. A reference goes on as the request gave it, and no approval is the member with the value `null`: the sourcing record
- * refuses a missing member, and it refuses a null approval with its own code.
+ * The body of the call: the ranking as the hirer holds it, the salt, and the approval. The reference goes on as the request holds it, with every member that it has, and no approval is the member with the
+ * value `null`. The sourcing record refuses a missing member, and it refuses a null approval with its own code. The copy of the reference only gives the type of a JSON object: no value changes.
  */
 function bodyOf(request: ExecuteRequest): JsonValue {
   const { approval } = request;
-  return {
-    ranking: request.proposal.document,
-    salt: request.proposal.salt,
-    approval: approval === null ? null : { attestation: approval.attestation, issuer_did: approval.issuer_did },
-  };
+  return { ranking: request.proposal.document, salt: request.proposal.salt, approval: approval === null ? null : { ...approval } };
 }
 
 /** What the call came to. The reason of a refusal is a code of the record, and a failure has no code of its own: `failed` and `mock_system_failed` say it. */
