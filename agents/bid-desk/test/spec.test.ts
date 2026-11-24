@@ -3,7 +3,7 @@
 // files and to the deploy pack, table by table, so that they cannot part: the opening line, the status line and the changelog; the identity rows of the three instances; the terms, the times and the limits; the 7 checks
 // of the hook with their refusal codes; the steps of the job; the quote; the price list tables; the errors; the claim; the gaps word for word; the data that leaves the service; and the links. No test here uses the network.
 import { createHash } from 'node:crypto';
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, test } from 'vitest';
 import { parse as parseYaml } from 'yaml';
@@ -1055,5 +1055,48 @@ describe('specs/bid-desk.md: the receipt, the claim and the fault switch', () =>
     for (const item of ['the refund of the escrow of a revoked agent', 'the reclaim of an escrow in use case 3', 'a relying party that refuses a live token after its authority ends']) expect(lines[6], item).toContain(item);
     expect(known).toContain('The manifest states these eight, in this order, word for word. A test keeps them equal to `GAPS` in `agents/bid-desk/src/serve/gaps.ts`.');
     expect(known).toContain('The first five are the gaps of the agent. The sixth says whose keys the parties are. The seventh starts with a run-in lead and names three things that no run of use case 3 (supplier bid evaluation) covers. The eighth is the sentence of the kit about the fault switch.');
+  });
+});
+
+describe('specs/bid-desk.md: the hire, the headings, the changelog and the links', () => {
+  test('How to hire it sends the reader to the Sourcing Agent, says what the hook refuses, and says that each Bid Desk has an advert and a book of its own', () => {
+    const how = section('How to hire it');
+    expect(how).toContain('No advert exists yet, so no buyer can hire a Bid Desk today.');
+    expect(how).toContain("A buyer's agent hires a Bid Desk from the vault of a delegation. A hire without a delegation of the sender, or without a payment from its vault, is refused by the hook before the Claim.");
+    // Each of the two refusals is a code of the hook, and the check of the vault comes after the checks of the delegation.
+    const codes: string[] = [...COUNTERPARTY_REFUSALS['bid-desk']];
+    expect(['delegation_invalid', 'not_vault_paid'].map((code) => codes.indexOf(code))).toStrictEqual([3, 5]);
+    // Each Bid Desk has a volume of its own, and its book is the file `rfq-book.json` of that volume, so the same request can go to the three.
+    expect(INSTANCES.map((instance) => composes[instance].services.service.volumes?.[0])).toStrictEqual(INSTANCES.map((instance) => `bid-desk-${instance}-state:/data`));
+    expect(sources.some(([file, text]) => file === 'serve/wiring.ts' && text.includes("new FileRfqBook(join(config.stateDir, 'rfq-book.json'))"))).toBe(true);
+    expect(how).toContain("Each Bid Desk has its own advert and its own book of answered requests, so a buyer's agent can send one request, with one `rfq_id`, to each of the three Bid Desks, with one hire for each advert.");
+    expect(how).toContain('To see the Bid Desks work, hire the [Sourcing Agent](sourcing-agent.md). It hires Bid Desks for quotes on one request for quotation, and it proposes a ranking of the quotes to its hirer. The steps to hire the Sourcing Agent are on its page.');
+    expect(existsSync(`${root}agents/sourcing-agent`)).toBe(true);
+  });
+
+  test('the page has the thirteen headings of its profile in order, and Interface has the six sub-headings that the tests above read', () => {
+    expect([...page.matchAll(/^## (.+)$/gm)].map((hit) => hit[1])).toStrictEqual([
+      'Status', 'Identity', 'Capability id', 'Terms', 'Interface', 'What the receipt commits to', 'Claim statements', 'Fault switch', 'Operator and data handling', 'Known gaps', 'How to hire it', 'Changelog', 'Links',
+    ]);
+    expect([...page.matchAll(/^### (.+)$/gm)].map((hit) => hit[1])).toStrictEqual(['Request', 'What it checks before the Claim', 'What it does', 'Response', 'The price list', 'Errors']);
+  });
+
+  test('the Changelog is the version of the manifest, and the Links name files that exist, the three price lists, and the page of the Sourcing Agent', () => {
+    expect(template.version).toBe('0.1.0');
+    for (const instance of INSTANCES) expect(manifests[instance].version, instance).toBe('0.1.0');
+    expect(section('Changelog').trim()).toBe(`- ${template.version}, ${PAGE_DATE}: built`);
+    const links = section('Links');
+    const targets = [...links.matchAll(/\]\(\.\.\/([^)]+)\)/g)].map((hit) => hit[1]);
+    for (const target of targets) expect(existsSync(root + target), target).toBe(true);
+    for (const [, label, target] of links.matchAll(/\[([^\]]+)\]\(\.\.\/([^)]+)\)/g)) expect(label, target).toBe(target);
+    expect(targets).toStrictEqual(['agents/bid-desk/agent.json.template', ...INSTANCES.map((instance) => `agents/bid-desk/price-lists/${instance}.json`), 'agents/bid-desk', 'deploy/server/RUNBOOK-bid-desk.md']);
+    expect(links).toContain('Manifest: `GET /agent.json` on the public URL of each Bid Desk, once the agent is deployed. The service renders it from its environment when it starts.');
+    expect(links).toContain('Price lists: `GET /price-list.json` on the public URL of each Bid Desk, with the bytes of ');
+    // The page of the buyer-side agent is the page of the agent whose folder is in the repository.
+    expect(links).toContain('- Buyer-side agent: [Sourcing Agent](sourcing-agent.md)');
+    for (const instance of INSTANCES) {
+      expect(manifests[instance].links.source.endsWith('/agents/bid-desk'), instance).toBe(true);
+      expect(manifests[instance].links.spec.endsWith('/specs/bid-desk.md'), instance).toBe(true);
+    }
   });
 });

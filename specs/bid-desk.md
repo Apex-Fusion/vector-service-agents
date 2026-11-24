@@ -498,3 +498,23 @@ The manifest states these eight, in this order, word for word. A test keeps them
 - The controller key of this deployment, the Accountable key and the guardian keys are on one host of one operator, so a party is independent of the controller by key only.
 - What this does not show: no run covers the refund of the escrow of a revoked agent, the reclaim of an escrow in use case 3, or a relying party that refuses a live token after its authority ends. Tests cover that last case only.
 - This service has a fault switch for failure runs with these possible values: quote_off_price_list (one quote line has a unit price that is not the published price for that item and quantity); this manifest is the same for every value, so only the field fault_mode of each result shows which value is active.
+
+## How to hire it
+
+No advert exists yet, so no buyer can hire a Bid Desk today.
+
+A buyer's agent hires a Bid Desk from the vault of a delegation. A hire without a delegation of the sender, or without a payment from its vault, is refused by the hook before the Claim. Each Bid Desk has its own advert and its own book of answered requests, so a buyer's agent can send one request, with one `rfq_id`, to each of the three Bid Desks, with one hire for each advert.
+
+To see the Bid Desks work, hire the [Sourcing Agent](sourcing-agent.md). It hires Bid Desks for quotes on one request for quotation, and it proposes a ranking of the quotes to its hirer. The steps to hire the Sourcing Agent are on its page.
+
+## Changelog
+
+- 0.1.0, 2026-11-24: built
+
+## Links
+
+- Manifest: `GET /agent.json` on the public URL of each Bid Desk, once the agent is deployed. The service renders it from its environment when it starts. The template is [agents/bid-desk/agent.json.template](../agents/bid-desk/agent.json.template).
+- Price lists: `GET /price-list.json` on the public URL of each Bid Desk, with the bytes of [agents/bid-desk/price-lists/alfa.json](../agents/bid-desk/price-lists/alfa.json), [agents/bid-desk/price-lists/bravo.json](../agents/bid-desk/price-lists/bravo.json) and [agents/bid-desk/price-lists/charlie.json](../agents/bid-desk/price-lists/charlie.json).
+- Source: [agents/bid-desk](../agents/bid-desk)
+- Deploy pack: [deploy/server/RUNBOOK-bid-desk.md](../deploy/server/RUNBOOK-bid-desk.md)
+- Buyer-side agent: [Sourcing Agent](sourcing-agent.md)
