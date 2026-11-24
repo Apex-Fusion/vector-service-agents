@@ -252,20 +252,31 @@ describe('the pages of the list', () => {
     ['a number with a fraction', 1.5],
     ['NaN', Number.NaN],
     ['an object', {}],
+    ['no member', undefined],
     ['zero, where the first page starts', 0],
-  ])('a next page that is %s is not a page to follow: the fact is unreadable, and no second call is made', async (_name, nextOffset) => {
+    ['2, a jump ahead: the page of one item ends at 1', 2],
+  ])('a next page that is %s is not the end of its page: the fact is unreadable, and no second call is made', async (_name, nextOffset) => {
     const source = scripted(() => ({ ...page([view(ID, datum())]), nextOffset }));
     expect(await readCompliance(depsOf(source.list), DID, NOW)).toStrictEqual(UNREADABLE);
     expect(source.queries).toHaveLength(1);
   });
 
-  test.each<readonly [string, unknown]>([
-    ['null', null],
-    ['no member', undefined],
-  ])('a next page that is %s is the end of the list', async (_name, nextOffset) => {
-    const source = scripted(() => ({ ...page([view(ID, datum())]), nextOffset }));
-    expect(await readCompliance(depsOf(source.list), DID, NOW)).toStrictEqual(golden('fact-valid.json'));
+  test('a next page that is null is the end of the list, and no second call is made', async () => {
+    const last = scripted(() => ({ ...page([view(ID, datum())]), nextOffset: null }));
+    expect(await readCompliance(depsOf(last.list), DID, NOW)).toStrictEqual(golden('fact-valid.json'));
+    expect(last.queries).toHaveLength(1);
+  });
+
+  test.each([0, 5])('an empty page that names the next page %i holds no item that the next page could follow: the fact is unreadable', async (nextOffset) => {
+    const source = scripted(() => page([], { nextOffset }));
+    expect(await readCompliance(depsOf(source.list), DID, NOW)).toStrictEqual(UNREADABLE);
     expect(source.queries).toHaveLength(1);
+  });
+
+  test('a jump ahead on a later page skips items: the fact is unreadable', async () => {
+    const jumping = scripted((query) => (query.offset === undefined ? page([other(3)], { nextOffset: 1 }) : page([view(ID, datum())], { nextOffset: 3 })));
+    expect(await readCompliance(depsOf(jumping.list), DID, NOW)).toStrictEqual(UNREADABLE);
+    expect(jumping.queries).toHaveLength(2);
   });
 
   test('a page that does not lead forward makes the fact unreadable: a later page that names its own start', async () => {
@@ -315,6 +326,20 @@ describe('the pages of the list', () => {
     inTime.resolve(page([newer]));
     expect(await pendingInTime).toMatchObject({ state: 'invalid', attestation: id(2) });
     expect(spare.waiting).toBe(0);
+  });
+
+  test('no list call is made after the bound: a page that comes late is dropped, and the next page is not asked for', async () => {
+    const clock = new ManualClock();
+    const first = deferred<AttestationPage>();
+    const source = scripted((query) => (query.offset === undefined ? first.promise : page([view(ID, datum())])));
+    const pending = readCompliance(depsOf(source.list, { clock }), DID, NOW);
+    await clock.advance(FACT_READ_TIMEOUT_MS);
+    expect(await pending).toStrictEqual(UNREADABLE);
+    expect(source.queries).toHaveLength(1);
+    // The first page comes late, and it names a second page. The read is over, so the reader does not ask for it.
+    first.resolve(page([view(ID, datum())], { nextOffset: 1 }));
+    await settle();
+    expect(source.queries).toHaveLength(1);
   });
 });
 
@@ -440,12 +465,13 @@ describe('a list that cannot be read', () => {
     ['an object whose items are a text', { items: 'items' }],
     ['an object whose items are an object', { items: {} }],
     ['an object whose items are null', { items: null }],
+    ['an object with a list of items and no next page member', { items: [] }],
   ])('a page that is %s is unreadable', async (_name, answer) => {
     expect(await readCompliance(depsOf(scripted(() => answer).list), DID, NOW)).toStrictEqual(UNREADABLE);
   });
 
-  test('a page with an empty list of items and no other member is absent', async () => {
-    expect(await readCompliance(depsOf(scripted(() => ({ items: [] })).list), DID, NOW)).toStrictEqual(ABSENT);
+  test('a page with an empty list of items and no next page is absent', async () => {
+    expect(await readCompliance(depsOf(scripted(() => ({ items: [], nextOffset: null })).list), DID, NOW)).toStrictEqual(ABSENT);
   });
 });
 

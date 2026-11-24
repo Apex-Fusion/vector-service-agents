@@ -7,15 +7,15 @@
 //      bytes of the subject can be dodged. The controller of the subject can write the datum again, in a `Contest`, with the subject as a byte string in chunks. That datum decodes to the same subject, but a list
 //      that filters on the bytes of the subject does not find it, so a bidder could hide a revoked attestation. A key hash gives no filter on the datum. The list then reads every attestation output, and the
 //      reader decides on the decoded datum. The list fails when 5,000 or more attestation outputs exist, whoever made them: the fact is then `unreadable`, for every bidder.
-//   2. The reader follows `nextOffset` from page to page until a page names none. The next page must start after the page that names it. All the pages together have 20 seconds, and at most 100 pages are read.
-//      The attestations of all the pages take part.
+//   2. The reader follows `nextOffset` from page to page until a page names null. The next page starts where the page that names it ends, and that page holds an item: any other value, a missing member included,
+//      ends the read as `unreadable`. All the pages together have 20 seconds, and the reader asks for no page after that. At most 100 pages are read. The attestations of all the pages take part.
 //   3. The reader checks each item again, on its decoded datum: the type is 0, the key hash of the issuer is the key hash of the registry, and the subject is the agent id of the bidder. Anybody can make an
 //      attestation about any subject, so the issuer rule is the guard. An item that fails one of the three is dropped and never shown. The reader does not trust the list to have applied the query.
 //   4. The reader puts the kept items in order again: the newest `issued_at` first, then the lower identifier. The newest kept item decides. It is the last statement of the registry about the bidder.
 //   5. `attestationState` of buyer-core gives the state of that item at `nowMs`: active, revoked, expired or not_yet_valid. Active is `valid`. Each other state is `invalid`, and `attestation_state` names it.
 //      No kept item is `absent`.
 //   6. A source that cannot be read is `unreadable`. It is never `absent` and never `valid`. That covers a list that throws or does not answer in 20 seconds, a page that is not an object with a list `items`,
-//      a next page that does not lead on, more than 100 pages, an item whose datum cannot be read, an identifier that appears twice, and a bidder, a key hash or a time that is not in its form.
+//      a `nextOffset` that is not the end of its page, more than 100 pages, an item whose datum cannot be read, an identifier that appears twice, and a bidder, a key hash or a time that is not in its form.
 //
 // What the reader reads of an item. Of every item: the identifier, and the subject, the issuer, the type and the issue time of the datum. Of the item that decides: also the dates, the status, the reason of a
 // revocation and the hash of the reply. The reason is `revokeReason` of the view. It is exact, while `datum.status.reason` is NaN for a reason that a number cannot hold. The address of the reply of the bidder
@@ -102,13 +102,13 @@ const isoOf = (ms: number): string => `${new Date(ms).toISOString().slice(0, 19)
 
 /**
  * Runs `work`, and gives its value in a wrapper. It gives null when `work` throws or rejects, and when `ms` milliseconds of the clock pass first. A late answer, or a late failure, is dropped. The timer of the
- * clock is cleared when the race ends.
+ * clock is cleared when the race ends. `work` gets a signal that aborts when the race ends, so that a loop in `work` stops after the bound and asks for nothing more.
  */
-async function bounded<T>(clock: ComplianceClock, ms: number, work: () => Promise<T>): Promise<{ readonly value: T } | null> {
+async function bounded<T>(clock: ComplianceClock, ms: number, work: (signal: AbortSignal) => Promise<T>): Promise<{ readonly value: T } | null> {
   const stop = new AbortController();
   try {
     const late = clock.sleep(ms, stop.signal).then(() => null);
-    const run = Promise.resolve().then(work).then((value) => ({ value }), () => null);
+    const run = Promise.resolve().then(() => work(stop.signal)).then((value) => ({ value }), () => null);
     return await Promise.race([run, late]);
   } finally {
     stop.abort();
@@ -173,21 +173,24 @@ function factOf(item: Item, nowMs: number): ComplianceFact | null {
 }
 
 /**
- * The items of every page of the list, in the order of the pages. Null when a page is not an object with a list `items`, when a page names a next page that does not start after it, and when a page after the
- * `MAX_PAGES`th is still named. The query names the key hash of the registry and the type, and no subject: see rule 1. A failure of the list is thrown to the caller.
+ * The items of every page of the list, in the order of the pages. Null when a page is not an object with a list `items`, when a page names a next page that is not the end of the page, when the read is over
+ * (`signal` aborted), and when a page after the `MAX_PAGES`th is still named. The query names the key hash of the registry and the type, and no subject: see rule 1. A failure of the list is thrown to the
+ * caller. The signal is read before each call of the list, so that no call is made after the bound has ended the read.
  */
-async function pagesOf(list: ComplianceDeps['list'], issuerPkh: string): Promise<unknown[] | null> {
+async function pagesOf(list: ComplianceDeps['list'], issuerPkh: string, signal: AbortSignal): Promise<unknown[] | null> {
   const items: unknown[] = [];
-  let offset: number | undefined;
+  let offset = 0;
   for (let pages = 0; pages < MAX_PAGES; pages += 1) {
-    const query: AttestationQuery = { issuer: { type: 'key_hash', hash: issuerPkh }, attType: COMPLIANCE_ATT_TYPE, limit: PAGE_LIMIT, ...(offset === undefined ? {} : { offset }) };
+    if (signal.aborted) return null;
+    const query: AttestationQuery = { issuer: { type: 'key_hash', hash: issuerPkh }, attType: COMPLIANCE_ATT_TYPE, limit: PAGE_LIMIT, ...(pages === 0 ? {} : { offset }) };
     const page: unknown = await list(query);
     if (!isPlainObject(page) || !Array.isArray(page.items)) return null;
     items.push(...page.items);
-    const next = page.nextOffset;
-    if (next === null || next === undefined) return items;
-    if (!isWhole(next) || next <= (offset ?? 0)) return null;
-    offset = next;
+    if (page.nextOffset === null) return items;
+    // The next page starts where this page ends, and a page that names one holds an item. Any other value cannot be followed: a missing member, a jump ahead that skips items, or a place that was read already.
+    const end = offset + page.items.length;
+    if (page.items.length === 0 || page.nextOffset !== end) return null;
+    offset = end;
   }
   return null;
 }
@@ -195,7 +198,7 @@ async function pagesOf(list: ComplianceDeps['list'], issuerPkh: string): Promise
 async function judge(deps: ComplianceDeps, did: Did, nowMs: number): Promise<ComplianceFact> {
   const issuerPkh = deps.issuerPkh;
   if (!parseDid(did).ok || !isKeyHash(issuerPkh) || !isWhole(nowMs)) return noAttestation('unreadable');
-  const answer = await bounded(deps.clock, FACT_READ_TIMEOUT_MS, () => pagesOf((query) => deps.list(query), issuerPkh));
+  const answer = await bounded(deps.clock, FACT_READ_TIMEOUT_MS, (signal) => pagesOf((query) => deps.list(query), issuerPkh, signal));
   const items = answer?.value ?? null;
   if (items === null) return noAttestation('unreadable');
   const looked: Item[] = [];
