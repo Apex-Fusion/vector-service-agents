@@ -32,8 +32,8 @@ import type { QuoteDeps } from './ports.ts';
 import { DECISION_TEXT, QUOTE_TEXT, QuoteRefusal, decisionCodeOf, describeDecision } from './refusal.ts';
 import type { QuoteRefusalCode } from './refusal.ts';
 
-/** How long before `deliver_by` the runtime stops waiting for the job, in milliseconds. */
-const RUNTIME_MARGIN_MS = 30_000;
+/** How long before `deliver_by` the runtime stops waiting for the job, in milliseconds. The job records no quote with less time left, and the service ends the paid decision this margin and the call for the credential before `deliver_by`. */
+export const RUNTIME_MARGIN_MS = 30_000;
 /** The longest organisation of the sender that a quote holds, in characters, in the text and in its NFC form. */
 const MAX_ORGANISATION_CHARS = 1024;
 /** The credential that a quote holds: a compact JWS of at most 8192 characters, three parts of base64url text with a dot between them. A test holds this rule to the parser of the quote. */

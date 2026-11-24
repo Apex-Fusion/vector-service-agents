@@ -10,7 +10,7 @@
 //   the hook's ledger    Every read of the ledger by the hook ends inside the budget of the hook. The wiring sets that budget over the one that the environment of the ledger carries.
 //   one book             One `FileRfqBook` serves the hook and every job of the process. Two objects on one file can lose an entry: each reads the file, adds its entry and writes the whole file. The job reads
 //                        the book again before it records a quote, so a second escrow of one request that the hook passed before the first job wrote its entry is refused there.
-//   the decision         `decide` of the kit with the decision `quote`, the four limits of the settings and the deadline of the job, 300 s after the job arrived. One decision is one hire, with no second try.
+//   the decision         `decide` of the kit with the decision `quote`, the four limits of the settings and the deadline of the job: 300 s after the job arrived, or earlier when `deliver_by` leaves less. One decision is one hire, with no second try.
 //
 // The Bid Desk is not buyer-side: it has no Module-1 port, no dispute code and no sub-delegation. The janitor of its one paying key, which ends the escrows that a model hire left, starts with the service.
 //
@@ -27,7 +27,7 @@ import type { ChecksPorts } from '@vsa/usecase-kit/checks';
 import { decide } from '@vsa/usecase-kit/decision';
 import type { RfqMessage } from '@vsa/usecase-kit/protocol';
 import { FileRfqBook, PassedChecks, createPrecheck } from '../checks/index.ts';
-import { QUOTE_DECISION } from '../job/index.ts';
+import { QUOTE_DECISION, RUNTIME_MARGIN_MS } from '../job/index.ts';
 import type { QuoteDeps } from '../job/index.ts';
 import { serviceKeyOf } from './keys.ts';
 import { defaultLog } from './server.ts';
@@ -53,8 +53,8 @@ export interface Wired {
   /** The paying key of the service key: its chain, its queue (`lane`), its stranded store and its janitor. */
   readonly key: PayingKey;
   readonly precheck: Precheck;
-  /** The ports of the job that arrived at the time given. */
-  readonly jobDeps: (arrivedAt: number) => QuoteDeps;
+  /** The ports of the job that arrived at the time given, for the escrow that its context names. */
+  readonly jobDeps: (arrivedAt: number, context: JobContext) => QuoteDeps;
 }
 
 /** A wait that never holds the process open: the timer is not cancelled when the work that it bounds ends first. */
@@ -109,15 +109,18 @@ export async function wireService(config: ServiceConfig, options: WireOptions = 
   const precheck = createPrecheck({ ports, book, passed, clock, log: say });
 
   const hireLedger = hireLedgerOf(say);
-  const jobDeps = (arrivedAt: number): QuoteDeps => ({
+  const jobDeps = (arrivedAt: number, context: JobContext): QuoteDeps => ({
     agent: { did: config.agentDid, organisation: config.organisation },
     priceList: { list: config.priceList.list, sha256: config.priceList.sha256 },
     takeChecks: (escrowRef) => passed.take(escrowRef, clock()),
     book,
     credential: (did) => jobGateway.credential(did),
+    // The job has no check of the time before the paid decision, so the deadline of the decision holds it: the hire never runs past the time that the rest of the job needs after it. The job records no quote
+    // with less than RUNTIME_MARGIN_MS left before deliver_by, and the call for the credential before the record takes up to CALL_TIMEOUT_MS.
     decide: (input) => decide(
       {
-        key, limits: config.limits, clock, sleep, deadlineMs: arrivedAt + JOB_DEADLINE_MS, fetchImpl, ledger: hireLedger, log: say,
+        key, limits: config.limits, clock, sleep, fetchImpl, ledger: hireLedger, log: say,
+        deadlineMs: Math.min(arrivedAt + JOB_DEADLINE_MS, context.deliverByMs - RUNTIME_MARGIN_MS - CALL_TIMEOUT_MS),
         ...(config.endpoints.indexerUrl === undefined ? {} : { indexerUrl: config.endpoints.indexerUrl }),
       },
       QUOTE_DECISION,

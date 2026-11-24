@@ -202,7 +202,7 @@ A Bid Desk is the hired side. A job that fails answers with its HTTP status, and
 | 409, the service is busy | `busy` (a job runs, or the slot is reserved for another escrow. The answer to a job has no message, and the answer of the hook has one) |
 | 422, the job | `deadline` (the caller hung up before the model hire or before the record in the book, or less than 30 s are left before the runtime stops waiting for the job) |
 | 500, the service | `precheck_missing` (the job has no record of passed checks for its body), `store_write_failed` (the rfq book or the record of the model hire cannot be written), `internal` (a fault of the service: a plain 500 with no message when nothing names it, and the fixed message when the job names it) |
-| 502, a third party | `credential_failed` (the identity gateway gave no credential that a quote can hold), `inference_failed` (the model hire failed), `model_output_invalid` (the answer of the model cannot be used: it breaks the shape of the decision, or a line is not an item of the request, or there is no line) |
+| 502, a third party | `credential_failed` (the identity gateway gave no credential that a quote can hold), `inference_failed` (the model hire failed, or it did not start because less than 60 s were left for it), `model_output_invalid` (the answer of the model cannot be used: it breaks the shape of the decision, or a line is not an item of the request, or there is no line) |
 | 503, the service cannot answer now | `check_unavailable` (the hook could not read a source), `shutting_down` (the service is stopping) |
 
 A refusal of the hook leaves the escrow open, and nothing is paid. A job that fails after the Claim leaves the escrow claimed. The buyer reclaims it after the deadline, and nothing is paid for work that was not done. The Bid Desk calls no mock system, so a failed job can leave behind a model hire and nothing else. A job that fails after it accepted the model hire has paid the model supplier from the service key. A hire that stays unfinished is in the stranded file, and the janitor settles it.
@@ -211,7 +211,7 @@ A refusal of the hook leaves the escrow open, and nothing is paid. A job that fa
 
 | Time | Value | What it bounds |
 |---|---|---|
-| Deadline of a job | 300000 ms | a job ends with a quote or a refusal this long after its request arrives. The model hire has the same deadline |
+| Deadline of a job | 300000 ms | a job ends with a quote or a refusal this long after its request arrives. The model hire ends by then, or earlier: 50 s before the runtime stops waiting for the job, so that the credential can be fetched and the quote recorded. A hire does not start with less than 60 s left for it |
 | Timeout of the runtime for a job | 360000 ms | `SERVICE_TIMEOUT_MS` of the runtime: 60 s after the deadline of a job |
 | Window of the advert | 480000 ms to 86400000 ms | `ADVERT_MAX_PROCESSING_MS`: at least 8 min, at most 24 h. The default is the least |
 | Call for the credential | 20000 ms | the one timeout of the call to the identity gateway for the credential of the desk. It fits inside the deadline of a job |

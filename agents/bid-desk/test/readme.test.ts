@@ -13,9 +13,10 @@ import { BID_CAPABILITIES, BID_DESK_CLAIM, MAX_ITEM_QUANTITY, MAX_RFQ_ITEMS, QUO
 import type { PriceList } from '@vsa/usecase-kit/bids';
 import { SHARED_CHECK_NAMES, checkSenderActive } from '@vsa/usecase-kit/checks';
 import type { ChecksPorts } from '@vsa/usecase-kit/checks';
+import { HIRE_MIN_MS } from '@vsa/usecase-kit/decision';
 import { COUNTERPARTY_REFUSALS, ERROR_STATUS, MAX_REQUEST_BYTES, RFQ_SCHEMA, canonicalSha256 } from '@vsa/usecase-kit/protocol';
 import { HOOK_READS as READS_OF_THE_HOOK, MemoryRfqBook, PASSED_CHECKS_LIMIT, PASSED_CHECKS_TTL_MS, PassedChecks, RFQ_BOOK_LIMIT, createPrecheck } from '../src/checks/index.ts';
-import { QUOTE_DECISION, QUOTE_REFUSAL_STATUS, faultyPriceOf, quoteInput, runQuote } from '../src/job/index.ts';
+import { QUOTE_DECISION, QUOTE_REFUSAL_STATUS, RUNTIME_MARGIN_MS, faultyPriceOf, quoteInput, runQuote } from '../src/job/index.ts';
 import type { QuoteDeps } from '../src/job/index.ts';
 import { QUOTE_TEXT } from '../src/job/refusal.ts';
 import { TEMPLATE_ENV, TEMPLATE_PRICE_LIST, manifestFromEnv } from '../src/serve/manifest.ts';
@@ -618,6 +619,7 @@ describe('agents/bid-desk/README.md: the errors', () => {
     expect(kit).toContain("return send(500, { error: 'internal' });");
     expect(errors).toContain(`\`shutting_down\` has the fixed message \`${STOPPING_TEXT}\`, and the 409 \`busy\` of the hook has the fixed message \`${BUSY_TEXT}\`.`);
     expect(errors).toContain('A Bid Desk is the hired side. A job that fails answers with its HTTP status, and the runtime turns the error into the answer that the buyer reads.');
+    expect(errors).toContain(`\`inference_failed\` (the model hire failed, or it did not start because less than ${HIRE_MIN_MS / 1000} s were left for it)`);
   });
 
   test('each refusal that the job writes is in the table with its status, with its fixed text, and a refused job books no quote', async () => {
@@ -716,8 +718,10 @@ describe('agents/bid-desk/README.md: the times, the state and the stop', () => {
     expect(JOB_DEADLINE_MS + 60_000 + 120_000).toBe(MIN_PROCESSING_WINDOW_MS);
     expect(section('Times')).toContain(`A pass that is still in flight at a stop is abandoned after ${JANITOR_STOP_WAIT_MS / 1000} s`);
     expect(JANITOR_STOP_WAIT_MS).toBe(30_000);
-    // The model hire has the deadline of the job, and the call for the credential has its own timeout.
-    expect(textOf('../src/serve/wiring.ts')).toContain('deadlineMs: arrivedAt + JOB_DEADLINE_MS');
+    // The model hire has the deadline of the job, or the time that the rest of the job needs before the runtime stops waiting for it, and the call for the credential has its own timeout.
+    expect(textOf('../src/serve/wiring.ts')).toContain('deadlineMs: Math.min(arrivedAt + JOB_DEADLINE_MS, context.deliverByMs - RUNTIME_MARGIN_MS - CALL_TIMEOUT_MS)');
+    expect(section('Times')).toContain(`The model hire ends by then, or earlier: ${(RUNTIME_MARGIN_MS + CALL_TIMEOUT_MS) / 1000} s before the runtime stops waiting for the job`);
+    expect(section('Times')).toContain(`A hire does not start with less than ${HIRE_MIN_MS / 1000} s left for it`);
     expect(textOf('../src/serve/wiring.ts')).toContain('timeoutMs: CALL_TIMEOUT_MS');
     expect(textOf('../src/serve/wiring.ts')).toContain('timeoutMs: config.checksBudgetMs');
   });

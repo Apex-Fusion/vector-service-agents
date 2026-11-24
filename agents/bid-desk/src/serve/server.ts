@@ -73,8 +73,8 @@ export interface ServerOptions {
   readonly fault: FaultSwitch<'bid-desk'>;
   /** The hook. Required: a service with no hook would claim every escrow. */
   readonly precheck: (request: RfqMessage, context: JobContext) => Promise<PrecheckAnswer>;
-  /** The ports of the job that arrived at the time given. The server asks for them when the job starts, so the deadline of the job is the one of its arrival. */
-  readonly jobDeps: (arrivedAt: number) => QuoteDeps;
+  /** The ports of the job that arrived at the time given, for the escrow that its context names. The server asks for them when the job starts, so the deadline of the job is the one of its arrival and of its `deliver_by`. */
+  readonly jobDeps: (arrivedAt: number, context: JobContext) => QuoteDeps;
   /** The text of the price list file as the service read it. The route serves exactly this text, and the manifest holds the hash of its bytes. */
   readonly priceListText: string;
   readonly clock: () => number;
@@ -93,7 +93,7 @@ export function createServer(options: ServerOptions): Server {
   const priceListRoute: OpenRoute = { path: PRICE_LIST_ROUTE, methods: ['GET'], handle: () => ({ status: 200, headers: { 'content-type': 'application/json' }, body: options.priceListText }) };
   const job = (request: RfqMessage, arrivedAt: number, signal: AbortSignal | undefined, context: JobContext | undefined): Promise<Quote> => {
     if (context === undefined) throw new RequestRefusal('bad_context', 'The job needs the six headers of the context that the runtime sends: the Bid Desk takes no job without them.');
-    return runQuote(options.jobDeps(arrivedAt), request, context, arrivedAt, signal);
+    return runQuote(options.jobDeps(arrivedAt, context), request, context, arrivedAt, signal);
   };
   return createJobServer<RfqMessage, QuoteResult>({
     manifestText: options.manifestText,

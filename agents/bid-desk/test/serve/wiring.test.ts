@@ -12,7 +12,7 @@ import { parseRfqDocument } from '@vsa/usecase-kit/bids';
 import { HIRE_MIN_MS } from '@vsa/usecase-kit/decision';
 import type { JsonValue } from '@vsa/usecase-kit/protocol';
 import { HOOK_READS } from '../../src/checks/index.ts';
-import { quoteInput } from '../../src/job/index.ts';
+import { RUNTIME_MARGIN_MS, quoteInput } from '../../src/job/index.ts';
 import { CALL_TIMEOUT_MS, HOOK_READS as HOOK_READS_OF_THE_SETTINGS, JOB_DEADLINE_MS } from '../../src/serve/settings.ts';
 import { loadConfig } from '../../src/serve/start.ts';
 import { wireService } from '../../src/serve/wiring.ts';
@@ -86,7 +86,7 @@ describe('wireService makes the real parts from the configuration', () => {
   test('the job gets the desk as its agent, the price list of the instance, the fault switch and the clock of the configuration, and the record of the hook is its store', async () => {
     const world = makeWorld({ instance: 'bravo', fault: 'quote_off_price_list' });
     const { config, jobDeps } = await wired(world);
-    const deps = jobDeps(T);
+    const deps = jobDeps(T, world.context);
     expect(deps.agent).toStrictEqual({ did: DESK_DID, organisation: 'bravo.example.test' });
     expect(deps.priceList).toStrictEqual({ list: config.priceList.list, sha256: config.priceList.sha256 });
     expect(deps.fault).toBe(config.fault);
@@ -99,8 +99,8 @@ describe('wireService makes the real parts from the configuration', () => {
   test('every job of the process shares the one book of the hook: a quote that one job booked is a duplicate for the hook, and for the next job', async () => {
     const world = makeWorld();
     const { precheck, jobDeps } = await wired(world);
-    const first = jobDeps(T);
-    const second = jobDeps(T);
+    const first = jobDeps(T, world.context);
+    const second = jobDeps(T, world.context);
     expect(second.book).toBe(first.book);
     expect(await precheck(world.message, world.context)).toStrictEqual({ go: true });
     await first.book.record(world.sender.did, 'run1-rfq-1', 'ab'.repeat(32));
@@ -115,7 +115,7 @@ describe('the one paying key has one queue', () => {
     const { key, jobDeps } = await wired(world);
     const hold = world.holdModel();
     expect(key.lane.busy).toBe(false);
-    const hire = jobDeps(T).decide(inputOf(world));
+    const hire = jobDeps(T, world.context).decide(inputOf(world));
     await hold.reached;
     expect(key.lane.busy).toBe(true);
     hold.release();
@@ -128,12 +128,12 @@ describe('the one paying key has one queue', () => {
     const world = makeWorld();
     const { key, jobDeps } = await wired(world);
     const turns = vi.spyOn(key.lane, 'run');
-    expect((await jobDeps(T).decide(inputOf(world))).ok).toBe(true);
+    expect((await jobDeps(T, world.context).decide(inputOf(world))).ok).toBe(true);
     expect(turns).toHaveBeenCalledTimes(1);
     const hold = world.holdModel();
-    const first = jobDeps(T).decide(inputOf(world));
+    const first = jobDeps(T, world.context).decide(inputOf(world));
     await hold.reached;
-    const second = jobDeps(T).decide(inputOf(world));
+    const second = jobDeps(T, world.context).decide(inputOf(world));
     // The second decision asks for its turn, and it has not reached the model supplier: the first hire holds the lane until it ends.
     await until(() => turns.mock.calls.length === 3, 'the second decision has asked for its turn');
     expect(world.m.llm.sends).toHaveLength(1);
@@ -148,7 +148,7 @@ describe('the model decision', () => {
   test('is the real decision of the kit over the stub marketplace: one hire from the service key, the answer of the model as the choice, and a booking line with the fee and the hash', async () => {
     const world = makeWorld();
     const { jobDeps } = await wired(world);
-    const result = await jobDeps(T).decide(inputOf(world));
+    const result = await jobDeps(T, world.context).decide(inputOf(world));
     expect(result.ok, JSON.stringify(result)).toBe(true);
     if (!result.ok) return;
     expect([result.value.name, result.value.choice.lines.length, result.value.choice.valid_until, result.value.inference.path]).toStrictEqual(['quote', 3, '2027-06-30', 'marketplace']);
@@ -165,17 +165,35 @@ describe('the model decision', () => {
     const { jobDeps } = await wired(world);
     expect(JOB_DEADLINE_MS).toBe(300_000);
     expect(HIRE_MIN_MS).toBe(60_000);
-    const late = await jobDeps(T - JOB_DEADLINE_MS + HIRE_MIN_MS - 1_000).decide(inputOf(world));
+    const late = await jobDeps(T - JOB_DEADLINE_MS + HIRE_MIN_MS - 1_000, world.context).decide(inputOf(world));
     expect(late.ok).toBe(false);
     if (!late.ok) expect([late.code, late.reason]).toStrictEqual(['inference_failed', 'llm_out_of_time']);
     expect(world.m.llm.sends).toStrictEqual([]);
-    expect((await jobDeps(T).decide(inputOf(world))).ok).toBe(true);
+    expect((await jobDeps(T, world.context).decide(inputOf(world))).ok).toBe(true);
+  });
+
+  test('never runs past the end of the time that the rest of the job needs: deliver_by less 30 s, less the 20 s of the call for the credential, so a job that arrives too late starts no hire and pays nothing, and its twin hires', async () => {
+    const world = makeWorld();
+    const { jobDeps } = await wired(world);
+    expect([RUNTIME_MARGIN_MS, CALL_TIMEOUT_MS, HIRE_MIN_MS]).toStrictEqual([30_000, 20_000, 60_000]);
+    // The job arrived now, so its own deadline is 300 s away. The escrow ends in 109 s: 109 less 30, less 20 leaves 59 s, which is under the 60 s that a hire needs. Without the 20 s of the call for the
+    // credential it would leave 79 s, and without the 30 s of the margin 89 s: each of them is a hire.
+    const late = await jobDeps(T, { ...world.context, deliverByMs: T + RUNTIME_MARGIN_MS + CALL_TIMEOUT_MS + HIRE_MIN_MS - 1_000 }).decide(inputOf(world));
+    expect(late.ok).toBe(false);
+    if (!late.ok) expect([late.code, late.reason]).toStrictEqual(['inference_failed', 'llm_out_of_time']);
+    // Nothing was posted or accepted, and the model supplier had no job.
+    expect(world.logs.filter((line) => line.startsWith('model hire:'))).toStrictEqual([]);
+    expect(world.m.llm.sends).toStrictEqual([]);
+    // The same job with the escrow that the world gives, due 300 s after it arrived, hires: the check above is not empty for want of a hire.
+    expect((await jobDeps(T, world.context).decide(inputOf(world))).ok).toBe(true);
+    expect(world.m.llm.sends).toHaveLength(1);
+    expect(world.logs.filter((line) => line.startsWith('model hire: posted'))).toHaveLength(1);
   });
 
   test('has the limits of the settings: a model that the allowlist does not name is never hired', async () => {
     const world = makeWorld();
     const { jobDeps } = await wired(world, { LLM_MODEL_ALLOWLIST: 'another/model-that-is-not-listed' });
-    const result = await jobDeps(T).decide(inputOf(world));
+    const result = await jobDeps(T, world.context).decide(inputOf(world));
     expect(result.ok).toBe(false);
     expect(world.m.llm.sends).toStrictEqual([]);
   });
@@ -186,12 +204,12 @@ describe('the model decision', () => {
     expect(Object.values(terms)).toStrictEqual([200_000n, 1_000_000n, 1_000_000n]);
     for (const [name, at] of Object.entries(terms)) {
       const below = makeWorld();
-      const refused = await (await wired(below, { [name]: String(at - 1n) })).jobDeps(T).decide(inputOf(below));
+      const refused = await (await wired(below, { [name]: String(at - 1n) })).jobDeps(T, below.context).decide(inputOf(below));
       expect(refused.ok, `${name} one below the terms`).toBe(false);
       expect(below.m.llm.sends, `${name} one below the terms`).toStrictEqual([]);
       expect(below.logs.filter((line) => line.startsWith('model hire: posted')), `${name} one below the terms`).toStrictEqual([]);
       const twin = makeWorld();
-      const taken = await (await wired(twin, { [name]: String(at) })).jobDeps(T).decide(inputOf(twin));
+      const taken = await (await wired(twin, { [name]: String(at) })).jobDeps(T, twin.context).decide(inputOf(twin));
       expect(taken.ok, `${name} at the terms: ${JSON.stringify(taken)}`).toBe(true);
       expect(twin.m.llm.sends, `${name} at the terms`).toHaveLength(1);
     }
@@ -217,7 +235,7 @@ describe('the time of the hook', () => {
     const world = makeWorld();
     const config = loadConfig({ ...world.env, CHECKS_READ_BUDGET_MS: '500' });
     const { jobDeps } = await wireService(config, { ...world.options, fetchImpl: lateGateway(world, 700) });
-    const issued = await jobDeps(T).credential(DESK_DID);
+    const issued = await jobDeps(T, world.context).credential(DESK_DID);
     expect(issued.ok, JSON.stringify(issued)).toBe(true);
   });
 
@@ -227,7 +245,7 @@ describe('the time of the hook', () => {
     const timeouts = vi.spyOn(AbortSignal, 'timeout');
     const { jobDeps, precheck } = await wireService(config, world.options);
     timeouts.mockClear();
-    expect((await jobDeps(T).credential(DESK_DID)).ok).toBe(true);
+    expect((await jobDeps(T, world.context).credential(DESK_DID)).ok).toBe(true);
     expect(CALL_TIMEOUT_MS).toBe(20_000);
     expect(timeouts.mock.calls.map(([ms]) => ms)).toStrictEqual([CALL_TIMEOUT_MS]);
     timeouts.mockClear();
@@ -264,7 +282,7 @@ describe('the organisation of the desk', () => {
     for (const instance of ['alfa', 'bravo', 'charlie'] as const) {
       const world = makeWorld({ instance });
       const { jobDeps } = await wired(world);
-      expect(jobDeps(T).agent.organisation).toBe(`${instance}.example.test`);
+      expect(jobDeps(T, world.context).agent.organisation).toBe(`${instance}.example.test`);
     }
     expect(ORGANISATION).toBe('alfa.example.test');
   });
