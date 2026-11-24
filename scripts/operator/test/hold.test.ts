@@ -396,6 +396,25 @@ describe('what the signers and the plan refuse', () => {
     await h.suspendAnswer();
     expect(await h.run(...h.args('--submit'))).toBe(0);
   });
+  it('refuses a transaction that spends a second copy of the record output of the agent, because the plan explains only the output that the node shows: the build passes the guard body and the guard inputs alone refuses it, in the dry run and with --submit; the world with one copy lands', async () => {
+    const h = await world();
+    const chain = h.w.world.chain;
+    // The world holds a second output with the token and the datum of the record. The tool finds that copy first and spends it, and then the node shows the other copy first.
+    const copy = recordUtxo(OD_ID, h.record());
+    chain.held.unshift(copy);
+    await h.suspendAnswer();
+    chain.held.push(chain.held.shift()!);
+    const refusal = `the step suspend is refused by inputs: the transaction spends ${copy.txHash}#${copy.outputIndex} is not explained by the state file, and it is not a plain output of a wallet of the given keys. Nothing was signed.`;
+    expect(await h.run(...h.args())).toBe(2);
+    expect(h.errors()).toContain(refusal);
+    untouched(h);
+    await refusedSubmit(h, 'inputs', refusal);
+    expect(calls(h, 'vector_build_identity_suspend')).toHaveLength(2);
+    chain.held = chain.held.filter((utxo) => utxo !== copy);
+    await h.suspendAnswer();
+    expect(await h.run(...h.args('--submit'))).toBe(0);
+    expect(h.record().status).toEqual(suspended(alfaHold(h.alfa)));
+  });
   it('refuses a transaction whose change goes to an address outside the keys and the identity script: the guard destinations stops the dry run, and the cap stops the run with --submit; the twin that keeps the change lands', async () => {
     const h = await world();
     const built = await h.suspendAnswer();

@@ -9,7 +9,8 @@
 // the group that the results go to, and the name is in no file of the repository. The page ends with the section "Not covered".
 // A label is the name of an evidence file without `.json`: the file `<state>/evidence/private/<label>.json`, or the file `<state>/evidence/<label>.json` (a public file has the date and the number
 // of the run in its name). Without `--runs` the page takes the public labels only: a private file goes into the page when `--runs` names its label. The header file must lie outside the key folder,
-// and it must hold no run of 40 or more hex characters. The task reads no key and no chain, signs nothing, and records no step in the state file, so it can run again when a later run adds a file.
+// and it must hold no run of 40 or more hex characters and no line of the form NAME=value, which is a line of an env file: the value of such a line can be a token that is no hex. The task reads no key and
+// no chain, signs nothing, and records no step in the state file, so it can run again when a later run adds a file.
 import { createHash } from 'node:crypto';
 import { lstatSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
 import type { Dirent, Stats } from 'node:fs';
@@ -36,6 +37,8 @@ const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const HASH = /^[0-9a-f]{64}$/;
 const REF_VALUE = /^[A-Za-z0-9._:#/-]{1,200}$/;
 const REF_KIND = /^[a-z][a-z0-9_-]{0,31}$/;
+/** A line of an env file: a name and an equals sign at the start of a line. A header names a group in plain words, so it holds no such line. */
+const ENV_LINE = /^[A-Za-z_][A-Za-z0-9_]*=/m;
 
 // ---- what each primitive shows and does not show ----
 
@@ -240,8 +243,8 @@ function isInside(path: string, base: string): boolean {
 
 /**
  * The text of the header file, verbatim. These are refused: a link, a folder, a device, a file of the key folder (by its real path, so that a link to the folder does not hide it, and before the file is
- * read), a file above the limit, a file that is not UTF-8 text, a file with no text in it, and a text with a mark of a secret or with 40 or more hex characters in a row (the size of a key, a hash
- * or a token).
+ * read), a file above the limit, a file that is not UTF-8 text, a file with no text in it, a text with a mark of a secret or with 40 or more hex characters in a row (the size of a key, a hash or a token),
+ * and a text with a line of the form NAME=value (a line of an env file, whose value can be a token that is no hex). A refusal never shows the text.
  */
 function readHeader(path: string, keysDir: string): string {
   let found: Stats;
@@ -264,6 +267,7 @@ function readHeader(path: string, keysDir: string): string {
   if (text.trim() === '') throw new PreconditionError('the header file holds no text: it names the group that the results go to');
   if (/[0-9a-fA-F]{40,}/.test(text)) throw new PreconditionError('the header file holds 40 or more hex characters in a row: that is the size of a key, a hash or a token, and the header names a group');
   if (holdsSecret(text)) throw new PreconditionError('the header file holds a mark of a secret: the page holds no key and no token');
+  if (ENV_LINE.test(text)) throw new PreconditionError('the header file holds a line of the form NAME=value: that is a line of an env file, and the header names a group in plain words');
   return text;
 }
 

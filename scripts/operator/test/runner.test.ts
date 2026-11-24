@@ -860,8 +860,8 @@ describe('a transaction in flight', () => {
         expect(w.exposure()).toEqual([]);
         expect(w.evidence('toy')).toEqual([expect.objectContaining({ step: 'one', status: 'info', shows: { note: 'the operator lets the transaction go, and says that the chain was checked', transaction: hash, session: 's1' } })]);
         expect(w.machine()).toMatchObject({ command: 'cleanup', mode: 'submit', outcome: 'done', exit: 0, step: 'one' });
-        // The release reads no status and no inputs. It asks the network guard and the tip of the node once in each of its two runs.
-        expect(w.node.reads).toHaveLength(reads);
+        // The release reads the status of the transaction once in each of its two runs, and no inputs. It asks the network guard and the tip of the node once in each of its two runs.
+        expect(w.node.reads.slice(reads)).toEqual([hash, hash]);
         expect(w.node.inputReads).toHaveLength(inputReads);
         expect(w.node.tipReads).toBe(tips + 2);
         expect(w.node.networkReads).toBe(networks + 2);
@@ -910,7 +910,7 @@ describe('a transaction in flight', () => {
         expect(w.evidence('toy')).toEqual([expect.objectContaining({ status: 'info', shows: expect.objectContaining({ transaction: hash, session: null }) })]);
       });
     });
-    describe('the release of a transaction that may still land', () => {
+    describe('the release of a transaction that may still land, or that the indexer knows', () => {
       /** The end of the validity of a transaction of `strand`, and the time after which the checks let it go: a minute later. */
       const LAST_MS = NOW + 30 * 60_000;
       const RELEASE_AT = LAST_MS + 60_000;
@@ -996,6 +996,39 @@ describe('a transaction in flight', () => {
         untouched(w, hash);
         expect(w.node.tipReads).toBe(tips);
         expect(w.node.networkReads).toBe(networks);
+      });
+      it('refuses a transaction that the indexer knows, in a dry run and with --submit, after one read of its status: it landed. It lets the transaction go when the indexer does not know it or cannot be read, and says so', async () => {
+        const w = await taskWorld();
+        const { hash, def } = await strand(w, [], { applied: false });
+        w.clock.t = AFTER_VALIDITY;
+        for (const confirmations of [1, 0]) {
+          for (const argv of [[], ['--submit']]) {
+            reset(w);
+            w.node.reads.length = 0;
+            w.node.script.push({ confirmations });
+            expect(await release(w, def, hash, ...argv), `${confirmations} ${argv.join(' ')}`).toBe(2);
+            expect(w.screen.errorText).toContain(`the transaction ${hash} of the step one ${confirmations >= 1 ? 'is confirmed' : 'is in the newest block'}, as the indexer says: it landed, so nothing is let go. Run the task again without --release, so that the run records the step.`);
+            expect(w.node.reads).toEqual([hash]);
+            expect(w.machine()).toMatchObject({ command: 'cleanup', outcome: 'stopped', exit: 2, step: 'one' });
+            untouched(w, hash);
+          }
+        }
+        // The indexer does not know the transaction: one read, and the release goes through.
+        reset(w);
+        w.node.reads.length = 0;
+        expect(await release(w, def, hash, '--submit')).toBe(0);
+        expect(w.node.reads).toEqual([hash]);
+        expect(w.screen.text).toContain(`the indexer does not know the transaction ${hash} of the step one.`);
+        expect(w.state('toy').in_flight).toBeNull();
+        // The status cannot be read: the indexer adds no check, and the output says so.
+        const down = await taskWorld();
+        const second = await strand(down, [], { applied: false });
+        down.clock.t = AFTER_VALIDITY;
+        down.node.script.push(new Error('the indexer is down'));
+        reset(down);
+        expect(await release(down, second.def, second.hash, '--submit')).toBe(0);
+        expect(down.screen.text).toContain(`the status of the transaction ${second.hash} of the step one could not be read (the indexer is down), so the indexer adds no check`);
+        expect(down.state('toy').in_flight).toBeNull();
       });
     });
     it('keeps a transaction when the node cannot say whether its inputs are spent, and lets it go at the next run that can', async () => {

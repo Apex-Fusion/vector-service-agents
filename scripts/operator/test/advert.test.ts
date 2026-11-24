@@ -302,6 +302,43 @@ describe('advert: an advert that is on the node', () => {
     expect(await f.run(advert, '--submit', '--run', 'c')).toBe(0);
     expect(live()).toEqual([factRef()]);
   });
+  it('stops the facts of an old step that holds another manifest hash than the facts hold, while an advert of another lot is on the node: exit 2 and the facts stay. The twin with no other lot on the node writes them', async () => {
+    const f = await stakeAdvertWorld();
+    const lots = (): Record<string, { ref: string }> => f.w.facts().adverts['order-desk']!;
+    const manifestHash = (): string => f.w.facts().manifests['order-desk']!.sha256;
+    const first = sha(bodyOf(f, ORDER_DESK));
+    // The first run posts the Reorder advert, the small lot and the medium lot with the first manifest. The list never shows the medium lot, so its step stays unverified in the state file of this run.
+    await land(f);
+    await land(f);
+    f.hosted.listLag = 1_000;
+    expect(await f.run(advert, '--submit')).toBe(1);
+    f.hosted.listLag = 0;
+    const oldRef = lots()['lot-medium']!.ref;
+    expect(manifestHash()).toBe(first);
+    // The cleanup retires every advert, and the service serves another manifest. A second run posts the Reorder advert and the small lot with the new hash: no advert of the first hash is on the node, so the facts take it.
+    expect(await f.run(advert, 'cleanup', '--submit', '--all')).toBe(0);
+    const changed = JSON.stringify({ ...manifestOfAgent(f, ORDER_DESK), revision: 2 });
+    for (const lot of [SMALL, MEDIUM, LARGE]) serve(f, lot, changed);
+    await land(f, '--run', 'b');
+    await land(f, '--run', 'b');
+    const second = sha(changed);
+    expect(second).not.toBe(first);
+    expect(manifestHash()).toBe(second);
+    const liveRef = lots()['lot-small']!.ref;
+    // The first run goes on with its medium lot, which holds the first hash, while the small lot of the second run is on the node: the facts of the old step stop the run, and the facts stay as they are.
+    f.hosted.calls.length = 0;
+    const applied = f.world.chain.applied.length;
+    await stops(f, `the advert ${oldRef} of order-desk holds the manifest hash ${first}, and the advert(s) lot-small on the node hold ${second}: the facts of this step are not written`);
+    expect(manifestHash()).toBe(second);
+    expect(lots()['lot-medium']!.ref).toBe(oldRef);
+    expect(lots()['lot-small']!.ref).toBe(liveRef);
+    expect(f.world.chain.applied).toHaveLength(applied);
+    // The twin: no advert of another lot is on the node, so the old step writes its facts. The list does not show its advert, which is retired, so the verification then fails with exit 1.
+    expect(await f.run(advert, 'cleanup', '--submit', '--all')).toBe(0);
+    expect(await f.run(advert, '--submit')).toBe(1);
+    expect(errors(f)).toContain('does not show the advert');
+    expect(manifestHash()).toBe(first);
+  });
 });
 
 describe('advert: the record, the wallet and the runtimes', () => {
