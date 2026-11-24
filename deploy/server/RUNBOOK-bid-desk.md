@@ -13,7 +13,7 @@ Four rules hold for every step:
 
 The Bid Desk is the agent of a supplier in use case 3 (supplier bid evaluation). The Sourcing Agent of a buyer sends it a request for quotation. The Bid Desk checks who sent the request, prices it from the published price list of the supplier, and returns a quote. Its capability is `supplychain.rfq.quote.v1`.
 
-There are three Bid Desks: `alfa`, `bravo` and `charlie`. They are one code base under three records of one operator, and they do not compete. Each one runs as two containers in a compose project of its own, `bid-desk-<name>`: a runtime in front of a service. The runtime holds the supplier key, serves the advert, claims the escrow of the buyer and calls the service. The service holds one key, the service key, and does the work. It does one job at a time. The three Bid Desks run one image of the service and one image of the runtime. They share nothing else: each has a supplier key, a service key, a wallet, an advert, a port, a host name, a folder and a volume of its own, and no two of them share a job slot.
+There are three Bid Desks: `alfa`, `bravo` and `charlie`. They are one code base under three records of one operator, and they do not compete. Each one runs as two containers in a compose project of its own, `bid-desk-<name>`: a runtime in front of a service. The runtime holds the supplier key, serves the advert, claims the escrow of the buyer and calls the service. The service holds one key, the service key, and does the work. It does one job at a time. The three Bid Desks run one image of the service and one image of the runtime. They share nothing else: each has a supplier key, a service key, two wallets, an advert, two ports, a host name, a folder and a volume of its own, and no two of them share a job slot.
 
 | Bid Desk | Runtime | Service | Runtime port on 127.0.0.1 | Service port on 127.0.0.1 | Host name | Folder | Volume | Organisation |
 |---|---|---|---|---|---|---|---|---|
@@ -297,7 +297,7 @@ Start the Bid Desks one after the other, `alfa` first, then `bravo`, then `charl
 
 ## The checks
 
-Each command only reads. None prints a secret.
+Each command only reads. None prints a secret. The commands name the three Bid Desks. While one or two of them do not run yet, leave their ports, containers and host names out of the commands, and check the others.
 
 1. The six containers answer on the loopback address. Each command prints `{"ok":true}`:
 
