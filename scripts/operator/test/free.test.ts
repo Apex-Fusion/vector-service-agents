@@ -1,4 +1,4 @@
-// The check that no running runtime of an agent works, and the reader of `running-images.json` that the wrapper writes before every run.
+// The check that no running runtime of an agent works, and the reader of `running-images.json` that the script that starts the container writes before every run.
 // No test uses the network or a clock: the fetch is a function of the test, the time is a number that the test gives, and the limit of 10 seconds runs on fake timers.
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -81,7 +81,7 @@ describe('readRunningImages and readRunning', () => {
     expect(refused(() => readRunning(fileWith(body(stamp(NOW), {})), Number.NaN)).message).toMatch(/clock/);
   });
 
-  it('refuse a file that is missing, with a message that says that the wrapper writes it', () => {
+  it('refuse a file that is missing, with a message that says that the start script writes it', () => {
     const missing = join(fileWith('{}'), '..', 'not-there.json');
     expect(refused(() => readRunningImages(missing, NOW)).message).toMatch(/does not exist.*before every run/);
   });
