@@ -237,7 +237,7 @@ function createSpec(session: Session, agent: AgentSpec, ready: Ready, opening: O
   };
 }
 
-/** The facts of an opening that landed: one fact for the agent, with no stake yet. The same opening again changes nothing, and another opening is a conflict. */
+/** The facts of an opening that landed: one fact for the agent, with no stake yet (`amountLovelace` is the stake of the data). The same opening again changes nothing, and another opening is a conflict. */
 function writeOpeningFact(session: Session, agent: AgentSpec, refs: Readonly<Record<string, string>>): void {
   const openingRef = refs.openingRef;
   if (openingRef === undefined) throw new Error(`the state file holds the step ${stepName(agent, 'open')} without the reference of its opening output: its fact cannot be written`);
@@ -298,6 +298,7 @@ function openStep(agent: AgentSpec): StepHandler<Extra> {
       if (landed.build === null) throw new Error(`the landing of the step ${name} gave no answer of the tool`);
       if (landed.kind === 'dry') {
         showDry(session, agent, 'open', ready, landed.build);
+        session.extra.result = { agent: agent.id, step: 'open', did: ready.did, amount_lovelace: String(agent.stakeLovelace), valid_until: iso(landed.build.validTo) };
         return { kind: 'dry' };
       }
       const refs = { openingRef: `${landed.txHash}#${openingOutput(name, { id: ready.id, owner: session.registry.hashOf(agent.serviceKey), capability: agent.capability }, landed.facts).index}` };
@@ -327,6 +328,7 @@ function createStep(agent: AgentSpec): StepHandler<Extra> {
       if (landed.build === null) throw new Error(`the landing of the step ${name} gave no answer of the tool`);
       if (landed.kind === 'dry') {
         showDry(session, agent, 'create', ready, landed.build);
+        session.extra.result = { agent: agent.id, step: 'create', did: ready.did, opening_ref: opening.ref, token_unit: stakeTokenUnit(ready.id), amount_lovelace: String(agent.stakeLovelace), valid_until: iso(landed.build.validTo) };
         return { kind: 'dry' };
       }
       const unit = stakeTokenUnit(ready.id);

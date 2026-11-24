@@ -1,4 +1,4 @@
-// The task `advert`: the four adverts of use case 1, each with the hash of the manifest that its service serves, read twice. A fake tool writes the bytes of an advert (a datum and units, and NO token) and of
+// The task `advert`: the four adverts of use case 1 (inventory reorder), each with the hash of the manifest that its service serves, read twice. A fake tool writes the bytes of an advert (a datum and units, and NO token) and of
 // its retirement over the identity fixtures and answers in the format of the live tools, so the real guards judge real bytes. A fake `fetch` serves the manifests and the statuses of the runtimes. The task
 // runs through the real runner. Each refusal has an accepted twin. No test opens a connection.
 import { createHash } from 'node:crypto';
@@ -114,6 +114,17 @@ describe('advert: the landing', () => {
     expect(f.w.machine()).toMatchObject({ mode: 'submit', outcome: 'done', step: 'reorder-agent:reorder-agent-v1' });
     expect(f.w.machine().result).toMatchObject({ agent: 'reorder-agent', model: 'reorder-agent-v1', ref, tx: bytes.txHash });
     expect(f.w.state('advert').notes['part.reorder-agent:reorder-agent-v1']).toMatchObject({ verified_at: expect.any(String), refs: { ref } });
+  });
+  it('reads the reference of the advert from the bytes, and never from the answer of the tool', async () => {
+    const f = await stakeAdvertWorld();
+    const claimed = `${'12'.repeat(32)}#7`;
+    f.hosted.twist.post = { claimRef: claimed };
+    await land(f);
+    const bytes = factsOf(f.world.chain.applied[0]!);
+    const held = f.w.facts().adverts['reorder-agent']!['reorder-agent-v1']!.ref;
+    expect(held).not.toBe(claimed);
+    expect(held).toBe(`${bytes.txHash}#${bytes.outputs.findIndex((output) => output.address === ADDRESS)}`);
+    expect(f.w.state('advert').notes['part.reorder-agent:reorder-agent-v1']).toMatchObject({ refs: { ref: held } });
   });
   it('runs the four adverts with --all: the three adverts of the Order Desk hold one hash, and the manifest fact is set once', async () => {
     const f = await stakeAdvertWorld();

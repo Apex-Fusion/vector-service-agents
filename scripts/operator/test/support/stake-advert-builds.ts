@@ -197,6 +197,8 @@ export interface Twist {
   stakeId?: string;
   /** The price that the advert datum holds. */
   price?: bigint;
+  /** The advert reference that the answer of the tool states (the bytes hold the true one). */
+  claimRef?: string;
   /** The tool refuses with this text. */
   refuse?: string;
 }
@@ -253,7 +255,7 @@ export class StakeAdvertHosted extends PackHosted {
     }
   }
 
-  #build(key: ToolKey, args: Record<string, unknown>, make: () => { spec: TxSpec; title: string; extra: Record<string, unknown>; roles: Record<string, string> }): Answer {
+  #build(key: ToolKey, args: Record<string, unknown>, make: () => { spec: TxSpec; title: string; extra: Record<string, unknown> | ((built: Unsigned) => Record<string, unknown>); roles: Record<string, string> }): Answer {
     const refusal = this.twist[key]?.refuse;
     if (refusal !== undefined) return { text: refusal, isError: true };
     const { spec, title, extra, roles } = make();
@@ -263,7 +265,7 @@ export class StakeAdvertHosted extends PackHosted {
     return liveBuildAnswer(title, {
       txCbor: built.txCbor, txHash: built.txHash, fee: built.fee.toString(), validFrom: spec.validFrom, validTo: spec.validTo,
       requiredSigners: listed.map((keyHash) => ({ keyHash, roles: [roles[keyHash] ?? 'signer'] })),
-    }, extra);
+    }, typeof extra === 'function' ? extra(built) : extra);
   }
 
   /** The window of a build: it opens a minute before the second of the clock and ends 30 minutes after it. */
@@ -294,7 +296,7 @@ export class StakeAdvertHosted extends PackHosted {
       wallet, inputs: [this.#wallet(wallet).pay], collateral: [], signers: t.signers ?? [], fee: FEES.open, validFrom: lo, validTo: hi,
       outputs: [{ address: t.address ?? REPUTATION_ADDRESS, lovelace: OPENING, datum }, ...(t.extra === undefined ? [] : [t.extra])],
     };
-    return { spec, title: 'Reputation Stake Opening', extra: { did: args.did }, roles: { [keyCredentialOf(wallet)!]: 'wallet (inputs, fee and collateral)' } };
+    return { spec, title: 'Reputation Stake Opening', extra: (built: Unsigned) => ({ did: args.did, opening_ref: t.claimRef ?? `${built.txHash}#0` }), roles: { [keyCredentialOf(wallet)!]: 'wallet (inputs, fee and collateral)' } };
   }
 
   #create(args: Record<string, unknown>) {
@@ -317,7 +319,7 @@ export class StakeAdvertHosted extends PackHosted {
       wallet, inputs: [spent, pay], collateral: [collateral], signers: t.signers ?? [this.#controller, owner], fee: FEES.create, validFrom: lo, validTo: hi, mint: { [unit]: 1n },
       outputs: [{ address: t.address ?? REPUTATION_ADDRESS, lovelace: stake, assets: { [unit]: 1n }, datum }, ...(t.extra === undefined ? [] : [t.extra])],
     };
-    return { spec, title: 'Reputation Stake', extra: { did: args.did }, roles: { [this.#controller]: 'controller of the agent', [owner]: 'owner of the stake, and the wallet' } };
+    return { spec, title: 'Reputation Stake', extra: (built: Unsigned) => ({ did: args.did, stake_ref: t.claimRef ?? `${built.txHash}#0` }), roles: { [this.#controller]: 'controller of the agent', [owner]: 'owner of the stake, and the wallet' } };
   }
 
   #post(args: Record<string, unknown>) {
@@ -334,7 +336,7 @@ export class StakeAdvertHosted extends PackHosted {
       wallet, inputs: [this.#wallet(wallet).pay], collateral: [], signers: t.signers ?? [supplier], fee: FEES.post, validFrom: lo, validTo: hi, mint: t.mint,
       outputs: [{ address: t.address ?? DEPLOYMENT.advert.address, lovelace: BigInt(Number(args.deposit_lovelace)), datum, ...(t.mint === undefined ? {} : { assets: t.mint }) }, ...(t.extra === undefined ? [] : [t.extra])],
     };
-    return { spec, title: 'Advert Post', extra: { did: args.did }, roles: { [supplier]: 'supplier key, and the wallet' } };
+    return { spec, title: 'Advert Post', extra: (built: Unsigned) => ({ did: args.did, advert_ref: t.claimRef ?? `${built.txHash}#0` }), roles: { [supplier]: 'supplier key, and the wallet' } };
   }
 
   #retire(args: Record<string, unknown>) {
@@ -422,7 +424,7 @@ export interface Fixture {
 const FUNDED = [1_000_000_000n, 5_000_000n];
 
 /**
- * A world with the real data of use case 1: the keys of the registry, the identity fixtures with a record for each agent (it lists the service key and the supplier keys with the transaction
+ * A world with the real data of use case 1 (inventory reorder): the keys of the registry, the identity fixtures with a record for each agent (it lists the service key and the supplier keys with the transaction
  * purpose, and the capability), the funded wallets of the service keys and the supplier keys, the facts of the two records, the fake tools, the fake `fetch` (each runtime is free and serves
  * its manifest), an empty `running-images.json` and the approval of the session.
  */

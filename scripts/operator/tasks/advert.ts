@@ -242,9 +242,9 @@ function advertOutput(step: string, address: string, want: Want, facts: TxFacts)
 
 // ---- the landing of an advert ----
 
-function wantOf(advert: AdvertSpec, supplierHash: string, ready: Ready, manifest: Manifest): Want {
+function wantOf(agent: AgentSpec, advert: AdvertSpec, supplierHash: string, ready: Ready, manifest: Manifest): Want {
   return {
-    supplier: supplierHash, capability: '', model: advert.model, tokens: advert.maxOutputTokens, windowMs: advert.windowMs, price: advert.priceLovelace, supplierBond: advert.supplierBondLovelace,
+    supplier: supplierHash, capability: agent.capability, model: advert.model, tokens: advert.maxOutputTokens, windowMs: advert.windowMs, price: advert.priceLovelace, supplierBond: advert.supplierBondLovelace,
     buyerBond: advert.buyerBondLovelace, endpoint: originOf(advert), detailUri: manifest.uri, detailHash: manifest.sha256, agentId: ready.id, deposit: advert.depositLovelace,
   };
 }
@@ -253,7 +253,7 @@ function postSpec(session: Session, agent: AgentSpec, advert: AdvertSpec, ready:
   const step = stepName(agent, advert);
   const supplierHash = session.registry.hashOf(advert.supplierKey);
   const address = session.chain.deployment.advert.address;
-  const want = { ...wantOf(advert, supplierHash, ready, manifest), capability: agent.capability };
+  const want = wantOf(agent, advert, supplierHash, ready, manifest);
   return {
     step, tool: TOOL_POST, expectSigners: [advert.supplierKey],
     args: {
@@ -424,8 +424,8 @@ async function nextLive(session: Session): Promise<{ agent: AgentSpec; advert: A
 async function retireOne(session: Session, agent: AgentSpec, advert: AdvertSpec, ref: string): Promise<StepOutcome> {
   const step = retireName(agent, advert);
   requireNoFlight(session);
-  await requireCollateralOutput(session, advert.supplierKey);
   await requireFree(session, agent);
+  await requireCollateralOutput(session, advert.supplierKey);
   const spec: HostedLandSpec = {
     step, tool: TOOL_RETIRE, args: { changeAddress: session.registry.addressOf(advert.supplierKey), advert_ref: ref }, expectSigners: [advert.supplierKey],
     plan: (_build: HostedBuild, facts: TxFacts) => {

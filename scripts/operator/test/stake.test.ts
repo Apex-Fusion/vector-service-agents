@@ -1,4 +1,4 @@
-// The task `stake`: the Module-3 stake of each agent of use case 1, owned by its service key. A fake tool writes the bytes of the opening and of the stake over the identity fixtures and answers in
+// The task `stake`: the Module-3 stake of each agent of use case 1 (inventory reorder), owned by its service key. A fake tool writes the bytes of the opening and of the stake over the identity fixtures and answers in
 // the format of the live tools, so the real guards judge real bytes. The task runs through the real runner. Each refusal has an accepted twin. No test opens a connection.
 import { rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -60,6 +60,7 @@ describe('the constants of the reputation validator', () => {
     expect(REPUTATION_POLICY).toBe(recorded.policy_id);
     expect(stakeTokenUnit(RECORDED_STAKE.agent_did)).toBe(`${recorded.policy_id}${recorded.asset_name}`);
     expect(decodeStakeDatum(RECORDED_STAKE_HEX)).toStrictEqual(RECORDED_STAKE);
+    expect(`${RECORDED_STAKE_ROW.tx_hash}#${RECORDED_STAKE_ROW.tx_index}`).toMatch(/^48d4ce7b[0-9a-f]{56}#0$/);
     expect(RECORDED_STAKE_ROW.inline_datum!.bytes).toBe(RECORDED_STAKE_HEX);
   });
   it('equal the values of vector-read, which the fake tools use', () => {
@@ -87,6 +88,7 @@ describe('stake: the dry run', () => {
     const f = await stakeAdvertWorld({ go: null });
     expect(await f.run(stake)).toBe(0);
     expect(f.w.machine()).toMatchObject({ task: 'stake', command: 'run', mode: 'dry', outcome: 'dry', exit: 0, step: 'reorder-agent:open' });
+    expect(f.w.machine().result).toMatchObject({ agent: 'reorder-agent', step: 'open', did: f.didOf(REORDER), amount_lovelace: '10000000' });
     expect(f.hosted.calls).toEqual([{
       name: OPEN, args: { changeAddress: f.w.keys.registry.addressOf('reorder-service'), did: f.didOf(REORDER), capabilities: [REORDER.capability], owner_key_hash: f.hash('reorder-service'), amount: 10 },
     }]);
@@ -106,6 +108,7 @@ describe('stake: the dry run', () => {
     expect(f.hosted.calls.map((call) => call.name)).toEqual([CREATE]);
     expect(f.hosted.calls[0]!.args).toMatchObject({ opening_ref: ref, owner_key_hash: f.hash('reorder-service'), amount: 10 });
     expect(f.w.machine()).toMatchObject({ mode: 'dry', outcome: 'dry', step: 'reorder-agent:create' });
+    expect(f.w.machine().result).toMatchObject({ agent: 'reorder-agent', step: 'create', opening_ref: ref, token_unit: unitOf(f, REORDER), amount_lovelace: '10000000' });
     expect(f.w.screen.lines.some((line) => line.includes('The minimum of a stake never returns to its owner'))).toBe(true);
     expect(f.signs).toEqual([]);
     expect(f.world.chain.applied).toEqual([]);
@@ -138,6 +141,16 @@ describe('stake: the step open', () => {
     const f = await stakeAdvertWorld({ go: { irreversible: [] } });
     await land(f);
     expect(f.w.facts().stakes['reorder-agent']).toBeDefined();
+  });
+  it('reads the reference of the opening from the bytes, and never from the answer of the tool', async () => {
+    const f = await stakeAdvertWorld();
+    const claimed = `${'12'.repeat(32)}#7`;
+    f.hosted.twist.open = { claimRef: claimed };
+    await land(f);
+    const bytes = factsOf(f.world.chain.applied[0]!);
+    const held = f.w.facts().stakes['reorder-agent']!.openingRef;
+    expect(held).not.toBe(claimed);
+    expect(held).toBe(`${bytes.txHash}#${bytes.outputs.findIndex((output) => output.address === REPUTATION_ADDRESS)}`);
   });
   it('refuses a second opening of an agent whose opening the facts file holds: exit 2 and no build', async () => {
     const f = await stakeAdvertWorld();
@@ -418,6 +431,15 @@ describe('stake: the verification of create', () => {
     f.hosted.readTwist = (row) => row;
     expect(await f.run(stake)).toBe(0);
     expect(f.w.facts().stakes['reorder-agent']).toMatchObject({ stakeRef: expect.stringMatching(/#0$/), tokenUnit: unitOf(f, REORDER) });
+    expect(f.w.state('stake').notes['part.reorder-agent:create']).toMatchObject({ verified_at: expect.any(String) });
+  });
+  it('reads the reference of the stake from the bytes: a tool that states another reference changes nothing', async () => {
+    const f = await stakeAdvertWorld();
+    await land(f);
+    f.hosted.twist.create = { claimRef: `${'12'.repeat(32)}#7` };
+    await land(f);
+    const bytes = factsOf(f.world.chain.applied[1]!);
+    expect(f.w.facts().stakes['reorder-agent']!.stakeRef).toBe(`${bytes.txHash}#${bytes.outputs.findIndex((output) => output.address === REPUTATION_ADDRESS)}`);
     expect(f.w.state('stake').notes['part.reorder-agent:create']).toMatchObject({ verified_at: expect.any(String) });
   });
   it('catches a stake that another key owns, and a stake of another output than the transaction made', async () => {
