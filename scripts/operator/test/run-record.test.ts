@@ -3,7 +3,7 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { RunRecordError, UnknownTransactionError, hireRoleOf, parseReport, parseRunRecord, txInfoOf, txTimeOf } from '../lib/run-record.ts';
+import { RunRecordError, UnknownTransactionError, hireRoleOf, parseReport, parseRunRecord, scriptTxInfoOf, txInfoOf, txTimeOf } from '../lib/run-record.ts';
 import type { RunRecordPolicy } from '../lib/run-record.ts';
 import { inventory } from '../lib/evidence/inventory.ts';
 import data from '../usecases/inventory-reorder.ts';
@@ -278,6 +278,30 @@ describe('txInfoOf and txTimeOf', () => {
 
   it('gives the block time alone through txTimeOf', async () => {
     expect(await txTimeOf(koios([row()]).fetchImpl, 'https://koios.test', hash)).toBe(1_794_000_000_000);
+  });
+
+  it('uses the script flags when the transaction row has no phase-two flag', async () => {
+    const script = { script_hash: 'ab'.repeat(28), valid_contract: true, spends_input: { tx_hash: h('in'), tx_index: 2 },
+      input: { redeemer: { purpose: 'spend', datum: { value: { constructor: 2, fields: [] } } } } };
+    const mint = { ...script, input: { redeemer: { purpose: 'mint' } } };
+    const world = koios([row({ outputs: [], plutus_contracts: [script, mint] })]);
+    const proof = await scriptTxInfoOf(world.fetchImpl, 'https://koios.test', hash);
+    expect(proof.spends).toEqual([{ script: script.script_hash, input: `${h('in')}#2`, valid: true, action: 2, fields: [] }]);
+    expect(world.calls[0]?.body).toMatchObject({ _scripts: true });
+  });
+
+  it.each(['mint', 'reward', 'spend'] as const)('refuses any false phase-two flag on a %s run, even when the other flags are true', async (purpose) => {
+    const spend = { script_hash: 'ab'.repeat(28), valid_contract: true, spends_input: { tx_hash: h('in'), tx_index: 2 },
+      input: { redeemer: { purpose: 'spend', datum: { value: { constructor: 2, fields: [] } } } } };
+    const failed = { ...spend, valid_contract: false, input: { redeemer: { ...spend.input.redeemer, purpose } } };
+    for (const fields of [
+      { plutus_contracts: [spend, failed] },
+      { valid_contract: true, plutus_contracts: [spend, failed] },
+      { valid_contract: false, plutus_contracts: [spend] },
+    ]) {
+      const world = koios([row({ outputs: [], ...fields })]);
+      await expect(scriptTxInfoOf(world.fetchImpl, 'https://koios.test', hash)).rejects.toThrow('does not show successful script validation');
+    }
   });
 
   const failures: Array<[string, Record<string, unknown>[], number, string]> = [
