@@ -350,6 +350,8 @@ For each pack listed above, use its own runbook from the first DNS and folder st
 
 ## 8. Remove an agent
 
+For a pack named in step 7, follow the whole section "Back out" in its own runbook. The numbered steps below apply only to other packs.
+
 1. The operator retires the advert first, as the runbook of the agent says. Then nobody can post an escrow against an agent that stops.
 2. Check that the runtime says `free` (section "The restart rule"). Wait while it says `working`.
 3. Take the block of the agent out of the proxy, and stop the containers. The order depends on the way that put the block in. Do not use `-v` when you stop the containers. A volume can hold the list of escrows that a job left behind.
@@ -372,6 +374,25 @@ For each pack listed above, use its own runbook from the first DNS and folder st
      The runbook of the pack gives the commands, in its section "Back out".
 4. Remove the DNS records of the agent.
 5. Keep `/srv/agents/<agent>` and its keys. Delete them only when each wallet of the agent is empty. A deleted key cannot be made again.
+
+### Check the ledger before a use case 3 stop
+
+Use a synced Vector mainnet Ogmios node. Check `queryNetwork/tip` on that node. Its tip must be current and at or after the block of every confirmed Retire. Use the identity marketplace script addresses of this pack's deployment. `buyerIdentityDeployment` in [buyer-core](../../packages/buyer-core/src/deployment.ts) derives `advert.address` and `escrow.address` from the pack's public identity settings. Do not copy the env file.
+
+Send this read-only request after any Retire and before either stop path. Replace the two script addresses and the node URL:
+
+```sh
+curl -fsS --max-time 30 -H 'Content-Type: application/json' --data \
+  '{"jsonrpc":"2.0","id":1,"method":"queryLedgerState/utxo","params":{"addresses":["<advert address>","<escrow address>"]}}' \
+  '<Ogmios URL>'
+```
+
+Require a complete `result` array with no JSON-RPC `error`. Use `address` to select the decoder of each inline `datum`: `decodeIdentityAdvertDatum` or `decodeIdentityEscrowDatum` in [vector-read](../../packages/vector-read/src/datum.ts). Use the intended `agent_id` and `supplier_pkh` from the deployment record.
+
+- At the advert address, require no `Active` output for that agent, supplier and model. The exact output of each retired advert must be absent from the unspent outputs.
+- At the escrow address, require no output in state `Open`, `Claimed` or `Submitted` for that agent and supplier. Check all advert references, including earlier ones. A `Submitted` output still needs Accept or Release even when `/status` says `free`.
+
+Record the tip and the result of both checks. Do not treat an output you cannot classify as settled. An empty indexer result, a stale node or a failed read is not proof. If either check is not clear, leave the containers and the proxy block in place.
 
 ## Keys
 
