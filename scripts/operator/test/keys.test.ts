@@ -1,7 +1,7 @@
 // The task keys, through the real runner: what a dry run shows and writes, the approval, the keys that a submit run makes (modes, public file, table, result), a second run, a key file that is lost,
 // replaced or damaged, a key file that has the wrong mode, the status, the cleanup, and the rule that no seed reaches any stream. Each refusal has an accepted twin.
 // The keys of these tests are made at run time by the task itself. No test writes a key into a source file, and none uses a network.
-import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { KeySpec } from '../lib/registry.ts';
@@ -346,6 +346,19 @@ describe('a key file that is lost', () => {
     expect(await submit(w)).toBe(0);
     expect(w.machine()).toMatchObject({ outcome: 'finished' });
   });
+  it('does not show an invalid manifest address and refuses to make a run key when the file cannot be read as a manifest', async () => {
+    const { w, root } = await emptyWorld();
+    expect(await submit(w)).toBe(0);
+    const document = JSON.parse(manifestOf(root));
+    document.keys.run.address = KEY_TEXT;
+    writeFileSync(join(root, MANIFEST), JSON.stringify(document), { mode: 0o600 });
+    rmSync(fileOf(root, SPECS[0]!));
+    reset(w);
+    expect(await submit(w)).toBe(2);
+    expect(w.screen.errorText).toContain('the public key file cannot be read');
+    expect(w.allText()).not.toContain(KEY_TEXT);
+    expect(existsSync(fileOf(root, SPECS[0]!))).toBe(false);
+  });
 });
 
 describe('a key file that is not as the pack made it', () => {
@@ -464,6 +477,7 @@ describe('two use cases in one key folder', () => {
   const SECOND_SPECS: readonly KeySpec[] = [
     { name: 'run', scope: 'shared', about: 'The run wallet of a test.' },
     { name: 'fee', scope: 'shared', about: 'The fee wallet of a test.' },
+    { name: 'new-shared', scope: 'shared', about: 'A shared key that the first use case does not need.' },
     { name: 'gamma', scope: 'use-case', about: 'A key of the second use case of a test.' },
   ];
   /** Two worlds over one key folder: the first has the use case of the tests, the second has another name. */
@@ -491,6 +505,52 @@ describe('two use cases in one key folder', () => {
     reset(second);
     expect(await second.run(keysTask, 'status')).toBe(0);
     expect(second.screen.text).toContain('the public key file equals the key files');
+  });
+  it.each([false, true])('guards the shared run wallet that another use case recorded (legacy file: %s)', async (legacy) => {
+    const { first, second, root } = await twoWorlds();
+    expect(await submit(first)).toBe(0);
+    const firstPath = join(root, legacy ? LEGACY_PUBLIC_MANIFEST : MANIFEST);
+    if (legacy) renameSync(join(root, MANIFEST), firstPath);
+    const before = readFileSync(firstPath, 'utf8');
+    const runPath = fileOf(root, SPECS[0]!);
+    const original = readFileSync(runPath, 'utf8');
+    const runAddress = registryOf(root).addressOf('run');
+    rmSync(runPath);
+    for (const argv of [[], ['--submit']]) {
+      reset(second);
+      approve(second);
+      expect(await second.run(keysTask, ...argv)).toBe(2);
+      expect(second.screen.errorText).toContain('the shared key run is missing');
+      expect(existsSync(runPath)).toBe(false);
+      expect(existsSync(join(root, 'shared', 'new-shared.seed'))).toBe(false);
+      expect(existsSync(join(root, SECOND))).toBe(false);
+      expect(existsSync(join(root, publicManifestFile(SECOND)))).toBe(false);
+    }
+    writeSeed(root, 'shared', 'run', original);
+    reset(second);
+    expect(await submit(second)).toBe(0);
+    expect(second.machine().result).toMatchObject({ made: ['new-shared', 'gamma'], kept: ['run', 'fee'], run_wallet: runAddress });
+    expect(readFileSync(firstPath, 'utf8')).toBe(before);
+  });
+  it('refuses a shared fee key that is missing or has another address before making keys for the second use case', async () => {
+    const { first, second, root } = await twoWorlds();
+    expect(await submit(first)).toBe(0);
+    const feePath = fileOf(root, SPECS[1]!);
+    const original = readFileSync(feePath, 'utf8');
+    rmSync(feePath);
+    expect(await submit(second)).toBe(2);
+    expect(second.screen.errorText).toContain('the shared key fee is missing');
+    expect(existsSync(feePath)).toBe(false);
+    expect(existsSync(join(root, SECOND))).toBe(false);
+    writeSeed(root, 'shared', 'fee', `${counterSeed()}\n`);
+    reset(second);
+    expect(await submit(second)).toBe(2);
+    expect(second.screen.errorText).toContain('the shared key fee gives another wallet');
+    expect(existsSync(join(root, SECOND))).toBe(false);
+    writeSeed(root, 'shared', 'fee', original);
+    reset(second);
+    expect(await submit(second)).toBe(0);
+    expect(second.machine().result).toMatchObject({ made: ['new-shared', 'gamma'], kept: ['run', 'fee'] });
   });
   it('lets a world take its use case from its data: the setting, the folder of its test keys and the reader of its facts', async () => {
     const first = await taskWorld({ use: { keys: SPECS } });
@@ -545,6 +605,22 @@ describe('a public key file of the earlier name', () => {
       expect(w.screen.errorText).toContain(`the run key file is missing, and the public key file shows the run wallet ${runAddress}: funds may be there`);
       expect(existsSync(fileOf(root, SPECS[0]!))).toBe(false);
     }
+  });
+  it('does not make another use-case key in place of one that the earlier file records', async () => {
+    const { w, root, earlier } = await earlierWorld();
+    const before = readFileSync(earlier, 'utf8');
+    const keyPath = fileOf(root, SPECS[2]!);
+    const original = readFileSync(keyPath, 'utf8');
+    rmSync(keyPath);
+    expect(await submit(w)).toBe(2);
+    expect(w.screen.errorText).toContain('the key alpha is missing');
+    expect(existsSync(keyPath)).toBe(false);
+    expect(existsSync(join(root, MANIFEST))).toBe(false);
+    writeSeed(root, USE_CASE, 'alpha', original);
+    reset(w);
+    expect(await submit(w)).toBe(0);
+    expect(manifestOf(root)).toBe(before);
+    expect(readFileSync(earlier, 'utf8')).toBe(before);
   });
   it('is no public key file of a use case that it does not name', async () => {
     const { w, earlier } = await earlierWorld();
