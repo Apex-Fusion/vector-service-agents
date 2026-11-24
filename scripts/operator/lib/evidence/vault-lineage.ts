@@ -1,10 +1,10 @@
 import { isDeepStrictEqual } from 'node:util';
-import { blake2b256Hex, dataOfKoiosJson, soleTokenName, utxoOfKoiosRow, withinBudget } from '../../../../packages/buyer-core/src/index.ts';
+import { blake2b256Hex, dataOfKoiosJson, withinBudget } from '../../../../packages/buyer-core/src/index.ts';
 import { koiosPostList, koiosUtxoInfo } from '../../../../packages/buyer-core/src/vendored/mcp/marketplace-indexer.ts';
 import type { KoiosUtxo } from '../../../../packages/buyer-core/src/vendored/mcp/marketplace-indexer.ts';
 import { decodePlutusDataHex } from '../../../../packages/vector-read/src/index.ts';
 import { addressDetails } from '../../../../packages/vector-read/src/guarded-decode.ts';
-import { decodeDelegationDatum, decodeVaultDatum, sameDelegator, vaultDatumFromData } from '../../../../packages/vector-read/src/identity-codec.ts';
+import { decodeDelegationDatum, decodeVaultDatum, delegationDatumFromData, sameDelegator, vaultDatumFromData } from '../../../../packages/vector-read/src/identity-codec.ts';
 import type { DelegationDatum, VaultDatum } from '../../../../packages/vector-read/src/identity-codec.ts';
 import type { NodeAccess } from '../../../checks/lib/ports.ts';
 import { PreconditionError } from '../../../checks/lib/session.ts';
@@ -25,8 +25,9 @@ const REF = /^[0-9a-f]{64}#(?:0|[1-9][0-9]{0,5})$/;
 
 interface Output { readonly ref: string; readonly address: string; readonly key: string | null; readonly script: string | null; readonly value: bigint; readonly raw: Obj }
 interface Tx { readonly raw: Obj; readonly outputs: readonly Output[]; readonly vaultInputs: readonly Output[]; readonly runs: readonly Obj[] }
-interface Vault { readonly output: Output; readonly spent: boolean; readonly datum: VaultDatum; readonly bytes: string; readonly hash: string | null }
-interface Link { readonly ref: string; readonly datum: DelegationDatum }
+interface LedgerDatum<T> { readonly datum: T; readonly bytes: string; readonly hash: string | null }
+interface Vault extends LedgerDatum<VaultDatum> { readonly output: Output; readonly spent: boolean }
+interface Link extends LedgerDatum<DelegationDatum> { readonly output: Output }
 interface Source { readonly env: LedgerEnv; check(): void }
 
 function need(ok: unknown, reason: string): asserts ok {
@@ -79,30 +80,44 @@ function redeemerOf(run: Obj): Obj | null {
 }
 
 /** Require one successful spend per exact input. Do not infer an absent spends_input from position. */
-function requireSpends(tx: Tx, script: string, action: number, name: string): void {
-  const pending = new Set(tx.vaultInputs.map(({ ref }) => ref));
+function requireSpends(tx: Tx, script: string, action: number, name: string): Map<string, Obj> {
+  const runs = new Map<string, Obj>();
+  const why = `the vault input does not have an exact validated ${name} redeemer`;
   for (const run of tx.runs) {
     if (run.script_hash !== script) continue;
     const redeemer = redeemerOf(run);
-    need(redeemer?.purpose === 'spend' && isObject(run.spends_input) && pending.delete(outRef(run.spends_input))
-      && emptyAction(redeemer.datum, action), `the vault input does not have an exact validated ${name} redeemer`);
+    need(redeemer?.purpose === 'spend' && isObject(run.spends_input) && emptyAction(redeemer.datum, action), why);
+    const ref = outRef(run.spends_input);
+    need(!runs.has(ref) && tx.vaultInputs.some((input) => input.ref === ref), why);
+    runs.set(ref, run);
   }
-  need(pending.size === 0, `the vault input does not have an exact validated ${name} redeemer`);
+  need(runs.size === tx.vaultInputs.length, why);
+  return runs;
 }
 
-function vaultDatumMatches(raw: Obj, bytes: string, datum: VaultDatum, sealedHash: string | null): boolean {
-  const hash = raw.datum_hash;
-  if (hash != null && hash !== (sealedHash ?? blake2b256Hex(Buffer.from(bytes, 'hex')))) return false;
-  const inline = raw.inline_datum;
-  if (inline == null) return true; // Koios can project only the hash in tx_info.
-  return isObject(inline) && (inline.bytes == null || inline.bytes === bytes)
-    && (inline.value == null || isDeepStrictEqual(vaultDatumFromData(dataOfKoiosJson(inline.value)), datum));
+function datumHashMatches(hash: unknown, { bytes, hash: known }: LedgerDatum<unknown>): boolean {
+  return hash == null || hash === (known ?? blake2b256Hex(Buffer.from(bytes, 'hex')));
+}
+
+function projectedDatumMatches<T>(data: unknown, exact: LedgerDatum<T>, decode: (data: ReturnType<typeof dataOfKoiosJson>) => T): boolean {
+  // Koios can supply a hash without decoded data, or a decoded value without bytes.
+  return data == null || (isObject(data) && (data.bytes == null || data.bytes === exact.bytes)
+    && (data.value == null || isDeepStrictEqual(decode(dataOfKoiosJson(data.value)), exact.datum)));
+}
+
+function isToken(asset: Obj, policy: string, id: string): boolean {
+  return asset.policy_id === policy && asset.asset_name === id && (asset.quantity === '1' || asset.quantity === 1);
+}
+
+function oneToken(assets: unknown, policy: string, id: string): boolean {
+  return Array.isArray(assets) && assets.length === 1 && isObject(assets[0]) && isToken(assets[0], policy, id);
 }
 
 function requireVaultInput(input: Output, prior: Vault): void {
   need(input.ref === prior.output.ref && prior.spent && input.address === prior.output.address && input.value === prior.output.value
-    && Array.isArray(input.raw.asset_list) && input.raw.asset_list.length === 0
-    && vaultDatumMatches(input.raw, prior.bytes, prior.datum, prior.hash), 'the vault input differs from its exact spent output');
+    && Array.isArray(input.raw.asset_list) && input.raw.asset_list.length === 0 && input.raw.reference_script == null
+    && datumHashMatches(input.raw.datum_hash, prior) && projectedDatumMatches(input.raw.inline_datum, prior, vaultDatumFromData),
+  'the vault input differs from its exact spent output');
 }
 
 function payWindow(tx: Tx): { lo: number; hi: number } {
@@ -120,9 +135,18 @@ function requireTransition(tx: Tx, parent: Vault, child: Vault, link: Link, escr
     && sameDelegator(before.owner, after.owner) && before.delegation === after.delegation, 'the vault Pay does not preserve the Live owner and delegation');
   const { lo, hi } = payWindow(tx);
   const limit = link.datum.value;
-  const refs = objects(tx.raw.reference_inputs, REFERENCES, 'the vault Pay reference inputs are missing or exceed the limit').map((row) => outRef(row));
-  need(new Set(refs).size === refs.length && refs.includes(link.ref) && limit !== null && sameDelegator(link.datum.delegator, before.owner)
+  const refs = objects(tx.raw.reference_inputs, REFERENCES, 'the vault Pay reference inputs are missing or exceed the limit');
+  const names = refs.map((row) => outRef(row));
+  const at = names.indexOf(link.output.ref);
+  need(at >= 0 && new Set(names).size === names.length && limit !== null && sameDelegator(link.datum.delegator, before.owner)
     && link.datum.notBefore <= lo && hi <= link.datum.notAfter, 'the vault Pay does not reference its authentic delegation for the validity window');
+  const reference = refs[at]!;
+  const address = reference.payment_addr;
+  need((address == null || (isObject(address) && address.bech32 === link.output.address && address.cred === link.output.script))
+    && (reference.value == null || reference.value === String(link.output.value))
+    && (reference.asset_list == null || oneToken(reference.asset_list, link.output.script!, before.delegation))
+    && reference.reference_script == null && datumHashMatches(reference.datum_hash, link)
+    && projectedDatumMatches(reference.inline_datum, link, delegationDatumFromData), 'the Pay reference disagrees with the authenticated delegation output');
   const amount = parent.output.value - child.output.value;
   const reset = BigInt(lo) >= BigInt(before.periodStart) + BigInt(limit.periodMs);
   const spent = reset ? amount : before.spent + amount;
@@ -209,12 +233,12 @@ export function vaultLineageReader(env: LedgerEnv, node: Pick<NodeAccess, 'txSta
       const row = await archive(source, output);
       need(output.value > 0n && Array.isArray(row.asset_list) && row.asset_list.length === 0 && Array.isArray(output.raw.asset_list) && output.raw.asset_list.length === 0
         && row.reference_script == null && output.raw.reference_script == null, 'the vault output must hold lovelace only and no reference script');
-      const bytes = row.inline_datum!.bytes;
-      const datum = decodeVaultDatum(bytes);
-      const hash = row.datum_hash ?? (typeof output.raw.datum_hash === 'string' ? output.raw.datum_hash : null);
-      need(vaultDatumMatches(output.raw, bytes, datum, hash), 'the archived inline datum differs from its transaction');
+      const datum = decodeVaultDatum(row.inline_datum!.bytes);
+      const exact = { output, spent: row.is_spent === true, datum, bytes: row.inline_datum!.bytes, hash: row.datum_hash ?? null };
+      need(projectedDatumMatches(output.raw.inline_datum, exact, vaultDatumFromData)
+        && projectedDatumMatches(row.inline_datum, exact, vaultDatumFromData), 'the archived inline datum differs from its transaction');
       need(datum.type === 'Returned' || datum.spent >= 0n, 'the Live vault has invalid period spending');
-      return { output, spent: row.is_spent === true, datum, bytes, hash };
+      return exact;
     })();
     vaults.set(output.ref, loaded);
     return loaded;
@@ -227,29 +251,40 @@ export function vaultLineageReader(env: LedgerEnv, node: Pick<NodeAccess, 'txSta
       const declared = declarations.find((entry) => entry.id === id);
       need(declared !== undefined, 'the Live vault names no delegation of the run');
       const tx = await readTx(source, declared.tx);
-      const minted = objects(tx.raw.assets_minted, IO, 'the delegation mint is unproven').filter((asset) => asset.policy_id === delegation.hash && asset.asset_name === id);
+      const minted = objects(tx.raw.assets_minted, IO, 'the delegation mint is unproven').filter((asset) => asset.policy_id === delegation.hash);
       const runs = tx.runs.filter((run) => run.script_hash === delegation.hash && redeemerOf(run)?.purpose === 'mint');
-      need(minted.length === 1 && (minted[0]!.quantity === '1' || minted[0]!.quantity === 1) && runs.length === 1, 'the transaction did not validate the mint of this delegation token');
-      const targets = tx.outputs.filter((output) => output.address === delegation.address && output.script === delegation.hash
-        && objects(output.raw.asset_list, IO, 'the delegation output has no token list').some((asset) => asset.policy_id === delegation.hash && asset.asset_name === id));
+      need(minted.length === 1 && isToken(minted[0]!, delegation.hash, id) && runs.length === 1, 'the transaction did not validate the mint of this delegation token');
+      const targets = tx.outputs.filter((output) => output.script === delegation.hash && output.address === delegation.address);
       need(targets.length === 1, 'the delegation mint did not create one exact token output');
-      const row = await archive(source, targets[0]!);
-      const utxo = utxoOfKoiosRow(row);
-      need(utxo !== null && soleTokenName(utxo, delegation.address, delegation.hash) === id, 'the archived delegation does not hold its authentic token');
+      const [output] = targets;
+      for (const out of tx.outputs) {
+        const tokens = objects(out.raw.asset_list, IO, 'a delegation transaction output has no complete token list');
+        need(out === output ? oneToken(tokens, delegation.hash, id) : !tokens.some((asset) => asset.policy_id === delegation.hash && asset.asset_name === id),
+          'the transaction does not show exactly one delegation token at its deployed address');
+      }
+      const row = await archive(source, output!);
+      need(oneToken(row.asset_list, delegation.hash, id) && row.reference_script == null && output!.raw.reference_script == null,
+        'the archived delegation does not hold only its authentic token and lovelace');
       const datum = decodeDelegationDatum(row.inline_datum!.bytes);
+      const link = { output: output!, datum, bytes: row.inline_datum!.bytes, hash: row.datum_hash ?? null };
+      need(projectedDatumMatches(output!.raw.inline_datum, link, delegationDatumFromData)
+        && projectedDatumMatches(row.inline_datum, link, delegationDatumFromData), 'the archived delegation datum differs from its transaction');
       need(datum.value !== null && datum.value.perTx >= 0n && datum.value.total >= datum.value.perTx && datum.value.periodMs > 0,
         'the historical delegation has no valid vault value limit');
-      return { ref: targets[0]!.ref, datum };
+      return link;
     })();
     links.set(id, loaded);
     return loaded;
   }
 
-  async function prove(source: Source, wanted: string, maxDepth = DEPTH): Promise<VaultLineage> {
+  function prove(source: Source, wanted: string, maxDepth?: number): Promise<VaultLineage>;
+  function prove(source: Source, wanted: string, maxDepth: number, root: string): Promise<VaultLineage | null>;
+  async function prove(source: Source, wanted: string, maxDepth = DEPTH, root?: string): Promise<VaultLineage | null> {
     need(REF.test(wanted), 'the vault lineage has an invalid output reference');
     const saved = proved.get(wanted);
     if (saved !== undefined) {
       need(saved.path.length <= maxDepth, `the vault lineage exceeds its depth limit of ${DEPTH} transactions`);
+      if (root !== undefined && saved.rootRef !== root) return null;
       return saved;
     }
     const hops: { tx: Tx; ref: string }[] = [];
@@ -266,6 +301,8 @@ export function vaultLineageReader(env: LedgerEnv, node: Pick<NodeAccess, 'txSta
       need(tx.vaultInputs.length === 1, 'a Live continuation does not have one exact vault parent');
       ref = tx.vaultInputs[0]!.ref;
     }
+    // The root is the exact output, not just a matching owner or delegation. Do not verify a foreign branch as part of this run.
+    if (root !== undefined && hops.at(-1)!.ref !== root) return null;
     const path: string[] = [];
     let parent: Vault | undefined;
     let link: Link | undefined;
@@ -310,8 +347,8 @@ export function vaultLineageReader(env: LedgerEnv, node: Pick<NodeAccess, 'txSta
       const tx = await readTx(source, hash);
       need(!tx.outputs.some((output) => output.script === vault.hash), 'makes an output at the vault script: a close leaves no vault output');
       need(tx.vaultInputs.length > 0, 'does not spend the vault lineage of ref: the close has no vault input');
-      requireSpends(tx, vault.hash, 1, 'Close');
-      const roots = new Set<string>();
+      const runs = requireSpends(tx, vault.hash, 1, 'Close');
+      let matchedRoot = false;
       let found: VaultLineage | undefined;
       for (const input of tx.vaultInputs) {
         const origin = await readTx(source, txOf(input.ref));
@@ -319,12 +356,18 @@ export function vaultLineageReader(env: LedgerEnv, node: Pick<NodeAccess, 'txSta
         need(output !== undefined, 'the close does not name an exact archived vault output');
         const prior = await readVault(source, output);
         requireVaultInput(input, prior);
-        if (prior.datum.type !== 'Live') continue;
-        const lineage = await prove(source, input.ref, DEPTH - 1);
-        need(!roots.has(lineage.rootRef), 'the close spends the same vault branch more than once');
-        roots.add(lineage.rootRef);
-        if (lineage.rootRef === from.rootRef && lineage.delegation === from.delegation && sameDelegator(lineage.owner, from.owner)
-          && lineage.path.includes(from.ref)) found = lineage;
+        // The deployed Close checks the principal signature or the agent controller and its reference record.
+        // The exact script receipt must agree with the owner and value of the spent output, including any datum it projects.
+        const receipt = runs.get(input.ref)!.input;
+        const datum = isObject(receipt) ? receipt.datum : null;
+        need(datum == null || (isObject(datum) && datumHashMatches(datum.hash, prior) && projectedDatumMatches(datum, prior, vaultDatumFromData)),
+          'the Close script receipt gives a different vault datum');
+        if (prior.datum.type !== 'Live' || prior.datum.delegation !== from.delegation || !sameDelegator(prior.datum.owner, from.owner)) continue;
+        const lineage = await prove(source, input.ref, DEPTH - 1, from.rootRef);
+        if (lineage === null) continue;
+        need(!matchedRoot, 'the close spends the same vault branch more than once');
+        matchedRoot = true;
+        if (lineage.path.includes(from.ref)) found = lineage;
       }
       need(found !== undefined, 'does not spend the vault lineage of ref: no exact Live input descends from it');
       const refs = tx.vaultInputs.map(({ ref }) => ({ txHash: txOf(ref), outputIndex: Number(ref.slice(65)) }));
