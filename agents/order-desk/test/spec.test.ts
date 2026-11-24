@@ -207,8 +207,9 @@ describe('specs/order-desk.md: the claim, the fault switch and the gaps', () => 
     const sources = (readdirSync(sourceDir, { recursive: true }) as string[]).map(String).filter((file) => file.endsWith('.ts'));
     expect(sources.length).toBeGreaterThan(10);
     expect(sources.filter((file) => readFileSync(new URL(file, sourceDir), 'utf8').includes('stakeRunClaim'))).toStrictEqual([]);
-    // The claim of 50 units is the least claim that the Module-1 deployment takes, and the example environment gives that number as the stake of a challenge: a challenge targets a claim whose stake is not above it.
-    expect(envExample.split('\n')).toContain('DISPUTE_CHALLENGE_STAKE_LOVELACE=50000000');
+    // The example environment sets the stake of a CHALLENGE, and it sets it once. A challenge targets a claim whose stake is not above that number, so a claim of 50 units is a target.
+    // This line does not hold the stake of a CLAIM: the constants of the operator pack hold it (`scripts/operator/lib/claim-constants.ts`), and a test of the pack ties them to this page.
+    expect(envExample.split('\n').filter((line) => line.startsWith('DISPUTE_CHALLENGE_STAKE_LOVELACE='))).toStrictEqual(['DISPUTE_CHALLENGE_STAKE_LOVELACE=50000000']);
   });
 
   test('the Fault switch names the one value of the kit, the wrong lot of the job, and the field that every result carries', () => {
