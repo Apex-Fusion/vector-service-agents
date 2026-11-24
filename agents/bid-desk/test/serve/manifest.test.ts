@@ -14,7 +14,7 @@ import type { AdvertDatum } from '@vsa/vector-read';
 import { CONTROLLER_GAP, GAPS, NOT_SHOWN_GAP, PAGE_GAPS } from '../../src/serve/gaps.ts';
 import { REQUEST_SCHEMA, SPEC_URL, TEMPLATE_ENV, TEMPLATE_PRICE_LIST, manifestFromEnv, renderTemplate } from '../../src/serve/manifest.ts';
 import type { BidDeskManifest } from '../../src/serve/manifest.ts';
-import { BOND_LOVELACE, INSTANCES, INSTANCE_NAMES, PRICE_LIST_ROUTE, PRICE_LOVELACE } from '../../src/serve/settings.ts';
+import { BOND_LOVELACE, INSTANCES, INSTANCE_NAMES, MAX_PROCESSING_WINDOW_MS, PRICE_LIST_ROUTE, PRICE_LOVELACE } from '../../src/serve/settings.ts';
 import type { Instance } from '../../src/serve/settings.ts';
 import { AGENT_DID, CONTACT, ORIGIN, POLICY, PRICE_LIST_SHA256, SERVICE, SERVICE_ADDRESS, SUPPLIER, TOKEN, envOf, message, priceListOf, priceListUrl, shows } from './support.ts';
 
@@ -145,6 +145,19 @@ describe('the three manifests', () => {
 });
 
 describe('the terms', () => {
+  /** The advert that the record of an instance would hold, for a Post that plans it. */
+  const advertOf = (instance: Instance, manifest: BidDeskManifest, window: number = manifest.terms.max_processing_ms): AdvertDatum & { agent_id: string } => {
+    const { terms } = manifest;
+    const endpoint = `https://bids-${instance}.example.test`;
+    return {
+      supplier_pkh: manifest.keys.supplier_pkh, capability_id: manifest.capability_id, model: BID_DESK_MODEL, max_output_tokens: 0, max_processing_ms: window,
+      price_lovelace: BigInt(terms.price_lovelace), supplier_bond_lovelace: BigInt(terms.supplier_bond_lovelace), buyer_bond_lovelace: BigInt(terms.buyer_bond_lovelace),
+      endpoint_url: endpoint, detail_uri: `${endpoint}/agent.json`, detail_hash: served(instance).sha256, advertised_at: 1_790_000_000_000, status: 'Active', agent_id: AGENT_DID.slice('did:vector:'.length),
+    };
+  };
+  const post = (advert: AdvertDatum & { agent_id: string }) =>
+    planFleetPostEscrow(advert, `${'cd'.repeat(32)}#1`, 'ab'.repeat(28), 'ef'.repeat(32), 1_790_000_000_000, fleetPostTerms(advert, SERVICE_ADDRESS));
+
   test('are the price and both bonds of 1 million lovelace, the window of the operator, and the limit of the request', () => {
     expect(manifestOf('alfa').terms).toStrictEqual({
       price_lovelace: 1_000_000, supplier_bond_lovelace: 1_000_000, buyer_bond_lovelace: 1_000_000, max_processing_ms: 480_000, input_limits: { request_bytes: 900_000 },
@@ -156,18 +169,20 @@ describe('the terms', () => {
   test.each(INSTANCES)('the lock of the advert of %s is the price plus both bonds, 3 million lovelace, for a Post that plans the advert', (instance) => {
     const manifest = manifestOf(instance);
     const { terms } = manifest;
-    const endpoint = `https://bids-${instance}.example.test`;
-    const advert: AdvertDatum & { agent_id: string } = {
-      supplier_pkh: manifest.keys.supplier_pkh, capability_id: manifest.capability_id, model: BID_DESK_MODEL, max_output_tokens: 0, max_processing_ms: terms.max_processing_ms,
-      price_lovelace: BigInt(terms.price_lovelace), supplier_bond_lovelace: BigInt(terms.supplier_bond_lovelace), buyer_bond_lovelace: BigInt(terms.buyer_bond_lovelace),
-      endpoint_url: endpoint, detail_uri: `${endpoint}/agent.json`, detail_hash: served(instance).sha256, advertised_at: 1_790_000_000_000, status: 'Active', agent_id: AGENT_DID.slice('did:vector:'.length),
-    };
-    const identity = fleetPostTerms(advert, SERVICE_ADDRESS);
-    const plan = planFleetPostEscrow(advert, `${'cd'.repeat(32)}#1`, 'ab'.repeat(28), 'ef'.repeat(32), 1_790_000_000_000, identity);
+    const plan = post(advertOf(instance, manifest));
     expect(plan.lockLovelace).toBe(3_000_000n);
     expect(plan.lockLovelace).toBe(BigInt(terms.price_lovelace + terms.supplier_bond_lovelace + terms.buyer_bond_lovelace));
     expect(plan.deliverBy).toBe(1_790_000_000_000 + terms.max_processing_ms + DELIVER_BY_BUFFER_MS);
     expect(BID_DESK_MODEL).toBe('bid-desk-v1');
+  });
+
+  test('the longest window that the settings take is the longest window that a Post plans: 24 hours is planned, and one millisecond more is refused by buyer-core as the settings refuse it', () => {
+    const manifest = manifestOf('alfa');
+    expect(MAX_PROCESSING_WINDOW_MS).toBe(86_400_000);
+    expect(() => post(advertOf('alfa', manifest, MAX_PROCESSING_WINDOW_MS))).not.toThrow();
+    expect(() => post(advertOf('alfa', manifest, MAX_PROCESSING_WINDOW_MS + 1))).toThrow(/longer than the 86400000 ms/);
+    expect(manifestOf('alfa', { ADVERT_MAX_PROCESSING_MS: String(MAX_PROCESSING_WINDOW_MS) }).terms.max_processing_ms).toBe(MAX_PROCESSING_WINDOW_MS);
+    expect(message(() => build('alfa', { ADVERT_MAX_PROCESSING_MS: String(MAX_PROCESSING_WINDOW_MS + 1) }))).toContain('must be at most 86400000');
   });
 });
 
@@ -238,6 +253,7 @@ const REFUSALS: readonly Row[] = [
   ['BID_DESK_PUBLIC_ORIGIN', 'http://bids-alfa.example.test', 'environment variable BID_DESK_PUBLIC_ORIGIN must be an https origin with no user, path, query or fragment', ORIGIN],
   ['BID_DESK_PUBLIC_ORIGIN', 'https://bids-alfa.example.test/x', 'environment variable BID_DESK_PUBLIC_ORIGIN must be an https origin with no user, path, query or fragment', ORIGIN],
   ['ADVERT_MAX_PROCESSING_MS', '479999', 'environment variable ADVERT_MAX_PROCESSING_MS must be at least 480000', '480000'],
+  ['ADVERT_MAX_PROCESSING_MS', '86400001', 'environment variable ADVERT_MAX_PROCESSING_MS must be at most 86400000', '86400000'],
   ['LLM_MODEL_ALLOWLIST', undefined, 'environment variable LLM_MODEL_ALLOWLIST is required (', 'a/one'],
   ['LLM_MODEL_ALLOWLIST', 'a b', 'environment variable LLM_MODEL_ALLOWLIST entry 1 must be a model name', 'a/b'],
   ['LLM_MAX_PRICE_LOVELACE', undefined, 'environment variable LLM_MAX_PRICE_LOVELACE is required (', '250000'],

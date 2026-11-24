@@ -43,6 +43,11 @@ export const BOND_LOVELACE = 1_000_000;
 export const JOB_DEADLINE_MS = 300_000;
 /** The least window of the advert (ADVERT_MAX_PROCESSING_MS) and its default: the deadline of a job and the timeout of the runtime fit inside it. */
 export const MIN_PROCESSING_WINDOW_MS = 480_000;
+/**
+ * The longest window of the advert: 24 hours. A Post of the marketplace refuses an advert with a longer window (buyer-core does not export its ceiling, so the number is written here, and a test plans a Post at
+ * this window and one millisecond above it). An advert that nobody can hire is no advert.
+ */
+export const MAX_PROCESSING_WINDOW_MS = 86_400_000;
 /** The longest time of one call to the identity gateway for the credential of the desk. It is the one timeout of that read, and it fits the deadline of the job. */
 export const CALL_TIMEOUT_MS = 20_000;
 
@@ -188,11 +193,14 @@ export function checksBudgetOf(env: NodeJS.ProcessEnv): number {
   return ms;
 }
 
-/** The window that the advert gives a job: at least MIN_PROCESSING_WINDOW_MS. The manifest publishes it. */
+/** The window that the advert gives a job: from MIN_PROCESSING_WINDOW_MS to MAX_PROCESSING_WINDOW_MS. The manifest publishes it. */
 export function processingWindowOf(env: NodeJS.ProcessEnv): number {
   const ms = envInt('ADVERT_MAX_PROCESSING_MS', given(env.ADVERT_MAX_PROCESSING_MS), MIN_PROCESSING_WINDOW_MS);
   if (ms < MIN_PROCESSING_WINDOW_MS) {
     throw new Error(`environment variable ADVERT_MAX_PROCESSING_MS must be at least ${MIN_PROCESSING_WINDOW_MS} (the window of ${MIN_PROCESSING_WINDOW_MS / 60_000} min that the deadline of a job, ${JOB_DEADLINE_MS} ms, assumes), got ${ms}`);
+  }
+  if (ms > MAX_PROCESSING_WINDOW_MS) {
+    throw new Error(`environment variable ADVERT_MAX_PROCESSING_MS must be at most ${MAX_PROCESSING_WINDOW_MS} (24 h, the longest window that a Post accepts), got ${ms}`);
   }
   return ms;
 }

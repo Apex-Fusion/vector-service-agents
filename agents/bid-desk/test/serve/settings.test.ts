@@ -10,7 +10,7 @@ import { PRICE_LIST_SCHEMA, parsePriceList, priceFor } from '@vsa/usecase-kit/bi
 import { REGISTRY_POLICY, legacyVectorDid } from '@vsa/vector-read';
 import {
   BOND_LOVELACE, CALL_TIMEOUT_MS, CHECKS_READ_BUDGET_DEFAULT_MS, CHECKS_READ_BUDGET_MAX_MS, CHECKS_READ_BUDGET_MIN_MS, GATEWAY_DEFAULT, HOOK_READS, HOOK_READS_LIMIT_MS, HOST_DEFAULT, INSTANCES,
-  INSTANCE_NAMES, JOB_DEADLINE_MS, MIN_PROCESSING_WINDOW_MS, PORT_DEFAULT, PRICE_LIST_ROUTE, PRICE_LOVELACE, RUNTIME_PRECHECK_WAIT_MS, STATE_DIR_DEFAULT, agentDidOf, checksBudgetOf, endpointsFromEnv,
+  INSTANCE_NAMES, JOB_DEADLINE_MS, MAX_PROCESSING_WINDOW_MS, MIN_PROCESSING_WINDOW_MS, PORT_DEFAULT, PRICE_LIST_ROUTE, PRICE_LOVELACE, RUNTIME_PRECHECK_WAIT_MS, STATE_DIR_DEFAULT, agentDidOf, checksBudgetOf, endpointsFromEnv,
   faultOf, hostOf, instanceOf, limitsOf, organisationOf, portOf, priceListFileOf, processingWindowOf, publicOriginOf, stateDirOf, supplierKeyOf,
 } from '../../src/serve/settings.ts';
 import type { Instance } from '../../src/serve/settings.ts';
@@ -143,6 +143,8 @@ const REFUSALS: readonly Row[] = [
   ['CHECKS_READ_BUDGET_MS', '4000', /^environment variable CHECKS_READ_BUDGET_MS must be a whole number of milliseconds from 500 to 2249, got 4000: .* it can take 16000 ms, /, '1200'],
   ['CHECKS_READ_BUDGET_MS', 'fast', 'environment variable CHECKS_READ_BUDGET_MS must be a non-negative integer, got "fast"', '1200'],
   ['ADVERT_MAX_PROCESSING_MS', '479999', /^environment variable ADVERT_MAX_PROCESSING_MS must be at least 480000 .* got 479999$/, '480000'],
+  ['ADVERT_MAX_PROCESSING_MS', '86400001', 'environment variable ADVERT_MAX_PROCESSING_MS must be at most 86400000 (24 h, the longest window that a Post accepts), got 86400001', '86400000'],
+  ['ADVERT_MAX_PROCESSING_MS', '9007199254740991', /^environment variable ADVERT_MAX_PROCESSING_MS must be at most 86400000 .* got 9007199254740991$/, '86400000'],
   ['ADVERT_MAX_PROCESSING_MS', 'long', 'environment variable ADVERT_MAX_PROCESSING_MS must be a non-negative integer, got "long"', '900000'],
   ['FAULT_MODE', 'confirm_wrong_lot', 'environment variable FAULT_MODE must be empty or "quote_off_price_list" for bid-desk, got "confirm_wrong_lot"', 'quote_off_price_list'],
   ['FAULT_MODE', 'alter_after_approval', 'environment variable FAULT_MODE must be empty or "quote_off_price_list" for bid-desk, got "alter_after_approval"', ''],
@@ -339,6 +341,14 @@ describe('the defaults and the constants', () => {
     expect([portOf({ PORT: '9200' }), hostOf({ HOST: '127.0.0.1' }), stateDirOf({ BID_DESK_STATE_DIR: '/var/bid-desk' }), processingWindowOf({ ADVERT_MAX_PROCESSING_MS: '600000' })]).toStrictEqual([
       9200, '127.0.0.1', '/var/bid-desk', 600_000,
     ]);
+  });
+
+  test('the window of the advert is from 480000 ms to 24 hours: both ends are accepted, and one millisecond outside either end is refused', () => {
+    expect([MIN_PROCESSING_WINDOW_MS, MAX_PROCESSING_WINDOW_MS]).toStrictEqual([480_000, 86_400_000]);
+    for (const ms of [MIN_PROCESSING_WINDOW_MS, 600_000, 3_600_000, MAX_PROCESSING_WINDOW_MS]) expect(processingWindowOf({ ADVERT_MAX_PROCESSING_MS: String(ms) }), String(ms)).toBe(ms);
+    for (const ms of [MIN_PROCESSING_WINDOW_MS - 1, MAX_PROCESSING_WINDOW_MS + 1]) {
+      expect(() => processingWindowOf({ ADVERT_MAX_PROCESSING_MS: String(ms) }), String(ms)).toThrow(`environment variable ADVERT_MAX_PROCESSING_MS must be at ${ms < MIN_PROCESSING_WINDOW_MS ? 'least' : 'most'} `);
+    }
   });
 
   test('the deadline of a job and the time of the one gateway call are the numbers of the page, and the deadline fits inside the runtime timeout inside the window of the advert', () => {
