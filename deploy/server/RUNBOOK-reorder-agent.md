@@ -28,7 +28,18 @@ The service is the container `reorder-service`, on `127.0.0.1:9101`. The lock of
 
 The deadline of a job is inside the timeout of the runtime, and the timeout is inside the window with 120 seconds to spare. The runtime refuses to boot with less than 60 seconds to spare.
 
-The operator makes three things outside this pack: the keys, the agent records (the record of the agent and the record of its subagent stock-reader), and the advert (with the hosted tools of the Vector marketplace). This runbook says when each one is needed and where its result goes. The service does not start without its keys, `AGENT_DID` and `STOCK_READER_DID`. The runtime does not start without its advert.
+The operator pack (`scripts/operator`) makes the keys, the agent records, the stakes, the env files and the advert. It is not part of this deploy pack. Each task of the pack makes one result:
+
+| Task | Result | When |
+|---|---|---|
+| `keys` | The keys of the use case, in the key folder. | First. |
+| `fund` | The collateral output and the float of each wallet. | After `keys`. |
+| `register` | The record of the agent and the record of its subagent stock-reader. | After `fund`, and before the first start. The operator publishes the TXT value of the organisation first. |
+| `stake` | The Module-3 stake of the agent. | After `register`, and before the first start. |
+| `env` | The env files of both agents of use case 1: `.env.reorder-agent` of this pack, and the files of the Order Desk. One run plans both agents. It needs both agent folders and the records of both agents (and of stock-reader), and it writes nothing when one is missing. | Before the first start (step 2 of the order of the work), and again after `advert`, to write `ADVERT_REF`. |
+| `advert` | The advert. | After the service runs and serves its manifest, and before the runtime starts. |
+
+This runbook says when each result is needed and where it goes. The service does not start without its keys, `AGENT_DID` and `STOCK_READER_DID`. The runtime does not start without its advert. The commands of this runbook that make the env file by hand stay as the manual way, and the task `env` does the same work. `scripts/operator/README.md` says what each task does.
 
 The order of the work:
 
@@ -102,7 +113,7 @@ umask 077
 cp .env.reorder-agent.example .env.reorder-agent
 ```
 
-The keys come from the operator pack, and the key rules of RUNBOOK.md (section "Keys") hold for them. A key is never typed in a shell, and no command here prints one. There are six keys, and all six are different:
+The task `env` of the operator pack makes this file and fills the same lines. The commands of this section are the manual way. The keys come from the task `keys` of the operator pack, and the key rules of RUNBOOK.md (section "Keys") hold for them. A key is never typed in a shell, and no command here prints one. There are six keys, and all six are different:
 
 - The supplier key goes in the four `SUPPLIER_` lines. It is the key of the runtime. The service reads only the two public lines, `SUPPLIER_PKH` and `SUPPLIER_PUB_KEY_HEX`: the compose file blanks `SUPPLIER_PRIV_KEY_HEX` for the service.
 - The five keys of the service go in five lines. `REORDER_SERVICE_PRIV_KEY_HEX` pays the model hires and signs the claims and the challenges. `REORDER_DELEGATION_1_PRIV_KEY_HEX` and `REORDER_DELEGATION_2_PRIV_KEY_HEX` are the keys that a delegation of a hirer names. `STOCK_READER_AUTH_PRIV_KEY_HEX` and `STOCK_READER_DELEGATION_PRIV_KEY_HEX` are the two keys of the subagent stock-reader. The compose file blanks all five for the runtime.
@@ -118,7 +129,7 @@ sed -i "s|^SERVICE_AUTH_HEADER=.*|SERVICE_AUTH_HEADER=\"Bearer $(od -An -N32 -tx
 
 Fill the other lines with an editor:
 
-- `OPERATOR_CONTACT` (a role address, never a person), `AGENT_DID`, `STOCK_READER_DID`, `MOCK_PUBLIC_BASE` and `MOCK_MTLS_BASE`.
+- `OPERATOR_CONTACT` (the contact address that the live agents publish; the operator types it, and no file of the repository holds it), `AGENT_DID`, `STOCK_READER_DID`, `MOCK_PUBLIC_BASE` and `MOCK_MTLS_BASE`. The task `env` writes the contact from the setting `OPERATOR_CONTACT`.
 - `VECTOR_MODULE1_MANIFEST`: replace `<commit>` with the 40 hex digits of the commit that the hosted MCP server uses for its own `VECTOR_MODULE1_MANIFEST`.
 - `AGENT_ID`: the 64 hex characters of the agent record, the part of `AGENT_DID` after `did:vector:`. `ADVERT_REF` stays empty until the advert exists (section "The start order", step 5).
 - `COSIGN_ALLOWLIST`: the key hashes of the principals whose delegation the co-sign route may co-sign, separated by commas. The empty line holds nobody, and the route then signs for nobody. A change to this line needs the service created again (section "The restart rule").
@@ -228,7 +239,7 @@ Run each `docker compose` command as the service user, in `/srv/agents/reorder-a
 
 3. Join the Caddy container to the network, and add the block of the host name (section "The Caddy block"). The DNS record must resolve to the host first.
 4. Check the public name, and take the hash of the manifest (section "The checks"). It is the `manifest` value of the line of step 2, and it is the `detail_hash` of the advert.
-5. Post the advert. This pack does not post it: the operator posts it with the hosted tools of the Vector marketplace. Post it for the supplier key of the runtime, with the `AGENT_ID` of the agent record. The terms of the advert are:
+5. Post the advert with the task `advert` of the operator pack. The task reads the manifest twice, and it posts the advert for the supplier key of the runtime, with the `AGENT_ID` of the agent record. The manual way is the hosted tools of the Vector marketplace. The terms of the advert are:
    - the capability `supplychain.reorder.po.v1`;
    - the model `reorder-agent-v1`;
    - the price 3 units, with a supplier bond of 1 unit and a buyer bond of 1 unit;

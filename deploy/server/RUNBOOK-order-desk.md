@@ -30,7 +30,18 @@ The service is the container `orders-service`, on `127.0.0.1:9102`. The lock of 
 
 The deadline of a job is inside the timeout of the runtime, and the timeout is inside the window with 120 seconds to spare. The runtime refuses to boot with less than 60 seconds to spare.
 
-The operator makes three things outside this pack: the keys, the agent record, and the three adverts (with the hosted tools of the Vector marketplace). This runbook says when each one is needed and where its result goes. The service does not start without its keys and `AGENT_DID`. A runtime does not start without its advert.
+The operator pack (`scripts/operator`) makes the keys, the agent record, the stakes, the env files and the three adverts. It is not part of this deploy pack. Each task of the pack makes one result:
+
+| Task | Result | When |
+|---|---|---|
+| `keys` | The keys of the use case, in the key folder. | First. |
+| `fund` | The collateral output and the float of each wallet. | After `keys`. |
+| `register` | The record of the agent. | After `fund`, and before the first start. The operator publishes the TXT value of the organisation first. |
+| `stake` | The Module-3 stake of the agent. | After `register`, and before the first start. |
+| `env` | The env files of both agents of use case 1: the four files of this pack (the shared file and one file for each runtime), and the env file of the Reorder Agent. One run plans both agents. It needs both agent folders and the records of both agents (and of stock-reader), and it writes nothing when one is missing. | Before the first start (step 2 of the order of the work), and again after `advert`, to write `ADVERT_REF` of each runtime. |
+| `advert` | The three adverts. | After the service runs and serves its manifest, and before the runtimes start. |
+
+This runbook says when each result is needed and where it goes. The service does not start without its keys and `AGENT_DID`. A runtime does not start without its advert. The commands of this runbook that make the env files by hand stay as the manual way, and the task `env` does the same work. `scripts/operator/README.md` says what each task does.
 
 The order of the work:
 
@@ -111,7 +122,7 @@ cp .env.order-desk.example .env.order-desk
 for size in small medium large; do cp .env.order-desk-runtime.example ".env.order-desk-$size"; done
 ```
 
-The keys come from the key procedure of RUNBOOK.md (section "Keys"). Nobody types a key in a shell, and no command here prints one. There are four keys, and all four are different:
+The task `env` of the operator pack makes these files and fills the same lines. The commands of this section are the manual way. The keys come from the task `keys` of the operator pack, and the key rules of RUNBOOK.md (section "Keys") hold for them. Nobody types a key in a shell, and no command here prints one. There are four keys, and all four are different:
 
 - The key of the service goes in `ORDER_DESK_SERVICE_PRIV_KEY_HEX` of `.env.order-desk`. It pays for the model hires and signs the claims and the challenges of the dispute code. It is never a supplier key.
 - The supplier key of each runtime goes in the four `SUPPLIER_` lines of the file of that runtime. Each runtime has a key and a wallet of its own. Two runtimes with one key can spend the same outputs.
@@ -126,7 +137,7 @@ sed -i "s|^SERVICE_AUTH_HEADER=.*|SERVICE_AUTH_HEADER=\"Bearer $(openssl rand -h
 
 Fill the other lines with an editor:
 
-- In `.env.order-desk`: `OPERATOR_CONTACT` (a role address, never a person), `AGENT_DID`, `MOCK_PUBLIC_BASE`, `MOCK_MTLS_BASE`, and the six lines `SMALL_SUPPLIER_PKH`, `SMALL_SUPPLIER_PUB_KEY_HEX`, `MEDIUM_SUPPLIER_PKH`, `MEDIUM_SUPPLIER_PUB_KEY_HEX`, `LARGE_SUPPLIER_PKH` and `LARGE_SUPPLIER_PUB_KEY_HEX`. They hold the public values of the three supplier keys.
+- In `.env.order-desk`: `OPERATOR_CONTACT` (the contact address that the live agents publish; the operator types it, and no file of the repository holds it), `AGENT_DID`, `MOCK_PUBLIC_BASE`, `MOCK_MTLS_BASE`, and the six lines `SMALL_SUPPLIER_PKH`, `SMALL_SUPPLIER_PUB_KEY_HEX`, `MEDIUM_SUPPLIER_PKH`, `MEDIUM_SUPPLIER_PUB_KEY_HEX`, `LARGE_SUPPLIER_PKH` and `LARGE_SUPPLIER_PUB_KEY_HEX`. They hold the public values of the three supplier keys. The task `env` writes the contact from the setting `OPERATOR_CONTACT`.
 - In `VECTOR_MODULE1_MANIFEST`: replace `<commit>` with the 40 hex digits of the commit that the hosted MCP server uses for its `VECTOR_MODULE1_MANIFEST`.
 - In each runtime file: `AGENT_ID` (the 64 hex characters of the agent record, the same in the three files). `ADVERT_REF` stays empty until the adverts exist (section "The start order", step 5).
 - Leave every other line as it is. The comments in the examples say what each line does.
@@ -258,7 +269,7 @@ Run each `docker compose` command as the service user, in `/srv/agents/order-des
 
 3. Join the Caddy container to the network, and add the block of the three host names (section "The Caddy block"). The three DNS records must resolve to the host first.
 4. Check the three public names, and take the hash of the manifest (section "The checks"). The three hosts serve one manifest, so they give one `detail_hash`.
-5. Post the three adverts. This pack does not post them: the operator posts them with the hosted tools of the Vector marketplace. Post each advert for the supplier key of its runtime, with the `AGENT_ID` of the agent record. The terms of each advert are:
+5. Post the three adverts with the task `advert` of the operator pack. The task reads the manifest twice, and it posts each advert for the supplier key of its runtime, with the `AGENT_ID` of the agent record. The manual way is the hosted tools of the Vector marketplace. The terms of each advert are:
    - the capability `supplychain.order.accept.v1`;
    - the model `lot-small`, `lot-medium` or `lot-large`;
    - the price 2, 5 or 10 units, with a supplier bond of 1 unit and a buyer bond of 1 unit;

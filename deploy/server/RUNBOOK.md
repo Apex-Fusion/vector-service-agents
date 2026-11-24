@@ -259,7 +259,7 @@ docker compose -f docker-compose.mock-systems.yml down
 
 ## 7. Add an agent
 
-The deploy pack of an agent has its compose file, its env example, its snippet and its own runbook. The packs of use case 1 (inventory reorder) are the Reorder Agent, with `RUNBOOK-reorder-agent.md`, and the Order Desk, with `RUNBOOK-order-desk.md`. The packs of use case 2 (prior authorization) are the Prior Authorization Agent, with `RUNBOOK-prior-authorization-agent.md`, and the Insurer Intake Agent, with `RUNBOOK-insurer-intake-agent.md`. They fit the marker block only: their upstreams are container names, and Caddy on the host cannot resolve them. The runbook of an agent gives the keys, the registration and the advert. These steps are only for the host.
+The deploy pack of an agent has its compose file, its env example, its snippet and its own runbook. The packs of use case 1 (inventory reorder) are the Reorder Agent, with `RUNBOOK-reorder-agent.md`, and the Order Desk, with `RUNBOOK-order-desk.md`. The packs of use case 2 (prior authorization) are the Prior Authorization Agent, with `RUNBOOK-prior-authorization-agent.md`, and the Insurer Intake Agent, with `RUNBOOK-insurer-intake-agent.md`. They fit the marker block only: their upstreams are container names, and Caddy on the host cannot resolve them. The runbook of each pack of use case 1 says which tasks of the operator pack make the keys, the records, the stakes, the env files and the advert. README.md, section "The operator image", describes the pack. The runbooks of the other packs give the keys, the registration and the advert. These steps are only for the host.
 
 1. Make the DNS record of each host name of the agent (step 5). Wait until it resolves to `<host address>`.
 2. Make the folder of the agent. Use the name of the agent:
@@ -331,6 +331,7 @@ The deploy pack of an agent has its compose file, its env example, its snippet a
 - An env file that holds a key belongs to `agents` and has mode 600.
 - The key never leaves the host. Nobody signs on another machine.
 - The script makes no key and reads no key.
+- The task `keys` of the operator pack makes the keys on this host. It never prints a key.
 - Do not delete a key file while its wallet holds funds. Deleting the host deletes every key on it. Empty every wallet first.
 
 ## The restart rule

@@ -925,6 +925,42 @@ describe('deploy/server/RUNBOOK-order-desk.md', () => {
     expect(files).toMatch(/three wallets/);
   });
 
+  // The operator pack makes the keys, the record, the stakes, the env files and the adverts. The runbook names the task of each result, in the order of the work, and says who does the work.
+  test('the first section says that the operator pack makes the keys, the record, the stakes, the env files and the three adverts, with one row for each of the six tasks in the order of the work', () => {
+    const what = sectionOf(runbookText, 'What it is');
+    expect(what).toContain('The operator pack (`scripts/operator`) makes the keys, the agent record, the stakes, the env files and the three adverts. It is not part of this deploy pack.');
+    expect(what).not.toContain('outside this pack');
+    expect([...what.matchAll(/^\| `([a-z]+)` \|/gm)].map((hit) => hit[1])).toStrictEqual(['keys', 'fund', 'register', 'stake', 'env', 'advert']);
+    expect(what).toContain('The commands of this runbook that make the env files by hand stay as the manual way, and the task `env` does the same work.');
+    expect(what.split('\n').find((line) => line.startsWith('| `advert` |'))).toContain('After the service runs and serves its manifest, and before the runtimes start.');
+    const env = what.split('\n').find((line) => line.startsWith('| `env` |'));
+    expect(env).toContain('The env files of both agents of use case 1: the four files of this pack (the shared file and one file for each runtime), and the env file of the Reorder Agent.');
+    expect(env).toContain('It needs both agent folders and the records of both agents (and of stock-reader), and it writes nothing when one is missing.');
+    expect(env).toContain('and again after `advert`, to write `ADVERT_REF` of each runtime.');
+  });
+
+  test('the env files section says that the task env does the same work, and the contact is the address that the live agents publish: the operator types it, and no file of the repository holds it', () => {
+    const files = sectionOf(runbookText, 'The env files');
+    expect(files).toContain('The task `env` of the operator pack makes these files and fills the same lines. The commands of this section are the manual way.');
+    expect(files).toContain('`OPERATOR_CONTACT` (the contact address that the live agents publish; the operator types it, and no file of the repository holds it)');
+    expect(runbookText).not.toMatch(/role address|never a person/);
+  });
+
+  test('the three adverts are posted with the task advert of the operator pack, and the manual way is the hosted tools', () => {
+    const start = sectionOf(runbookText, 'The start order');
+    expect(start).toContain('Post the three adverts with the task `advert` of the operator pack.');
+    expect(start).not.toContain('This pack does not post them');
+  });
+
+  test('the example asks for the contact in angle brackets, and says that the live agents publish it, that the operator types it, and that no file of the repository holds it', () => {
+    const lines = exampleText.split('\n');
+    const at = lines.findIndex((line) => line.startsWith('OPERATOR_CONTACT='));
+    expect(at).toBeGreaterThan(0);
+    expect(lines[at]).toMatch(/^OPERATOR_CONTACT=<[^>@]+>$/);
+    expect(lines.slice(0, at).filter((line) => line.startsWith('#')).join('\n')).toContain('OPERATOR_CONTACT is required and is published. It is the contact address that the live agents of the operator publish. The operator types it, and no file of the repository holds it.');
+    expect(exampleText).not.toMatch(/role address|never the address of a person/);
+  });
+
   test('both images are pulled by the tag of the reviewed commit and pinned by digest, and the three runtimes get one digest', () => {
     const images = sectionOf(runbookText, 'The images');
     for (const part of [SERVICE_IMAGE, RUNTIME_IMAGE, '<full git commit sha>', 'sha256', 'denied', 'read:packages', FILES.compose]) expect(images, part).toContain(part);

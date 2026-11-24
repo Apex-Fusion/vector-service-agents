@@ -13,7 +13,7 @@ import { join } from 'node:path';
 import { collateralAdvice, isCollateralOutput } from '../../checks/lib/collateral.ts';
 import { duration, iso, units } from '../../checks/lib/format.ts';
 import type { AgentSpec, Facts, StepOutcome, TaskDefinition, TaskSession } from '../lib/contract.ts';
-import { readRunning, runtimesOf } from '../lib/free.ts';
+import { readRunning, readRuntimeStatus, runtimesOf } from '../lib/free.ts';
 import { createModule1Port, effectiveStatus, findRecord, liveDelegations, module1FromManifest, readManifest, withdrawableFrom } from '../lib/platform.ts';
 import type { RecordUtxo } from '../lib/platform.ts';
 import { codeOf } from '../lib/registry.ts';
@@ -47,8 +47,6 @@ const RUNNING_IMAGES = 'running-images.json';
 const DEPOSIT_DELAY_MS = 90 * 86_400_000;
 /** The reason code of a hold that Module-1 puts on an agent after a verdict. */
 const JURY_HOLD_REASON = 64;
-const STATUS_LIMIT_MS = 10_000;
-const STATUS_BODY_BYTES = 65_536;
 const READ_TIMEOUT_MS = 20_000;
 const MOST_ADVERTS = 50;
 
@@ -437,53 +435,12 @@ async function attestations(ctx: Context): Promise<Check> {
 
 // ---- 9. the runtimes ----
 
-type Status = { readonly kind: 'free' } | { readonly kind: 'working' } | { readonly kind: 'unknown'; readonly why: string };
-
-/** The body of an answer as text, or null when it is longer than `max` bytes. The read stops as soon as the body passes `max`. */
-async function boundedText(response: Response, max: number): Promise<string | null> {
-  if (response.body === null) return '';
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-    if (total > max) {
-      await reader.cancel().catch(() => undefined);
-      return null;
-    }
-    chunks.push(value);
-  }
-  return new TextDecoder().decode(Buffer.concat(chunks, total));
-}
-
-/** What a runtime says at its status address: `free`, `working`, or that nothing can be told. It never throws. Only the member `status` of the body counts. */
-async function askStatus(fetchImpl: typeof fetch, url: string): Promise<Status> {
-  try {
-    const response = await fetchImpl(url, { method: 'GET', headers: { accept: 'application/json' }, redirect: 'manual', signal: AbortSignal.timeout(STATUS_LIMIT_MS) });
-    if (response.status !== 200) {
-      void response.body?.cancel().catch(() => undefined);
-      return { kind: 'unknown', why: `the answer has the status ${response.status}` };
-    }
-    const text = await boundedText(response, STATUS_BODY_BYTES);
-    if (text === null) return { kind: 'unknown', why: `the answer is longer than ${STATUS_BODY_BYTES} bytes` };
-    const body: unknown = JSON.parse(text);
-    const status = isObject(body) ? body.status : undefined;
-    if (status === 'free') return { kind: 'free' };
-    if (status === 'working') return { kind: 'working' };
-    return { kind: 'unknown', why: 'the answer has no status that is free or working' };
-  } catch {
-    return { kind: 'unknown', why: 'the request failed or the answer is not JSON' };
-  }
-}
-
 async function runtimes(ctx: Context): Promise<Check> {
   const name = 'runtimes';
   let running: ReadonlySet<string>;
   try { running = readRunning(join(ctx.session.settings.stateDir, RUNNING_IMAGES), ctx.now); } catch (err) { return failed(name, `cannot tell: ${shown(err)}`); }
   const refs = ctx.session.use.agents.flatMap(runtimesOf);
-  const answers = await Promise.all(refs.map(async (ref) => (running.has(ref.container) ? askStatus(ctx.session.fetchImpl, ref.statusUrl) : null)));
+  const answers = await Promise.all(refs.map(async (ref) => (running.has(ref.container) ? readRuntimeStatus(ctx.session.fetchImpl, ref.statusUrl) : null)));
   const problems: string[] = [];
   const working: string[] = [];
   const good: string[] = [];

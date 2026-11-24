@@ -8090,3 +8090,128 @@ test('use case 2 RUNBOOK: step 7 points to the runbooks of the two packs of use 
   assert.ok(snippetFolder.includes('The packs of use case 2 do not fit this way either.'), 'the snippet folder is not for the packs of use case 2');
   assert.ok(markerBlock.includes('The packs of use case 2 use this way only.'), 'the marker block is for the packs of use case 2');
 });
+
+// ======================================================================================================================================
+// The operator pack (scripts/operator) and the deploy packs of use case 1. The tests of the pack hold the pack to its own code. These tests read more than one place: the files of the pack against the tracked files and
+// the rules of the public text, the two runbooks and the two env examples of use case 1 against the list of the tasks of the pack, and the README and the runbook of the agents host. Each guard has refused copies
+// and an accepted twin.
+// ======================================================================================================================================
+
+const OPERATOR_FOLDER = 'scripts/operator';
+// The files of the pack that a reader meets: the README, the Dockerfile and every script file, the tests included.
+const OPERATOR_FILES = [`${OPERATOR_FOLDER}/README.md`, `${OPERATOR_FOLDER}/Dockerfile`, ...sourceFiles(OPERATOR_FOLDER)];
+// The faults of the files of the pack: a file that git does not track, the host, the stack of its reverse proxy, a login or a key file (the guard of the packs above), the name of a person, a path into a home folder,
+// and, in the README and the Dockerfile, an em or en dash and the name of the unit.
+function operatorFileProblems(files, tracked, textOf) {
+  const problems = trackedFileProblems(files, tracked, textOf);
+  for (const file of files) {
+    const text = textOf(file);
+    if (NAMES.test(text)) problems.push(`${file} names a person`);
+    if (HOME_PATH.test(text)) problems.push(`${file} names a path in a home folder`);
+    if (/(?:README\.md|Dockerfile)$/.test(file) && DASHES.test(text)) problems.push(`${file} holds an em dash or an en dash`);
+    if (/(?:README\.md|Dockerfile)$/.test(file) && UNIT_NAME.test(text)) problems.push(`${file} names the unit: it is called units`);
+  }
+  return problems;
+}
+
+test('operator pack files: the README, the Dockerfile and the sources are tracked by git, and none names the host, a person or a home folder; the README and the Dockerfile hold no em or en dash and no name of the unit; the guard refuses each copy', { skip: TRACKED ? false : 'needs a git checkout' }, () => {
+  assert.ok(OPERATOR_FILES.length > 80 && new Set(OPERATOR_FILES).size === OPERATOR_FILES.length, `the list reaches the files of the pack, found ${OPERATOR_FILES.length}`);
+  for (const must of ['README.md', 'Dockerfile', 'cli.ts', 'lib/registry.ts', 'tasks/env.ts', 'usecases/inventory-reorder.ts', 'test/integration.test.ts']) assert.ok(OPERATOR_FILES.includes(`${OPERATOR_FOLDER}/${must}`), `${must} is in the list`);
+  assert.deepEqual(operatorFileProblems(OPERATOR_FILES, TRACKED, read), [], 'the real files pass');
+  const [readme, dockerfile] = OPERATOR_FILES;
+  const source = `${OPERATOR_FOLDER}/cli.ts`;
+  const withText = (file, extra) => (name) => (name === file ? `${read(name)}\n${extra}\n` : read(name));
+  assert.deepEqual(operatorFileProblems(OPERATOR_FILES, TRACKED.filter((file) => file !== source), read), [`${source} is not tracked by git`], 'a file that is not tracked');
+  for (const part of ['the apex' + '-web box', 'uma' + 'mi_default', 'root' + '@host', 'id_' + 'ed25519', 'hetz' + 'ner']) {
+    assert.deepEqual(operatorFileProblems(OPERATOR_FILES, TRACKED, withText(source, `// ${part}`)), [`${source} names the host, the stack of its reverse proxy, a login or a key file`], part);
+  }
+  assert.deepEqual(operatorFileProblems(OPERATOR_FILES, TRACKED, withText(readme, `Ask ${'Dan' + 'ielle'}.`)), [`${readme} names a person`], 'a person');
+  assert.deepEqual(operatorFileProblems(OPERATOR_FILES, TRACKED, withText(source, '// see /home/someone/keys')), [`${source} names a path in a home folder`], 'a home folder');
+  assert.deepEqual(operatorFileProblems(OPERATOR_FILES, TRACKED, withText(readme, `One step ${String.fromCharCode(0x2014)} two steps.`)), [`${readme} holds an em dash or an en dash`], 'an em dash');
+  assert.deepEqual(operatorFileProblems(OPERATOR_FILES, TRACKED, withText(dockerfile, `# ${'AP' + '3X'}`)), [`${dockerfile} names the unit: it is called units`], 'the unit');
+  // The twin: a public host name of an agent and the word host in a script, and a dash in a script file, which the rule for the README and the Dockerfile does not cover.
+  const twin = (name) => (name === source ? `${read(name)}// mp-suppliers-reorder.vector.apexfusion.org on the agents host, a dash ${String.fromCharCode(0x2014)} in a comment\n` : read(name));
+  assert.deepEqual(operatorFileProblems(OPERATOR_FILES, TRACKED, twin), [], 'the names that the pack holds on purpose');
+});
+
+// The six tasks that make the results that the runbooks of use case 1 name, in the order of the work. The contact is the address that the live agents publish: the operator types it, and no file holds it.
+const PACK_TASKS = ['keys', 'fund', 'register', 'stake', 'env', 'advert'];
+const CONTACT_SENTENCE = '`OPERATOR_CONTACT` (the contact address that the live agents publish; the operator types it, and no file of the repository holds it)';
+const CONTACT_COMMENT = 'OPERATOR_CONTACT is required and is published. It is the contact address that the live agents of the operator publish. The operator types it, and no file of the repository holds it.';
+// The faults of a runbook of use case 1: it does not say that the operator pack makes the results, it says that the operator makes them outside the pack, its first table has not the six tasks in the order of the work,
+// a task of its table is no task of the pack, or it gives the contact as a role address.
+function runbookPackProblems(text, tasks) {
+  const problems = [];
+  const what = section(text, 'What it is');
+  if (!what.includes('The operator pack (`scripts/operator`) makes the keys, ')) problems.push('the first section does not say that the operator pack makes the keys');
+  if (/outside this pack/.test(text)) problems.push('the text says that the operator makes something outside this pack');
+  const listed = [...what.matchAll(/^\| `([a-z-]+)` \|/gm)].map((hit) => hit[1]);
+  if (listed.join(',') !== PACK_TASKS.join(',')) problems.push(`the first table lists the tasks ${listed.join(', ')}, and it must list ${PACK_TASKS.join(', ')} in this order`);
+  for (const task of listed) if (!tasks.includes(task)) problems.push(`${task} is no task of the pack`);
+  if (text.split(CONTACT_SENTENCE).length !== 2) problems.push('the runbook does not give the rule of the contact once');
+  if (/role address|never a person/.test(text)) problems.push('the runbook still calls the contact a role address');
+  return problems;
+}
+// The faults of an env example: the contact is no placeholder in angle brackets, it holds an address, or the comment above it gives no rule or the old rule.
+function exampleContactProblems(text) {
+  const lines = text.split('\n');
+  const at = lines.findIndex((line) => line.startsWith('OPERATOR_CONTACT='));
+  if (at < 0) return ['the example has no OPERATOR_CONTACT line'];
+  const problems = [];
+  if (!/^OPERATOR_CONTACT=<[^>@]+>$/.test(lines[at])) problems.push('the contact is a placeholder in angle brackets, and it holds no address');
+  if (!lines.slice(0, at).filter((line) => line.startsWith('#')).join('\n').includes(CONTACT_COMMENT)) problems.push('the comment above the contact does not give the rule');
+  if (/role address|never the address of a person/.test(text)) problems.push('the example still calls the contact a role address');
+  return problems;
+}
+
+test('use case 1 runbooks and examples: the operator pack makes the keys, the records, the stakes, the env files and the adverts, the six tasks are named in the order of the work, and the contact is the address that the live agents publish, typed by the operator and held by no file; the guards refuse each copy that breaks a rule', () => {
+  const tasks = [...read(`${OPERATOR_FOLDER}/tasks/names.ts`).matchAll(/'([a-z-]+)'/g)].map((hit) => hit[1]);
+  assert.ok(tasks.length >= 17 && PACK_TASKS.every((task) => tasks.includes(task)), 'the six tasks are tasks of the pack');
+  const [reorder, orders] = ['RUNBOOK-reorder-agent.md', 'RUNBOOK-order-desk.md'].map((file) => srvRead(file));
+  const [reorderExample, ordersExample] = ['.env.reorder-agent.example', '.env.order-desk.example'].map((file) => srvRead(file));
+  for (const text of [reorder, orders]) assert.deepEqual(runbookPackProblems(text, tasks), [], 'the real runbook passes');
+  for (const text of [reorderExample, ordersExample]) assert.deepEqual(exampleContactProblems(text), [], 'the real example passes');
+  const faults = [
+    ['the old sentence', runbookPackProblems(`${reorder}\nThe operator makes three things outside this pack: the keys.\n`, tasks), /outside this pack/],
+    ['a task row that is left out', runbookPackProblems(reorder.split('\n').filter((line) => !line.startsWith('| `fund` |')).join('\n'), tasks), /lists the tasks keys, register/],
+    ['a task that is no task of the pack', runbookPackProblems(orders.split('| `fund` |').join('| `fond` |'), tasks), /fond is no task of the pack/],
+    ['the rows in another order', runbookPackProblems(reorder.split('| `keys` |').join('| `stake` |').split('| `stake` | The Module-3').join('| `keys` | The Module-3'), tasks), /in this order/],
+    ['the old rule of the contact', runbookPackProblems(reorder.split(CONTACT_SENTENCE).join('`OPERATOR_CONTACT` (a role address, never a person)'), tasks), /does not give the rule of the contact once/],
+    ['the rule of the contact twice', runbookPackProblems(`${orders}\n- ${CONTACT_SENTENCE}\n`, tasks), /does not give the rule of the contact once/],
+    ['a role address in the text', runbookPackProblems(`${reorder}\nThe contact is a role address.\n`, tasks), /still calls the contact a role address/],
+    ['an address in the example', exampleContactProblems(reorderExample.split('\n').map((line) => (line.startsWith('OPERATOR_CONTACT=') ? 'OPERATOR_CONTACT=someone@example.test' : line)).join('\n')), /no address/],
+    ['a comment of the old rule', exampleContactProblems(ordersExample.split(CONTACT_COMMENT).join('Write the role address that the operator confirms, never the address of a person.')), /does not give the rule/],
+    ['an example with no contact line', exampleContactProblems(reorderExample.split('\n').filter((line) => !line.startsWith('OPERATOR_CONTACT=')).join('\n')), /no OPERATOR_CONTACT line/],
+  ];
+  for (const [name, problems, expected] of faults) assert.ok(problems.some((problem) => expected.test(problem)), `${name}: found ${JSON.stringify(problems)}`);
+  // The twins: a new line of the runbook about another task of the pack, outside the first section, and a placeholder with other words in the example.
+  assert.deepEqual(runbookPackProblems(`${reorder}\nThe task \`claim\` stakes a claim.\n`, tasks), [], 'a task named outside the table');
+  assert.deepEqual(exampleContactProblems(ordersExample.split('<contact address that the live agents publish>').join('<the address of the live agents>')), [], 'a placeholder with other words');
+});
+
+test('the README of the agents host has a section about the operator image: its name, the run by digest with docker run --rm, the mounts, the memory limit, the gate and the rule that no task prints a key; the runbook of the host says which tasks make the results', () => {
+  const readme = srvRead('README.md');
+  const text = section(readme, 'The operator image');
+  const at = (heading) => readme.indexOf(`\n## ${heading}\n`);
+  assert.ok(at('The runtime image') > 0 && at('The runtime image') < at('The operator image') && at('The operator image') < at('What the script does'), 'after the runtime image, before the script');
+  const image = CI_IMAGES.find((row) => row.file === `${OPERATOR_FOLDER}/Dockerfile`).image;
+  assert.equal(image, `${IMAGE_REPOSITORY}/operator`, 'the image that CI builds');
+  for (const part of [
+    `${image}@sha256:<digest>`, '`docker run --rm`', 'by its digest, never by a tag', '`/keys`', '`/state`', '`/agents/<agent>`', '`/mock-env/.env.mock-systems`', 'read-only', 'for the task `keys` only', 'for the task `tenant` only',
+    'for the tasks `env`, `allowlist` and `fault` only', '768 MiB', '1,792 MiB', 'No task prints a key or a token', 'scripts/operator/README.md', 'The agents host never mounts `/srv/agents` as a whole',
+    'The task `env` plans both agents of use case 1 in one run, so it needs both folders and both records', 'and it runs again after `advert`, to write `ADVERT_REF`',
+  ]) assert.ok(text.includes(part), part);
+  const gate = /at least ([\d,]+) MiB: the gate of ([\d,]+) MiB plus the ([\d,]+) MiB of the image/.exec(text);
+  assert.ok(gate, 'the sentence of the gate');
+  const [total, base, limit] = gate.slice(1).map((value) => Number(value.replaceAll(',', '')));
+  assert.equal(total, base + limit, 'the gate of a run is the gate of the host plus the limit of the image');
+  assert.equal(limit, 768, 'the limit is the memory limit of the image');
+  assert.equal(base, 1024, 'the gate of the host is the gate of the containers of the agents');
+  assert.doesNotMatch(text, HOST_WORDS, 'no host, no proxy stack, no provider');
+  assert.doesNotMatch(text, DASHES, 'no em or en dash');
+  const runbook = srvRead('RUNBOOK.md');
+  assert.ok(section(runbook, '7. Add an agent').includes('The runbook of each pack of use case 1 says which tasks of the operator pack make the keys, the records, the stakes, the env files and the advert.'), 'step 7 says which tasks make the results');
+  assert.equal(runbook.includes('The runbook of an agent gives the keys, the registration and the advert.'), false, 'step 7 does not say that the runbook of every agent gives them');
+  assert.ok(section(runbook, '7. Add an agent').includes('The runbooks of the other packs give the keys, the registration and the advert.'), 'step 7 says that the runbooks of the other packs still give them');
+  assert.ok(section(runbook, 'Keys').includes('The task `keys` of the operator pack makes the keys on this host. It never prints a key.'), 'the keys are made by the task keys');
+});
