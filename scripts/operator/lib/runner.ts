@@ -315,18 +315,18 @@ function signedLine(one: Landing, facts: boolean): string {
 
 /**
  * The exit code and the lines of an error. `signed` holds the transactions that the run signed before the error came. Exit 2 says that nothing was signed, so an error of that kind that comes after a
- * signature is a failure (exit 1): the transaction is on the chain or may land, and the run must not look like a run that changed nothing.
+ * signature is a failure (exit 1): the transaction is on the chain or may land, and the run must not look like a run that changed nothing. Exit 3 (the hosted tools cannot be used) makes no such claim,
+ * so it stays 3, but its lines name the transactions too, and the evidence file gets an entry for each.
  */
 function classify(err: unknown, signed: readonly Landing[], usage: readonly string[]): Classified {
   const alone = classifyAlone(err, usage);
-  if (alone.exit !== 2 || signed.length === 0) return alone;
+  if (signed.length === 0 || (alone.exit !== 2 && alone.exit !== 3)) return alone;
   const facts = err instanceof FactsError;
+  const lines = [...alone.lines, ...signed.map((one) => signedLine(one, facts))];
+  if (alone.exit === 3) return { ...alone, lines, afterSigning: true };
   return {
     exit: 1, outcome: 'failed', stream: 'err', afterSigning: true,
-    lines: [
-      ...alone.lines, ...signed.map((one) => signedLine(one, facts)),
-      facts ? 'Repair the facts file before another task reads it.' : 'A transaction was signed in this run, so this is a failure and not a stop before a signature.',
-    ],
+    lines: [...lines, facts ? 'Repair the facts file before another task reads it.' : 'A transaction was signed in this run, so this is a failure and not a stop before a signature.'],
   };
 }
 
@@ -480,7 +480,8 @@ function firstOpenStep<Extra>(def: TaskDefinition<Extra>, session: TaskSession<E
  *   - a number of confirmations, 0 included (the indexer counts the blocks on top of the block of the transaction, so 0 is the newest block): the transaction is on the chain. The step is recorded
  *     and its reserve of the cap stays.
  *   - a read that fails: nobody knows. The transaction stays in flight and the run stops, so that no step is built that may have landed.
- *   - a read that works and does not know the transaction: it cannot land any more, because its validity ended. A dry run leaves it in flight and stops. A run with --submit gives its reserve back
+ *   - a read that works and does not know the transaction: it cannot land any more, because its validity ended. A dry run leaves it in flight and goes on, so that the summary shows the step as it would
+ *     be built again. A run with --submit gives its reserve back
  *     (when the approval is loaded) and lets it go, and the run goes on.
  * It gives the reason to stop, or null when the run goes on.
  */
@@ -498,7 +499,10 @@ async function reconcile(flight: InFlight, parts: { node: NodeAccess; state: Sta
     return null;
   }
   const lost = `${where} is not on the chain, and its validity ended at ${iso(flight.valid_to)}: it cannot land any more`;
-  if (mode === 'dry') return `${lost}. A dry run does not let it go. Run again with --submit to let it go and to build the step again.`;
+  if (mode === 'dry') {
+    out.out(`${lost}. A dry run does not let it go: the record and the reserve stay. A run with --submit lets it go and builds the step again, as the summary below shows.`);
+    return null;
+  }
   if (go === null) {
     state.clearInFlight();
     out.out(`${lost}. No approval file is loaded, so its reserve stays in the cap file of its session.`);

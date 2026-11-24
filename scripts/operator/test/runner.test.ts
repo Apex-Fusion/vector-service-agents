@@ -21,7 +21,7 @@ import { FactsConflict, FactsError, FactsFile } from '../lib/facts.ts';
 import { ToolRefused } from '../lib/land-hosted.ts';
 import { LoadError } from '../lib/load.ts';
 import { KeyStoreError, loadRegistry } from '../lib/registry.ts';
-import { FlagError, RunLockError, parseArguments, reportError, runCli, runTask, usageLines, waitFor } from '../lib/runner.ts';
+import { FlagError, RunLockError, parseArguments, reportError, runCli, runSteps, runTask, usageLines, waitFor } from '../lib/runner.ts';
 import type { StepHandler } from '../lib/runner.ts';
 import { TASK_NAMES } from '../tasks/names.ts';
 import { MemoryOutput } from './support/fakes.ts';
@@ -558,15 +558,19 @@ describe('a transaction in flight', () => {
     expect(w.exposure().map((entry) => entry.tx_hash)).toContain(hash);
     expect(w.exposure()).toHaveLength(2);
   });
-  it('settles in a dry run too, and builds nothing there that it would sign', async () => {
+  it('settles in a dry run too, builds nothing there that it would sign, and reads no approval file', async () => {
     const w = await taskWorld();
-    const { hash, def } = await strand(w, []);
+    const { hash } = await strand(w, []);
     w.node.neverConfirm = false;
     const submitted = w.node.submitted.length;
+    const seen: Array<TaskSession['go']> = [];
+    const handlers = landing([]);
+    const def = toyTask(handlers, { next: async (session) => { seen.push(session.go); return runSteps(session, handlers); } });
     expect(await w.run(def)).toBe(0);
     expect(w.state('toy').steps.one!.tx_hash).toBe(hash);
     expect(w.screen.text).toContain('step two: dry mode, nothing is signed or submitted');
     expect(w.node.submitted).toHaveLength(submitted);
+    expect(seen).toEqual([null]);
     expect(w.machine()).toMatchObject({ outcome: 'dry', step: 'two' });
   });
   it('waits for a transaction that may still land: exit 4, with the task not run, the transaction still in flight, its reserve kept, and no submit of its bytes in a dry run', async () => {
@@ -620,7 +624,7 @@ describe('a transaction in flight', () => {
       expect(w.state('toy').steps.one!.tx_hash).not.toBe(hash);
       expect(w.exposure().map((entry) => entry.tx_hash)).toEqual([w.state('toy').steps.one!.tx_hash]);
     });
-    it('is kept by a dry run: it stops with exit 2 and names the way out, nothing is built or submitted, the record and the reserve stay, and a run with --submit then lets it go and builds the step again', async () => {
+    it('is kept by a dry run, and the dry run goes on: the record and the reserve stay, nothing is submitted, the summary shows the step as it would be built again, and a run with --submit then lets it go and builds the step', async () => {
       const w = await taskWorld();
       const ran: string[] = [];
       const { hash, def } = await strand(w, ran);
@@ -628,20 +632,21 @@ describe('a transaction in flight', () => {
       w.node.neverConfirm = false;
       const submitted = w.node.submitted.length;
       w.node.script.push({ confirmations: null }, { confirmations: null });
-      expect(await w.run(def)).toBe(2);
-      expect(w.screen.errorText).toContain(`the transaction ${hash} of the step one is not on the chain, and its validity ended at ${iso(NOW + 30 * 60_000)}: it cannot land any more. A dry run does not let it go. Run again with --submit`);
+      expect(await w.run(def)).toBe(0);
+      expect(w.screen.text).toContain(`the transaction ${hash} of the step one is not on the chain, and its validity ended at ${iso(NOW + 30 * 60_000)}: it cannot land any more. A dry run does not let it go: the record and the reserve stay.`);
       expect(w.screen.text).not.toContain('is released');
+      expect(w.screen.text).toContain('step one: dry mode, nothing is signed or submitted');
       expect(w.state('toy').in_flight?.tx_hash).toBe(hash);
       expect(w.exposure().map((entry) => entry.tx_hash)).toEqual([hash]);
       expect(w.node.submitted).toHaveLength(submitted);
-      expect(ran).toEqual(['one']);
-      expect(w.machine()).toMatchObject({ outcome: 'stopped', exit: 2, step: 'one' });
+      expect(ran).toEqual(['one', 'one']);
+      expect(w.machine()).toMatchObject({ mode: 'dry', outcome: 'dry', exit: 0, step: 'one' });
       reset(w);
       w.node.script.push({ confirmations: null }, { confirmations: null });
       expect(await w.run(def, '--submit')).toBe(0);
       expect(w.screen.text).toContain('Its reserve of the cap is released.');
       expect(w.state('toy').in_flight).toBeNull();
-      expect(ran).toEqual(['one', 'one']);
+      expect(ran).toEqual(['one', 'one', 'one']);
     });
     it('is given back when the first read failed and the second read works and does not know the hash: only the second read counts', async () => {
       const w = await taskWorld();
@@ -912,6 +917,7 @@ describe('the hosted tools', () => {
       const asking: StepHandler = { name: 'one', run: async (session) => { await session.hosted.call('vector_get_vault', {}); return { kind: 'done', message: 'asked' }; } };
       expect(await w.run(toyTask([asking])), kind).toBe(code);
       expect(w.machine()).toMatchObject({ outcome: 'stopped', exit: code, step: 'one' });
+      expect(w.evidence('toy'), kind).toEqual([]);
     }
   });
 });
@@ -1043,6 +1049,20 @@ describe('an error that comes after the run signed a transaction', () => {
     ];
     for (const [error, code] of others) expect(reportError(error, new MemoryOutput(), { landed: [{ step: 'one', txHash: signedHash }] })).toBe(code);
   });
+  it('keeps exit 3 for hosted tools that cannot be used when the run signed a transaction: the screen names it, and the run is not called a failure', () => {
+    for (const one of [{ step: 'one', txHash: signedHash }, { step: 'one', txHash: signedHash, unconfirmed: true as const }]) {
+      for (const kind of ['unreachable', 'missing_tool', 'protocol'] as const) {
+        const out = new MemoryOutput();
+        expect(reportError(new HostedError(kind, 'the hosted server could not be used'), out, { landed: [one] }), kind).toBe(3);
+        const text = out.errors.join('\n');
+        expect(text, kind).toContain(`the transaction ${signedHash} of the step one ${one.unconfirmed === true ? 'was signed in this run and is not confirmed' : 'landed in this run'}`);
+        expect(text, kind).not.toContain('a failure and not a stop');
+      }
+    }
+    const alone = new MemoryOutput();
+    expect(reportError(new HostedError('unreachable', 'the hosted server could not be used'), alone)).toBe(3);
+    expect(alone.errors).toEqual(['the hosted server could not be used']);
+  });
   it('is a failure when step one lands with --all and step two is refused: the screen and the evidence name the transaction, and the machine line says failed', async () => {
     const w = await taskWorld();
     w.writeGo();
@@ -1086,6 +1106,17 @@ describe('an error that comes after the run signed a transaction', () => {
     const hash = w.state('toy').steps.one!.tx_hash!;
     expect(w.screen.errorText).toContain(`the transaction ${hash} of the step one landed in this run. The evidence file names the transaction.`);
     expect(w.machine()).toMatchObject({ outcome: 'failed', exit: 1, step: 'one' });
+  });
+  it('keeps exit 3 when the hosted tools cannot be used after the step landed: the screen and the evidence name the transaction, and the machine line says stopped', async () => {
+    const w = await taskWorld();
+    w.writeGo();
+    const one: StepHandler = { ...landingStep('one', [], 'run', 'fee', 3_000_000n), verify: async () => { throw new HostedError('unreachable', 'the hosted server could not be used'); } };
+    expect(await w.run(toyTask([one]), '--submit')).toBe(3);
+    const hash = w.state('toy').steps.one!.tx_hash!;
+    expect(w.state('toy').steps.one!.verified_at).toBeNull();
+    expect(w.screen.errorText).toContain(`the transaction ${hash} of the step one landed in this run. The evidence file names the transaction.`);
+    expect(w.evidence('toy')).toContainEqual(expect.objectContaining({ step: 'one', status: 'info', shows: { note: 'the transaction landed, and the run then stopped with an error', transaction: hash, error: 'HostedError' } }));
+    expect(w.machine()).toMatchObject({ outcome: 'stopped', exit: 3, step: 'one' });
   });
   it('is a failure when a transaction of the run is in flight, and the line says that it is not confirmed', async () => {
     const w = await taskWorld();
