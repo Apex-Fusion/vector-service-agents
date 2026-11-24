@@ -60,8 +60,9 @@ export function attestationAbout(attType: number, key: { publicKey: string }, ov
   return { id, utxo: attestationUtxo(id, datum) };
 }
 
-/** The five parts of the good world. */
+/** The five parts of the good world, in the order of the list that the node holds. */
 export type PartName = 'record' | 'delegation' | 'provenance' | 'software' | 'binding';
+const PARTS: readonly PartName[] = ['record', 'delegation', 'provenance', 'software', 'binding'];
 
 /**
  * The world in which every kind is valid: the sender with a Provider key, the delegation of a key principal, and one attestation of each kind by its issuer. `over` replaces a part by another output, or drops
@@ -75,7 +76,7 @@ export function goodWorld(over: Partial<Record<PartName, Output | null>> = {}): 
     software: attestationAbout(2, PROVIDER_KEY).utxo,
     binding: attestationAbout(4, ROOT_KEY).utxo,
   };
-  return (Object.keys(parts) as PartName[]).flatMap((name) => {
+  return PARTS.flatMap((name) => {
     const replacement = over[name];
     return replacement === null ? [] : [replacement ?? parts[name]];
   });

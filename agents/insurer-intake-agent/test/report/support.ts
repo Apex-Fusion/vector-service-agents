@@ -134,7 +134,10 @@ export interface Rig {
 /** The ports that a script can replace. */
 export type PortName = 'check' | 'list' | 'providerKeyHashOf' | 'rootDelegatorOf';
 
-/** A script that replaces one port by `answer`. A test uses it for a port that fails or that gives a value of the wrong type. */
+/**
+ * A script that replaces one port by `answer`. A test uses it for a port that fails or that gives a value of the wrong type. The key is a union of four names, so the compiler widens the object to an index
+ * signature, and the result is cast to the type of the script.
+ */
 export const replacing = (port: PortName, answer: (...args: never[]) => Promise<unknown>): NonNullable<Script['ports']> => ({ [port]: answer }) as unknown as NonNullable<Script['ports']>;
 
 /**
