@@ -198,6 +198,11 @@ export interface TaskSession<Extra = unknown> extends LandHost {
   readonly use: UseCase; readonly extra: Extra; readonly flags: TaskFlags; readonly facts: FactsStore; readonly fetchImpl: typeof fetch; readonly all: boolean;
   readonly dohLookup: DohLookup;
 }
+/** A local document writer gets public data only. It does not get the transaction session. */
+export interface OfflineTaskInput<Extra> {
+  readonly extra: Extra; readonly use: UseCase; readonly facts: Readonly<Facts>; readonly stateDir: string; readonly out: Output;
+}
+export interface OfflineTaskResult { readonly message: string; readonly result: Readonly<Record<string, unknown>> }
 export interface TaskDefinition<Extra = unknown> {
   readonly name: string; readonly title: string;
   /** The boolean flags besides --submit and --all. */
@@ -205,6 +210,10 @@ export interface TaskDefinition<Extra = unknown> {
   /** The flags that take a value. */
   readonly valued: readonly string[];
   readonly needs: { keys(use: UseCase, flags: TaskFlags): readonly string[]; readonly chain: boolean; readonly hosted: readonly string[]; readonly approval: 'submit' | 'never' };
+  readonly offline?: {
+    matches(extra: Extra): boolean;
+    run(input: OfflineTaskInput<Extra>): OfflineTaskResult | Promise<OfflineTaskResult>;
+  };
   steps(use: UseCase, flags: TaskFlags): readonly string[];
   parse(env: Readonly<Record<string, string | undefined>>, settings: OperatorSettings, use: UseCase, flags: TaskFlags): Extra;
   next(session: TaskSession<Extra>): Promise<StepOutcome>;
