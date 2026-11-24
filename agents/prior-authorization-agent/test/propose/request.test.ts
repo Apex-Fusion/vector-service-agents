@@ -7,10 +7,19 @@ import { recordSetSha256 } from '@vsa/usecase-kit/priorauth';
 import { accepted } from '@vsa/usecase-kit/protocol';
 import { PROPOSE_FAILURES } from '../../src/propose/index.ts';
 import type { JustifyAnswer } from '../../src/propose/index.ts';
-import { CHOICE, DECISION, INSURER_DID, PORTS, SUB_JOB, TENANT, answerFor, calledPorts, changed, expectFailed, expectNotDecided, golden, proposed, world } from './support.ts';
+import { CHOICE, DECISION, INSURER_DID, PORTS, SUB_JOB, TENANT, answerFor, calledPorts, changed, expectFailed, expectNotDecided, golden, listAt, proposed, world } from './support.ts';
 
 /** The choice of the golden run as a plain object, with the members of the request that a test changes. */
 const choiceWith = (over: Record<string, unknown>): JustifyAnswer => answerFor({ justification: CHOICE.justification, guideline_refs: [...CHOICE.guideline_refs], record_refs: [...CHOICE.record_refs], ...over });
+
+/**
+ * An answer of the decision that records the choice that it gives, member for member: its recorded choice and its typed choice are two copies of one JSON text, so a refusal in the test is the refusal of the
+ * document, and never a difference between the two. A member that `over` sets to `undefined` is left out, as a JSON text leaves it out.
+ */
+function agreeing(over: Record<string, unknown>): JustifyAnswer {
+  const text = JSON.stringify({ justification: CHOICE.justification, guideline_refs: CHOICE.guideline_refs, record_refs: CHOICE.record_refs, ...over });
+  return { ok: true, decision: { ...DECISION, choice: JSON.parse(text) as never }, choice: JSON.parse(text) as never };
+}
 
 describe('the number of the request', () => {
   it('is taken once, for the tenant of the request, after the decision', async () => {
@@ -105,21 +114,11 @@ describe('the request that the kit refuses', () => {
     ['a justification that is a number', { justification: 5 }],
     ['no justification', { justification: undefined }],
     ['a criterion twice', { guideline_refs: ['C1', 'C1'] }],
-    ['a criterion that is no identifier', { guideline_refs: ['C 1'] }],
-    ['criteria that are no list', { guideline_refs: 'C1' }],
-    ['21 criteria', { guideline_refs: Array.from({ length: 21 }, (_, index) => `C${index + 1}`) }],
     ['a record twice', { record_refs: ['REC-0001', 'REC-0001'] }],
-    ['a record that is no identifier', { record_refs: ['REC 1'] }],
-    ['51 records', { record_refs: Array.from({ length: 51 }, (_, index) => `REC-${index + 1}`) }],
-    ['a record that is a number', { record_refs: [1] }],
   ];
   it.each(BAD)('is a failed proposal with bad_document for %s, and the decision is kept in the result', async (_name, over) => {
     const w = world();
-    // The decision records the same choice, so the failure is the one of the document, and not a difference between the choice and the decision.
-    const given = choiceWith(over);
-    if (!given.ok) throw new Error('the test makes an answer with a decision');
-    const decision = { ...DECISION, choice: JSON.parse(JSON.stringify(given.choice)) as never };
-    w.script.justify = async () => ({ ok: true, decision, choice: given.choice });
+    w.script.justify = async () => agreeing(over);
     const result = await w.run();
     expectFailed(result, 'bad_document');
     expect(result.decisions).toHaveLength(1);
@@ -172,6 +171,79 @@ describe('the request that the kit refuses', () => {
     expect(result.decisions).toStrictEqual([]);
     expect(calledPorts(w)).toStrictEqual(PORTS.slice(0, 4));
     expectNotDecided(w);
+  });
+});
+
+describe('the references of the choice', () => {
+  const OUTSIDE: [string, Record<string, unknown>][] = [
+    ['a record that the set does not hold', { record_refs: ['REC-9999'] }],
+    ['a record that the set holds and one that it does not', { record_refs: ['REC-0001', 'REC-9999'] }],
+    ['a record id in the lower case', { record_refs: ['rec-0001'] }],
+    ['a record id with a space after it', { record_refs: ['REC-0001 '] }],
+    ['a record id that is no identifier', { record_refs: ['REC 1'] }],
+    ['a record id that is a number', { record_refs: [1] }],
+    ['a criterion that the guideline does not hold', { guideline_refs: ['C9'] }],
+    ['a criterion that the guideline holds and one that it does not', { guideline_refs: ['C1', 'C9'] }],
+    ['a criterion id in the lower case', { guideline_refs: ['c1'] }],
+    ['a criterion id that is no identifier', { guideline_refs: ['C 1'] }],
+    ['a criterion in the list of the records', { record_refs: ['C1'] }],
+    ['a record in the list of the criteria', { guideline_refs: ['REC-0001'] }],
+    ['criteria that are no list', { guideline_refs: 'C1' }],
+    ['records that are no list', { record_refs: 'REC-0001' }],
+    ['21 criteria', { guideline_refs: Array.from({ length: 21 }, (_, index) => `C${index + 1}`) }],
+    ['51 records', { record_refs: Array.from({ length: 51 }, (_, index) => `REC-${index + 1}`) }],
+  ];
+  it.each(OUTSIDE)('is a failed proposal with bad_document for %s, before the number: the decision is kept, and no number is taken', async (_name, over) => {
+    const w = world();
+    w.script.justify = async () => agreeing(over);
+    const result = await w.run();
+    expectFailed(result, 'bad_document');
+    expect(result.decisions).toHaveLength(1);
+    expect(result.decisions[0]).toMatchObject({ name: 'justification', inference: DECISION.inference });
+    expect(result.sub_jobs).toStrictEqual([SUB_JOB]);
+    expect(calledPorts(w)).toStrictEqual(PORTS.slice(0, 5));
+    expect(w.counterCalls).toStrictEqual([]);
+    expect(w.numbers.size).toBe(0);
+    expect(w.logs).toStrictEqual(['propose stopped at decision: bad_document']);
+  });
+
+  const INSIDE: [string, Record<string, unknown>][] = [
+    ['all the records and all the criteria of the golden run', {}],
+    ['one record and one criterion', { record_refs: ['REC-0002'], guideline_refs: ['C1'] }],
+    ['the records in another order', { record_refs: ['REC-0005', 'REC-0001'] }],
+    ['no record and no criterion', { record_refs: [], guideline_refs: [] }],
+  ];
+  it.each(INSIDE)('takes %s: the twin of every refusal above', async (_name, over) => {
+    const w = world();
+    w.script.justify = async () => agreeing(over);
+    const result = proposed(await w.run());
+    expect(result.document).toMatchObject({ guideline_refs: over.guideline_refs ?? CHOICE.guideline_refs, record_refs: over.record_refs ?? CHOICE.record_refs });
+    expect(w.counterCalls).toStrictEqual([TENANT]);
+  });
+
+  it('names the records and the criteria of the documents that the evidence gave, and no other: a set with other ids takes other references and refuses the golden ones', async () => {
+    const set = changed(changed(golden('record-set'), ['records', 0, 'record_id'], 'REC-7001'), ['records', 1, 'record_id'], 'REC-7002');
+    const guideline = changed(golden('guideline'), ['criteria', 0, 'id'], 'K1');
+    const oldRefs = world();
+    oldRefs.script.evidence = async () => ({ ok: true, record_set: set as never, guideline: guideline as never });
+    expectFailed(await oldRefs.run(), 'bad_document');
+    expect(oldRefs.counterCalls).toStrictEqual([]);
+    const newRefs = world();
+    newRefs.script.evidence = async () => ({ ok: true, record_set: set as never, guideline: guideline as never });
+    newRefs.script.justify = async () => agreeing({ record_refs: ['REC-7001', 'REC-0003'], guideline_refs: ['K1', 'C2'] });
+    expect(proposed(await newRefs.run()).document).toMatchObject({ record_refs: ['REC-7001', 'REC-0003'], guideline_refs: ['K1', 'C2'] });
+  });
+
+  it('takes the ids from the documents as the job checked them before the decision: a record and a criterion that the decision adds to the objects that it got are not in the set and the guideline', async () => {
+    const w = world();
+    w.script.justify = async (set, guideline) => {
+      listAt(set, ['records']).push({ record_id: 'REC-9999', type: 'note', recorded_at: '2026-10-22', summary: 'A record that the decision added.' });
+      listAt(guideline, ['criteria']).push({ id: 'C9', text: 'A criterion that the decision added.' });
+      return agreeing({ record_refs: ['REC-9999'], guideline_refs: ['C9'] });
+    };
+    expectFailed(await w.run(), 'bad_document');
+    expect(w.counterCalls).toStrictEqual([]);
+    expect(w.numbers.size).toBe(0);
   });
 });
 

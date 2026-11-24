@@ -17,8 +17,9 @@
 //      with a tab or a format character is one) is `failed` `bad_document` here, before the model is hired and before a number is taken.
 //   5. The decision `justification`, once, with the record set and the guideline that the job checked. A failure gives `failed` with its code and no decision. The request is built from the choice only when it
 //      EQUALS the choice that the decision records: no code changes what the model chose, and a difference is `failed` `decision_mismatch`. The equality is the equality of the canonical forms. The result keeps
-//      the decision with its choice as the decision records it, each text as the model wrote it, and the request is built from that copy: the request parser makes the NFC copy. The decision is kept in the
-//      result when a later step fails.
+//      the decision with its choice as the decision records it, each text as the model wrote it, and the request is built from that copy: the request parser makes the NFC copy. A reference of the choice that
+//      names no record of the set and no criterion of the guideline is `failed` `bad_document`: the decision checks the references too, and the job does not rely on that. The decision is kept in the result
+//      when a later step fails.
 //   6. The request. The number comes from the counter, which stores it before this step uses it. The document must be accepted by `parsePriorAuthRequest`.
 //
 // Every answer of a port is read one time. The job keeps what it read in constants and never goes back to an object of a port, because a port could change its objects while the job waits for the next port.
@@ -118,6 +119,11 @@ function advertRefOf(value: unknown): string | null {
   if (typeof value !== 'object' || value === null) return null;
   const reference = parseOutputRef(Reflect.get(value, 'advert_ref'), 'advert_ref');
   return reference.ok ? reference.value : null;
+}
+
+/** True when `value` is a list of texts and each text is one of `ids`. A reference to a record or a criterion that the job did not read would put a false statement into the request. */
+function namesOnly(value: unknown, ids: ReadonlySet<string>): boolean {
+  return Array.isArray(value) && value.every((entry) => typeof entry === 'string' && ids.has(entry));
 }
 
 /** Writes one line to the log of the deps. A log that throws changes no result: the line is lost, and the job goes on. */
@@ -222,6 +228,9 @@ export async function runPropose(deps: ProposeDeps, request: ProposeRequest, arr
   const clinicianRef = order.ordering_clinician_ref;
   const serviceCode = order.service_code;
   const diagnosisCodes = [...order.diagnosis_codes];
+  // The ids that the references of the choice must name. They are read here, before the decision, for the same reason.
+  const recordIds: ReadonlySet<string> = new Set(set.value.records.map((record) => record.record_id));
+  const criterionIds: ReadonlySet<string> = new Set(guideline.value.criteria.map((criterion) => criterion.id));
   let setSha256: string;
   try {
     setSha256 = recordSetSha256(set.value);
@@ -277,6 +286,9 @@ export async function runPropose(deps: ProposeDeps, request: ProposeRequest, arr
   const chosen = written.value;
   if (!isPlainObject(chosen)) return failed('decision', 'bad_document');
   decisions = [{ ...decision, choice: chosen }];
+  // The request cites only records of the set and criteria of the guideline that the job checked. This check comes before the number: a reference to a record that does not exist would put a false statement
+  // into a request that the hirer approves.
+  if (!namesOnly(chosen.record_refs, recordIds) || !namesOnly(chosen.guideline_refs, criterionIds)) return failed('decision', 'bad_document');
 
   // 6. The request.
   const beforeNumber = stopped('request');
