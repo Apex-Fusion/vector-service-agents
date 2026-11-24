@@ -7,7 +7,7 @@ import { listAttestations } from '@vsa/buyer-core';
 import { decodeAttestationDatum, utf8Hex } from '@vsa/vector-read/identity-codec';
 import type { AttestationDatum } from '@vsa/vector-read/identity-codec';
 import {
-  CAPTURE, CAPTURE_MS, attestationIdOf, attestationUtxo, callsTo, capturedUtxos, ledgerWorld, revokedWithReason,
+  CAPTURE, CAPTURE_MS, MAINNET, attestationIdOf, attestationUtxo, callsTo, capturedUtxos, koiosRow, ledgerWorld, revokedWithReason,
 } from '../../../../packages/buyer-core/test/fixtures/ledger-read-world.ts';
 import type { KoiosOptions, LedgerWorld } from '../../../../packages/buyer-core/test/fixtures/ledger-read-world.ts';
 import { readCompliance } from '../../src/compliance/index.ts';
@@ -111,6 +111,20 @@ describe('the real list', () => {
     const world = worldOf([row(ID, datum())]);
     const spent: ComplianceDeps = depsOf((query) => listAttestations({ ...world.env, budgetMs: 0 }, query));
     expect((await readCompliance(spent, DID, NOW)).state).toBe('unreadable');
+  });
+
+  test('5,000 attestations about the bidder make the list fail, and the fact is unreadable: it is neither valid nor absent, and a few strangers do not matter', async () => {
+    const template = koiosRow(attestationUtxo(id(0x90), datum({ issuer: STRANGER.publicKey })));
+    const hash = (n: number): string => n.toString(16).padStart(8, '0').repeat(8);
+    const outputs = (count: number) => Array.from({ length: count }, (_, n) => ({
+      ...template, tx_hash: hash(0x100000 + n), asset_list: [{ policy_id: MAINNET.attestation.hash, asset_name: (0x100000 + n).toString(16).padStart(64, '0'), quantity: '1' }],
+    }));
+    const mine = attestationUtxo(ID, datum());
+    const fine = ledgerWorld([mine], { rows: [...outputs(50), koiosRow(mine)] });
+    expect(await readCompliance(realDeps(fine), DID, NOW)).toStrictEqual(golden('fact-valid.json'));
+    // The list reads at most 4,999 outputs of one subject: the 5,000th makes it fail, and the attestation of the registry is among them.
+    const flooded = ledgerWorld([mine], { rows: [...outputs(4_999), koiosRow(mine)] });
+    expect(await readCompliance(realDeps(flooded), DID, NOW)).toMatchObject({ state: 'unreadable', attestation: null });
   });
 
   test('a Koios that ignores its datum filter and its token filter changes nothing: the reader and the list decide on the decoded datum', async () => {
