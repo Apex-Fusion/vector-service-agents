@@ -265,7 +265,9 @@ Run each `docker compose` command as the service user, in `/srv/agents/sourcing-
    - `detail_uri`: that origin and `/agent.json`;
    - `detail_hash`: the hash of step 4.
 
+   Keep the Post transaction hash in the deployment record before waiting for confirmation. Verify its output on the ledger. If confirmation is unknown, stop here and check the same hash. Do not post another advert.
    Write the reference of the advert, `<transaction hash>#<output index>`, into `ADVERT_REF` of `.env.sourcing-agent`. A change to the manifest after this step means a retired advert and a new one. After you post a new advert, write its reference into `ADVERT_REF`, and create the runtime again with `up -d --no-deps --force-recreate runtime`, as section "The restart rule" says. A runtime that holds the reference of a retired advert refuses every job with 503 `advert_not_active`.
+   Set the existing `ADVERT_REF` entry. Do not append a second entry or print the rest of the env file.
 6. Start the runtime. Pass the memory gate first. After the start, wait 30 seconds, and check that the runtime is up and says `free`:
 
    ```sh
@@ -275,6 +277,7 @@ Run each `docker compose` command as the service user, in `/srv/agents/sourcing-
    ```
 
    The option `--no-deps` keeps compose from touching the service: a start of the runtime never creates the service again.
+   Read `GET /capability` on port 8107. Require HTTP 200 and an `advert_ref` equal to the confirmed output reference from step 5. A different reference or no answer is not ready for a hire.
 7. Run the other checks of section "The checks".
 
 ## The checks
@@ -520,12 +523,14 @@ A job that fails is no failed start. A failed job answers 200 with its `reason`,
 
 To take the Sourcing Agent out of service. The order matters: the advert goes first, so that nobody can post an escrow against an agent that goes away.
 
-1. Retire the advert. The operator does it with the hosted tools, signed with the supplier key of the runtime. Skip this step when `ADVERT_REF` is empty in the env file: nothing was posted.
+1. Retire the active advert before stopping the agent. Use the hosted tools and the supplier key of the runtime. An empty `ADVERT_REF` does not prove that no Post landed. Check each recorded Post transaction and the current ledger outputs for this agent ID, supplier and model. If a Post may still land, or the ledger read fails, stop here. Skip retirement only when no matching advert is active and no Post can still land. If an advert was active, confirm its retirement before continuing.
 2. Wait 2 minutes after the last job. Then check that the runtime says `free`, and stop the containers at once. Never check first and then wait. The command does the three steps without a gap. A job that was claimed before the retire still runs, up to 5,220,000 ms: when the runtime says `working`, nothing is stopped. Let the job end, and run the command again. Compose waits up to 330 seconds for the service:
 
    ```sh
    sleep 120; if curl -s --max-time 5 http://127.0.0.1:8107/status | grep -q '"status":"free"'; then docker compose -f docker-compose.sourcing-agent.yml stop; else echo 'the runtime does not say free: nothing was stopped'; fi
    ```
+
+   If the runtime never started, use the deployment record and container history to establish that fact. Check that no escrow for its advert has work outstanding. Only then may you stop the service alone with `docker compose -f docker-compose.sourcing-agent.yml stop service`. A missing container or a failed `/status` request is not proof. If any result is unknown, leave the service and the Caddy block in place.
 
 3. Remove the Caddy block, as section "The Caddy block" says. Validate and reload Caddy.
 4. Leave the network of the project before the `down` command, because the Caddy container is on it. Do not use `-v`:

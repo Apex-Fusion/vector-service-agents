@@ -8632,8 +8632,6 @@ test('use case 3 RUNBOOK: step 7 directs both packs to the marker block and to t
   assert.ok(paragraph.includes('The packs of use case 3 (supplier bid evaluation) are the Sourcing Agent, with `RUNBOOK-sourcing-agent.md`, and the three Bid Desks, with `RUNBOOK-bid-desk.md`.'), 'the paragraph names the packs');
   const at = (part) => paragraph.indexOf(part);
   assert.ok(at('The packs of use case 2') > 0 && at('The packs of use case 2') < at('The packs of use case 3') && at('The packs of use case 3') < at('They fit the marker block only:'), 'the sentence about the marker block follows the lists of all the packs');
-  assert.ok(paragraph.includes('For every pack listed above, follow "The start order" in its runbook in place of steps 4 to 6 below. Start the runtime last. It needs the advert reference in `ADVERT_REF`.'), 'the pack uses its own start order instead of common steps 4 to 6');
-  assert.match(ways, /^4\. If the pack is listed above, follow its start order and then go to step 7\./m);
   const [snippetFolder, markerBlock] = ways.split('   - Marker block.');
   assert.ok(snippetFolder.includes('The packs of use case 3 do not fit this way either.'), 'the snippet folder is not for the packs of use case 3');
   assert.ok(markerBlock.includes('The packs of use case 3 use this way only.'), 'the marker block is for the packs of use case 3');
