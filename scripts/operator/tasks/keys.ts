@@ -98,9 +98,15 @@ function requireRunWalletStays(kept: Registry, old: OldManifest): void {
   }
 }
 
-/** Refuses to change a key that a manifest records. Only shared keys in another use case belong to this one. */
+/** Refuses to change a recorded key or to make a shared key when the manifest cannot be checked. Only shared keys in another use case belong to this one. */
 function requireRecordedKeysStay(use: UseCase, kept: Registry, prior: OldManifest, sharedOnly: boolean): void {
-  if (prior.kind !== 'found') return;
+  if (prior.kind === 'absent') return;
+  if (prior.kind === 'damaged') {
+    if (use.keys.some(({ name, scope }) => scope === 'shared' && !kept.has(name))) {
+      throw new PreconditionError('a public key file cannot be read. The pack cannot check the identity of a missing shared key. Restore the original key file or repair the public key file. Nothing was made');
+    }
+    return;
+  }
   for (const { name, scope } of use.keys) {
     const recorded = prior.keys.get(name);
     if (recorded === undefined || (sharedOnly && (scope !== 'shared' || recorded.scope !== 'shared'))) continue;
@@ -180,13 +186,10 @@ const task: TaskDefinition<KeysExtra> = {
     requireRunWalletStays(existing, old);
     requireRecordedKeysStay(use, existing, old, !earlier);
     // Another use case may be the only record of a shared key.
-    const sharedRun = use.keys.some(({ name: key, scope }) => key === RUN && scope === 'shared');
     for (const file of KNOWN_MANIFESTS) {
       const other = join(settings.keysDir, file);
       if (other === found) continue;
-      const prior = readOldManifest(other);
-      if (sharedRun && prior.kind === 'damaged') requireRunWalletStays(existing, prior);
-      requireRecordedKeysStay(use, existing, prior, true);
+      requireRecordedKeysStay(use, existing, readOldManifest(other), true);
     }
 
     if (session.mode === 'dry') {

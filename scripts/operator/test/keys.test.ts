@@ -552,6 +552,39 @@ describe('two use cases in one key folder', () => {
     expect(await submit(second)).toBe(0);
     expect(second.machine().result).toMatchObject({ made: ['new-shared', 'gamma'], kept: ['run', 'fee'] });
   });
+  it.each([false, true])('refuses to make a missing shared key when a public key file is damaged (legacy file: %s)', async (legacy) => {
+    const { first, second, root } = await twoWorlds();
+    expect(await submit(first)).toBe(0);
+    const manifest = manifestOf(root);
+    const path = join(root, legacy ? LEGACY_PUBLIC_MANIFEST : MANIFEST);
+    if (legacy) renameSync(join(root, MANIFEST), path);
+    const document = JSON.parse(manifest);
+    delete document.keys.alpha.scope;
+    const damaged = JSON.stringify(document);
+    writeFileSync(path, damaged, { mode: 0o600 });
+    const feePath = fileOf(root, SPECS[1]!);
+    const originalFee = readFileSync(feePath, 'utf8');
+    rmSync(feePath);
+    for (const w of [first, second]) {
+      for (const argv of [[], ['--submit']]) {
+        reset(w);
+        approve(w);
+        expect(await w.run(keysTask, ...argv)).toBe(2);
+        expect(w.screen.errorText).toContain('cannot check the identity of a missing shared key');
+        expect(existsSync(feePath)).toBe(false);
+        expect(existsSync(join(root, SECOND))).toBe(false);
+        expect(existsSync(join(root, 'shared', 'new-shared.seed'))).toBe(false);
+        expect(readFileSync(path, 'utf8')).toBe(damaged);
+      }
+    }
+    writeSeed(root, 'shared', 'fee', originalFee);
+    reset(first);
+    expect(await submit(first)).toBe(0);
+    expect(first.machine().result).toMatchObject({ made: [], kept: NAMES });
+    expect(manifestOf(root)).toBe(manifest);
+    expect(readFileSync(feePath, 'utf8')).toBe(originalFee);
+    if (legacy) expect(readFileSync(path, 'utf8')).toBe(damaged);
+  });
   it('lets a world take its use case from its data: the setting, the folder of its test keys and the reader of its facts', async () => {
     const first = await taskWorld({ use: { keys: SPECS } });
     const second = await taskWorld({ use: { name: SECOND, keys: SECOND_SPECS } });
