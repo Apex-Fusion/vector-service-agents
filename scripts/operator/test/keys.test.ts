@@ -84,7 +84,7 @@ describe('the definition', () => {
 });
 
 describe('a dry run', () => {
-  it('previews first setup on empty mounts without any key files, approval or marker', async () => {
+  it('previews empty mounts without approval or writes, then makes the keys with approval', async () => {
     const { w, root } = await emptyWorld();
     for (const folder of ['shared', USE_CASE]) mkdirSync(join(root, folder), { mode: 0o700 });
     expect(existsSync(w.goPath)).toBe(false);
@@ -97,17 +97,32 @@ describe('a dry run', () => {
     for (const spec of SPECS) expect(w.screen.lines).toContain(`  ${spec.name}: folder ${folderOf(spec)}`);
     expect(w.screen.text).not.toContain('the run wallet address is');
     expect(w.machine()).toEqual({ task: 'keys', command: 'run', mode: 'dry', outcome: 'dry', exit: 0, step: null, result: { would_make: NAMES, would_keep: [] } });
-  });
-  it('lists a key that exists as kept, and the dry list is the list that the next submit run makes', async () => {
-    const { w, root } = await emptyWorld();
-    writeSeed(root, 'shared', 'fee', `${counterSeed()}\n`);
-    reset(w);
-    expect(await w.run(keysTask, '--initialize')).toBe(0);
-    expect(w.machine().result).toEqual({ would_make: ['run', 'alpha', 'beta'], would_keep: ['fee'] });
-    expect(existsSync(fileOf(root, SPECS[2]!))).toBe(false);
     reset(w);
     expect(await initialize(w)).toBe(0);
-    expect(w.machine().result).toMatchObject({ made: ['run', 'alpha', 'beta'], kept: ['fee'] });
+    expect(w.machine().result).toMatchObject({ made: NAMES, kept: [] });
+    expect(existsSync(markerOf(w))).toBe(true);
+  });
+  it.each([
+    ['shared', 'fee.seed', 'the shared key scope has an unrecorded entry'],
+    ['shared', 'extra-role.seed', 'the shared key scope has an unrecorded entry'],
+    [USE_CASE, 'alpha.seed', 'is missing for a use case with existing keys or setup history'],
+    [USE_CASE, 'extra-role.seed', 'is missing for a use case with existing keys or setup history'],
+    [USE_CASE, '.pending.tmp', 'is missing for a use case with existing keys or setup history'],
+  ])('refuses first setup with an unrecorded entry in %s named %s', async (scope, name, problem) => {
+    const { w, root } = await emptyWorld();
+    for (const folder of ['shared', USE_CASE]) mkdirSync(join(root, folder), { mode: 0o700 });
+    const text = `${counterSeed()}\n`;
+    writeFileSync(join(root, scope, name), text, { mode: 0o600 });
+    for (const argv of [[], ['--submit']]) {
+      reset(w);
+      approve(w);
+      expect(await w.run(keysTask, '--initialize', ...argv)).toBe(2);
+      expect(w.screen.errorText).toContain(problem);
+      expect(existsSync(markerOf(w))).toBe(false);
+      expect(readdirSync(root).sort()).toEqual([USE_CASE, 'shared']);
+      for (const folder of ['shared', USE_CASE]) expect(readdirSync(join(root, folder))).toEqual(folder === scope ? [name] : []);
+      expect(readFileSync(join(root, scope, name), 'utf8')).toBe(text);
+    }
   });
   it('stops with exit 2 for a key file with the wrong mode, in a dry run too, and takes the file with mode 600', async () => {
     const { w, root } = await emptyWorld();
@@ -154,7 +169,7 @@ describe('the approval', () => {
     expect(w.screen.errorText).toContain('the approval says unset for runWallet, and the run key exists: it must name the run wallet');
     reset(w);
     expect(await initialize(w)).toBe(2);
-    expect(w.screen.errorText).toContain('needs an approval that names the recorded shared run wallet');
+    expect(w.screen.errorText).toContain('the shared key scope has an unrecorded entry');
     expect(existsSync(markerOf(w))).toBe(false);
     expect(existsSync(join(root, USE_CASE))).toBe(false);
   });
@@ -247,11 +262,11 @@ describe('a submit run that makes the keys', () => {
   });
   it('never prints the text of a key file that it keeps, whatever the text is, and a marker seed that it keeps stays off every stream', async () => {
     const { w, root } = await emptyWorld();
-    approve(w);
-    const marker = counterSeed();
-    writeSeed(root, 'shared', 'fee', `${marker}\n`);
     expect(await initialize(w)).toBe(0);
-    expect(w.machine().result).toMatchObject({ made: ['run', 'alpha', 'beta'], kept: ['fee'] });
+    const marker = readFileSync(fileOf(root, SPECS[1]!), 'utf8').trim();
+    reset(w);
+    expect(await submit(w)).toBe(0);
+    expect(w.machine().result).toMatchObject({ made: [], kept: NAMES });
     expect(readFileSync(fileOf(root, SPECS[1]!), 'utf8')).toBe(`${marker}\n`);
     expect(readable(w, root)).not.toContain(marker);
     reset(w);
@@ -582,6 +597,37 @@ describe('two use cases in one key folder', () => {
     reset(second);
     expect(await second.run(keysTask, 'status')).toBe(0);
     expect(second.screen.text).toContain('the public key file equals the key files');
+  });
+  it('requires prior proof for a new shared role and checks the keys that only the earlier use case uses', async () => {
+    const { first, second, root } = await twoWorlds();
+    expect(await initialize(first)).toBe(0);
+    const prior = manifestOf(root);
+    const scope = join(root, SECOND);
+    mkdirSync(scope, { mode: 0o700 });
+    const unrecorded = join(root, 'shared', 'new-shared.seed');
+    writeSeed(root, 'shared', 'new-shared', `${counterSeed()}\n`);
+    expect(await initialize(second)).toBe(2);
+    expect(second.screen.errorText).toContain('the shared key scope has an unrecorded entry');
+    expect(existsSync(markerOf(second))).toBe(false);
+    expect(readdirSync(scope)).toEqual([]);
+
+    rmSync(unrecorded);
+    const earlierOnly = 'provider';
+    const earlierFile = join(root, 'shared', `${earlierOnly}.seed`);
+    const original = readFileSync(earlierFile, 'utf8');
+    writeSeed(root, 'shared', earlierOnly, `${counterSeed()}\n`);
+    reset(second);
+    expect(await initialize(second)).toBe(2);
+    expect(second.screen.errorText).toContain('the shared key provider gives another wallet');
+    expect(existsSync(markerOf(second))).toBe(false);
+    expect(readdirSync(scope)).toEqual([]);
+    expect(existsSync(unrecorded)).toBe(false);
+
+    writeSeed(root, 'shared', earlierOnly, original);
+    reset(second);
+    expect(await initialize(second)).toBe(0);
+    expect(second.machine().result).toMatchObject({ made: ['new-shared', 'gamma'], kept: ['run', 'fee'] });
+    expect(manifestOf(root)).toBe(prior);
   });
   it('does not treat an empty scope as fresh after it wrote the setup marker', async () => {
     const { first, second, root } = await twoWorlds();

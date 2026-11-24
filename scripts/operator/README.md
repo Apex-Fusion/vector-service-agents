@@ -67,6 +67,7 @@ A task that spends a wallet that a running service also uses (`claim`, `stake`, 
 ### First key setup and recovery
 
 Verify that the use case has no prior key setup. Keep a separate state folder for each use case. Restore the public key files of any earlier use cases before you continue.
+The key folder of this use case must be empty. The shared key folder can hold only keys that match the earlier public key files. An unrecorded entry is a reason to stop, not a reason to make new keys.
 
 1. Preview with `node --import tsx scripts/operator/cli.ts keys run --initialize`. A dry run needs no `GO.json`. You can preview the first wallet with no key files.
 2. Get an approval for `keys` only. Set `capUnits` to `0`. Include no irreversible tags or external addresses. Use `unset` for `runWallet` only before the first wallet exists. For a later use case, use the address in the verified public key files.
