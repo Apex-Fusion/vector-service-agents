@@ -218,8 +218,8 @@ export const SHOWS: Readonly<Record<string, Sentences>> = {
   },
 };
 
-// Preserve the published wording for shared primitives of the original page.
-const HISTORICAL_SHOWS: Readonly<Partial<Record<UseCase['name'], Readonly<Record<string, Sentences>>>>> = {
+// A use case can establish more than the generic wording, or preserve established wording for that case.
+const CASE_SHOWS: Readonly<Partial<Record<UseCase['name'], Readonly<Record<string, Sentences>>>>> = {
   'inventory-reorder': {
     'Escrow': {
       shows: 'The hire settled through the escrow. The ledger holds each transaction of the escrow.',
@@ -240,6 +240,12 @@ const HISTORICAL_SHOWS: Readonly<Partial<Record<UseCase['name'], Readonly<Record
     'Hold removes the agent from the listing': {
       shows: 'During the hold the marketplace listed no advert of the Order Desk. A new proposal found none.',
       doesNotShow: 'That the listing returns after the hold. The end-state check reads that.',
+    },
+  },
+  'bid-evaluation': {
+    'Escrow: release': {
+      shows: 'The evidence records a confirmed Release spend of this quote escrow.',
+      doesNotShow: 'Who submitted the transaction or how much the supplier received.',
     },
   },
 };
@@ -284,14 +290,16 @@ function refOf(raw: unknown): Ref | null {
   return kind === 'transaction' && !HASH.test(value) ? null : { kind, value };
 }
 
-type Refusal = 'ledger' | 'tool';
+type Refusal = 'ledger' | 'tool' | 'projected-tool';
 type RouteRead = readonly [route: string, credential: string, links: number | null, count?: number, decision?: 'refused'];
+type ProjectedRoute = readonly [route: string, credential: 'token' | 'jwt-svid', decision: 'allowed' | 'refused', links: number, count: number, status: number];
 interface StepProof {
   readonly refs: Readonly<Record<string, number>>;
   readonly refusals?: readonly Refusal[];
   readonly routes?: readonly RouteRead[];
-  readonly settlement?: { readonly type: 'receipt'; readonly counterparty: 'order-desk' | 'intake' } | { readonly type: 'none-recorded' };
-  readonly recordFromTransaction?: true;
+  readonly projectedRoutes?: readonly ProjectedRoute[];
+  readonly settlement?: { readonly type: 'receipt' } | { readonly type: 'none-recorded' } | { readonly type: 'release' } | { readonly type: 'intake-handoff' };
+  readonly recordFromTransaction?: 'record' | 'hold';
 }
 interface CaseProof { readonly number: number; readonly steps: Readonly<Record<string, StepProof>> }
 
@@ -313,7 +321,7 @@ const PROOF: Readonly<Record<string, CaseProof>> = {
     'r1-07': { refs: HIRE },
     'r1-08': { refs: { escrow: 1, transaction: 1 } },
     'r1-09': { refs: { escrow: 2 }, routes: [['POST /supplier/orders', 'x509-svid', null]] },
-    'r1-10': { refs: { escrow: 1, transaction: 1 }, routes: [['POST /po', 'token', 1]], settlement: { type: 'receipt', counterparty: 'order-desk' } },
+    'r1-10': { refs: { escrow: 1, transaction: 1 }, routes: [['POST /po', 'token', 1]], settlement: { type: 'receipt' } },
     'r1-11': { refs: CLOSE },
     'r2-a': { refs: HIRE, refusals: ['ledger'] },
     'r2-b': { refs: HIRE, refusals: ['ledger'] },
@@ -326,36 +334,38 @@ const PROOF: Readonly<Record<string, CaseProof>> = {
   } },
   'prior-authorization': { number: 2, steps: {
     'r1-01': { refs: { delegation: 1, attestation: 1, vault: 1, transaction: 3 } },
-    'r1-02': { refs: { escrow: 2, delegation: 2, transaction: 4 }, routes: [['GET /records/orders/{order_id}', 'token', 2], ['GET /guidelines/{code}', 'token', 2]] },
+    'r1-02': { refs: { escrow: 2, delegation: 2, transaction: 4 }, projectedRoutes: [
+      ['GET /records/orders/{order_id}', 'token', 'allowed', 2, 1, 200], ['GET /guidelines/{code}', 'token', 'allowed', 2, 1, 200],
+    ] },
     'r1-03': { refs: APPROVAL },
-    'r1-04': { refs: { escrow: 2, transaction: 3 } },
-    'r1-05': { refs: { escrow: 2, transaction: 2 }, routes: [['POST /insurer/requests', 'jwt-svid', null]] },
-    'r1-06': { refs: { escrow: 1, transaction: 1 }, routes: [['POST /records/orders/{order_id}/submission', 'token', 1]], settlement: { type: 'receipt', counterparty: 'intake' } },
+    'r1-04': { refs: { escrow: 2, transaction: 3, vault: 1 } },
+    'r1-05': { refs: { escrow: 2, transaction: 1 }, projectedRoutes: [['POST /insurer/requests', 'jwt-svid', 'allowed', 0, 1, 201]] },
+    'r1-06': { refs: { escrow: 1, transaction: 1 }, projectedRoutes: [['POST /records/orders/{order_id}/submission', 'token', 'allowed', 1, 1, 201]], settlement: { type: 'intake-handoff' } },
     'r1-07': { refs: CLOSE },
     'r2-d': { refs: { attestation: 2, escrow: 3, transaction: 6 } },
     'r2-e': { refs: { attestation: 1, escrow: 1, transaction: 2 } },
     'r2-a': { refs: { escrow: 2, transaction: 2 } },
     'r2-b': { refs: { claim: 1, challenge: 1 } },
     'r2-b-hold': { refs: VERDICT },
-    'r2-c': { refs: { hold: 1 }, refusals: ['tool'] },
-    'r2-f': { refs: { transaction: 1, resolution: 2, probe: 2 } },
+    'r2-c': { refs: { hold: 1, transaction: 1 }, refusals: ['projected-tool'], recordFromTransaction: 'hold' },
+    'r2-f': { refs: { transaction: 1, did: 2, probe: 2 } },
   } },
   'bid-evaluation': { number: 3, steps: {
     'r1-01': { refs: { delegation: 1, vault: 1, transaction: 2 } },
     'r1-02': { refs: HIRE },
     'r1-03': { refs: { bidder: 3, escrow: 1 } },
     'r1-04': { refs: { escrow: 9, transaction: 6 } },
-    'r1-05': { refs: { delegation: 3, transaction: 6, escrow: 1 }, routes: [['GET /vendors', 'token', 2, 3]] },
+    'r1-05': { refs: { delegation: 3, transaction: 6, escrow: 1 }, projectedRoutes: [['GET /vendors', 'token', 'allowed', 2, 3, 200]] },
     'r1-06': { refs: APPROVAL },
-    'r1-07': { refs: HIRE, routes: [['POST /sourcing/rankings', 'token', 1]] },
+    'r1-07': { refs: HIRE, projectedRoutes: [['POST /sourcing/rankings', 'token', 'allowed', 1, 1, 201]] },
     'r1-08': { refs: CLOSE },
     'r2-a': { refs: { escrow: 1, claim: 1, challenge: 1 } },
-    'r2-a-release': { refs: { escrow: 1 }, settlement: { type: 'none-recorded' } },
+    'r2-a-release': { refs: { escrow: 1, transaction: 1 }, settlement: { type: 'release' } },
     'r2-a-hold': { refs: VERDICT },
     'r2-b': { refs: { attestation: 1, escrow: 1, transaction: 4 } },
     'r2-c': { refs: { escrow: 1, hold: 1, transaction: 2 } },
-    'r2-d': { refs: HIRE, routes: [['POST /sourcing/rankings', 'token', 1, 1, 'refused']] },
-    'r2-e': { refs: RECORD, recordFromTransaction: true },
+    'r2-d': { refs: HIRE, projectedRoutes: [['POST /sourcing/rankings', 'token', 'refused', 1, 1, 403]] },
+    'r2-e': { refs: RECORD, recordFromTransaction: 'record' },
     'l1-01': { refs: RECORD },
     'l1-02': { refs: RECORD },
     'l1-03': { refs: CLOSE, refusals: ['tool'] },
@@ -366,9 +376,61 @@ const PROOF: Readonly<Record<string, CaseProof>> = {
   } },
 };
 
+/** The run record accepts a role followed by one short alphanumeric suffix. */
+function hasHireRole(step: unknown, role: string): boolean {
+  return typeof step === 'string' && (step === role || (step.startsWith(role) && /^-[a-z0-9]{1,8}$/.test(step.slice(role.length))));
+}
+
+/** An escrow must identify one hire. Two entries for one escrow cannot confirm the same action. */
+function hireFor(hires: readonly unknown[], escrow: string): Record<string, unknown> | null {
+  let found: Record<string, unknown> | null = null;
+  for (const hire of hires) {
+    if (!isObject(hire) || hire.escrow_ref !== escrow) continue;
+    if (found !== null) return null;
+    found = hire;
+  }
+  return found;
+}
+
+/** A publishable spend needs the assembler's terminal proof, not an empty Accept or Reclaim field. */
+function releaseOf(refs: readonly Ref[], hires: readonly unknown[], proof: unknown): boolean {
+  if (!isObject(proof) || Object.keys(proof).length !== 5 || proof.action !== 'Release') return false;
+  const { escrow_ref: escrow, tx, spent_output: spent, at } = proof;
+  if (typeof escrow !== 'string' || !OUTPUT_REF.test(escrow) || typeof tx !== 'string' || !HASH.test(tx)
+      || typeof spent !== 'string' || !OUTPUT_REF.test(spent) || spent === escrow || spent.startsWith(`${tx}#`)
+      || typeof at !== 'number' || !Number.isSafeInteger(at) || at <= 0) return false;
+  if (refs.length !== 2 || !refs.some(({ kind, value }) => kind === 'escrow' && value === escrow)
+      || !refs.some(({ kind, value }) => kind === 'transaction' && value === tx)) return false;
+  const hire = hireFor(hires, escrow);
+  return hire !== null && hasHireRole(hire.step, 'quote') && hire.post_tx === escrow.slice(0, 64)
+    && hire.verdict === 'VERIFIED' && hire.accept_tx === null && hire.reclaim_tx === null;
+}
+
+/** The public assembler proof binds the signed handoff to the independently confirmed Accept without publishing the signed contents. */
+function intakeHandoffOf(refs: readonly Ref[], hires: readonly unknown[], doc: Record<string, unknown>): boolean {
+  const proof = doc.handoff_evidence;
+  if (!isObject(proof) || Object.keys(proof).length !== 7) return false;
+  const { execute_step: executeStep, execute_escrow: executeEscrow, execute_result_sha256: digest,
+    intake_step: intakeStep, intake_escrow: intakeEscrow, signed_acceptance: signed, confirmed_accept_tx: accept } = proof;
+  if (!hasHireRole(executeStep, 'execute') || !hasHireRole(intakeStep, 'intake') || typeof executeEscrow !== 'string' || !OUTPUT_REF.test(executeEscrow)
+      || typeof intakeEscrow !== 'string' || !OUTPUT_REF.test(intakeEscrow) || intakeEscrow === executeEscrow
+      || typeof digest !== 'string' || !HASH.test(digest) || typeof accept !== 'string' || !HASH.test(accept)
+      || (signed !== 'confirmed' && signed !== 'pending')) return false;
+  if (doc.escrow_ref !== executeEscrow || doc.result_sha256 !== digest || doc.verdict !== 'VERIFIED' || !isObject(doc.result_projection)
+      || doc.result_projection.operation !== 'execute' || doc.result_projection.outcome !== 'completed' || doc.result_projection.exit_state !== 'Completed') return false;
+  const execute = hireFor(hires, executeEscrow);
+  const intake = hireFor(hires, intakeEscrow);
+  return execute !== null && execute.step === executeStep && execute.result_sha256 === digest && execute.verdict === 'VERIFIED'
+    && intake !== null && intake.step === intakeStep && intake.verdict === 'VERIFIED' && intake.reclaim_tx === null
+    && typeof intake.result_sha256 === 'string' && HASH.test(intake.result_sha256) && intake.accept_tx === accept
+    && refs.some(({ kind, value }) => kind === 'transaction' && value === accept);
+}
+
 /** The assembler's public links, receipt and check results must agree before a row claims an accepted, completed hire. */
 function settlementOf(settlement: NonNullable<StepProof['settlement']>, refs: readonly Ref[], doc: Record<string, unknown>): boolean {
   const hires: unknown[] = Array.isArray(doc.hires) ? doc.hires : [];
+  if (settlement.type === 'release') return releaseOf(refs, hires, doc.release);
+  if (settlement.type === 'intake-handoff') return intakeHandoffOf(refs, hires, doc);
   if (settlement.type === 'none-recorded') {
     const matching = hires.filter((hire) => isObject(hire) && refs.some(({ kind, value }) => kind === 'escrow' && value === hire.escrow_ref));
     return matching.length === 1 && isObject(matching[0]) && matching[0].accept_tx === null && matching[0].reclaim_tx === null;
@@ -385,17 +447,35 @@ function settlementOf(settlement: NonNullable<StepProof['settlement']>, refs: re
   const { accepted, escrow_ref: handoff } = body.handoff;
   if (accepted !== 'confirmed' && accepted !== 'pending') return false;
   if (typeof handoff !== 'string' || !OUTPUT_REF.test(handoff) || handoff === escrow) return false;
-  const carried = hires.filter((hire) => isObject(hire) && hire.escrow_ref === escrow);
-  const received = hires.filter((hire) => isObject(hire) && hire.escrow_ref === handoff);
-  if (carried.length !== 1 || received.length !== 1 || !isObject(carried[0]) || !isObject(received[0])) return false;
-  if (carried[0].accept_tx !== accept || carried[0].reclaim_tx !== null || carried[0].result_sha256 !== digest) return false;
-  const { step, accept_tx: intakeAccept, reclaim_tx: intakeReclaim, result_sha256: intakeDigest, verdict } = received[0];
-  const role = settlement.counterparty;
-  // The run record permits a role followed by one short alphanumeric suffix.
-  if (typeof step !== 'string' || (step !== role && !(step.startsWith(role) && /^-[a-z0-9]{1,8}$/.test(step.slice(role.length))))) return false;
+  const carried = hireFor(hires, escrow);
+  const received = hireFor(hires, handoff);
+  if (carried === null || received === null || carried.accept_tx !== accept || carried.reclaim_tx !== null || carried.result_sha256 !== digest) return false;
+  const { step, accept_tx: intakeAccept, reclaim_tx: intakeReclaim, result_sha256: intakeDigest, verdict } = received;
+  if (!hasHireRole(step, 'order-desk')) return false;
   // The assembler confirms the Accept for this escrow independently of when the result was signed.
   return verdict === 'VERIFIED' && intakeReclaim === null && typeof intakeDigest === 'string' && HASH.test(intakeDigest)
     && typeof intakeAccept === 'string' && HASH.test(intakeAccept) && refs.some(({ kind, value }) => kind === 'transaction' && value === intakeAccept);
+}
+
+/** Attribution stays in the assembler. The reader checks its exact step proof against the sanitized events. */
+function projectedRoutesOf(id: string, required: readonly ProjectedRoute[], doc: Record<string, unknown>): boolean {
+  if (!Array.isArray(doc.route_evidence) || !isObject(doc.mock) || !Array.isArray(doc.mock.log)) return false;
+  const proofs = (doc.route_evidence as unknown[]).filter((row): row is Record<string, unknown> => isObject(row) && row.step === id);
+  if (proofs.length !== required.length) return false;
+  const log: unknown[] = doc.mock.log;
+  for (const [route, credential, decision, links, count, status] of required) {
+    if (proofs.filter((row) => Object.keys(row).length === 6 && row.route === route && row.credential === credential
+        && row.decision === decision && row.act_links === links && row.count === count).length !== 1) return false;
+    let matched = 0;
+    for (const row of log) {
+      if (isObject(row) && Object.keys(row).length === 5 && row.route === route && row.credential === credential
+          && row.decision === decision && row.status === status && typeof row.at === 'string'
+          && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(row.at) && Number.isFinite(Date.parse(row.at))) matched += 1;
+    }
+    // Distinct verified calls can have identical public timestamps.
+    if (matched < count) return false;
+  }
+  return true;
 }
 
 function proofOf(proof: StepProof | undefined, id: string, refs: readonly Ref[], doc: Record<string, unknown>): boolean {
@@ -405,20 +485,23 @@ function proofOf(proof: StepProof | undefined, id: string, refs: readonly Ref[],
     for (const ref of refs) {
       if (ref.kind !== kind) continue;
       const valid = kind === 'delegation' || kind === 'attestation' || kind === 'case' || kind === 'transaction' || kind === 'bidder' ? HASH.test(ref.value)
-        : kind === 'resolution' ? DID.test(ref.value) : kind === 'probe' ? REF_VALUE.test(ref.value) : OUTPUT_REF.test(ref.value);
+        : kind === 'did' ? DID.test(ref.value) : kind === 'probe' ? REF_VALUE.test(ref.value) : OUTPUT_REF.test(ref.value);
       if (valid) values.add(ref.value);
     }
     if (values.size < count) return false;
   }
   if (proof.settlement !== undefined && !settlementOf(proof.settlement, refs, doc)) return false;
-  if (proof.recordFromTransaction && !refs.some(({ kind, value }) => kind === 'record' && OUTPUT_REF.test(value)
+  if (proof.projectedRoutes !== undefined && !projectedRoutesOf(id, proof.projectedRoutes, doc)) return false;
+  if (proof.recordFromTransaction && !refs.some(({ kind, value }) => kind === proof.recordFromTransaction && OUTPUT_REF.test(value)
       && refs.some((one) => one.kind === 'transaction' && one.value === value.slice(0, 64)))) return false;
   if (proof.refusals !== undefined) {
     const refusals: unknown[] = Array.isArray(doc.refusals) ? doc.refusals : [];
     for (const kind of proof.refusals) {
-      if (!refusals.some((value) => isObject(value) && value.step === id && value.kind === kind && (kind === 'tool'
-        ? typeof value.message === 'string' && value.message.trim() !== ''
-        : typeof value.evaluation_error === 'string' && value.evaluation_error.trim() !== '' && typeof value.transaction_body === 'string' && value.transaction_body !== ''))) return false;
+      const projected = kind === 'projected-tool';
+      if (!refusals.some((value) => isObject(value) && value.step === id && value.kind === (projected ? 'tool' : kind) && (projected
+        ? typeof value.message_sha256 === 'string' && HASH.test(value.message_sha256)
+        : kind === 'tool' ? typeof value.message === 'string' && value.message.trim() !== ''
+          : typeof value.evaluation_error === 'string' && value.evaluation_error.trim() !== '' && typeof value.transaction_body === 'string' && value.transaction_body !== ''))) return false;
     }
   }
   if (proof.routes !== undefined) {
@@ -503,7 +586,7 @@ function rowOf(step: UseCase['evidenceSteps'][number], found: EvidenceStep | und
 /** The page: the header, the title, one table for each run, and the section "Not covered". The header comes first and verbatim. */
 export function renderPage(input: { header: string; use: Pick<UseCase, 'name' | 'title' | 'evidenceSteps' | 'notCovered'>; runs: readonly PageRun[] }): string {
   const { lead, items } = input.use.notCovered;
-  const overrides = Object.hasOwn(HISTORICAL_SHOWS, input.use.name) ? HISTORICAL_SHOWS[input.use.name] : undefined;
+  const overrides = Object.hasOwn(CASE_SHOWS, input.use.name) ? CASE_SHOWS[input.use.name] : undefined;
   const body: string[] = [`# ${input.use.title}: ${PAGE_TEXT.results}`, '', PAGE_TEXT.intro, ''];
   for (const run of input.runs) {
     body.push(`## ${PAGE_TEXT.run} ${run.label}: ${run.kind}, ${run.date}`, '', `| ${PAGE_TEXT.columns.join(' | ')} |`, `|${PAGE_TEXT.columns.map(() => '---').join('|')}|`);

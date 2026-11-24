@@ -10,6 +10,7 @@ import results, { EXPLORER_TX, HEADER_LIMIT_BYTES, PAGE_TEXT, SHOWS, parseEviden
 import data from '../usecases/inventory-reorder.ts';
 import priorAuthorization from '../usecases/prior-authorization.ts';
 import bidEvaluation from '../usecases/bid-evaluation.ts';
+import { USE_CASE_NAMES } from '../usecases/names.ts';
 import type { UseCase } from '../lib/contract.ts';
 import { USE_CASE, hashOf, taskWorld } from './support/task-world.ts';
 import type { TaskWorld } from './support/task-world.ts';
@@ -41,6 +42,7 @@ const NOTE = 'The jury has no verdict yet.';
 const PRIOR_LABEL = '2026-12-01-prior-authorization-agent-run-1';
 const BIDS_LABEL = '2026-12-04-bid-desk-bravo-run-1';
 const USE_CASES = [data, priorAuthorization, bidEvaluation] as const;
+const LOCAL_GOLDENS = fileURLToPath(new URL('./golden/', import.meta.url));
 
 const tx = (name: string): string => hashOf(`results tx ${name}`);
 
@@ -152,6 +154,49 @@ describe('the task results', () => {
       for (const step of run.steps.values()) expect(step.complete, step.id).toBe(step.status === 'shown');
     }
   });
+
+  it('keeps the original signed-pending rule when the matching Accept arrives later', () => {
+    const original: { handoff: { escrow_ref: string; accepted: string } } = JSON.parse(String(ASSEMBLED_CLEAN.result));
+    const result = JSON.stringify({ ...original, handoff: { ...original.handoff, accepted: 'pending' } });
+    const digest = createHash('sha256').update(result).digest('hex');
+    const hires = (ASSEMBLED_CLEAN.hires as Array<Record<string, unknown>>).map((hire) => hire.escrow_ref === ASSEMBLED_CLEAN.escrow_ref
+      ? { ...hire, result_sha256: digest } : hire);
+    const receipt = { ...ASSEMBLED_CLEAN.receipt as Record<string, unknown>, response_hash: digest };
+    const complete = (rows: unknown[]) => parseEvidence(cleanDoc({ result, result_sha256: digest, receipt, hires: rows }), CLEAN, data).steps.get('r1-10')!.complete;
+    expect(complete(hires)).toBe(true);
+    expect(complete(hires.map((hire) => hire.escrow_ref === original.handoff.escrow_ref ? { ...hire, accept_tx: null } : hire))).toBe(false);
+  });
+
+  for (const [use, number, fixtureDir] of [
+    [priorAuthorization, 2, process.env.RESULTS_UC2_GOLDENS], [bidEvaluation, 3, process.env.RESULTS_UC3_GOLDENS],
+  ] as const) {
+    const kinds = ['clean', 'failure'] as const;
+    const files = kinds.map((kind) => join(fixtureDir ?? LOCAL_GOLDENS, `evidence-uc${number}-${kind}.json`));
+    // Separate branches can supply the producer fixtures. An enabled use case must have the local copies if none are supplied.
+    const enabled = USE_CASE_NAMES.some((name: string) => name === use.name);
+    it.skipIf(!enabled && fixtureDir === undefined && !files.some((path) => existsSync(path)))(`renders all verified rows from both use case ${number} producer files`, async () => {
+      const rig = await makeRig(use);
+      for (const [index, file] of files.entries()) {
+        const source = readFileSync(file, 'utf8');
+        const value: AssemblerFixture = JSON.parse(source);
+        const label = `${value.date}-${use.agents[0]!.id}-run-${index + 1}`;
+        const parsed = parseEvidence(value, label, use);
+        expect(parsed.kind).toBe(kinds[index]);
+        expect(parsed.steps.size).toBe(use.evidenceSteps.filter(({ run }) => run === parsed.kind).length);
+        expect([...parsed.steps.values()].filter(({ status }) => status === 'shown').length).toBeGreaterThan(0);
+        rig.put('public', label, source);
+        expect(await rig.run(...NO_ARGUMENTS(rig), '--runs', label, '--submit')).toBe(0);
+        const page = rig.page();
+        for (const { id, status, complete } of parsed.steps.values()) {
+          const shown = rowOf(page, id)[4];
+          expect(complete, `${file}: ${id}`).toBe(status === 'shown');
+          if (complete) expect(shown).not.toMatch(/^Not (?:run|shown)/);
+          else expect(shown).toMatch(/^Not run/);
+        }
+        expect(page).not.toMatch(/route_evidence|handoff_evidence|spiffe:|"act":/);
+      }
+    });
+  }
 
   it('puts the text of the header file first and verbatim, whatever its ending, and never changes it', async () => {
     const texts = [HEADER, 'A name with no line end', 'First line\r\nSecond line, with accents: \u00e4\u00f6\u00fc\r\n', 'A line\n\n\nand two empty lines before the end\n\n'];
@@ -298,14 +343,15 @@ describe('the task results', () => {
         const steps = use === priorAuthorization ? [
           { id: 'r2-b', status: 'shown', refs: [output('claim', 'claim'), output('challenge', 'challenge')] },
           { id: 'r2-b-hold', status: 'shown', refs: [{ kind: 'case', value: tx('case') }, transaction('finalize'), output('hold', 'hold')] },
-          { id: 'r2-c', status: 'shown', refs: [output('hold', 'hold')] },
+          { id: 'r2-c', status: 'shown', refs: [output('hold', 'hold'), transaction('hold')] },
         ] : [
           { id: 'r2-a', status: 'shown', refs: [output('escrow', 'quote'), output('claim', 'claim'), output('challenge', 'challenge')] },
           { id: 'r2-a-hold', status: 'shown', refs: [{ kind: 'case', value: tx('case') }, transaction('finalize'), output('hold', 'hold')] },
           { id: 'r2-c', status: 'shown', refs: [transaction('proposal'), output('escrow', 'proposal'), transaction('posted'), output('hold', 'hold')] },
         ];
         const run = parseEvidence(doc('failure', '2026-12-01', steps, {
-          run: `use-case-${number}-failure`, capability_id: use.agents[0]!.capability, refusals: [{ step: 'r2-c', kind: 'tool', message: 'The supplier is not listed.' }],
+          run: `use-case-${number}-failure`, capability_id: use.agents[0]!.capability,
+          refusals: [{ step: 'r2-c', kind: 'tool', message_sha256: tx('listing refusal') }],
         }), 'failure', use);
         const page = renderPage({ header: HEADER, use, runs: [run] });
         expect(page).not.toContain('Order Desk');
@@ -316,24 +362,27 @@ describe('the task results', () => {
       }
     });
 
-    it.each(['confirmed', 'pending'] as const)('requires a verified Accept for a signed %s handoff', (accepted) => {
+    it.each(['confirmed', 'pending'] as const)('requires the projected proof and exact ledger Accept for a signed %s intake handoff', (signedAcceptance) => {
       const refs = [
         { kind: 'delegation', value: tx('delegation id') }, transaction('delegation'), { kind: 'attestation', value: tx('binding id') }, transaction('binding'),
         output('vault', 'open'), transaction('open'),
       ];
-      const write = [{ route: 'POST /records/orders/{order_id}/submission', credential: 'token', decision: 'allowed', act: ['agent'] }];
+      const route = 'POST /records/orders/{order_id}/submission';
+      const write = [{ route, credential: 'token', decision: 'allowed', status: 201, at: '2026-12-01T01:00:00.000Z' }];
       const intakeAccept = tx('accept intake');
       const escrow = output('escrow', 'carried hire').value;
-      const accept = tx('accept execute');
       const intakeEscrow = output('escrow', 'intake hire').value;
-      const result = JSON.stringify({ outcome: 'completed', handoff: { escrow_ref: intakeEscrow, accepted } });
-      const digest = createHash('sha256').update(result).digest('hex');
+      const digest = tx('signed execute result');
       const settlement = {
-        escrow_ref: escrow, accept_tx: accept, result, result_sha256: digest,
-        receipt: { escrow_ref: escrow, response_hash: digest }, receipt_signature: 'ab'.repeat(64),
-        checks: { signature_valid: 'pass', response_hash_matches: 'pass', escrow_ref_matches: 'pass', supplier_key_matches: 'pass' },
+        escrow_ref: escrow, result_sha256: digest, verdict: 'VERIFIED',
+        result_projection: { operation: 'execute', outcome: 'completed', exit_state: 'Completed' },
+        route_evidence: [{ step: 'r1-06', route, credential: 'token', decision: 'allowed', act_links: 1, count: 1 }],
+        handoff_evidence: {
+          execute_step: 'execute', execute_escrow: escrow, execute_result_sha256: digest, intake_step: 'intake-2', intake_escrow: intakeEscrow,
+          signed_acceptance: signedAcceptance, confirmed_accept_tx: intakeAccept,
+        },
         hires: [
-          { step: 'execute', escrow_ref: escrow, accept_tx: accept, reclaim_tx: null, result_sha256: digest },
+          { step: 'execute', escrow_ref: escrow, result_sha256: digest, verdict: 'VERIFIED' },
           { step: 'intake-2', escrow_ref: intakeEscrow, accept_tx: intakeAccept, reclaim_tx: null, result_sha256: tx('intake result'), verdict: 'VERIFIED' },
         ],
       };
@@ -349,6 +398,9 @@ describe('the task results', () => {
       expect(rowOf(render(refs, write), 'r1-06')[4]).toBe(PAGE_TEXT.partialReference);
       expect(rowOf(render(refs, [], settlement), 'r1-06')[4]).toBe(PAGE_TEXT.partialReference);
       expect(rowOf(render(refs, write, { ...settlement, hires: settlement.hires.slice(0, 1) }), 'r1-06')[4]).toBe(PAGE_TEXT.partialReference);
+      expect(rowOf(render(refs, write, { ...settlement, route_evidence: [] }), 'r1-06')[4]).toBe(PAGE_TEXT.partialReference);
+      expect(rowOf(render(refs, write, { ...settlement, handoff_evidence: null }), 'r1-06')[4]).toBe(PAGE_TEXT.partialReference);
+      expect(rowOf(render(refs, write, { ...settlement, handoff_evidence: { ...settlement.handoff_evidence, execute_result_sha256: tx('another result') } }), 'r1-06')[4]).toBe(PAGE_TEXT.partialReference);
       const [execute, intake] = settlement.hires;
       expect(rowOf(render(refs, write, { ...settlement, hires: [execute, { ...intake, accept_tx: null }] }), 'r1-06')[4]).toBe(PAGE_TEXT.partialReference);
       expect(rowOf(render(refs, write, { ...settlement, hires: [execute, { ...intake, accept_tx: tx('another accept') }] }), 'r1-06')[4]).toBe(PAGE_TEXT.partialReference);
@@ -361,18 +413,49 @@ describe('the task results', () => {
       expect(rowOf(full, 'r1-06')[4]).toBe(SHOWS['Receipt checks, accept, token for a route']!.shows);
     });
 
-    it('describes only the missing accept or reclaim, not the state of the escrow', () => {
-      const ref = output('escrow', 'quote hire');
-      const render = (hires: unknown[]) => renderPage({
+    it('requires the exact terminal Release proof and checked quote hire', () => {
+      const escrow = output('escrow', 'quote hire');
+      const spend = transaction('release');
+      const hire = { step: 'quote-a3', escrow_ref: escrow.value, post_tx: tx('quote hire'), verdict: 'VERIFIED', accept_tx: null, reclaim_tx: null };
+      const proof = { action: 'Release', escrow_ref: escrow.value, tx: spend.value, spent_output: output('escrow', 'submit').value, at: 1_795_000_000_000 };
+      const check = (hires: unknown[], release: unknown, refs: unknown[] = [escrow, spend]) => renderPage({
         header: HEADER, use: bidEvaluation, runs: [parseEvidence(doc('failure', '2026-12-04', [
-          { id: 'r2-a-release', status: 'shown', refs: [ref] },
-        ], { run: 'use-case-3-failure', capability_id: bidEvaluation.agents[0]!.capability, hires }), 'failure', bidEvaluation)],
+          { id: 'r2-a-release', status: 'shown', refs },
+        ], { run: 'use-case-3-failure', capability_id: bidEvaluation.agents[0]!.capability, hires, release }), 'failure', bidEvaluation)],
       });
-      expect(rowOf(render([]), 'r2-a-release')[4]).toBe(PAGE_TEXT.partialReference);
-      expect(rowOf(render([{ escrow_ref: ref.value, accept_tx: tx('accepted'), reclaim_tx: null }]), 'r2-a-release')[4]).toBe(PAGE_TEXT.partialReference);
-      const row = rowOf(render([{ escrow_ref: ref.value, accept_tx: null, reclaim_tx: null }]), 'r2-a-release');
-      expect(row[4]).toBe(SHOWS['Escrow: release']!.shows);
-      expect(row[5]).toBe('Whether the escrow ended, who spent it, or who received funds.');
+      for (const page of [
+        check([], proof), check([hire], null), check([hire], { ...proof, action: 'Accept' }), check([hire], { ...proof, spent_output: escrow.value }),
+        check([{ ...hire, accept_tx: tx('accepted') }], proof), check([{ ...hire, reclaim_tx: tx('reclaimed') }], proof),
+        check([{ ...hire, escrow_ref: output('escrow', 'other quote').value }], proof),
+        check([hire], proof, [escrow, transaction('other spend')]), check([hire], proof, [output('escrow', 'other quote'), spend]),
+      ]) expect(rowOf(page, 'r2-a-release')[4]).toBe(PAGE_TEXT.partialReference);
+      const row = rowOf(check([hire], proof), 'r2-a-release');
+      expect(row[4]).toBe('The evidence records a confirmed Release spend of this quote escrow.');
+      expect(row[5]).toBe('Who submitted the transaction or how much the supplier received.');
+    });
+
+    it('checks a scoped route proof against enough sanitized events with the correct status', () => {
+      const step = 'r1-05';
+      const route = 'GET /vendors';
+      const evidence = { step, route, credential: 'token', decision: 'allowed', act_links: 2, count: 3 };
+      const event = { at: '2026-12-01T02:00:00.000Z', route, credential: 'token', decision: 'allowed', status: 200 };
+      const refs = [
+        ...['one', 'two', 'three'].map((name) => ({ kind: 'delegation', value: tx(name) })),
+        ...Array.from({ length: 6 }, (_, i) => transaction(`child ${i}`)), output('escrow', 'score'),
+      ];
+      const check = (routeEvidence: unknown[], log: unknown[], linked = refs) => parseEvidence(doc('clean', '2026-12-01', [
+        { id: step, status: 'shown', refs: linked },
+      ], { run: 'use-case-3-clean', capability_id: bidEvaluation.agents[0]!.capability, route_evidence: routeEvidence, mock: { log } }), 'bids', bidEvaluation).steps.get(step)!.complete;
+      const log = [event, event, event];
+      expect(check([evidence], log)).toBe(true);
+      expect(check([evidence], log.slice(1))).toBe(false);
+      expect(check([evidence], [event, event, { ...event, status: 201 }])).toBe(false);
+      expect(check([evidence], [event, event, { ...event, act: ['not public'] }])).toBe(false);
+      expect(check([{ ...evidence, step: 'r1-07' }], log)).toBe(false);
+      expect(check([{ ...evidence, act_links: 1 }], log)).toBe(false);
+      expect(check([{ ...evidence, count: 2 }], log)).toBe(false);
+      expect(check([evidence, evidence], log)).toBe(false);
+      expect(check([evidence], log, refs.slice(1))).toBe(false);
     });
 
     it('describes only the linked record output when no revocation details are present', () => {

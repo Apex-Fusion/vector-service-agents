@@ -250,7 +250,7 @@ const USE_CASE: UseCase = {
     },
     {
       id: 'r2-a-release', run: 'failure', actor: 'counterparty', primitive: 'Escrow: release',
-      what: 'Check the Bid Desk Charlie quote escrow for an accept or reclaim.',
+      what: 'Check for a confirmed Release spend of the Bid Desk Charlie quote escrow.',
     },
     { id: 'r2-a-hold', run: 'failure', actor: 'relay', primitive: 'Module-1 verdict and hold', what: 'The jury decides. Bid Desk Charlie gets a hold of 7 days, reason 64.' },
     {
