@@ -69,6 +69,7 @@ function useCaseProblem(value: unknown): string | null {
   if (!isObject(value)) return 'the default export is not an object';
   if (typeof value.name !== 'string') return 'name is not a text';
   if (typeof value.title !== 'string') return 'title is not a text';
+  if (value.legacyOrganisationWriter !== undefined && value.legacyOrganisationWriter !== value.name) return 'legacyOrganisationWriter does not identify this use case';
   for (const member of USE_CASE_LISTS) if (!Array.isArray(value[member])) return `${member} is not a list`;
   for (const member of USE_CASE_TEXTS) if (typeof value[member] !== 'string') return `${member} is not a text`;
   const notCovered = notCoveredProblem(value.notCovered);
