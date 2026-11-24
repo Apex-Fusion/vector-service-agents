@@ -13,10 +13,11 @@ import type { JsonValue } from '@vsa/usecase-kit/protocol';
 import { HOOK_READS } from '../../src/checks/index.ts';
 import { quoteInput } from '../../src/job/index.ts';
 import { CALL_TIMEOUT_MS, HOOK_READS as HOOK_READS_OF_THE_SETTINGS, JOB_DEADLINE_MS } from '../../src/serve/settings.ts';
+import { loadConfig } from '../../src/serve/start.ts';
 import { wireService } from '../../src/serve/wiring.ts';
 import { until } from './serve.ts';
 import { SERVICE, ORGANISATION } from './support.ts';
-import { DESK_DID, RFQ_VALUE, T, cleanDirs, configOf, makeWorld } from './world.ts';
+import { DESK_DID, RFQ_VALUE, T, cleanDirs, makeWorld } from './world.ts';
 import type { World } from './world.ts';
 
 afterEach(() => {
@@ -32,7 +33,7 @@ function inputOf(world: World): JsonValue {
 }
 
 async function wired(world: World, over: Readonly<Record<string, string | undefined>> = {}) {
-  const config = configOf({ ...world.env, ...over });
+  const config = loadConfig({ ...world.env, ...over });
   return { config, ...(await wireService(config, world.options)) };
 }
 
@@ -187,7 +188,7 @@ describe('the time of the hook', () => {
 
   test('the gateway client of the hook has the budget of the hook: a gateway that answers in 700 ms is no answer with a budget of 500 ms', async () => {
     const world = makeWorld();
-    const config = configOf({ ...world.env, CHECKS_READ_BUDGET_MS: '500' });
+    const config = loadConfig({ ...world.env, CHECKS_READ_BUDGET_MS: '500' });
     const { precheck } = await wireService(config, { ...world.options, fetchImpl: lateGateway(world, 700) });
     const answer = await precheck(world.message, world.context);
     expect(answer).toMatchObject({ go: false, status: 503, error: 'check_unavailable' });
@@ -196,7 +197,7 @@ describe('the time of the hook', () => {
 
   test('the gateway client of the job has the time of the credential read, and the same late gateway gives the job its credential', async () => {
     const world = makeWorld();
-    const config = configOf({ ...world.env, CHECKS_READ_BUDGET_MS: '500' });
+    const config = loadConfig({ ...world.env, CHECKS_READ_BUDGET_MS: '500' });
     const { jobDeps } = await wireService(config, { ...world.options, fetchImpl: lateGateway(world, 700) });
     const issued = await jobDeps(T).credential(DESK_DID);
     expect(issued.ok, JSON.stringify(issued)).toBe(true);
@@ -204,7 +205,7 @@ describe('the time of the hook', () => {
 
   test('the timeout of the client of the job is CALL_TIMEOUT_MS, and the timeout of the client of the hook is the budget of the hook', async () => {
     const world = makeWorld();
-    const config = configOf({ ...world.env, CHECKS_READ_BUDGET_MS: '700' });
+    const config = loadConfig({ ...world.env, CHECKS_READ_BUDGET_MS: '700' });
     const timeouts = vi.spyOn(AbortSignal, 'timeout');
     const { jobDeps, precheck } = await wireService(config, world.options);
     timeouts.mockClear();
@@ -221,7 +222,7 @@ describe('the time of the hook', () => {
     const hangs = (): Promise<never> => new Promise<never>(() => undefined);
     const provider = new Proxy({}, { get: () => hangs }) as typeof world.ledger.env.provider;
     const ledgerEnv = { ...world.ledger.env, provider, fetchImpl: hangs as unknown as typeof fetch, budgetMs: 600_000 };
-    const config = configOf({ ...world.env, CHECKS_READ_BUDGET_MS: '500' });
+    const config = loadConfig({ ...world.env, CHECKS_READ_BUDGET_MS: '500' });
     const { precheck } = await wireService(config, { ...world.options, ledgerEnv });
     const answer = await precheck(world.message, world.context);
     expect(answer).toMatchObject({ go: false, status: 503, error: 'check_unavailable' });

@@ -5,7 +5,6 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buyerVaultDeployment } from '@vsa/buyer-core';
 import { ALLOWLIST, INDEXER, LLM_ADVERT, marketplace } from '@vsa/hire-kit/testing';
 import type { Marketplace } from '@vsa/hire-kit/testing';
 import { createStubGateway, ed25519Key } from '@vsa/id-kit/testing';
@@ -14,21 +13,14 @@ import { CONTEXT_HEADERS } from '@vsa/service-kit';
 import type { JobContext } from '@vsa/service-kit';
 import { BID_DESK_MODEL, priceFor } from '@vsa/usecase-kit/bids';
 import type { PriceList } from '@vsa/usecase-kit/bids';
-import { renderManifest } from '@vsa/usecase-kit/manifest';
 import { RFQ_SCHEMA } from '@vsa/usecase-kit/protocol';
 import type { Document, JsonValue, RfqMessage } from '@vsa/usecase-kit/protocol';
 import { CAPTURE, CAPTURE_MS, ISSUER_KEY, delegation, delegationUtxo, ledgerWorld, liveRecord, recordUtxo } from '../../../../packages/buyer-core/test/fixtures/ledger-read-world.ts';
 import type { LedgerWorld } from '../../../../packages/buyer-core/test/fixtures/ledger-read-world.ts';
-import { loadPriceList } from '../../src/checks/index.ts';
-import { serviceKeyOf } from '../../src/serve/keys.ts';
-import { manifestFromEnv } from '../../src/serve/manifest.ts';
-import {
-  agentDidOf, checksBudgetOf, endpointsFromEnv, faultOf, hostOf, instanceOf, limitsOf, organisationOf, portOf, priceListFileOf, stateDirOf, supplierKeyOf,
-} from '../../src/serve/settings.ts';
 import type { Instance } from '../../src/serve/settings.ts';
-import type { ServiceConfig } from '../../src/serve/start.ts';
-import type { WireOptions } from '../../src/serve/wiring.ts';
-import { IDENTITY_SETTINGS, SERVICE, TOKEN, envOf } from './support.ts';
+import { loadConfig } from '../../src/serve/start.ts';
+import type { ServiceConfig, StartOptions } from '../../src/serve/start.ts';
+import { IDENTITY_SETTINGS, SERVICE, envOf } from './support.ts';
 
 /** The time of the world: a minute after the tip of the captured ledger. */
 export const T = CAPTURE_MS + 60_000;
@@ -89,7 +81,7 @@ export interface World {
   readonly config: ServiceConfig;
   readonly stateDir: string;
   /** What the service is given in place of its real parts. */
-  readonly options: WireOptions;
+  readonly options: StartOptions;
   readonly logs: string[];
   /** Makes the model supplier wait before it answers, and tells when a call has reached it. */
   holdModel(): { readonly reached: Promise<void>; readonly release: () => void };
@@ -104,24 +96,6 @@ export function tempDir(): string {
 }
 export function cleanDirs(): void {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-}
-
-/**
- * The configuration of the service for an environment, made from the readers of the settings: the manifest is rendered for each setting of the fault switch from an environment with no secret in it, and the
- * price list is the file of the instance.
- */
-export function configOf(env: NodeJS.ProcessEnv): ServiceConfig {
-  const instance = instanceOf(env);
-  const priceList = loadPriceList(priceListFileOf(instance));
-  const service = serviceKeyOf(SERVICE.privateKeyHex);
-  const published: NodeJS.ProcessEnv = { ...env, BID_DESK_SERVICE_PRIV_KEY_HEX: undefined, SERVICE_AUTH_HEADER: undefined, BID_DESK_SERVICE_PKH: service.pkh };
-  const rendered = renderManifest('bid-desk', (setting) => manifestFromEnv({ ...published, FAULT_MODE: setting }, { sha256: priceList.sha256 }));
-  if (!rendered.ok) throw new Error(`the manifest of the world is refused (${rendered.code}): ${rendered.detail}`);
-  return {
-    manifest: rendered.value, authHeader: TOKEN, host: hostOf(env), port: portOf(env), stateDir: stateDirOf(env), fault: faultOf(env), instance, agentDid: agentDidOf(env), organisation: organisationOf(env),
-    service: { privateKeyHex: SERVICE.privateKeyHex, pkh: service.pkh, address: service.address }, supplier: supplierKeyOf(env), limits: limitsOf(env), checksBudgetMs: checksBudgetOf(env),
-    endpoints: endpointsFromEnv(env), identityDeployment: buyerVaultDeployment(env), priceList,
-  };
 }
 
 /**
@@ -164,11 +138,13 @@ export function makeWorld(over: WorldOptions = {}): World {
     LLM_MODEL_ALLOWLIST: ALLOWLIST.join(','), LLM_MAX_PRICE_LOVELACE: String(LLM_ADVERT.price_lovelace), LLM_MAX_SUPPLIER_BOND_LOVELACE: String(LLM_ADVERT.supplier_bond_lovelace),
     LLM_MAX_BUYER_BOND_LOVELACE: String(LLM_ADVERT.buyer_bond_lovelace), FAULT_MODE: over.fault ?? '', ...over.env,
   });
-  const config = configOf(env);
+  const config = loadConfig(env);
   m.llm.answer = answerOf(config.priceList.list, rfq);
   // The hire waits `ms` by moving the clock of the world, after a turn of the event loop.
   const sleep = (ms: number): Promise<void> => new Promise<void>((resolve) => { setImmediate(() => { m.clock.now += ms; resolve(); }); });
-  const options: WireOptions = { createChain: async () => m.chain, fetchImpl: routed, clock: () => m.clock.now, sleep, log: (line) => { logs.push(line); }, ledgerEnv: ledger.env };
+  const options: StartOptions = {
+    createChain: async () => m.chain, fetchImpl: routed, clock: () => m.clock.now, sleep, log: (line) => { logs.push(line); }, ledgerEnv: ledger.env, janitorIntervalMs: 3_600_000,
+  };
   return {
     instance, m, gateway, sender, desk, delegateKey, ledger, message, context, env, config, stateDir, options, logs,
     holdModel: () => {

@@ -1,11 +1,8 @@
 // agents/bid-desk/test/serve/serve.ts
-// A real service on a port that the system picks, made over a world of test/serve/world.ts, and an HTTP client for it. The service is stopped, its connections included, whatever the test does.
-import type { AddressInfo } from 'node:net';
-import { JobSlot, listen } from '@vsa/service-kit';
+// A real service on a port that the system picks, started over a world of test/serve/world.ts, and an HTTP client for it. The service is stopped, its connections included, whatever the test does.
 import type { JobContext } from '@vsa/service-kit';
-import { createServer } from '../../src/serve/server.ts';
-import { wireService } from '../../src/serve/wiring.ts';
-import type { Wired } from '../../src/serve/wiring.ts';
+import { startService } from '../../src/serve/start.ts';
+import type { RunningService } from '../../src/serve/start.ts';
 import { TOKEN } from './support.ts';
 import { headersOf, wire } from './world.ts';
 import type { World } from './world.ts';
@@ -30,7 +27,7 @@ export interface Reply {
 
 export interface Api {
   readonly base: string;
-  readonly wired: Wired;
+  readonly service: RunningService;
   /** Any request. It carries the token of the runtime unless `headers` says otherwise: a value replaces it, and `null` sends no header of that name. */
   request(method: string, path: string, init?: { readonly body?: string; readonly headers?: Readonly<Record<string, string | null>>; readonly signal?: AbortSignal }): Promise<Reply>;
   /** POST /precheck as the runtime asks it: the token, the body of the job and the six headers of the context. */
@@ -41,13 +38,8 @@ export interface Api {
 
 /** Runs `fn` against the service of `world`, and stops the service whatever `fn` does. */
 export async function serve<T>(world: World, fn: (api: Api) => Promise<T>): Promise<T> {
-  const wired = await wireService(world.config, world.options);
-  const server = createServer({
-    manifestText: world.config.manifest.text, authHeader: world.config.authHeader, fault: world.config.fault, precheck: wired.precheck, jobDeps: wired.jobDeps,
-    priceListText: world.config.priceList.text, clock: world.options.clock ?? Date.now, log: world.options.log ?? (() => undefined), slot: new JobSlot(),
-  });
-  await listen(server, 0, '127.0.0.1');
-  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const service = await startService(world.env, world.options);
+  const base = `http://127.0.0.1:${service.port}`;
   const request: Api['request'] = async (method, path, init = {}) => {
     const sent: Record<string, string> = { ...AUTH };
     for (const [name, value] of Object.entries(init.headers ?? {})) {
@@ -65,7 +57,7 @@ export async function serve<T>(world: World, fn: (api: Api) => Promise<T>): Prom
     return { status: res.status, text, json, headers: res.headers };
   };
   const api: Api = {
-    base, wired, request,
+    base, service, request,
     precheck: (message: unknown = world.message, context = world.context, headers = {}) => request('POST', '/precheck', { body: wire(message), headers: { ...headersOf(context), ...headers } }),
     job: (message: unknown = world.message, context = world.context, headers = {}, signal) =>
       request('POST', '/', { body: wire(message), headers: { ...headersOf(context), ...headers }, ...(signal === undefined ? {} : { signal }) }),
@@ -73,8 +65,7 @@ export async function serve<T>(world: World, fn: (api: Api) => Promise<T>): Prom
   try {
     return await fn(api);
   } finally {
-    server.close();
-    server.closeAllConnections();
+    await service.stop();
   }
 }
 

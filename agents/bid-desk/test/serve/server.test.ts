@@ -10,6 +10,7 @@ import { afterEach, describe, expect, test } from 'vitest';
 import { rawHexToBech32 } from '@vsa/buyer-core';
 import { createGatewayClient } from '@vsa/id-kit/client';
 import { QUOTE_CHECKS, parseQuote } from '@vsa/usecase-kit/bids';
+import type { Quote } from '@vsa/usecase-kit/bids';
 import { readFaultSwitch } from '@vsa/usecase-kit/fault';
 import { isPlainObject } from '@vsa/usecase-kit/protocol';
 import { FileRfqBook } from '../../src/checks/index.ts';
@@ -17,6 +18,7 @@ import { createServer } from '../../src/serve/server.ts';
 import type { ServerOptions } from '../../src/serve/server.ts';
 import { INSTANCES, INSTANCE_NAMES } from '../../src/serve/settings.ts';
 import { serve, until } from './serve.ts';
+import type { Reply } from './serve.ts';
 import { PRICE_LIST_SHA256, SERVICE, TOKEN, priceListUrl } from './support.ts';
 import { DESK_DID, PLAIN_ESCROW_REF, T, answerOf, cleanDirs, headersOf, makeWorld, wire } from './world.ts';
 import type { World } from './world.ts';
@@ -29,6 +31,13 @@ const BOOK = (world: World): string => join(world.stateDir, 'rfq-book.json');
 /** The paths that the stub gateway was asked for the credential of a desk. */
 const credentialAsks = (world: World): string[] => world.gateway.requests.map((request) => request.path).filter((path) => path.endsWith('/credential'));
 const COMPACT_JWS = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
+
+/** The quote of a reply: the parser of the kit reads it, so the lines and the totals come out typed and checked. */
+function quoteIn(reply: Reply): Quote {
+  const quote = parseQuote(reply.json);
+  if (!quote.ok) throw new Error(`the answer is no quote (status ${reply.status}): ${reply.text.slice(0, 120)}`);
+  return quote.value;
+}
 
 describe.each(INSTANCES)('the Bid Desk %s: POST /precheck, the hook', (instance) => {
   test('a request that passes the 7 checks gets a go and the reservation of the job slot for its escrow', async () => {
@@ -195,10 +204,9 @@ describe('POST /: the job and the record of the hook', () => {
     const world = makeWorld();
     await serve(world, async (api) => {
       expect((await api.precheck()).status).toBe(200);
-      const reply = await api.job();
-      const lines = (reply.json?.lines as Array<Record<string, unknown>>).map((line) => [line.sku, line.quantity, line.unit_price, line.lead_time_days]);
-      expect(lines).toStrictEqual([['GLV-NIT-M', 100, 125, 14], ['SYR-10ML', 250, 28, 10], ['MSK-N95', 40, 60, 21]]);
-      expect([reply.json?.total, reply.json?.lead_time_days]).toStrictEqual([21_900, 21]);
+      const quote = quoteIn(await api.job());
+      expect(quote.lines.map((line) => [line.sku, line.quantity, line.unit_price, line.lead_time_days])).toStrictEqual([['GLV-NIT-M', 100, 125, 14], ['SYR-10ML', 250, 28, 10], ['MSK-N95', 40, 60, 21]]);
+      expect([quote.total, quote.lead_time_days]).toStrictEqual([21_900, 21]);
     });
   });
 
@@ -291,9 +299,8 @@ describe('POST /: the job and the record of the hook', () => {
     const clean = makeWorld();
     await serve(clean, async (api) => {
       expect((await api.precheck()).status).toBe(200);
-      const reply = await api.job();
-      const first = (reply.json?.lines as Array<Record<string, unknown>>)[0];
-      expect([first?.unit_price, reply.json?.total, reply.json?.fault_mode]).toStrictEqual([125, 21_900, '']);
+      const quote = quoteIn(await api.job());
+      expect([quote.lines[0]?.unit_price, quote.total, quote.fault_mode]).toStrictEqual([125, 21_900, '']);
     });
     const fault = makeWorld({ fault: 'quote_off_price_list' });
     await serve(fault, async (api) => {
@@ -304,10 +311,10 @@ describe('POST /: the job and the record of the hook', () => {
       expect((await api.precheck()).status).toBe(200);
       const reply = await api.job();
       expect(reply.status, reply.text).toBe(200);
-      const lines = reply.json?.lines as Array<Record<string, unknown>>;
+      const quote = quoteIn(reply);
       // The listed price is 125: the fault takes 25 off the first line, and the totals are made again from the changed line. The two other lines are the lines of the model.
-      expect(lines.map((line) => line.unit_price)).toStrictEqual([100, 28, 60]);
-      expect([reply.json?.total, reply.json?.fault_mode]).toStrictEqual([19_400, 'quote_off_price_list']);
+      expect(quote.lines.map((line) => line.unit_price)).toStrictEqual([100, 28, 60]);
+      expect([quote.total, quote.fault_mode]).toStrictEqual([19_400, 'quote_off_price_list']);
     });
   });
 
