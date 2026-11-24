@@ -9,7 +9,7 @@ import type { Clock, NodeAccess, Output } from '../../checks/lib/ports.ts';
 import type { NetworkSpec } from '../../checks/lib/settings.ts';
 import type { StateFile } from '../../checks/lib/state.ts';
 import type { TxFacts } from '../../checks/lib/txfacts.ts';
-import type { Exposure, GoFile } from './approval.ts';
+import type { Exposure, GoFile, IrreversibleTag } from './approval.ts';
 import type { KeySpec, Registry } from './registry.ts';
 export type { StepOutcome };
 
@@ -118,7 +118,7 @@ export interface HostedLandSpec {
   readonly refs?: (build: HostedBuild, facts: TxFacts) => Record<string, string>;
   readonly facts?: (build: HostedBuild, facts: TxFacts) => Record<string, unknown>;
   readonly notes?: readonly string[];
-  readonly irreversible?: 'record' | 'stake' | 'attestation';
+  readonly irreversible?: IrreversibleTag;
 }
 /** A transaction that a builder of buyer-core made (no hosted tool): the same landing. */
 export interface BuiltLandSpec {
@@ -130,12 +130,12 @@ export interface BuiltLandSpec {
   readonly refs?: (facts: TxFacts) => Record<string, string>;
   readonly facts?: (facts: TxFacts) => Record<string, unknown>;
   readonly notes?: readonly string[];
-  readonly irreversible?: 'record' | 'stake' | 'attestation';
+  readonly irreversible?: IrreversibleTag;
 }
 /** For a flow that the kit drives: the kit builds, calls a SYNC sign, submits and waits. The plan and the step name may depend on the bytes (a claim flow signs a document transaction and then a claim transaction). */
 export interface GuardedSignRequest {
   readonly step: string | ((facts: TxFacts) => string); readonly plan: StepPlan | ((facts: TxFacts) => StepPlan); readonly signer: string;
-  readonly refs?: Record<string, string>; readonly facts?: Record<string, unknown>; readonly notes?: readonly string[]; readonly irreversible?: 'record' | 'stake' | 'attestation';
+  readonly refs?: Record<string, string>; readonly facts?: Record<string, unknown>; readonly notes?: readonly string[]; readonly irreversible?: IrreversibleTag;
 }
 
 // ---- the task and its session ----
