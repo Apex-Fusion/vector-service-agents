@@ -2,10 +2,9 @@
 // sentence. The result is never the input, it always fits the limit of the request, the request parser always takes it, and every other member of the request stays as it is. The golden file pins the
 // text that it gives for the hard cases: one sentence, no end mark, abbreviations, line breaks and the sentences that are the fixed ones.
 import { describe, expect, it } from 'vitest';
-import { MAX_JUSTIFICATION_CHARS, parsePriorAuthRequest } from '@vsa/usecase-kit/priorauth';
+import { ALTERED_SENTENCE, MAX_JUSTIFICATION_CHARS, SECOND_ALTERED_SENTENCE, alterJustification, parsePriorAuthRequest } from '@vsa/usecase-kit/priorauth';
 import type { PriorAuthRequest } from '@vsa/usecase-kit/priorauth';
 import { proposalDigest } from '@vsa/usecase-kit/protocol';
-import { ALTERED_SENTENCE, SECOND_ALTERED_SENTENCE, alterJustification } from '../../src/execute/fault.ts';
 import { SALT, golden, requestDocument, requestHash, typedRequest } from './fixtures.ts';
 
 /** The request of the tests with another justification. */

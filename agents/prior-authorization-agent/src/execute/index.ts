@@ -7,8 +7,6 @@
 //   ports     what the job needs from outside (`ExecuteDeps`)
 //   decision  the decision on the delivery: two checks in code, and then the model
 //   dispute   the call of the challenge
-//   fault     the change of the justification
 //   execute   the job, its refusal and the codes of its results
 export { EXECUTE_REASONS, JOB_DEADLINE_MS, ExecuteRefusal, runExecute } from './execute.ts';
-export { alterJustification } from './fault.ts';
 export type { AcceptAnswer, AcceptChoice, DelegationKeyDeps, DelegationKeys, ExecuteDeps, MismatchName, RequestSide } from './ports.ts';

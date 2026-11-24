@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { PreconditionError } from '../../../checks/lib/session.ts';
 import { EXECUTE_OUTCOMES, EXIT_STATES, HANDOFF_SCHEMA, PROPOSAL_SCHEMA, RESULT_SCHEMA, canonicalSha256, isErrorCode, makeProposal, parseApprovalRef, parseHandoff, parseProposal } from '../../../../packages/usecase-kit/src/protocol/index.ts';
-import { INTAKE_CHECKS, INTAKE_RECORD_SCHEMA, parseIntakeRecord, parsePriorAuthRequest } from '../../../../packages/usecase-kit/src/priorauth/index.ts';
+import { INTAKE_CHECKS, INTAKE_RECORD_SCHEMA, alterJustification, parseIntakeRecord, parsePriorAuthRequest } from '../../../../packages/usecase-kit/src/priorauth/index.ts';
 import type { IntakeRecord, PriorAuthRequest } from '../../../../packages/usecase-kit/src/priorauth/index.ts';
 import { requestText } from '../../../../packages/usecase-kit/src/buyer/message.ts';
 import { evidenceDocument, evidenceReferences } from '../../../../packages/usecase-kit/src/dispute/index.ts';
@@ -15,7 +15,6 @@ import { decodeJuryDatum } from '../../../../packages/buyer-core/src/vendored/mc
 import { findConfigRecord } from '../../../../packages/buyer-core/src/vendored/mcp/identity-deployment.ts';
 import type { KoiosUtxo } from '../../../../packages/buyer-core/src/vendored/mcp/marketplace-indexer.ts';
 import { send as fetchBounded } from '../../../../packages/id-kit/src/common/http.ts';
-import { alterJustification } from '../../../../agents/prior-authorization-agent/src/execute/fault.ts';
 import data from '../../usecases/prior-authorization.ts';
 import { RUN_APPROVAL_VALIDITY_MS } from '../claim-constants.ts';
 import { MOCK_PUBLIC_BASE } from '../mock-hosts.ts';
