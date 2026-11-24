@@ -733,8 +733,8 @@ async function execute<Extra>(def: TaskDefinition<Extra>, argv: readonly string[
   const factsIdentity = { useCase: use.name, network: settings.network.name };
   if (def.offline?.matches(extra)) {
     if (args.command !== 'run' || args.mode !== 'dry') throw new FlagError('the local document writer takes only run without --submit');
-    const flight = StateFile.open(`${base}.state.json`, identity).snapshot().in_flight;
-    if (flight !== null) throw new PreconditionError(`the step ${flight.step} has a transaction in flight; settle it with the normal command before writing documents`);
+    const flight = StateFile.peek(`${base}.state.json`, identity)?.in_flight;
+    if (flight != null) throw new PreconditionError(`the step ${flight.step} has a transaction in flight; settle it with the normal command before writing documents`);
     const facts = FactsFile.open(factsPath, factsIdentity).read();
     const { message, result } = await def.offline.run({ extra, use, facts, stateDir: settings.stateDir, out });
     out.out(message);
