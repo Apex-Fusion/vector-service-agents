@@ -1,14 +1,15 @@
 // packages/usecase-kit/test/dispute/evidence-intake.test.ts: the intake record as evidence (use case 2). The insurer intake agent returns an intake record that must name the hash of the request that it
 // received. A record that names another hash breaks the statement S2 of its claim, so the evidence is about S2 and the challenge looks for a claim whose S2 has the text of the job. The documents here hold the
-// request number and hashes, and no other text of the request. Each refusal has an accepted twin.
+// request number and hashes, and no other text of the request. The last block keeps the samples equal to the claim constants of the priorauth folder. Each refusal has an accepted twin.
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { documentHash, documentUri } from '@vsa/buyer-core';
 import { NO_OPEN_CLAIM, canonicalSha256 } from '@vsa/usecase-kit/protocol';
 import { MAX_JUROR_DOCUMENT_BYTES, claimDocument, disputedFields, evidenceDocument, evidenceReferences } from '@vsa/usecase-kit/dispute';
 import type { ApprovalChallengeInput, ChallengeResult, ClaimView, DeliveryChallengeInput, EvidenceDocumentInput } from '@vsa/usecase-kit/dispute';
+import { INTAKE_CLAIM, PRIORAUTH_CAPABILITIES } from '@vsa/usecase-kit/priorauth';
 import {
-  APPROVAL_JOB, CHALLENGE_TX, DIGEST_FACTS, ESCROW, ESCROW_2, EVIDENCE_TX, INSURER, INSURER_S2, INTAKE_CAPABILITY, INTAKE_FACTS, INTAKE_JOB, INTAKE_PARTIES, INTAKE_RECORD, MANIFEST_SHA, ME, ME_ID,
+  APPROVAL_JOB, CHALLENGE_TX, DIGEST_FACTS, ESCROW, ESCROW_2, EVIDENCE_TX, INSURER, INSURER_CLAIM, INSURER_S2, INTAKE_CAPABILITY, INTAKE_FACTS, INTAKE_JOB, INTAKE_PARTIES, INTAKE_RECORD, MANIFEST_SHA, ME, ME_ID,
   OTHER, PRIOR_REQUEST, PRIOR_REQUEST_SHA, REF_A, REF_B, TOKEN_A, TOKEN_B, NOW, HOUR, canonical, challengeView, claimView, escrowJob, insurerClaimView, insurerEscrowJob, rig, senderClaimView,
 } from './support.ts';
 import type { Rig, RigOptions, ScriptedPort } from './support.ts';
@@ -504,5 +505,31 @@ describe('a challenge of this agent that is on chain is found again, also when i
     const result = await dispute.challengeDelivery(delivery());
     expectNotFiled(result, NO_OPEN_CLAIM);
     expect(port.published).toEqual([]);
+  });
+});
+
+describe('the samples agree with the claim constants of the priorauth folder', () => {
+  it('has the capability, and the text of the statement S2, that the insurer intake agent has in the priorauth folder', () => {
+    expect(INTAKE_CAPABILITY).toBe(PRIORAUTH_CAPABILITIES.intake);
+    expect(INSURER_S2).toBe(INTAKE_CLAIM.statements[1].text);
+  });
+
+  it('has the three statements of INTAKE_CLAIM, with the same ids and the same texts', () => {
+    expect(INSURER_CLAIM.statements.map((statement) => statement.id)).toEqual(['S1', 'S2', 'S3']);
+    expect(INSURER_CLAIM).toEqual(INTAKE_CLAIM);
+  });
+
+  it('files a challenge that names the capability and the text of the priorauth folder, against the claim document that INTAKE_CLAIM makes', async () => {
+    const rigged = rig();
+    const document = claimDocument({ agent_did: INSURER, capability_id: PRIORAUTH_CAPABILITIES.intake, manifest_sha256: MANIFEST_SHA, claim: INTAKE_CLAIM });
+    if (!document.ok) throw new Error(document.detail);
+    const claim = claimView({ claimer: INSURER });
+    rigged.port.documents.set(claim.claim_uri, { bytes: document.value.bytes, type: 'claim', media_type: 'text/plain' });
+    rigged.port.claims = [{ ...claim, claim_hash: document.value.hash }];
+    rigged.port.readEscrowAnswer = () => insurerEscrowJob({ capability_id: PRIORAUTH_CAPABILITIES.intake });
+    const result = await rigged.dispute.challengeDelivery(delivery({ capability_id: PRIORAUTH_CAPABILITIES.intake, statement_text: INTAKE_CLAIM.statements[1].text }));
+    expect(result.ok).toBe(true);
+    // The evidence is the golden document: it quotes the statement S2 that INTAKE_CLAIM holds.
+    expect(textOf(rigged.port.published[0]!.bytes)).toBe(golden);
   });
 });

@@ -391,12 +391,12 @@ export function challengeView(overrides: Partial<ChallengeView> = {}): Challenge
 
 // --- The intake record: the evidence of use case 2 about the statement S2 -------------------------------------------------------------------------------------------------
 
-/** The insurer intake agent that the agent of the samples hired, and the capability of its advert. */
+/** The insurer intake agent that the agent of the samples hired, and the capability of its advert. The capability is `PRIORAUTH_CAPABILITIES.intake` of the priorauth folder: a test keeps the two equal. */
 export const INSURER_ID = 'e8'.repeat(32);
 export const INSURER = `did:vector:${INSURER_ID}`;
 export const INTAKE_CAPABILITY = 'health.priorauth.intake.v1';
 
-/** The three statements of an insurer intake agent (use case 2). An intake record is evidence about the second one. */
+/** The three statements of an insurer intake agent (use case 2). An intake record is evidence about the second one. They are the texts of `INTAKE_CLAIM` of the priorauth folder: a test keeps the two equal. */
 export const INSURER_CLAIM = statements(
   'This agent issues an intake record only for a request with a valid sign-off by the party whose delegation paid for it.',
   'An intake record names the hash of the request this agent received.',
