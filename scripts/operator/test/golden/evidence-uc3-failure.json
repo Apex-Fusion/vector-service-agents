@@ -1,0 +1,1257 @@
+{
+  "run": "use-case-3-failure",
+  "kind": "failure",
+  "date": "2026-12-01",
+  "capability_id": "supplychain.rfq.evaluate.v1",
+  "builder": "https://mcp.vector.mainnet.apexfusion.org/mcp",
+  "advert_ref": "975a87348514b8c868572b5da87b0d27aad16e604234ec094fd2c8ec8acd9fd5#0",
+  "escrow_ref": "f1384633e390e500d28e48ce81db2ff00745b5909c21cf3318a8c9c51af8a909#0",
+  "post_tx": "f1384633e390e500d28e48ce81db2ff00745b5909c21cf3318a8c9c51af8a909",
+  "accept_tx": "a910473046b9629c60449b893ca468807f630c2ef5e85cafe1de420da15c1a47",
+  "explorer": {
+    "post": "https://explorer.vector.mainnet.apexfusion.org/transaction/hash/f1384633e390e500d28e48ce81db2ff00745b5909c21cf3318a8c9c51af8a909",
+    "accept": "https://explorer.vector.mainnet.apexfusion.org/transaction/hash/a910473046b9629c60449b893ca468807f630c2ef5e85cafe1de420da15c1a47"
+  },
+  "verdict": "VERIFIED",
+  "result_sha256": "7686f5e30c2d5fb635cce7aeac40192a5ee214e854417293fb7c898f57a937ee",
+  "result_projection": {
+    "outcome": "refused_by_system",
+    "reason": "approval_not_found",
+    "exit_state": "Rejected",
+    "proposal_digest": "39527b216d9184b2dcc4d5852cb461c0ab53e72ea329eca1a6396cd66f9d8dbc"
+  },
+  "hires": [
+    {
+      "step": "propose-a",
+      "agent": "sourcing-agent",
+      "advert_ref": "975a87348514b8c868572b5da87b0d27aad16e604234ec094fd2c8ec8acd9fd5#0",
+      "escrow_ref": "a98203d889b008ee93591a661bb21eaa541ccd4d0b3b05fd631041a34dae0952#0",
+      "post_tx": "a98203d889b008ee93591a661bb21eaa541ccd4d0b3b05fd631041a34dae0952",
+      "accept_tx": "aeddaeccf49e44a412a3e1702479938765bfa5a5fe150cecb2cb12c980dfbec8",
+      "reclaim_tx": null,
+      "verdict": "VERIFIED",
+      "result_sha256": "960ff504180410107df77b15920c43b2e8505699f0e2a2aa3cf984aa7d71ad7f"
+    },
+    {
+      "step": "propose-b",
+      "agent": "sourcing-agent",
+      "advert_ref": "975a87348514b8c868572b5da87b0d27aad16e604234ec094fd2c8ec8acd9fd5#0",
+      "escrow_ref": "f15020c50c2788b1331b1c7bf0918ddab0fef25fe67462aaa6fc628763af00c4#0",
+      "post_tx": "f15020c50c2788b1331b1c7bf0918ddab0fef25fe67462aaa6fc628763af00c4",
+      "accept_tx": "51aad98e8aca5ef7e257662f1138671a101b6576d4f79999d3b7b799eb210f16",
+      "reclaim_tx": null,
+      "verdict": "VERIFIED",
+      "result_sha256": "4a24da3aeddc92832958c4b1f3d82187afcd52fa45d89a485ce186f7021530be"
+    },
+    {
+      "step": "propose-c",
+      "agent": "sourcing-agent",
+      "advert_ref": "975a87348514b8c868572b5da87b0d27aad16e604234ec094fd2c8ec8acd9fd5#0",
+      "escrow_ref": "e9457ff45056a72e3572888e986643a21f45c8f3f467f96740ae73e2eef294e2#0",
+      "post_tx": "e9457ff45056a72e3572888e986643a21f45c8f3f467f96740ae73e2eef294e2",
+      "accept_tx": "aacbd61c2e1e7b41cabb22c6e2b6d30c18f7e1be1850b154f6a409a147b3269a",
+      "reclaim_tx": null,
+      "verdict": "VERIFIED",
+      "result_sha256": "1ced97491de54277b96baad73904c10c44b66ff536befc063026f9ffa0476ed8"
+    },
+    {
+      "step": "propose-d",
+      "agent": "sourcing-agent",
+      "advert_ref": "975a87348514b8c868572b5da87b0d27aad16e604234ec094fd2c8ec8acd9fd5#0",
+      "escrow_ref": "fecc4d30c243390b9295469823b79a200d54a361185e95d24973c2cef7a74684#0",
+      "post_tx": "fecc4d30c243390b9295469823b79a200d54a361185e95d24973c2cef7a74684",
+      "accept_tx": "56d4989123f7384fb67309f4f25f42c167f996dd06d42346c18f1fbfc7e6e5ba",
+      "reclaim_tx": null,
+      "verdict": "VERIFIED",
+      "result_sha256": "cb351f320b06ef8ab543436707dc684b3e52b15aa6e62628f828fd181dac46b4"
+    },
+    {
+      "step": "execute-d",
+      "agent": "sourcing-agent",
+      "advert_ref": "975a87348514b8c868572b5da87b0d27aad16e604234ec094fd2c8ec8acd9fd5#0",
+      "escrow_ref": "f1384633e390e500d28e48ce81db2ff00745b5909c21cf3318a8c9c51af8a909#0",
+      "post_tx": "f1384633e390e500d28e48ce81db2ff00745b5909c21cf3318a8c9c51af8a909",
+      "accept_tx": "a910473046b9629c60449b893ca468807f630c2ef5e85cafe1de420da15c1a47",
+      "reclaim_tx": null,
+      "verdict": "VERIFIED",
+      "result_sha256": "7686f5e30c2d5fb635cce7aeac40192a5ee214e854417293fb7c898f57a937ee"
+    },
+    {
+      "step": "quote-a1",
+      "agent": "bid-desk-alfa",
+      "advert_ref": "d68d7d577204ceb1e86ea3e2119fc6f72c378d34de0406886ee61ccd3340f9a3#0",
+      "escrow_ref": "7823809fde85d1067ae766d01bdff6dfbd3a863456fcb39e79cead17da289e07#0",
+      "post_tx": "7823809fde85d1067ae766d01bdff6dfbd3a863456fcb39e79cead17da289e07",
+      "accept_tx": "43acb221e56f2e725918f0fb03dfa2184e999138f2187f85a7726f06a882b132",
+      "reclaim_tx": null,
+      "verdict": "VERIFIED",
+      "result_sha256": "44f14685834936854a55a27e5c09654c0e3c0647e885221b776689a2c2670dc0"
+    },
+    {
+      "step": "quote-a2",
+      "agent": "bid-desk-bravo",
+      "advert_ref": "ea6fa457bb66c508a4ebeae85b9a64909e13af1ca9c1d0437c7e16b22048f51e#0",
+      "escrow_ref": "e4d83dff6c022dbc8fe77d0680007e92345cea0dc1a6b7f72f6d9c790311bc21#0",
+      "post_tx": "e4d83dff6c022dbc8fe77d0680007e92345cea0dc1a6b7f72f6d9c790311bc21",
+      "accept_tx": "8656563d977d0861f607d0ef427060c57e9d57a3bc78a90b8d2c7f9d1fedca57",
+      "reclaim_tx": null,
+      "verdict": "VERIFIED",
+      "result_sha256": "ee586ec98e87d9f17a6a92c155c56c2ce40f97b4b895aadbe0ff4d7243785353"
+    },
+    {
+      "step": "quote-a3",
+      "agent": "bid-desk-charlie",
+      "advert_ref": "77761795226c25a880c30dec6f33383cee99dce18fc34dc051b7488333212aab#0",
+      "escrow_ref": "3aa8a156d770932d922fab67e328dbec1f2cf1e551fc32f5288017c06487c789#0",
+      "post_tx": "3aa8a156d770932d922fab67e328dbec1f2cf1e551fc32f5288017c06487c789",
+      "accept_tx": null,
+      "reclaim_tx": null,
+      "verdict": "VERIFIED",
+      "result_sha256": "dfcad2955cb153b7b3a6897733734d6ebfaf3edf914069e71f4b96fa0daf92b0",
+      "receipt_attribution": {
+        "record_ref": "3b7c4c43881cb89b046eeadfb28c38236df264be0dba7c3c7ca9309094457b11#0",
+        "submitted_ref": "e5eb12206c410b979ac04a024256943c6e477e04c0c96363aa53dcbef26d9031#0",
+        "submitted_at_ms": 1796084641000,
+        "revocation": {
+          "record_ref": "d168dfc30bd607e0801b91167867ae22a19451c8931045513e987530b57c6694#0",
+          "invalid_from_ms": 1796084400000,
+          "invalidates_submission": true
+        }
+      }
+    },
+    {
+      "step": "quote-b1",
+      "agent": "bid-desk-alfa",
+      "advert_ref": "d68d7d577204ceb1e86ea3e2119fc6f72c378d34de0406886ee61ccd3340f9a3#0",
+      "escrow_ref": "598e5e8e877d0b7994f343e687b0ba228a7a4bfe1495b18246f0dc5b14256fd3#0",
+      "post_tx": "598e5e8e877d0b7994f343e687b0ba228a7a4bfe1495b18246f0dc5b14256fd3",
+      "accept_tx": "49976d91a1855b6ab9f0e1ace7b2dbee9bb9f24e4a07d14757dcf2303030034d",
+      "reclaim_tx": null,
+      "verdict": "VERIFIED",
+      "result_sha256": "3cf9c5fc2887738263e2d96dc4b957c5f77270f397f7f2fd75b123b1aaf04775"
+    },
+    {
+      "step": "quote-b2",
+      "agent": "bid-desk-bravo",
+      "advert_ref": "ea6fa457bb66c508a4ebeae85b9a64909e13af1ca9c1d0437c7e16b22048f51e#0",
+      "escrow_ref": "6a16d2c6d6ee5984a27c72b75aa647df7d7637f0e2118df4623201cf1d99a7f6#0",
+      "post_tx": "6a16d2c6d6ee5984a27c72b75aa647df7d7637f0e2118df4623201cf1d99a7f6",
+      "accept_tx": "421f07387e222ee8c2c7eb4319f80f88042f95520ff85319f1851d3d6c4b988b",
+      "reclaim_tx": null,
+      "verdict": "VERIFIED",
+      "result_sha256": "3ac29b3b269705094fee651cfb194727c82088016c3c504dc444f0f54e8ecd7e"
+    },
+    {
+      "step": "quote-b3",
+      "agent": "bid-desk-charlie",
+      "advert_ref": "77761795226c25a880c30dec6f33383cee99dce18fc34dc051b7488333212aab#0",
+      "escrow_ref": "10e86bc8adc9b47ae600bb112067e7a46b70cd12bc5c741f1f7d558cb868480a#0",
+      "post_tx": "10e86bc8adc9b47ae600bb112067e7a46b70cd12bc5c741f1f7d558cb868480a",
+      "accept_tx": "4547247893186e361dd12490d774160a4962d610b7dc99337d16a171a19ec5f3",
+      "reclaim_tx": null,
+      "verdict": "VERIFIED",
+      "result_sha256": "0487d91b938136a15b58972537b48eb584e0eba778c80a9a9528e90af90a9fd4",
+      "receipt_attribution": {
+        "record_ref": "3b7c4c43881cb89b046eeadfb28c38236df264be0dba7c3c7ca9309094457b11#0",
+        "submitted_ref": "d21a2d3545e29f7b885606f55b36d1393bd9fe2116267a732f1b7ec3eda54c5e#0",
+        "submitted_at_ms": 1796088241000,
+        "revocation": {
+          "record_ref": "d168dfc30bd607e0801b91167867ae22a19451c8931045513e987530b57c6694#0",
+          "invalid_from_ms": 1796084400000,
+          "invalidates_submission": true
+        }
+      }
+    },
+    {
+      "step": "quote-c1",
+      "agent": "bid-desk-alfa",
+      "advert_ref": "d68d7d577204ceb1e86ea3e2119fc6f72c378d34de0406886ee61ccd3340f9a3#0",
+      "escrow_ref": "13ea44b5f3032fad0f35aa49fc5f6cb7e4ffbe85ed6cf9e97cfc7ed0b8691af5#0",
+      "post_tx": "13ea44b5f3032fad0f35aa49fc5f6cb7e4ffbe85ed6cf9e97cfc7ed0b8691af5",
+      "accept_tx": "b55d318ae5000b7ed2d2d6e79dd24f3273d09cf5e1cb2c3753c2d1c63021777d",
+      "reclaim_tx": null,
+      "verdict": "VERIFIED",
+      "result_sha256": "2d44d180973596a04e735ce6da90ceec65f8ddb235fb02c2065e17c875928cb8"
+    },
+    {
+      "step": "quote-c2",
+      "agent": "bid-desk-bravo",
+      "advert_ref": "ea6fa457bb66c508a4ebeae85b9a64909e13af1ca9c1d0437c7e16b22048f51e#0",
+      "escrow_ref": "cd0f524c52986adcd975ef3ddab0584902110fc520723932a990c3c03a9d33b7#0",
+      "post_tx": "cd0f524c52986adcd975ef3ddab0584902110fc520723932a990c3c03a9d33b7",
+      "accept_tx": "ca1892925a218ad3dd52b9382220b47bff721fae69b410b8ef0774d2123a1f20",
+      "reclaim_tx": null,
+      "verdict": "VERIFIED",
+      "result_sha256": "10755e743d98631b89979a62ec76d4f1a069860835d28abf69b53a3ec4d5b654"
+    },
+    {
+      "step": "quote-d1",
+      "agent": "bid-desk-alfa",
+      "advert_ref": "d68d7d577204ceb1e86ea3e2119fc6f72c378d34de0406886ee61ccd3340f9a3#0",
+      "escrow_ref": "c5241402c006382619eef6049c935484d665d749ce7edc66d6d86ea66f61016b#0",
+      "post_tx": "c5241402c006382619eef6049c935484d665d749ce7edc66d6d86ea66f61016b",
+      "accept_tx": "63c1c064149b218b2967499e65b7d635771d03a6c53586491f257b4f2d3e08ca",
+      "reclaim_tx": null,
+      "verdict": "VERIFIED",
+      "result_sha256": "6f312327aa4adc6754a9c8bc0bb4e5b745d2db66578c905ff89a6484841169c0"
+    },
+    {
+      "step": "quote-d2",
+      "agent": "bid-desk-bravo",
+      "advert_ref": "ea6fa457bb66c508a4ebeae85b9a64909e13af1ca9c1d0437c7e16b22048f51e#0",
+      "escrow_ref": "1bf060b410bca9f059860619ffb5678cbb0018b7c9485f3cbdf62b659c00bd07#0",
+      "post_tx": "1bf060b410bca9f059860619ffb5678cbb0018b7c9485f3cbdf62b659c00bd07",
+      "accept_tx": "5a633beb77baa46a528ba76d0075d6e1576795811c0bcddb1a5d5138fde209dc",
+      "reclaim_tx": null,
+      "verdict": "VERIFIED",
+      "result_sha256": "a3c80d7b40ebd2088456b1c97f71941271537ce49a09bd1849f0b479379451a2"
+    }
+  ],
+  "delegation": [
+    {
+      "id": "27070166018c2379d3b72db4e8d9c5410bc2423e5cefb984a13fb926b637487f",
+      "tx": "b39967359f17c077c60ea2bb6a891a52a3c16b2ddf25d6a93555a70668bf4502",
+      "ended_tx": "fa5528c728e1993f5f5a64f25d1612abc0fc330822e0b289c73cc792ce55fbbd",
+      "state": "ended"
+    }
+  ],
+  "vault": [
+    {
+      "ref": "d85f74202080464327bd76d8490d3a5945f00039473e11f7eac9ad828570ebcb#0",
+      "open_tx": "d85f74202080464327bd76d8490d3a5945f00039473e11f7eac9ad828570ebcb",
+      "close_tx": "c5186a2ad2c634169fe0133ac37c8a5fce8bb7dea77d7eebd15cbd949b2f7c98",
+      "state": "closed"
+    }
+  ],
+  "sub_delegations": [
+    {
+      "id": "4a8875e12af0e8dc687008f97fb58bbc3f45ca3ef66faa56f902d969138db310",
+      "delegate_tx": "e46239e85d04c5d171fdc067375dd857a59fd40fff9b2c3fae447ee5fd949246",
+      "undelegate_tx": "d157bcf985557404471b752cc3f23300d23362299a35aa949cc03eaac5ee2e3c",
+      "subagent": "scorer-1",
+      "hire": "propose-a"
+    },
+    {
+      "id": "331df3ebf304073e138c5e26b7a97f6f4bc9e5ff654422b02b9e119251463dee",
+      "delegate_tx": "03bdbfe3bc34e64b06ffb5281470d9b0978b661ba7e6276f962771c17b17e857",
+      "undelegate_tx": "e6a7fa84c4932866a383c2f5eb0b4ee5305de69087479f97bc09d443132dee4c",
+      "subagent": "scorer-2",
+      "hire": "propose-a"
+    },
+    {
+      "id": "788e640a36b524fa33268d0c01a7d13e160d8046eafefa497598c58049c1a16f",
+      "delegate_tx": "ba7194159db620c093df5976b4786e9ee5bed2ff13e88bb45bceeb12d62de701",
+      "undelegate_tx": "307ae6396b624b27875adf981427c2ffffdf0337190eca788870be026d62537f",
+      "subagent": "scorer-1",
+      "hire": "propose-b"
+    },
+    {
+      "id": "a84b677779579cdf9e9821c33f44754aa15b841abb6b0b2bed3e101254fd3cbc",
+      "delegate_tx": "8b222e0bf4a946e1c713f81d07b69bb63f5c33c7f6919d5ed0dbe45356d88b72",
+      "undelegate_tx": "dc845d736a39874e37d2de20d51c9074e37b3474dd13e30f73aee18b7c21b3ac",
+      "subagent": "scorer-2",
+      "hire": "propose-b"
+    },
+    {
+      "id": "84fedf79a84d5322b90dcc332a24076aa71cde4780c21b396a0b221176784fb2",
+      "delegate_tx": "61714be7ba25acbb0eb3aebea8f0d7c31e02641b4132d35732b63c1d7daae14d",
+      "undelegate_tx": "525a51747be8d2dc06676686663db955119146d5b078fe7450044572e58e0552",
+      "subagent": "scorer-3",
+      "hire": "propose-b"
+    },
+    {
+      "id": "d64d6ce3e9f5b3316040a5a29bbc1c27f4aae34fe573b619feaeb18d6ab77801",
+      "delegate_tx": "5e3b74d6da4bbd2557fff8bb48aa60fefee9159f7ed36577540782ad99457159",
+      "undelegate_tx": "128cc028644c65241ba3dd25f34b3ab1591e5d601608f336705ee591d8a44ea5",
+      "subagent": "scorer-1",
+      "hire": "propose-c"
+    },
+    {
+      "id": "229a6c68a6c4e30ad46ea5db86d1b0160aed47b34c9ea9a3067d54cdc0b6e4f5",
+      "delegate_tx": "e2f4a6af244154ed25c62a172b61b69a0586e7cd70122bae2ff37e58213d9b56",
+      "undelegate_tx": "a644c80b114d7adfee99bb3fc9b9cbfe9aa058ff5d2d8ffa918b1cea5545e1e2",
+      "subagent": "scorer-2",
+      "hire": "propose-c"
+    },
+    {
+      "id": "05dc4c451785e640b307f54d05d814a2f50b8d9158a067f60689e7fd1bd7f787",
+      "delegate_tx": "f4fadb0745fa4f93ffa200e73a058023fba20433393160b014c7bce4d31a7d53",
+      "undelegate_tx": "071ee90827590f8fd3802d89c98325d4b280ac51595d2ffd1b4e1bc98df01b22",
+      "subagent": "scorer-1",
+      "hire": "propose-d"
+    },
+    {
+      "id": "1a500c8eb45d0057d03b045c2e48ed693deb3b6fcf5a6c217898125e19c23fdb",
+      "delegate_tx": "7cf99b3bc9e1a5b2453468176842d954a1b1170fe5fd5044ba29db995a033482",
+      "undelegate_tx": "9e534c3b2864fb5e5b71c661291e6ced8f8ff035748db89d8bab5460b2e7b77d",
+      "subagent": "scorer-2",
+      "hire": "propose-d"
+    }
+  ],
+  "mock": {
+    "tenant": "fixture-r2",
+    "log": [
+      {
+        "at": "2026-12-01T00:31:00.000Z",
+        "route": "GET /vendors",
+        "credential": "token",
+        "decision": "allowed",
+        "status": 200
+      },
+      {
+        "at": "2026-12-01T00:31:00.000Z",
+        "route": "GET /vendors",
+        "credential": "token",
+        "decision": "allowed",
+        "status": 200
+      },
+      {
+        "at": "2026-12-01T01:31:00.000Z",
+        "route": "GET /vendors",
+        "credential": "token",
+        "decision": "allowed",
+        "status": 200
+      },
+      {
+        "at": "2026-12-01T01:31:00.000Z",
+        "route": "GET /vendors",
+        "credential": "token",
+        "decision": "allowed",
+        "status": 200
+      },
+      {
+        "at": "2026-12-01T01:31:00.000Z",
+        "route": "GET /vendors",
+        "credential": "token",
+        "decision": "allowed",
+        "status": 200
+      },
+      {
+        "at": "2026-12-01T03:21:00.000Z",
+        "route": "GET /vendors",
+        "credential": "token",
+        "decision": "allowed",
+        "status": 200
+      },
+      {
+        "at": "2026-12-01T03:21:00.000Z",
+        "route": "GET /vendors",
+        "credential": "token",
+        "decision": "allowed",
+        "status": 200
+      },
+      {
+        "at": "2026-12-01T04:11:00.000Z",
+        "route": "GET /vendors",
+        "credential": "token",
+        "decision": "allowed",
+        "status": 200
+      },
+      {
+        "at": "2026-12-01T04:11:00.000Z",
+        "route": "GET /vendors",
+        "credential": "token",
+        "decision": "allowed",
+        "status": 200
+      },
+      {
+        "at": "2026-12-01T04:30:00.000Z",
+        "route": "POST /sourcing/rankings",
+        "credential": "token",
+        "decision": "refused",
+        "status": 403
+      }
+    ],
+    "unattributed_lines": 0,
+    "state": {
+      "rankings": 0
+    }
+  },
+  "decisions": [
+    {
+      "step": "propose-a",
+      "decisions": [
+        {
+          "name": "shortlist",
+          "escrow_ref": "df783952e3ae445d7acf8f281966214bcbcbf7d4fe7c0ccffedda6bc9156c332#0"
+        },
+        {
+          "name": "accept_quote",
+          "escrow_ref": "0923ef701e692248a246b9f5562b5861a532817866365bcf721247daeea5441f#0"
+        },
+        {
+          "name": "accept_quote",
+          "escrow_ref": "dcd4c7ce72df58208ea92763d64780bb2cf1499eb152b34db3357572ce9a7c84#0"
+        },
+        {
+          "name": "accept_quote",
+          "escrow_ref": "c65c250406af8bb6880f19ddf82b3d1713953640ecb6d98a840c7eba778ca378#0"
+        },
+        {
+          "name": "score",
+          "escrow_ref": "eb9a2ae4f462f6f81d93f196537703efad128d0e23acd950350a3fe9ec20a4f4#0"
+        },
+        {
+          "name": "score",
+          "escrow_ref": "26e5cf74da715d425b0e622ab44758d950fdb51e809fd5dbc5dcf3bf2a731727#0"
+        },
+        {
+          "name": "ranking",
+          "escrow_ref": "0ed192f6db0c172b568f2f2c9ca57d5f70ecdf91471370529501a92410e6e576#0"
+        }
+      ]
+    },
+    {
+      "step": "propose-b",
+      "decisions": [
+        {
+          "name": "shortlist",
+          "escrow_ref": "4cc50930244131860872ea68e822d86813d9de341cdb0420185e128c183ec9d6#0"
+        },
+        {
+          "name": "accept_quote",
+          "escrow_ref": "031f936af74883a4e21ac69e4d49ce74b46f29ba19e441ded7c282344d78889a#0"
+        },
+        {
+          "name": "accept_quote",
+          "escrow_ref": "7c02bc39fa692a9fb693a6ab9a523523e29c461e76f2a547fc9851e2c705e41e#0"
+        },
+        {
+          "name": "accept_quote",
+          "escrow_ref": "067bcbccfa32564cc5d09c915cd4df97efa93a12457ec8431c76e4b2f05e6abb#0"
+        },
+        {
+          "name": "score",
+          "escrow_ref": "716643c54063e01d0384c9b46eb11b12707e1e58452543ab33dfd15e60fb404e#0"
+        },
+        {
+          "name": "score",
+          "escrow_ref": "ea194be358557e147219b2c4360f59b325c990eecc02da16b3d56bf9b349d0a8#0"
+        },
+        {
+          "name": "score",
+          "escrow_ref": "9858d7691192152da35ab7dbc49d27a17d8a741c422a0c4284af12f38b2fe9a9#0"
+        },
+        {
+          "name": "ranking",
+          "escrow_ref": "bb53362baa8d4b1583e909075f217ed7b075bc9d106ae525595d01f4ccd80a6e#0"
+        }
+      ]
+    },
+    {
+      "step": "propose-c",
+      "decisions": [
+        {
+          "name": "shortlist",
+          "escrow_ref": "878c9857add16b6ec55c53f912cfa30459d6477a2bc11734ee401817c33a0495#0"
+        },
+        {
+          "name": "accept_quote",
+          "escrow_ref": "57defa624f886c83bd7712bb0d24456c63f4cc06c22d784881ed6b877d999212#0"
+        },
+        {
+          "name": "accept_quote",
+          "escrow_ref": "854d06e1343a88d3626876c8f9b5446cc4af3fd22b58ea25f01f0680b876983f#0"
+        },
+        {
+          "name": "score",
+          "escrow_ref": "e2ea708a9926d56252c0783ef2f0da2e87db198cd9a32ff6a5d8bc9bbfd79833#0"
+        },
+        {
+          "name": "score",
+          "escrow_ref": "f1dd3db67ae3eea8a1b54fa80c70532db094f8582b16cfc4e246a11b1aa0670c#0"
+        },
+        {
+          "name": "ranking",
+          "escrow_ref": "a82a02bc6692f9528eed145d1f06ef5bbe9da9b16f13e6eed576fe1637881b8b#0"
+        }
+      ]
+    },
+    {
+      "step": "propose-d",
+      "decisions": [
+        {
+          "name": "shortlist",
+          "escrow_ref": "c9435c60b74928579727e91a6f84d6c5e997040341fce161821b16489dcc26f8#0"
+        },
+        {
+          "name": "accept_quote",
+          "escrow_ref": "00d796b190716bb4d2f58bdfb7f3ef380aa4cda784957a29f76460c082e9c1d8#0"
+        },
+        {
+          "name": "accept_quote",
+          "escrow_ref": "f5e022638538dff0cee643094bf3861410f9bbfe57f4ef19d5202eb31f7ff897#0"
+        },
+        {
+          "name": "score",
+          "escrow_ref": "a3fb6a8e81aa7a059c8f9e29aba4b97c91672443bb9fc7336acbe2cf25e4f040#0"
+        },
+        {
+          "name": "score",
+          "escrow_ref": "26a00861c8d0da916dede9d4685985dfac62bf687ed4a332314075f1b88b821d#0"
+        },
+        {
+          "name": "ranking",
+          "escrow_ref": "463eba0511ae455af39d9a8f09347a56c81978b8b1cd640802c215e4fa97ffb5#0"
+        }
+      ]
+    },
+    {
+      "step": "quote-a1",
+      "decisions": [
+        {
+          "name": "quote",
+          "escrow_ref": "212702a0a1112ac867c14de79a2bae37246b42189d6fa5269a601968ac1c0e33#0"
+        }
+      ]
+    },
+    {
+      "step": "quote-a2",
+      "decisions": [
+        {
+          "name": "quote",
+          "escrow_ref": "0e86d8ff0a8d640e01c12703c6e0c94348be1ab75edc740c16caf3dd74e315fd#0"
+        }
+      ]
+    },
+    {
+      "step": "quote-a3",
+      "decisions": [
+        {
+          "name": "quote",
+          "escrow_ref": "f12fc14e453f1ecbe8f2449006c11fa315055477ccee400d0724c374825244e4#0"
+        }
+      ]
+    },
+    {
+      "step": "quote-b1",
+      "decisions": [
+        {
+          "name": "quote",
+          "escrow_ref": "535d114cdc25f33f9115a220eeb155e69099cde57cd8562a22352d8d0df52f45#0"
+        }
+      ]
+    },
+    {
+      "step": "quote-b2",
+      "decisions": [
+        {
+          "name": "quote",
+          "escrow_ref": "f5050fd68f22b3e592dd995b4b650ade41c6dfda1fa08884ce5b462f95621879#0"
+        }
+      ]
+    },
+    {
+      "step": "quote-b3",
+      "decisions": [
+        {
+          "name": "quote",
+          "escrow_ref": "e6632f2e46098e1ee23e1f6a9e2ed09e28292ddb5935be0226c845da5463d210#0"
+        }
+      ]
+    },
+    {
+      "step": "quote-c1",
+      "decisions": [
+        {
+          "name": "quote",
+          "escrow_ref": "7c222e0cfee5f705d4c68762cc17e36be265c78ac21a8edf7a0cab555a5f7c80#0"
+        }
+      ]
+    },
+    {
+      "step": "quote-c2",
+      "decisions": [
+        {
+          "name": "quote",
+          "escrow_ref": "958619648cc1fad097f37f686410d941b79ee4f05ac3f9545e12c5bac81d2540#0"
+        }
+      ]
+    },
+    {
+      "step": "quote-d1",
+      "decisions": [
+        {
+          "name": "quote",
+          "escrow_ref": "51a5653594be6b42b331b0b17008160d0cf63584256a078c697e0ed01da752af#0"
+        }
+      ]
+    },
+    {
+      "step": "quote-d2",
+      "decisions": [
+        {
+          "name": "quote",
+          "escrow_ref": "4e5fa8ea0a187129964c30542997934563716abbfa90012d4112ddb79e81b723#0"
+        }
+      ]
+    }
+  ],
+  "claims": {
+    "sourcing-agent": {
+      "claim_ref": "c74d681dfbb83428296807a17f1923d301071fb5aaa19929c874d3dc9b5c2885#0",
+      "document_tx": "c10a08f5fab095f76b36943d61929aced85d052346a60d43a28aebac60c0e7c5",
+      "claim_tx": "c74d681dfbb83428296807a17f1923d301071fb5aaa19929c874d3dc9b5c2885",
+      "claim_token": "636c6d5f9c1f3f5b811fb3d1cf26ee1044e0713c306fb4c9f079043dc767e0f7",
+      "stake_lovelace": "50000000",
+      "window_ms": 86400000,
+      "staked_at": "2026-12-01T00:03:00.000Z",
+      "withdrawable_from": "2026-12-02T00:03:00.000Z",
+      "withdraw_tx": null
+    },
+    "bid-desk-alfa": {
+      "claim_ref": "dd125738a1d4ca1f54f48ba8d61191216fab52e0fa9387a7515d303246582a3e#0",
+      "document_tx": "311a0139f28c0128b2c5840bff56ec5784fff20c88b4b5ec5d03dacddbbeafdd",
+      "claim_tx": "dd125738a1d4ca1f54f48ba8d61191216fab52e0fa9387a7515d303246582a3e",
+      "claim_token": "636c6d5fbff485dc3c79d6675e942a76e9cf7823937e159b378e0099bf2470e8",
+      "stake_lovelace": "50000000",
+      "window_ms": 86400000,
+      "staked_at": "2026-12-01T00:03:00.000Z",
+      "withdrawable_from": "2026-12-02T00:03:00.000Z",
+      "withdraw_tx": null
+    },
+    "bid-desk-bravo": {
+      "claim_ref": "cc3a5df386a7a9d61bed48e47f3d63c0f780c22bc5eab60f11bbd2f4eddfc0df#0",
+      "document_tx": "237a194c1fe67bafa60c8ff7825834a5fc97f8fbf0c49fa70fb2a47e37fdfecd",
+      "claim_tx": "cc3a5df386a7a9d61bed48e47f3d63c0f780c22bc5eab60f11bbd2f4eddfc0df",
+      "claim_token": "636c6d5f1c77c88a6703d1b8f93b79f39de418830cf7d5eb248e90c64f732582",
+      "stake_lovelace": "50000000",
+      "window_ms": 86400000,
+      "staked_at": "2026-12-01T00:03:00.000Z",
+      "withdrawable_from": "2026-12-02T00:03:00.000Z",
+      "withdraw_tx": null
+    },
+    "bid-desk-charlie": {
+      "claim_ref": "1be1944ef5fa8dc61e950b4931d778671454d327ebf249826688c0c2d2531c42#0",
+      "document_tx": "382d7326c83236cee6d25a81e6b935b727dc6512e33114b6e256b9386e0524e8",
+      "claim_tx": "1be1944ef5fa8dc61e950b4931d778671454d327ebf249826688c0c2d2531c42",
+      "claim_token": "636c6d5f3eb577b4178cc3ec6dd6cdd345ad1f105291ed63fbbf834cf81c31a2",
+      "stake_lovelace": "50000000",
+      "window_ms": 86400000,
+      "staked_at": "2026-12-01T00:03:00.000Z",
+      "withdrawable_from": "2026-12-02T00:03:00.000Z",
+      "withdraw_tx": null
+    }
+  },
+  "challenge": {
+    "claim": "1be1944ef5fa8dc61e950b4931d778671454d327ebf249826688c0c2d2531c42#0",
+    "evidence": "1171a353d60ea2eeb7798cda3673074336b063f32a236b0741531e5d34f73bde",
+    "challenge": "e1ea054412e00dbc563b39bae4c09ff8d4f98b5c1d9a061a6238184a55142a16#0"
+  },
+  "case": {
+    "verdict": "AuditorWins",
+    "live": null,
+    "indexed": {
+      "jury": "450708cc45821940ace692b19c69c7acfb04795fc4b683163a878ec5",
+      "case_token": "237f895cf97bd8ef556ed5a86885294094d87a67ef6c508259fd4823b38bbd61",
+      "state": "closed",
+      "window": "reveal",
+      "tally": {
+        "claimer": 0,
+        "auditor": 3,
+        "inconclusive": 0
+      },
+      "revealed": 3,
+      "result": "AuditorWins",
+      "opened_tx": "0a9a161c91c8fdb1fe12eb86d2677f01c703c38e6aadb3dc4380f6a597fee26c",
+      "finalized_tx": "f2326eb2d43b1b519a067a3d64b69a56ed772800fdf21c9d9cad404639b13e35",
+      "finalized_result": "AuditorWins",
+      "closed_tx": null
+    },
+    "hold": {
+      "reason": 64,
+      "since": 1796092800000,
+      "until": 1796697600000,
+      "record_output": "ec56717576b3a3fe6b90cb82feba66fe2388617dcfa1d199bc2eb6dcec16837e#0",
+      "gateway_status": null
+    }
+  },
+  "fault_mode": {
+    "sourcing-agent": "invert_scores",
+    "bid-desk-alfa": "",
+    "bid-desk-bravo": "",
+    "bid-desk-charlie": "quote_off_price_list"
+  },
+  "exit_state": "Rejected",
+  "steps": [
+    {
+      "id": "r2-a",
+      "status": "shown",
+      "refs": [
+        {
+          "kind": "transaction",
+          "value": "3aa8a156d770932d922fab67e328dbec1f2cf1e551fc32f5288017c06487c789"
+        },
+        {
+          "kind": "escrow",
+          "value": "3aa8a156d770932d922fab67e328dbec1f2cf1e551fc32f5288017c06487c789#0"
+        },
+        {
+          "kind": "claim",
+          "value": "1be1944ef5fa8dc61e950b4931d778671454d327ebf249826688c0c2d2531c42#0"
+        },
+        {
+          "kind": "transaction",
+          "value": "1171a353d60ea2eeb7798cda3673074336b063f32a236b0741531e5d34f73bde"
+        },
+        {
+          "kind": "challenge",
+          "value": "e1ea054412e00dbc563b39bae4c09ff8d4f98b5c1d9a061a6238184a55142a16#0"
+        }
+      ],
+      "note": ""
+    },
+    {
+      "id": "r2-a-release",
+      "status": "shown",
+      "refs": [
+        {
+          "kind": "escrow",
+          "value": "3aa8a156d770932d922fab67e328dbec1f2cf1e551fc32f5288017c06487c789#0"
+        },
+        {
+          "kind": "transaction",
+          "value": "c0e8492a7c8b010e9337e1f5b32e7ca424623112e82a02fd8d23ceb8afff8c71"
+        }
+      ],
+      "note": ""
+    },
+    {
+      "id": "r2-a-hold",
+      "status": "shown",
+      "refs": [
+        {
+          "kind": "case",
+          "value": "237f895cf97bd8ef556ed5a86885294094d87a67ef6c508259fd4823b38bbd61"
+        },
+        {
+          "kind": "transaction",
+          "value": "f2326eb2d43b1b519a067a3d64b69a56ed772800fdf21c9d9cad404639b13e35"
+        },
+        {
+          "kind": "hold",
+          "value": "ec56717576b3a3fe6b90cb82feba66fe2388617dcfa1d199bc2eb6dcec16837e#0"
+        }
+      ],
+      "note": ""
+    },
+    {
+      "id": "r2-b",
+      "status": "shown",
+      "refs": [
+        {
+          "kind": "transaction",
+          "value": "f15020c50c2788b1331b1c7bf0918ddab0fef25fe67462aaa6fc628763af00c4"
+        },
+        {
+          "kind": "escrow",
+          "value": "f15020c50c2788b1331b1c7bf0918ddab0fef25fe67462aaa6fc628763af00c4#0"
+        },
+        {
+          "kind": "transaction",
+          "value": "51aad98e8aca5ef7e257662f1138671a101b6576d4f79999d3b7b799eb210f16"
+        },
+        {
+          "kind": "attestation",
+          "value": "8914b1a5ab909073e6434d2ac73526e27f220be3382f5d0a59dedf326f041e66"
+        },
+        {
+          "kind": "transaction",
+          "value": "58b4033c14ff56f45f5f6fd9c86d00d64fdabfcd7385d1811ea5fb51f4079eb9"
+        },
+        {
+          "kind": "transaction",
+          "value": "0fa5206a999b7a79602e9b92d50c09404213cf1cb2c81bd3730c18923b11527d"
+        },
+        {
+          "kind": "transaction",
+          "value": "1df7f32e0d094bd422634bf82e4ea08eb4354a6709bc758d18bf826d21c393ea"
+        }
+      ],
+      "note": ""
+    },
+    {
+      "id": "r2-c",
+      "status": "shown",
+      "refs": [
+        {
+          "kind": "transaction",
+          "value": "e9457ff45056a72e3572888e986643a21f45c8f3f467f96740ae73e2eef294e2"
+        },
+        {
+          "kind": "escrow",
+          "value": "e9457ff45056a72e3572888e986643a21f45c8f3f467f96740ae73e2eef294e2#0"
+        },
+        {
+          "kind": "transaction",
+          "value": "aacbd61c2e1e7b41cabb22c6e2b6d30c18f7e1be1850b154f6a409a147b3269a"
+        },
+        {
+          "kind": "hold",
+          "value": "ec56717576b3a3fe6b90cb82feba66fe2388617dcfa1d199bc2eb6dcec16837e#0"
+        }
+      ],
+      "note": ""
+    },
+    {
+      "id": "r2-d",
+      "status": "shown",
+      "refs": [
+        {
+          "kind": "transaction",
+          "value": "f1384633e390e500d28e48ce81db2ff00745b5909c21cf3318a8c9c51af8a909"
+        },
+        {
+          "kind": "escrow",
+          "value": "f1384633e390e500d28e48ce81db2ff00745b5909c21cf3318a8c9c51af8a909#0"
+        },
+        {
+          "kind": "transaction",
+          "value": "a910473046b9629c60449b893ca468807f630c2ef5e85cafe1de420da15c1a47"
+        }
+      ],
+      "note": ""
+    },
+    {
+      "id": "r2-e",
+      "status": "shown",
+      "refs": [
+        {
+          "kind": "transaction",
+          "value": "d168dfc30bd607e0801b91167867ae22a19451c8931045513e987530b57c6694"
+        },
+        {
+          "kind": "record",
+          "value": "d168dfc30bd607e0801b91167867ae22a19451c8931045513e987530b57c6694#0"
+        }
+      ],
+      "note": ""
+    }
+  ],
+  "refusals": [],
+  "rfq_ids": [
+    "RFQ-1",
+    "RFQ-2",
+    "RFQ-3",
+    "RFQ-4"
+  ],
+  "bidders": [
+    {
+      "step": "propose-a",
+      "files": [
+        {
+          "did": "did:vector:b16b94d157b73c03a4435f11491f32193d7fe59a932404720b3b6b56ce40b73a",
+          "advert_ref": "d68d7d577204ceb1e86ea3e2119fc6f72c378d34de0406886ee61ccd3340f9a3#0",
+          "status": "active",
+          "in_catalog": true,
+          "compliance_state": "valid",
+          "file_sha256": "05a4924aace72bad533407547f4a9a0c76b49cc35c8d38e494ecdef8e65c437c"
+        },
+        {
+          "did": "did:vector:91864993fbb180a9ca2c6c2073a837fda9d31393929aa915088fa82782b13660",
+          "advert_ref": "ea6fa457bb66c508a4ebeae85b9a64909e13af1ca9c1d0437c7e16b22048f51e#0",
+          "status": "active",
+          "in_catalog": true,
+          "compliance_state": "valid",
+          "file_sha256": "226570d89a403456dc6221d1d21b10f441d79c5557a2c50045601c1a489d4894"
+        },
+        {
+          "did": "did:vector:213dbc59326be1c3b12ad41d0971a133fca0cd53c7a4c9f2210e3eb6d9fd2998",
+          "advert_ref": "77761795226c25a880c30dec6f33383cee99dce18fc34dc051b7488333212aab#0",
+          "status": "active",
+          "in_catalog": true,
+          "compliance_state": "valid",
+          "file_sha256": "40f176351499059605e600a3c49bd4e1ef205aab978287615381934d67678d13"
+        }
+      ]
+    },
+    {
+      "step": "propose-b",
+      "files": [
+        {
+          "did": "did:vector:b16b94d157b73c03a4435f11491f32193d7fe59a932404720b3b6b56ce40b73a",
+          "advert_ref": "d68d7d577204ceb1e86ea3e2119fc6f72c378d34de0406886ee61ccd3340f9a3#0",
+          "status": "active",
+          "in_catalog": true,
+          "compliance_state": "valid",
+          "file_sha256": "05a4924aace72bad533407547f4a9a0c76b49cc35c8d38e494ecdef8e65c437c"
+        },
+        {
+          "did": "did:vector:91864993fbb180a9ca2c6c2073a837fda9d31393929aa915088fa82782b13660",
+          "advert_ref": "ea6fa457bb66c508a4ebeae85b9a64909e13af1ca9c1d0437c7e16b22048f51e#0",
+          "status": "active",
+          "in_catalog": true,
+          "compliance_state": "valid",
+          "file_sha256": "226570d89a403456dc6221d1d21b10f441d79c5557a2c50045601c1a489d4894"
+        },
+        {
+          "did": "did:vector:213dbc59326be1c3b12ad41d0971a133fca0cd53c7a4c9f2210e3eb6d9fd2998",
+          "advert_ref": "77761795226c25a880c30dec6f33383cee99dce18fc34dc051b7488333212aab#0",
+          "status": "active",
+          "in_catalog": true,
+          "compliance_state": "invalid",
+          "file_sha256": "12e869a64283879e5385f587a95c71228dd72eb646a6552c39669f84b20385cb"
+        }
+      ]
+    },
+    {
+      "step": "propose-c",
+      "files": [
+        {
+          "did": "did:vector:b16b94d157b73c03a4435f11491f32193d7fe59a932404720b3b6b56ce40b73a",
+          "advert_ref": "d68d7d577204ceb1e86ea3e2119fc6f72c378d34de0406886ee61ccd3340f9a3#0",
+          "status": "active",
+          "in_catalog": true,
+          "compliance_state": "valid",
+          "file_sha256": "05a4924aace72bad533407547f4a9a0c76b49cc35c8d38e494ecdef8e65c437c"
+        },
+        {
+          "did": "did:vector:91864993fbb180a9ca2c6c2073a837fda9d31393929aa915088fa82782b13660",
+          "advert_ref": "ea6fa457bb66c508a4ebeae85b9a64909e13af1ca9c1d0437c7e16b22048f51e#0",
+          "status": "active",
+          "in_catalog": true,
+          "compliance_state": "valid",
+          "file_sha256": "226570d89a403456dc6221d1d21b10f441d79c5557a2c50045601c1a489d4894"
+        }
+      ]
+    },
+    {
+      "step": "propose-d",
+      "files": [
+        {
+          "did": "did:vector:b16b94d157b73c03a4435f11491f32193d7fe59a932404720b3b6b56ce40b73a",
+          "advert_ref": "d68d7d577204ceb1e86ea3e2119fc6f72c378d34de0406886ee61ccd3340f9a3#0",
+          "status": "active",
+          "in_catalog": true,
+          "compliance_state": "valid",
+          "file_sha256": "05a4924aace72bad533407547f4a9a0c76b49cc35c8d38e494ecdef8e65c437c"
+        },
+        {
+          "did": "did:vector:91864993fbb180a9ca2c6c2073a837fda9d31393929aa915088fa82782b13660",
+          "advert_ref": "ea6fa457bb66c508a4ebeae85b9a64909e13af1ca9c1d0437c7e16b22048f51e#0",
+          "status": "active",
+          "in_catalog": true,
+          "compliance_state": "valid",
+          "file_sha256": "226570d89a403456dc6221d1d21b10f441d79c5557a2c50045601c1a489d4894"
+        }
+      ]
+    }
+  ],
+  "quotes": [
+    {
+      "step": "quote-a1",
+      "propose": "propose-a",
+      "desk_did": "did:vector:b16b94d157b73c03a4435f11491f32193d7fe59a932404720b3b6b56ce40b73a",
+      "escrow_ref": "7823809fde85d1067ae766d01bdff6dfbd3a863456fcb39e79cead17da289e07#0",
+      "vault_ref": "d85f74202080464327bd76d8490d3a5945f00039473e11f7eac9ad828570ebcb#0",
+      "accepted": true,
+      "reason": null,
+      "challenge": null,
+      "receipt_sha256": "4470ec5a3ce1cade58326d9493e421bb6a6a9a9bfc17b4177672aa014aba7942",
+      "quote_sha256": "44f14685834936854a55a27e5c09654c0e3c0647e885221b776689a2c2670dc0",
+      "total": 1200,
+      "lead_time_days": 2
+    },
+    {
+      "step": "quote-a2",
+      "propose": "propose-a",
+      "desk_did": "did:vector:91864993fbb180a9ca2c6c2073a837fda9d31393929aa915088fa82782b13660",
+      "escrow_ref": "e4d83dff6c022dbc8fe77d0680007e92345cea0dc1a6b7f72f6d9c790311bc21#0",
+      "vault_ref": "7823809fde85d1067ae766d01bdff6dfbd3a863456fcb39e79cead17da289e07#1",
+      "accepted": true,
+      "reason": null,
+      "challenge": null,
+      "receipt_sha256": "ffff6d97bbe143dd0e4fc5666d0bd5835be0d59c18de8471438f03b6fe125379",
+      "quote_sha256": "ee586ec98e87d9f17a6a92c155c56c2ce40f97b4b895aadbe0ff4d7243785353",
+      "total": 1200,
+      "lead_time_days": 2
+    },
+    {
+      "step": "quote-a3",
+      "propose": "propose-a",
+      "desk_did": "did:vector:213dbc59326be1c3b12ad41d0971a133fca0cd53c7a4c9f2210e3eb6d9fd2998",
+      "escrow_ref": "3aa8a156d770932d922fab67e328dbec1f2cf1e551fc32f5288017c06487c789#0",
+      "vault_ref": "e4d83dff6c022dbc8fe77d0680007e92345cea0dc1a6b7f72f6d9c790311bc21#1",
+      "accepted": false,
+      "reason": "disputed",
+      "challenge": {
+        "agent": "bid-desk-charlie",
+        "claim": "1be1944ef5fa8dc61e950b4931d778671454d327ebf249826688c0c2d2531c42#0",
+        "evidence": "1171a353d60ea2eeb7798cda3673074336b063f32a236b0741531e5d34f73bde",
+        "challenge": "e1ea054412e00dbc563b39bae4c09ff8d4f98b5c1d9a061a6238184a55142a16#0"
+      },
+      "receipt_sha256": "a4c930ed80435b1f53307c8b5e136e861cb2f85ed2edce8a64c3613835f1112e",
+      "quote_sha256": "dfcad2955cb153b7b3a6897733734d6ebfaf3edf914069e71f4b96fa0daf92b0",
+      "total": 1300,
+      "lead_time_days": 2
+    },
+    {
+      "step": "quote-b1",
+      "propose": "propose-b",
+      "desk_did": "did:vector:b16b94d157b73c03a4435f11491f32193d7fe59a932404720b3b6b56ce40b73a",
+      "escrow_ref": "598e5e8e877d0b7994f343e687b0ba228a7a4bfe1495b18246f0dc5b14256fd3#0",
+      "vault_ref": "3aa8a156d770932d922fab67e328dbec1f2cf1e551fc32f5288017c06487c789#1",
+      "accepted": true,
+      "reason": null,
+      "challenge": null,
+      "receipt_sha256": "c54c32b84adcf852cc076025fa51843279f8e912165c015ec0e670a6add9f89b",
+      "quote_sha256": "3cf9c5fc2887738263e2d96dc4b957c5f77270f397f7f2fd75b123b1aaf04775",
+      "total": 1200,
+      "lead_time_days": 2
+    },
+    {
+      "step": "quote-b2",
+      "propose": "propose-b",
+      "desk_did": "did:vector:91864993fbb180a9ca2c6c2073a837fda9d31393929aa915088fa82782b13660",
+      "escrow_ref": "6a16d2c6d6ee5984a27c72b75aa647df7d7637f0e2118df4623201cf1d99a7f6#0",
+      "vault_ref": "598e5e8e877d0b7994f343e687b0ba228a7a4bfe1495b18246f0dc5b14256fd3#1",
+      "accepted": true,
+      "reason": null,
+      "challenge": null,
+      "receipt_sha256": "673f87afec3913dcc1e8453fb972844139070b089532b56ac6dd9fb5ca6ffefb",
+      "quote_sha256": "3ac29b3b269705094fee651cfb194727c82088016c3c504dc444f0f54e8ecd7e",
+      "total": 1200,
+      "lead_time_days": 2
+    },
+    {
+      "step": "quote-b3",
+      "propose": "propose-b",
+      "desk_did": "did:vector:213dbc59326be1c3b12ad41d0971a133fca0cd53c7a4c9f2210e3eb6d9fd2998",
+      "escrow_ref": "10e86bc8adc9b47ae600bb112067e7a46b70cd12bc5c741f1f7d558cb868480a#0",
+      "vault_ref": "6a16d2c6d6ee5984a27c72b75aa647df7d7637f0e2118df4623201cf1d99a7f6#1",
+      "accepted": true,
+      "reason": null,
+      "challenge": null,
+      "receipt_sha256": "32f76a7607ef63b712d84e2bedf0b0c8a2498b65ebfb1f5aacc2e706f200db83",
+      "quote_sha256": "0487d91b938136a15b58972537b48eb584e0eba778c80a9a9528e90af90a9fd4",
+      "total": 1200,
+      "lead_time_days": 2
+    },
+    {
+      "step": "quote-c1",
+      "propose": "propose-c",
+      "desk_did": "did:vector:b16b94d157b73c03a4435f11491f32193d7fe59a932404720b3b6b56ce40b73a",
+      "escrow_ref": "13ea44b5f3032fad0f35aa49fc5f6cb7e4ffbe85ed6cf9e97cfc7ed0b8691af5#0",
+      "vault_ref": "10e86bc8adc9b47ae600bb112067e7a46b70cd12bc5c741f1f7d558cb868480a#1",
+      "accepted": true,
+      "reason": null,
+      "challenge": null,
+      "receipt_sha256": "ce2cb30446cbb4d3a4c9523a656490399339064d0372c1136245f6dfa974b23d",
+      "quote_sha256": "2d44d180973596a04e735ce6da90ceec65f8ddb235fb02c2065e17c875928cb8",
+      "total": 1200,
+      "lead_time_days": 2
+    },
+    {
+      "step": "quote-c2",
+      "propose": "propose-c",
+      "desk_did": "did:vector:91864993fbb180a9ca2c6c2073a837fda9d31393929aa915088fa82782b13660",
+      "escrow_ref": "cd0f524c52986adcd975ef3ddab0584902110fc520723932a990c3c03a9d33b7#0",
+      "vault_ref": "13ea44b5f3032fad0f35aa49fc5f6cb7e4ffbe85ed6cf9e97cfc7ed0b8691af5#1",
+      "accepted": true,
+      "reason": null,
+      "challenge": null,
+      "receipt_sha256": "ee7b29e953a23411408b04303210e6e21520288beea7f9cdbf071e3b3545b68c",
+      "quote_sha256": "10755e743d98631b89979a62ec76d4f1a069860835d28abf69b53a3ec4d5b654",
+      "total": 1200,
+      "lead_time_days": 2
+    },
+    {
+      "step": "quote-d1",
+      "propose": "propose-d",
+      "desk_did": "did:vector:b16b94d157b73c03a4435f11491f32193d7fe59a932404720b3b6b56ce40b73a",
+      "escrow_ref": "c5241402c006382619eef6049c935484d665d749ce7edc66d6d86ea66f61016b#0",
+      "vault_ref": "cd0f524c52986adcd975ef3ddab0584902110fc520723932a990c3c03a9d33b7#1",
+      "accepted": true,
+      "reason": null,
+      "challenge": null,
+      "receipt_sha256": "f9ac91af76a95057e41fb9ed0355dfb44b1a4268f18385bba5dbc8166c45b6b5",
+      "quote_sha256": "6f312327aa4adc6754a9c8bc0bb4e5b745d2db66578c905ff89a6484841169c0",
+      "total": 1200,
+      "lead_time_days": 2
+    },
+    {
+      "step": "quote-d2",
+      "propose": "propose-d",
+      "desk_did": "did:vector:91864993fbb180a9ca2c6c2073a837fda9d31393929aa915088fa82782b13660",
+      "escrow_ref": "1bf060b410bca9f059860619ffb5678cbb0018b7c9485f3cbdf62b659c00bd07#0",
+      "vault_ref": "c5241402c006382619eef6049c935484d665d749ce7edc66d6d86ea66f61016b#1",
+      "accepted": true,
+      "reason": null,
+      "challenge": null,
+      "receipt_sha256": "d58355c4e4ecd46ca09e2ece28b7770d5c367f27e6f20d9798f22b58ab93236a",
+      "quote_sha256": "a3c80d7b40ebd2088456b1c97f71941271537ce49a09bd1849f0b479379451a2",
+      "total": 1200,
+      "lead_time_days": 2
+    }
+  ],
+  "rankings": [
+    {
+      "step": "propose-a",
+      "rfq_id": "RFQ-1",
+      "rfq_sha256": "cb0756df5df48adbf611583aa4a3932295685811eed707e1a21d17d967a52d0c",
+      "proposal_digest": "d73a0b5d95a042e157e580cceb9cb610bd540cbb870e4af39c0f2960a60a60fd",
+      "ranked": [
+        {
+          "rank": 1,
+          "desk_did": "did:vector:b16b94d157b73c03a4435f11491f32193d7fe59a932404720b3b6b56ce40b73a",
+          "escrow_ref": "7823809fde85d1067ae766d01bdff6dfbd3a863456fcb39e79cead17da289e07#0",
+          "receipt_sha256": "4470ec5a3ce1cade58326d9493e421bb6a6a9a9bfc17b4177672aa014aba7942",
+          "total": 1200,
+          "lead_time_days": 2
+        },
+        {
+          "rank": 2,
+          "desk_did": "did:vector:91864993fbb180a9ca2c6c2073a837fda9d31393929aa915088fa82782b13660",
+          "escrow_ref": "e4d83dff6c022dbc8fe77d0680007e92345cea0dc1a6b7f72f6d9c790311bc21#0",
+          "receipt_sha256": "ffff6d97bbe143dd0e4fc5666d0bd5835be0d59c18de8471438f03b6fe125379",
+          "total": 1200,
+          "lead_time_days": 2
+        }
+      ],
+      "excluded": [
+        {
+          "desk_did": "did:vector:213dbc59326be1c3b12ad41d0971a133fca0cd53c7a4c9f2210e3eb6d9fd2998",
+          "reason": "disputed",
+          "code": null
+        }
+      ]
+    },
+    {
+      "step": "propose-b",
+      "rfq_id": "RFQ-2",
+      "rfq_sha256": "eb3a6da454519ef8571b334897c7cd3503cb715ef672f3ed4cc1bccb9bfa4f19",
+      "proposal_digest": "8c79ca539cd975ba1c6ffe42b7c4f87030410011bd348869f2656cc101a0eff4",
+      "ranked": [
+        {
+          "rank": 1,
+          "desk_did": "did:vector:b16b94d157b73c03a4435f11491f32193d7fe59a932404720b3b6b56ce40b73a",
+          "escrow_ref": "598e5e8e877d0b7994f343e687b0ba228a7a4bfe1495b18246f0dc5b14256fd3#0",
+          "receipt_sha256": "c54c32b84adcf852cc076025fa51843279f8e912165c015ec0e670a6add9f89b",
+          "total": 1200,
+          "lead_time_days": 2
+        },
+        {
+          "rank": 2,
+          "desk_did": "did:vector:91864993fbb180a9ca2c6c2073a837fda9d31393929aa915088fa82782b13660",
+          "escrow_ref": "6a16d2c6d6ee5984a27c72b75aa647df7d7637f0e2118df4623201cf1d99a7f6#0",
+          "receipt_sha256": "673f87afec3913dcc1e8453fb972844139070b089532b56ac6dd9fb5ca6ffefb",
+          "total": 1200,
+          "lead_time_days": 2
+        },
+        {
+          "rank": 3,
+          "desk_did": "did:vector:213dbc59326be1c3b12ad41d0971a133fca0cd53c7a4c9f2210e3eb6d9fd2998",
+          "escrow_ref": "10e86bc8adc9b47ae600bb112067e7a46b70cd12bc5c741f1f7d558cb868480a#0",
+          "receipt_sha256": "32f76a7607ef63b712d84e2bedf0b0c8a2498b65ebfb1f5aacc2e706f200db83",
+          "total": 1200,
+          "lead_time_days": 2
+        }
+      ],
+      "excluded": []
+    },
+    {
+      "step": "propose-c",
+      "rfq_id": "RFQ-3",
+      "rfq_sha256": "14c3485fe622f203c915a1a6ee0432af13a3b8d9c4ff5b0ebb694fecdf1e55a7",
+      "proposal_digest": "8bc8bd1c0a85debdb74d6e458983651d6c0a6b93786f9953b27ee6733355b26d",
+      "ranked": [
+        {
+          "rank": 1,
+          "desk_did": "did:vector:b16b94d157b73c03a4435f11491f32193d7fe59a932404720b3b6b56ce40b73a",
+          "escrow_ref": "13ea44b5f3032fad0f35aa49fc5f6cb7e4ffbe85ed6cf9e97cfc7ed0b8691af5#0",
+          "receipt_sha256": "ce2cb30446cbb4d3a4c9523a656490399339064d0372c1136245f6dfa974b23d",
+          "total": 1200,
+          "lead_time_days": 2
+        },
+        {
+          "rank": 2,
+          "desk_did": "did:vector:91864993fbb180a9ca2c6c2073a837fda9d31393929aa915088fa82782b13660",
+          "escrow_ref": "cd0f524c52986adcd975ef3ddab0584902110fc520723932a990c3c03a9d33b7#0",
+          "receipt_sha256": "ee7b29e953a23411408b04303210e6e21520288beea7f9cdbf071e3b3545b68c",
+          "total": 1200,
+          "lead_time_days": 2
+        }
+      ],
+      "excluded": []
+    },
+    {
+      "step": "propose-d",
+      "rfq_id": "RFQ-4",
+      "rfq_sha256": "c6f1824c76b04ad5542c1911406127dbb0bd9c75682dddfc77e4d4512dd0f0ff",
+      "proposal_digest": "39527b216d9184b2dcc4d5852cb461c0ab53e72ea329eca1a6396cd66f9d8dbc",
+      "ranked": [
+        {
+          "rank": 1,
+          "desk_did": "did:vector:b16b94d157b73c03a4435f11491f32193d7fe59a932404720b3b6b56ce40b73a",
+          "escrow_ref": "c5241402c006382619eef6049c935484d665d749ce7edc66d6d86ea66f61016b#0",
+          "receipt_sha256": "f9ac91af76a95057e41fb9ed0355dfb44b1a4268f18385bba5dbc8166c45b6b5",
+          "total": 1200,
+          "lead_time_days": 2
+        },
+        {
+          "rank": 2,
+          "desk_did": "did:vector:91864993fbb180a9ca2c6c2073a837fda9d31393929aa915088fa82782b13660",
+          "escrow_ref": "1bf060b410bca9f059860619ffb5678cbb0018b7c9485f3cbdf62b659c00bd07#0",
+          "receipt_sha256": "d58355c4e4ecd46ca09e2ece28b7770d5c367f27e6f20d9798f22b58ab93236a",
+          "total": 1200,
+          "lead_time_days": 2
+        }
+      ],
+      "excluded": []
+    }
+  ],
+  "approvals": [],
+  "outcomes": [
+    {
+      "step": "execute-d",
+      "escrow_ref": "f1384633e390e500d28e48ce81db2ff00745b5909c21cf3318a8c9c51af8a909#0",
+      "outcome": "refused_by_system",
+      "reason": "approval_not_found",
+      "exit_state": "Rejected",
+      "proposal_digest": "39527b216d9184b2dcc4d5852cb461c0ab53e72ea329eca1a6396cd66f9d8dbc"
+    }
+  ],
+  "compliance": {
+    "attestation": "8914b1a5ab909073e6434d2ac73526e27f220be3382f5d0a59dedf326f041e66",
+    "issue_tx": "58b4033c14ff56f45f5f6fd9c86d00d64fdabfcd7385d1811ea5fb51f4079eb9",
+    "revoke_tx": "0fa5206a999b7a79602e9b92d50c09404213cf1cb2c81bd3730c18923b11527d",
+    "contest_tx": "1df7f32e0d094bd422634bf82e4ea08eb4354a6709bc758d18bf826d21c393ea",
+    "reason": 9,
+    "reply_sha256": "21b0a7c522dc7f359c7eb0bffe1978a803e0f9f577790591ea589659cc035935",
+    "revoked_at": 1796086680000,
+    "contested_at": 1796086920000
+  },
+  "revocation": {
+    "tx": "d168dfc30bd607e0801b91167867ae22a19451c8931045513e987530b57c6694",
+    "spent_output": "ec56717576b3a3fe6b90cb82feba66fe2388617dcfa1d199bc2eb6dcec16837e#0",
+    "record_output": "d168dfc30bd607e0801b91167867ae22a19451c8931045513e987530b57c6694#0",
+    "reason": 9,
+    "author": "210cbe061974bdc58c2d0d5c59bf9db2f7c28fd01be9360122459d9c",
+    "invalid_from": 1796084400000,
+    "at": 1796100900000
+  },
+  "resolutions": [
+    {
+      "did": "did:vector:213dbc59326be1c3b12ad41d0971a133fca0cd53c7a4c9f2210e3eb6d9fd2998",
+      "status": "revoked",
+      "deactivated": true
+    }
+  ],
+  "release": {
+    "action": "Release",
+    "escrow_ref": "3aa8a156d770932d922fab67e328dbec1f2cf1e551fc32f5288017c06487c789#0",
+    "tx": "c0e8492a7c8b010e9337e1f5b32e7ca424623112e82a02fd8d23ceb8afff8c71",
+    "spent_output": "e5eb12206c410b979ac04a024256943c6e477e04c0c96363aa53dcbef26d9031#0",
+    "at": 1796085300000
+  },
+  "route_evidence": [
+    {
+      "step": "r2-d",
+      "route": "POST /sourcing/rankings",
+      "credential": "token",
+      "decision": "refused",
+      "act_links": 1,
+      "count": 1
+    }
+  ]
+}
