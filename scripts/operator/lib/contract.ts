@@ -10,6 +10,7 @@ import type { NetworkSpec } from '../../checks/lib/settings.ts';
 import type { StateFile } from '../../checks/lib/state.ts';
 import type { TxFacts } from '../../checks/lib/txfacts.ts';
 import type { Exposure, GoFile, IrreversibleTag } from './approval.ts';
+import type { DohLookup } from './dns.ts';
 import type { KeySpec, Registry } from './registry.ts';
 export type { StepOutcome };
 
@@ -141,6 +142,7 @@ export interface GuardedSignRequest {
 // ---- the task and its session ----
 export interface TaskSession<Extra = unknown> extends LandHost {
   readonly use: UseCase; readonly extra: Extra; readonly flags: TaskFlags; readonly facts: FactsStore; readonly fetchImpl: typeof fetch; readonly all: boolean;
+  readonly dohLookup: DohLookup;
 }
 export interface TaskDefinition<Extra = unknown> {
   readonly name: string; readonly title: string;
