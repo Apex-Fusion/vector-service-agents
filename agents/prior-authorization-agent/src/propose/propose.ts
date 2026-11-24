@@ -16,7 +16,9 @@
 //      reads before the decision starts. Last, it makes a trial of the request with a stand-in number, a stand-in justification and no references. A record that the kit refuses in a request (a diagnosis code
 //      with a tab or a format character is one) is `failed` `bad_document` here, before the model is hired and before a number is taken.
 //   5. The decision `justification`, once, with the record set and the guideline that the job checked. A failure gives `failed` with its code and no decision. The request is built from the choice only when it
-//      EQUALS the choice that the decision records: no code changes what the model chose, and a difference is `failed` `decision_mismatch`. The decision is kept in the result when a later step fails.
+//      EQUALS the choice that the decision records: no code changes what the model chose, and a difference is `failed` `decision_mismatch`. The equality is the equality of the canonical forms. The result keeps
+//      the decision with its choice as the decision records it, each text as the model wrote it, and the request is built from that copy: the request parser makes the NFC copy. The decision is kept in the
+//      result when a later step fails.
 //   6. The request. The number comes from the counter, which stores it before this step uses it. The document must be accepted by `parsePriorAuthRequest`.
 //
 // Every answer of a port is read one time. The job keeps what it read in constants and never goes back to an object of a port, because a port could change its objects while the job waits for the next port.
@@ -28,8 +30,8 @@ import { within } from '@vsa/usecase-kit/access';
 import { checkAuthority, failedProposalResult, proposedResult } from '@vsa/usecase-kit/buyer';
 import type { ProposalPieces } from '@vsa/usecase-kit/buyer';
 import { PRIORAUTH_REQUEST_SCHEMA, parseGuideline, parsePriorAuthRequest, parseRecordSet, recordSetSha256, requestNumberOf } from '@vsa/usecase-kit/priorauth';
-import { ERROR_STATUS, canonicalJson, isPlainObject, parseOutputRef } from '@vsa/usecase-kit/protocol';
-import type { Decision, JsonValue, ProposalResult } from '@vsa/usecase-kit/protocol';
+import { ERROR_STATUS, canonicalJson, isPlainObject, parseJsonValue, parseOutputRef } from '@vsa/usecase-kit/protocol';
+import type { Decision, ProposalResult } from '@vsa/usecase-kit/protocol';
 import type { DelegationKey, ProposeDeps, ProposeRequest } from './ports.ts';
 
 /** The job deadline of the Prior Authorization Agent: the time from the arrival of a job to the end of every wait of `propose`, in milliseconds. */
@@ -262,13 +264,17 @@ export async function runPropose(deps: ProposeDeps, request: ProposeRequest, arr
   const choice: unknown = answer.choice;
   if (!isDecision(decision)) return failed('decision', 'internal');
   decisions = [decision];
-  // The request is built from the choice only when it is the choice that the decision records: no code changes what the model chose.
-  const given = canonicalJson(choice, 'choice');
-  const recorded = canonicalJson(decision.choice, 'decision.choice');
-  if (given.ok !== true || recorded.ok !== true) return failed('decision', 'bad_document');
-  if (given.value !== recorded.value) return failed('decision', 'decision_mismatch');
-  // From here on the job uses the copy that it checked, and never an object of the port: the port could change its objects while the job waits for the number.
-  const chosen: JsonValue = JSON.parse(given.value);
+  // The request is built from the choice only when it is the choice that the decision records: no code changes what the model chose. Both choices are copies that the job checks, each text as it came: the
+  // decision records the text as the model wrote it, and the result keeps it so. The comparison is the comparison of the canonical forms, which write each text in the NFC form.
+  const typed = parseJsonValue(choice, 'choice');
+  const written = parseJsonValue(decision.choice, 'decision.choice');
+  if (!typed.ok || !written.ok) return failed('decision', 'bad_document');
+  const typedText = canonicalJson(typed.value, 'choice');
+  const writtenText = canonicalJson(written.value, 'decision.choice');
+  if (typedText.ok !== true || writtenText.ok !== true) return failed('decision', 'bad_document');
+  if (typedText.value !== writtenText.value) return failed('decision', 'decision_mismatch');
+  // From here on the job uses the copy of the recorded choice, and never an object of the port: the port could change its objects while the job waits for the number. The request parser makes the NFC copy.
+  const chosen = written.value;
   if (!isPlainObject(chosen)) return failed('decision', 'bad_document');
   decisions = [{ ...decision, choice: chosen }];
 

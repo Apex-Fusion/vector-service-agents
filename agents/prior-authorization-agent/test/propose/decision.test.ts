@@ -153,7 +153,7 @@ describe('the choice and the decision that records it', () => {
     expect(result.decisions[0]!.choice).toStrictEqual(recorded);
   });
 
-  it('compares the canonical forms: a text in the NFD form and the same text in the NFC form are one choice, and the request holds the NFC form', async () => {
+  it('compares the canonical forms: a typed choice in the NFD form and a decision that records the same text in the NFC form are one choice, and the result keeps what the decision records', async () => {
     const nfc = 'The recorded gait is \u00e9ven. Criterion C1 is met by the progress note REC-0002.';
     const nfd = nfc.normalize('NFD');
     expect(nfd).not.toBe(nfc);
@@ -161,7 +161,30 @@ describe('the choice and the decision that records it', () => {
     w.script.justify = async () => answer({ ...RECORDED, justification: nfc }, { ...RECORDED, justification: nfd });
     const result = proposed(await w.run());
     expect(result.document.justification).toBe(nfc);
-    expect(result.decisions[0]!.choice).toMatchObject({ justification: nfc });
+    expect(result.decisions[0]!.choice).toStrictEqual({ ...RECORDED, justification: nfc });
+  });
+
+  it('records the choice as the model wrote it: an answer in the NFD form stays in the NFD form in the decision of the result, and the request holds the NFC form', async () => {
+    const nfc = 'The recorded gait is \u00e9ven. Criterion C1 is met by the progress note REC-0002.';
+    const nfd = nfc.normalize('NFD');
+    expect(nfd).not.toBe(nfc);
+    const w = world();
+    w.script.justify = async () => answer({ ...RECORDED, justification: nfd }, { ...RECORDED, justification: nfd });
+    const result = proposed(await w.run());
+    expect(result.decisions[0]!.choice).toStrictEqual({ ...RECORDED, justification: nfd });
+    expect(result.document.justification).toBe(nfc);
+  });
+
+  it('keeps the choice as the model wrote it also when a later step fails: the decision of a failed result has the NFD text', async () => {
+    const nfd = 'The recorded gait is \u00e9ven. Criterion C1 is met.'.normalize('NFD');
+    const w = world();
+    w.script.justify = async () => answer({ ...RECORDED, justification: nfd }, { ...RECORDED, justification: nfd });
+    w.script.next = async () => {
+      throw new Error('the disk is full');
+    };
+    const result = await w.run();
+    expectFailed(result, 'store_write_failed');
+    expect(result.decisions[0]!.choice).toStrictEqual({ ...RECORDED, justification: nfd });
   });
 
   const UNUSABLE: [string, unknown][] = [
