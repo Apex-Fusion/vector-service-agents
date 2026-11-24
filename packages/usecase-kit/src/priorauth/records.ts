@@ -6,7 +6,8 @@
 // Every record is synthetic: no patient exists behind a reference. The Prior Authorization Agent reads the first two and drafts a request from them. The Insurer Intake Agent reads the third and judges a
 // request against it. The two agents are two packages and they do not import each other, so the kit holds the three forms that both read.
 //
-// A parser takes what the mock service sends, and no more. The limits are the limits of the service, and each text is counted in UTF-16 code units, as the service counts it:
+// A parser takes what the mock service sends, and no more, with one exception: it refuses a text that NFC makes longer than its limit, although the service takes it. A copy must pass the parser,
+// because `recordSetSha256` parses the copy of a set again. The limits are the limits of the service, and each text is counted in UTF-16 code units, as the service counts it:
 //   record set    an order, and 1 to 50 records with a record id that no other record has
 //   order         order_id, patient_ref, service_code and ordering_clinician_ref are identifiers; service_description is 1 to 200 characters; diagnosis_codes is 1 to 8 texts of 1 to 16 characters;
 //                 ordered_at is a date
