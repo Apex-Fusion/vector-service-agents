@@ -1,7 +1,7 @@
 // agents/insurer-intake-agent/src/serve/gaps.ts
 // The gaps that the manifest states, as sentences, in one place: the manifest takes them from here (src/serve/manifest.ts), and the page of the agent repeats them word for word. The manifest is frozen into the hash
 // of the advert when the advert is posted, so each sentence is a statement made to a hirer about what the service does today. Each is one line of plain text that ends with a full stop.
-// The first six are the gaps of the package page, in its order. The seventh and the eighth are the two that this agent adds. The ninth says whose keys the parties of the agent are. The tenth says what the runs of
+// The first six are the gaps of the page of the agent, in its order. The seventh and the eighth are the two that this agent adds. The ninth says whose keys the parties of the agent are. The tenth says what the runs of
 // the use case do not show, and its lead, "What this does not show:", is the run-in lead of the page. The Insurer Intake Agent has no fault value, so the kit adds no sentence about a fault switch.
 import { withFaultGap } from '@vsa/usecase-kit/manifest';
 

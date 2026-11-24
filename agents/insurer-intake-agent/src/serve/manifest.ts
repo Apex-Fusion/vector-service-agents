@@ -25,8 +25,8 @@ export const DESCRIPTION =
   + "decides whether it is complete, files it in the insurer's system and returns an intake record; it makes an intake decision and no coverage decision.";
 
 /**
- * The date of the status of the agent when AGENT_STATUS_SINCE is not set: the day of the first commit of the agent. The page of the agent holds the same date, and the template and the README line of the status
- * show it. It stands here and nowhere else in the sources.
+ * The date since which the status of the agent holds, when AGENT_STATUS_SINCE is not set. The page of the agent holds the same date, and the template and the README line of the status show it. It stands here and
+ * nowhere else in the sources.
  */
 export const STATUS_SINCE_DEFAULT = '2026-11-24';
 

@@ -288,7 +288,7 @@ describe('the behaviour', () => {
 });
 
 describe('the gaps', () => {
-  test('are the six of the package page in its order, the two that this agent adds, the sentence about the keys of the parties, and the run-in lead, in that order', () => {
+  test('are the six of the page of the agent in its order, the two that this agent adds, the sentence about the keys of the parties, and the run-in lead, in that order', () => {
     expect(manifestOf().gaps).toStrictEqual([COVERAGE_GAP, COMPLETENESS_GAP, LEDGER_GAP, REPORTED_GAP, REFUSED_GAP, SYNTHETIC_GAP, BINDING_GAP, UNREADABLE_GAP, KEYS_GAP, NOT_SHOWN_GAP]);
     expect(manifestOf().gaps).toStrictEqual([...gapsFor()]);
     expect(gapsFor()).toHaveLength(10);
