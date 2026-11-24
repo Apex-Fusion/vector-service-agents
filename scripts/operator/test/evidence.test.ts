@@ -50,7 +50,7 @@ function setAt(root: unknown, path: readonly (string | number)[], value: unknown
 
 // ---- the scenario: everything that the reads show, as plain data that a test changes before the run ----
 
-interface Hire { step: string; role: 'propose' | 'execute' | 'order-desk'; minute: number; result: Obj; accepted: boolean; reportOver: Obj; receiptOver: Obj; entryOver: Obj }
+interface Hire { step: string; role: 'propose' | 'execute' | 'order-desk'; minute: number; result: Obj; accepted: boolean; reportOver: Obj; receiptOver: Obj; entryOver: Obj; datumOver?: Obj }
 
 interface Scenario {
   kind: 'clean' | 'failure'; label: string; tenant: string; hires: Hire[]; record: Obj;
@@ -242,7 +242,7 @@ async function go(s: Scenario, argv: string[] = ['run', '--run', s.label, '--num
     if (end !== null) row(end, one.minute + 3, [input(s.spendOverride.get(end) ?? `${submit}#0`, ESCROW_CREDENTIAL)]);
     for (const hash of [post, end]) if (hash !== null) confirmed.add(hash);
     for (const decided of (one.result.decisions as Obj[])) confirmed.add(((decided.inference as Obj).sub_job as Obj).escrow_ref!.toString().slice(0, 64));
-    const datum = identityEscrow(CAPTURE_MS, { advert_ref: { txHash: advert.slice(0, 64), index: 0 }, agent_id: AGENTS[agent], supplier_pkh: signer.keyHash });
+    const datum = identityEscrow(CAPTURE_MS, { advert_ref: { txHash: advert.slice(0, 64), index: 0 }, agent_id: AGENTS[agent], supplier_pkh: signer.keyHash, ...one.datumOver });
     posted.push(koiosRow(escrowUtxo(post, datum, { address: MAINNET.escrow.address }), { is_spent: true }));
   }
   // -- the delegations, the sub-delegation and the vaults: the transactions of the record, as the chain shows them
@@ -1084,11 +1084,21 @@ describe('check 7: the claims, the challenge and the case', () => {
     expect(r.read(publicFile())).toBeNull();
   });
   it('ignores a case of the indexer that is not canonical, a case of another claim and a case of another challenge output', async () => {
+    // Each of these cases has the result ClaimerWins and the node shows no hold, so a case that the task took would end the wait: a run waits only when the task skips the case.
     for (const over of [{ canonical: false }, { claim: h('another claim token') }, { challenge_out: ref('another challenge') }]) {
-      const r = await go(closedCase('AuditorWins', 'none', over));
+      const r = await go(closedCase('ClaimerWins', 'none', over));
       expect(r.exit, JSON.stringify(over)).toBe(4);
       expect(r.read(publicFile())).toBeNull();
     }
+    expect((await go(closedCase('ClaimerWins', 'none'))).exit).toBe(0);
+  });
+  it('refuses an escrow on the chain that is for another agent than the agent of the hire', async () => {
+    const s = scenario('clean');
+    s.hires[0]!.datumOver = { agent_id: AGENTS['order-desk'] };
+    await refuses(s, ['hires[0].escrow_ref: the escrow on the chain is not for the agent reorder-agent']);
+    const twin = scenario('clean');
+    twin.hires[0]!.datumOver = { agent_id: AGENTS['reorder-agent'] };
+    expect((await go(twin)).exit).toBe(0);
   });
   it('waits when the case of the indexer is not final yet: the window ended and no Finalize is on the chain', async () => {
     const r = await go(closedCase('AuditorWins', 'none', { state: 'open', finalized: null, closed: null, ref: ref('case output') }));
