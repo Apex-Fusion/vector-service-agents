@@ -1,0 +1,5 @@
+[
+  { "desk_did": "did:vector:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1", "score": 90.4, "components": { "price": 90, "lead_time": 80, "reliability": 92, "compliance": 100 }, "total": 14900, "lead_time_days": 21 },
+  { "desk_did": "did:vector:b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2", "score": 71, "components": { "price": 75, "lead_time": 60, "reliability": 70, "compliance": 80 }, "total": 13200, "lead_time_days": 28 },
+  { "desk_did": "did:vector:c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3", "score": 64.25, "components": { "price": 85, "lead_time": 55, "reliability": 40, "compliance": 20 }, "total": 12100, "lead_time_days": 30 }
+]

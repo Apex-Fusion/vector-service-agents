@@ -9,6 +9,7 @@
 //   shortlist  the decision `shortlist`: the fixed text, the input and the parser of the choice
 //   accept     the decision `accept_quote`
 //   score      the decision `score`, and the entry of the vendor master that it reads
+//   rank       the decision `ranking`
 export { parseProposeFields } from './intake.ts';
 export type { ProposeFields } from './intake.ts';
 export type { BidderFile, BidderLineage, BidderStatus, ComplianceFact, FactState } from './bidder.ts';
@@ -18,3 +19,5 @@ export { ACCEPT_QUOTE_DECISION, acceptQuoteInput } from './accept.ts';
 export type { AcceptQuoteChoice } from './accept.ts';
 export { SCORE_DECISION, scoreInput } from './score.ts';
 export type { ScoreChoice, ScoreParts, VendorEntry } from './score.ts';
+export { RANKING_DECISION, rankingInput } from './rank.ts';
+export type { RankingChoice, ScoredBidder } from './rank.ts';

@@ -15,17 +15,17 @@ const importsOf = (text: string): string[] => [...text.matchAll(/^(?:import|expo
 describe('the model folder', () => {
   test('exports these values, and no other', () => {
     expect(Object.keys(model).sort()).toStrictEqual([
-      'ACCEPT_QUOTE_DECISION', 'MAX_INVITED', 'SCORE_DECISION', 'SHORTLIST_DECISION', 'acceptQuoteInput', 'parseProposeFields', 'scoreInput', 'shortlistInput',
+      'ACCEPT_QUOTE_DECISION', 'MAX_INVITED', 'RANKING_DECISION', 'SCORE_DECISION', 'SHORTLIST_DECISION', 'acceptQuoteInput', 'parseProposeFields', 'rankingInput', 'scoreInput', 'shortlistInput',
     ]);
   });
 
   test('has these source files, and no other', () => {
-    expect(files).toStrictEqual(['accept.ts', 'bidder.ts', 'choice.ts', 'index.ts', 'intake.ts', 'score.ts', 'shortlist.ts']);
+    expect(files).toStrictEqual(['accept.ts', 'bidder.ts', 'choice.ts', 'index.ts', 'intake.ts', 'rank.ts', 'score.ts', 'shortlist.ts']);
   });
 
   test('imports the kit folders of the protocol, the decision and the bids and its own files, and nothing else', () => {
     const allowed = [
-      '@vsa/usecase-kit/protocol', '@vsa/usecase-kit/decision', '@vsa/usecase-kit/bids', './intake.ts', './bidder.ts', './choice.ts', './shortlist.ts', './accept.ts', './score.ts',
+      '@vsa/usecase-kit/protocol', '@vsa/usecase-kit/decision', '@vsa/usecase-kit/bids', './intake.ts', './bidder.ts', './choice.ts', './shortlist.ts', './accept.ts', './score.ts', './rank.ts',
     ];
     for (const name of files) {
       const imports = importsOf(textOf(name));

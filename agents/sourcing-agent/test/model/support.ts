@@ -7,7 +7,7 @@ import type { Quote } from '@vsa/usecase-kit/bids';
 import { INPUT_CLOSE, INPUT_OPEN, buildPrompt } from '@vsa/usecase-kit/decision';
 import type { DecisionSpec } from '@vsa/usecase-kit/decision';
 import type { ProtocolResult } from '@vsa/usecase-kit/protocol';
-import type { BidderFile } from '../../src/model/index.ts';
+import type { BidderFile, ScoredBidder } from '../../src/model/index.ts';
 
 /** The exact text of a golden file. */
 export const goldenText = (name: string): string => readFileSync(new URL(`./golden/${name}`, import.meta.url), 'utf8');
@@ -76,6 +76,9 @@ export function hostileQuote(): Quote {
 
 /** Fresh files of the three bidders. A test changes a member of a file without changing the sample. */
 export const files = (): BidderFile[] => JSON.parse(goldenText('bidder-files.json')) as BidderFile[];
+
+/** Fresh scored bidders of the golden file: Alfa, Bravo and Charlie, in the order of their quotes. */
+export const scored = (): ScoredBidder[] => JSON.parse(goldenText('scored.json')) as ScoredBidder[];
 
 /** The prompt of a decision as the golden file holds it: the file ends with a line break and the prompt does not. */
 export function goldenPrompt(name: string): string {
