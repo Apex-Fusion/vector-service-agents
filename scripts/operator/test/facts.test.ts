@@ -725,6 +725,8 @@ describe('the file', () => {
       ['the first ten sections and a section that it does not list', json(envelope({ facts: { ...firstShape, extra: {} } }))],
       ['a fact of compliance of the wrong shape', json(envelope({}, { compliance: { a: { id: 'x' } } }))],
       ['a fact of compliance with a later field of the wrong kind', json(envelope({}, { compliance: { a: { ...COMPLIANCE, revokeTx: 5 } } }))],
+      ['a fact of compliance with a secret in a text field', json(envelope({}, { compliance: { a: { ...COMPLIANCE, replyUri: KEY_TEXT } } }))],
+      ['a fact of compliance with a secret name', json(envelope({}, { compliance: { secret: COMPLIANCE } }))],
       ['a revocation with a reason that is no number', json(envelope({}, { revocations: { a: { ...REVOCATION, reason: '9' } } }))],
       ['a lifecycle step with no time', json(envelope({}, { lifecycle: { a: { tx: HEX_B } } }))],
       ['a subagent end with an epoch that is a text', json(envelope({}, { subagentEnds: { a: { ...SUBAGENT_END, epochAfter: '4' } } }))],
@@ -756,6 +758,7 @@ describe('the file', () => {
         const err = refusal(() => FactsFile.open(path, IDENTITY));
         expect(err.reason).toBe('damaged');
         expect(err.message).toContain('damaged');
+        expect(err.message).not.toContain(KEY_TEXT);
         expect(textOf(path)).toBe(text);
       });
     }
