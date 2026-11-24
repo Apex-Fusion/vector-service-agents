@@ -7,7 +7,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { attestation, attestationUtxo, CAPTURE_MS, DAY, delegation, delegationUtxo, koiosRow, ledgerWorld, liveRecord, MAINNET, recordUtxo, vaultUtxo } from '../../../packages/buyer-core/test/fixtures/ledger-read-world.ts';
-import type { Row, TxIo, TxRow } from '../../../packages/buyer-core/test/fixtures/ledger-read-world.ts';
+import type { Contract, Row, TxIo, TxRow } from '../../../packages/buyer-core/test/fixtures/ledger-read-world.ts';
 import type { Utxo } from '../../checks/lib/platform.ts';
 import { escrowUtxo, identityEscrow } from '../../../packages/buyer-core/test/fixtures/escrow-identity.fixture.ts';
 import { RESULT_SCHEMA as KIT_RESULT, PROPOSAL_SCHEMA as KIT_PROPOSAL } from '../../../packages/usecase-kit/src/protocol/messages.ts';
@@ -121,7 +121,7 @@ function scenario(kind: 'clean' | 'failure'): Scenario {
     ];
   if (kind === 'failure') hires.find((one) => one.step === 'execute-c')!.result.decisions = [decision('accept_delivery', 15)];
   // The fixtures of buyer-core number their outputs with a counter, so each output gets a hash of its own here: a golden file must not depend on the order of the tests.
-  const live = vaultUtxo({ type: 'Live', owner: { type: 'PrincipalKey', hash: 'cc'.repeat(28), organisation: null }, delegation: h('delegation c'), spent: 0n, periodStart: CAPTURE_MS }, 8_300_000n, { txHash: h('live vault output') });
+  const live = vaultUtxo({ type: 'Live', owner: { type: 'PrincipalKey', hash: 'cc'.repeat(28), organisation: null }, delegation: h('delegation c'), spent: 0n, periodStart: CAPTURE_MS }, 8_300_000n, { txHash: txOf('order-desk-c', 'post') });
   const claims = Object.fromEntries(Object.entries(AGENTS).map(([agent]) => [agent, {
     claimRef: `${h(`claim tx ${agent}`)}#0`, documentTx: h(`claim document tx ${agent}`), claimTx: h(`claim tx ${agent}`), claimToken: CLAIM_TOKEN(agent), stakeLovelace: '50000000', windowMs: 86_400_000,
     stakedAt: stamp(S0 - 3000), withdrawableFrom: stamp(S0 + 86_400 - 3000), withdrawTx: null,
@@ -178,8 +178,18 @@ async function go(s: Scenario, argv: string[] = ['run', '--run', s.label, '--num
   const rows: TxRow[] = [...s.extraRows];
   const posted: Row[] = [];
   const entries: Obj[] = [];
-  const row = (hash: string, minute: number, inputs: TxIo[]): void => { if (!s.skipKoiosTx.has(hash)) rows.push({ tx_hash: hash, tx_timestamp: S0 + minute * 60, inputs, outputs: [], plutus_contracts: [], tx_info_note: 'made up' }); };
+  const row = (hash: string, minute: number, inputs: TxIo[], more: Partial<TxRow> = {}): void => {
+    if (!s.skipKoiosTx.has(hash)) rows.push({ tx_hash: hash, tx_timestamp: S0 + minute * 60, inputs, outputs: [], plutus_contracts: [], assets_minted: [], tx_info_note: 'made up', ...more });
+  };
   const input = (reference: string, credential: string): TxIo => ({ tx_hash: reference.slice(0, 64), tx_index: Number(reference.slice(65)), value: '1000000', payment_addr: { cred: credential, bech32: 'addr1test' }, inline_datum: null });
+  // The vault lineages: a vault opens with its output at the open transaction, the Order Desk hires are paid from the first vault, and each payment spends the output that the payment before it made.
+  const VAULT_CREDENTIAL = MAINNET.vault.hash;
+  const vaultRoot = s.vaults.map((_, i) => `${h(`vault open ${i}`)}#0`);
+  const vaultHead = [...vaultRoot];
+  const vaultInput = (reference: string): TxIo => ({
+    ...input(reference, VAULT_CREDENTIAL),
+    inline_datum: { bytes: null, value: { constructor: 0, fields: [{ constructor: 0, fields: [{ bytes: 'cc'.repeat(28) }, { constructor: 1, fields: [] }] }, { bytes: s.delegations[0]!.id }, { int: 0 }, { int: 0 }] } },
+  });
   for (const one of s.hires) {
     const agent = one.role === 'order-desk' ? 'order-desk' : 'reorder-agent';
     const model = one.role === 'order-desk' ? 'lot-medium' : 'reorder-agent-v1';
@@ -195,7 +205,16 @@ async function go(s: Scenario, argv: string[] = ['run', '--run', s.label, '--num
     };
     writeFileSync(join(dir, s.label, `${one.step}.report.json`), JSON.stringify(report));
     const claim = txOf(one.step, 'claim'); const submit = txOf(one.step, 'submit');
-    row(post, one.minute, [input(ref('wallet', 1), WALLET_CREDENTIAL)]);
+    if (one.role === 'order-desk') {
+      const spent = vaultHead[0]!;
+      const out = (index: number, credential: string): TxIo => ({ tx_hash: post, tx_index: index, value: '5200000', payment_addr: { cred: credential, bech32: 'addr1test' }, inline_datum: null });
+      const pay: Contract = {
+        script_hash: VAULT_CREDENTIAL, spends_input: { tx_hash: spent.slice(0, 64), tx_index: Number(spent.slice(65)) }, valid_contract: true,
+        input: { redeemer: { purpose: 'spend', datum: { hash: h('pay redeemer'), value: { constructor: 0, fields: [] } } } },
+      };
+      row(post, one.minute, [input(ref('wallet', 1), WALLET_CREDENTIAL), vaultInput(spent)], { outputs: [out(0, ESCROW_CREDENTIAL), out(1, VAULT_CREDENTIAL)], plutus_contracts: [pay] });
+      vaultHead[0] = `${post}#1`;
+    } else row(post, one.minute, [input(ref('wallet', 1), WALLET_CREDENTIAL)]);
     row(claim, one.minute + 1, [input(`${post}#0`, ESCROW_CREDENTIAL)]);
     row(submit, one.minute + 2, [input(`${claim}#0`, ESCROW_CREDENTIAL)]);
     if (end !== null) row(end, one.minute + 3, [input(s.spendOverride.get(end) ?? `${submit}#0`, ESCROW_CREDENTIAL)]);
@@ -204,14 +223,23 @@ async function go(s: Scenario, argv: string[] = ['run', '--run', s.label, '--num
     const datum = identityEscrow(CAPTURE_MS, { advert_ref: { txHash: advert.slice(0, 64), index: 0 }, agent_id: AGENTS[agent] });
     posted.push(koiosRow(escrowUtxo(post, datum, { address: MAINNET.escrow.address }), { is_spent: true }));
   }
+  // -- the delegations, the sub-delegation and the vaults: the transactions of the record, as the chain shows them
+  const movement = (hash: string, name: string, quantity: string): void => row(hash, 0, [input(ref('wallet', 2), WALLET_CREDENTIAL)], { assets_minted: [{ policy_id: MAINNET.delegation.hash, asset_name: name, quantity }] });
+  s.delegations.forEach((d, i) => { movement(h(`delegation tx ${i}`), d.id, '1'); if (!d.live) movement(h(`delegation end ${i}`), d.id, '-1'); });
+  movement(h('sub delegate tx'), h('sub delegation'), '1');
+  movement(h('sub undelegate tx'), h('sub delegation'), '-1');
+  s.vaults.forEach((v, i) => {
+    row(h(`vault open ${i}`), 0, [input(ref('wallet', 3), WALLET_CREDENTIAL)]);
+    if (v.utxo === null) row(h(`vault close ${i}`), 0, [vaultInput(vaultHead[i]!)]);
+  });
   // -- the ledger: delegations, vaults, the approval, the record of the Order Desk
   const utxos = [];
-  s.delegations.forEach((d) => { if (d.live) utxos.push(delegationUtxo(d.id, delegation(), { txHash: h(`delegation output ${d.id}`) })); });
+  s.delegations.forEach((d, i) => { if (d.live) utxos.push(delegationUtxo(d.id, delegation(), { txHash: h(`delegation tx ${i}`) })); });
   const vaults: Obj[] = [];
   s.vaults.forEach((v) => { if (v.utxo !== null) { utxos.push(v.utxo); vaults.push({ ref: `${v.utxo.txHash}#${v.utxo.outputIndex}` }); } });
   if (s.approvalVisible) {
     const datum = attestation({ subject: AGENTS['reorder-agent'], attType: 5, digest: s.digest, issuedAt: CAPTURE_MS, validUntil: CAPTURE_MS + RUN_APPROVAL_VALIDITY_MS, ...(s.approval.datum as Obj | undefined) });
-    utxos.push(attestationUtxo(s.approval.attestation as string, datum, { txHash: h('approval output') }));
+    utxos.push(attestationUtxo(s.approval.attestation as string, datum, { txHash: s.approval.tx as string }));
   }
   const holdSince = s.holdSince ?? CAPTURE_MS + 3600_000;
   const held = { status: { type: 'Suspended' as const, holds: [{ by: { type: 'Script' as const, hash: 'ab'.repeat(28) }, reason: JURY_HOLD_REASON, since: holdSince, until: holdSince + 7 * DAY }] } };
@@ -225,7 +253,7 @@ async function go(s: Scenario, argv: string[] = ['run', '--run', s.label, '--num
   const record = {
     format: 1, label: s.label, kind: s.kind, date: '2026-12-01', tenant: s.tenant,
     delegations: s.delegations.map((d, i) => ({ id: d.id, tx: h(`delegation tx ${i}`), ended_tx: d.live ? null : h(`delegation end ${i}`) })),
-    vaults: s.vaults.map((v, i) => ({ ref: v.utxo === null ? ref(`vault ${i}`, 1) : `${v.utxo.txHash}#${v.utxo.outputIndex}`, open_tx: h(`vault open ${i}`), close_tx: v.utxo === null ? h(`vault close ${i}`) : null })),
+    vaults: s.vaults.map((v, i) => ({ ref: v.utxo === null ? vaultRoot[i]! : `${v.utxo.txHash}#${v.utxo.outputIndex}`, open_tx: h(`vault open ${i}`), close_tx: v.utxo === null ? h(`vault close ${i}`) : null })),
     approval: s.approval.attestation === undefined ? undefined : { attestation: s.approval.attestation, tx: s.approval.tx },
     sub_delegations: [{ id: h('sub delegation'), delegate_tx: h('sub delegate tx'), undelegate_tx: h('sub undelegate tx') }],
     hires: entries, refusals: s.kind === 'clean' ? [] : [
@@ -618,6 +646,67 @@ describe('check 4: delegations, vaults and the approval', () => {
     const s = scenario('clean');
     s.hires[0]!.result = proposed(h('another digest'), 1);
     await refuses(s, ['approval.digest']);
+  });
+});
+
+describe('check 4: each ended or closed entry is tied to its id by a read of its transaction', () => {
+  const other = txOf('propose', 'post');
+  it('refuses a vault that the node holds as Live when the record says that it is closed, and names the close transaction', async () => {
+    const s = scenario('clean');
+    const head = vaultUtxo({ type: 'Live', owner: { type: 'PrincipalKey', hash: 'cc'.repeat(28), organisation: null }, delegation: h('delegation c1'), spent: 0n, periodStart: CAPTURE_MS }, 8_300_000n, { txHash: txOf('order-desk', 'post') });
+    s.vaults = [{ utxo: head }];
+    s.record = { vaults: [{ ref: `${head.txHash}#${head.outputIndex}`, open_tx: h('vault open 0'), close_tx: h('vault close 0') }] };
+    await refuses(s, ['vaults[0].close_tx', 'does not spend the vault lineage of ref']);
+    expect((await go(decided())).exit).toBe(0);
+  });
+  it('refuses ids that never existed and the transactions of other steps, and names each member', async () => {
+    const s = scenario('clean');
+    s.record = {
+      delegations: [{ id: h('no such delegation'), tx: other, ended_tx: h('claim tx reorder-agent') }],
+      vaults: [{ ref: ref('no such vault', 3), open_tx: other, close_tx: h('claim tx order-desk') }],
+      sub_delegations: [{ id: h('no such sub'), delegate_tx: other, undelegate_tx: h('approval tx') }],
+      approval: { attestation: h('approval attestation'), tx: other },
+    };
+    await refuses(s, [
+      'delegations[0].tx', 'delegations[0].ended_tx', 'vaults[0].open_tx', 'vaults[0].close_tx', 'sub_delegations[0].delegate_tx', 'sub_delegations[0].undelegate_tx', 'approval.tx',
+    ]);
+  });
+  it('refuses a delegation transaction that does not mint the token of its id, and an end that does not burn it', async () => {
+    const noMint = scenario('clean');
+    noMint.record = { delegations: [{ id: h('delegation c1'), tx: other, ended_tx: txOf('propose', 'accept') }] };
+    await refuses(noMint, ['delegations[0].tx: does not mint', 'delegations[0].ended_tx: does not burn']);
+    const swapped = scenario('clean');
+    swapped.record = { delegations: [{ id: h('delegation c1'), tx: h('delegation end 0'), ended_tx: h('delegation tx 0') }] };
+    await refuses(swapped, ['delegations[0].tx: does not mint', 'delegations[0].ended_tx: does not burn']);
+    const another = scenario('clean');
+    another.record = { delegations: [{ id: h('delegation c1'), tx: h('sub delegate tx'), ended_tx: h('sub undelegate tx') }] };
+    await refuses(another, ['delegations[0].tx: does not mint', 'delegations[0].ended_tx: does not burn']);
+  });
+  it('refuses a sub-delegation whose transactions mint and burn another token', async () => {
+    const s = scenario('clean');
+    s.record = { sub_delegations: [{ id: h('sub delegation'), delegate_tx: h('delegation tx 0'), undelegate_tx: h('delegation end 0') }] };
+    await refuses(s, ['sub_delegations[0].delegate_tx: does not mint', 'sub_delegations[0].undelegate_tx: does not burn']);
+  });
+  it('refuses a vault close that spends no output of the lineage of ref, and an open that did not make the lineage', async () => {
+    const s = scenario('clean');
+    s.record = { vaults: [{ ref: ref('another vault', 0), open_tx: h('vault open 0'), close_tx: h('vault close 0') }] };
+    await refuses(s, ['vaults[0].close_tx: does not spend the vault lineage of ref', 'vaults[0].open_tx: is not the transaction that opened']);
+    const late = decided();
+    late.record = { vaults: [{ ref: `${txOf('order-desk-c', 'post')}#1`, open_tx: txOf('order-desk-c', 'post'), close_tx: null }, { ref: `${h('vault open 1')}#0`, open_tx: h('vault open 1'), close_tx: h('vault close 1') }] };
+    await refuses(late, ['vaults[0].open_tx: is not the transaction that opened']);
+    const wrong = decided();
+    wrong.record = { vaults: [{ ref: `${txOf('order-desk-c', 'post')}#1`, open_tx: h('vault open 1'), close_tx: null }, { ref: `${h('vault open 1')}#0`, open_tx: h('vault open 1'), close_tx: h('vault close 1') }] };
+    await refuses(wrong, ['vaults[0].open_tx: is not the transaction that opened']);
+  });
+  it('refuses an approval transaction that is not the transaction of the output that holds the approval', async () => {
+    const s = scenario('clean');
+    s.record = { approval: { attestation: h('approval attestation'), tx: txOf('propose', 'accept') } };
+    await refuses(s, ['approval.tx: is not the transaction of the output']);
+  });
+  it('says which member Koios does not know when it reads a transaction of the ledger', async () => {
+    const s = scenario('clean');
+    s.skipKoiosTx.add(h('delegation tx 0'));
+    await refuses(s, ['delegations[0].tx: does not mint', 'Koios does not know the transaction']);
   });
 });
 

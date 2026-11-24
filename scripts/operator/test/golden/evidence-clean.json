@@ -77,7 +77,7 @@
   ],
   "vault": [
     {
-      "ref": "b96cda773e81057d5811e3577dd14350c069942133c66d42915efbe3bb94431a#1",
+      "ref": "f129599e52ca3c9dfd2b858174168c2644a033de02ce421e37753e52a7650bf5#0",
       "open_tx": "f129599e52ca3c9dfd2b858174168c2644a033de02ce421e37753e52a7650bf5",
       "close_tx": "b305831314633a0c0bac98d5036717dee3fbb6fd7a9eeb0ee87130f5142c7745",
       "state": "closed"
@@ -296,7 +296,7 @@
       "refs": [
         {
           "kind": "vault",
-          "value": "b96cda773e81057d5811e3577dd14350c069942133c66d42915efbe3bb94431a#1"
+          "value": "f129599e52ca3c9dfd2b858174168c2644a033de02ce421e37753e52a7650bf5#0"
         },
         {
           "kind": "transaction",

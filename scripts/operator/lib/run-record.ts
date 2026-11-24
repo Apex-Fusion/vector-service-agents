@@ -261,11 +261,18 @@ export function readJsonFile(path: string, what: string, limitBytes = 4 * 1024 *
   }
 }
 
-// ---- Koios: the block time and the inputs of a transaction ----
+// ---- Koios: the block time, the inputs and the minted tokens of a transaction ----
 
-/** What Koios says of a transaction: when its block was made (POSIX milliseconds), and its inputs by reference, with the payment credential of each (null for an address with none). */
-export interface TxInfo { readonly timeMs: number; readonly inputs: readonly { readonly ref: string; readonly credential: string | null }[] }
+/**
+ * What Koios says of a transaction: when its block was made (POSIX milliseconds), its inputs by reference with the payment credential of each (null for an address with none), and the tokens that it minted
+ * (a positive quantity) or burned (a negative one), each with its policy and its name in hex.
+ */
+export interface TxInfo {
+  readonly timeMs: number; readonly inputs: readonly { readonly ref: string; readonly credential: string | null }[];
+  readonly minted: readonly { readonly policy: string; readonly name: string; readonly quantity: bigint }[];
+}
 
+const POLICY_ID = /^[0-9a-f]{56}$/;
 const KOIOS_TIMEOUT_MS = 15_000;
 const MOST_KOIOS_CHARS = 4 * 1024 * 1024;
 
@@ -277,14 +284,14 @@ function networkCode(err: unknown): string {
 }
 
 /**
- * Reads one transaction from Koios `tx_info`, with its inputs. The error messages name the route and the status only: no address, no body. A transaction that Koios does not list is an error,
- * and so is a row with no whole block time or with an input that is no output.
+ * Reads one transaction from Koios `tx_info`, with its inputs and its minted tokens. The error messages name the route and the status only: no address, no body. A transaction that Koios does not list is an
+ * error, and so is a row with no whole block time, with an input that is no output or with a minted token of a wrong shape. A row with no list of minted tokens minted none.
  */
 export async function txInfoOf(fetchImpl: typeof fetch, koiosUrl: string, txHash: string): Promise<TxInfo> {
   let response: Response;
   try {
     response = await fetchImpl(`${koiosUrl.replace(/\/+$/, '')}/api/v1/tx_info`, {
-      method: 'POST', headers: { accept: 'application/json', 'content-type': 'application/json' }, body: JSON.stringify({ _tx_hashes: [txHash], _inputs: true }),
+      method: 'POST', headers: { accept: 'application/json', 'content-type': 'application/json' }, body: JSON.stringify({ _tx_hashes: [txHash], _inputs: true, _assets: true }),
       redirect: 'error', signal: AbortSignal.timeout(KOIOS_TIMEOUT_MS),
     });
   } catch (err) { throw new Error(`Koios tx_info could not be reached (${networkCode(err)})`); }
@@ -304,7 +311,16 @@ export async function txInfoOf(fetchImpl: typeof fetch, koiosUrl: string, txHash
     const credential = isObject(address) && typeof address.cred === 'string' ? address.cred.toLowerCase() : null;
     return { ref: `${input.tx_hash.toLowerCase()}#${input.tx_index}`, credential };
   });
-  return { timeMs: stamp * 1000, inputs };
+  const listed = row.assets_minted === null || row.assets_minted === undefined ? [] : row.assets_minted;
+  if (!Array.isArray(listed)) throw new Error('Koios gives a list of minted tokens that is no list');
+  const minted = listed.map((one: unknown) => {
+    const whole = isObject(one) && (typeof one.quantity === 'number' ? Number.isSafeInteger(one.quantity) : typeof one.quantity === 'string' && /^-?[0-9]{1,30}$/.test(one.quantity));
+    if (!isObject(one) || typeof one.policy_id !== 'string' || !POLICY_ID.test(one.policy_id.toLowerCase()) || typeof one.asset_name !== 'string' || !/^(?:[0-9a-f]{2}){0,32}$/i.test(one.asset_name) || !whole) {
+      throw new Error('Koios gives a minted token of a wrong shape');
+    }
+    return { policy: one.policy_id.toLowerCase(), name: one.asset_name.toLowerCase(), quantity: BigInt(one.quantity as number | string) };
+  });
+  return { timeMs: stamp * 1000, inputs, minted };
 }
 
 /** The block time of a transaction in POSIX milliseconds, read from Koios `tx_info` (the node gives the confirmations only). */

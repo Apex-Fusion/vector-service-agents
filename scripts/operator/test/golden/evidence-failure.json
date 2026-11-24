@@ -171,13 +171,13 @@
   ],
   "vault": [
     {
-      "ref": "c64f066767c5a3b0cf17167c522a21eeec81cdd3bdd08ba2d3eb4aa4a302292e#1",
+      "ref": "857c900de81733b6e24644d1d04a9c53fda7f6a734ec2ea15611b1d5cedc5a2a#1",
       "open_tx": "f129599e52ca3c9dfd2b858174168c2644a033de02ce421e37753e52a7650bf5",
       "close_tx": null,
       "state": "live"
     },
     {
-      "ref": "defc876794ac12c231eb2cf6394b5f8f42ff3d632f768fb1fd943b194edefe24#1",
+      "ref": "ab1db44aab08aebf257eb42eadd99101d8b137376d245b02da5a74d32ee0dea5#0",
       "open_tx": "ab1db44aab08aebf257eb42eadd99101d8b137376d245b02da5a74d32ee0dea5",
       "close_tx": "6a6f9d074535b60debc4733faf500f5364600560755b584c182e1002999d5f40",
       "state": "closed"

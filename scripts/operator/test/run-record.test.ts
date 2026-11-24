@@ -174,7 +174,7 @@ describe('txInfoOf and txTimeOf', () => {
     tx_hash: hash, tx_timestamp: 1_794_000_000, inputs: [{ tx_hash: h('in'), tx_index: 2, payment_addr: { cred: 'ab'.repeat(28) } }, { tx_hash: h('wallet'), tx_index: 0, payment_addr: null }], ...over,
   });
 
-  it('gives the block time in milliseconds and the inputs with their credentials, and asks Koios for the inputs', async () => {
+  it('gives the block time in milliseconds, the inputs with their credentials and the minted tokens, and asks Koios for the inputs and the assets', async () => {
     const world = koios([row()]);
     const info = await txInfoOf(world.fetchImpl, 'https://koios.test/', hash);
     expect(info.timeMs).toBe(1_794_000_000_000);
@@ -182,7 +182,16 @@ describe('txInfoOf and txTimeOf', () => {
     expect(world.calls).toHaveLength(1);
     expect(world.calls[0]!.url).toBe('https://koios.test/api/v1/tx_info');
     expect(world.calls[0]!.method).toBe('POST');
-    expect(world.calls[0]!.body).toEqual({ _tx_hashes: [hash], _inputs: true });
+    expect(world.calls[0]!.body).toEqual({ _tx_hashes: [hash], _inputs: true, _assets: true });
+    expect(info.minted).toEqual([]);
+  });
+
+  it('gives each minted token with its policy, its name and its quantity, and a negative quantity for a burn, in lower case', async () => {
+    const policy = 'ab'.repeat(28);
+    const listed = [{ policy_id: policy.toUpperCase(), asset_name: 'AABB', quantity: '1' }, { policy_id: policy, asset_name: '', quantity: '-1' }, { policy_id: policy, asset_name: 'cc', quantity: 2 }];
+    const info = await txInfoOf(koios([row({ assets_minted: listed })]).fetchImpl, 'https://koios.test', hash);
+    expect(info.minted).toEqual([{ policy, name: 'aabb', quantity: 1n }, { policy, name: '', quantity: -1n }, { policy, name: 'cc', quantity: 2n }]);
+    expect((await txInfoOf(koios([row({ assets_minted: null })]).fetchImpl, 'https://koios.test', hash)).minted).toEqual([]);
   });
 
   it('gives the block time alone through txTimeOf', async () => {
@@ -197,6 +206,11 @@ describe('txInfoOf and txTimeOf', () => {
     ['a time of zero', [row({ tx_timestamp: 0 })], 200, 'no block time'],
     ['inputs that are no list', [row({ inputs: null })], 200, 'no list of inputs'],
     ['an input without an index', [row({ inputs: [{ tx_hash: h('in'), payment_addr: null }] })], 200, 'an input that is no output'],
+    ['minted tokens that are no list', [row({ assets_minted: 'a token' })], 200, 'minted tokens that is no list'],
+    ['a minted token without a quantity', [row({ assets_minted: [{ policy_id: 'ab'.repeat(28), asset_name: 'aa' }] })], 200, 'a minted token of a wrong shape'],
+    ['a minted token with a quantity that is no whole number', [row({ assets_minted: [{ policy_id: 'ab'.repeat(28), asset_name: 'aa', quantity: '1.5' }] })], 200, 'a minted token of a wrong shape'],
+    ['a minted token with a policy of 55 characters', [row({ assets_minted: [{ policy_id: 'ab'.repeat(27) + 'a', asset_name: 'aa', quantity: '1' }] })], 200, 'a minted token of a wrong shape'],
+    ['a minted token with a name that is no hex', [row({ assets_minted: [{ policy_id: 'ab'.repeat(28), asset_name: 'xyz', quantity: '1' }] })], 200, 'a minted token of a wrong shape'],
   ];
   for (const [what, rows, status, message] of failures) {
     it(`refuses ${what}, and the message shows no address and no body`, async () => {

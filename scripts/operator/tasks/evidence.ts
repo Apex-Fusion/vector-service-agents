@@ -44,6 +44,8 @@ const INDEXER_TIMEOUT_MS = 30_000;
 const MOST_INDEXER_CHARS = 16 * 1024 * 1024;
 const VERDICTS: readonly string[] = ['ClaimerWins', 'AuditorWins', 'Inconclusive'];
 const DEPTH_OF_SPEND_CHAIN = 4;
+/** A vault lineage is one output after the other: the open, then one output for each payment. A run has a few payments, so the walk back along it stops after this many transactions. */
+const DEPTH_OF_VAULT_CHAIN = 8;
 const NUMBER = /^[1-9][0-9]?$/;
 const REF = /^[0-9a-f]{64}#(?:0|[1-9][0-9]{0,5})$/;
 const HASH = /^[0-9a-f]{64}$/;
@@ -266,11 +268,63 @@ interface Reads {
   approval: Obj | null;
 }
 
+/** Runs a read that must say true: a read that says false, and a read that fails, are each a problem of the member. */
+async function mustHold(problems: Problems, member: string, rule: string, read: () => Promise<boolean>): Promise<void> {
+  try { if (!(await read())) problems.add(member, rule); } catch (err) { problems.add(member, `${rule} (the transaction cannot be read: ${shown(err)})`); }
+}
+
+/** True when Koios shows that the transaction minted (`1n`) or burned (`-1n`) the token of the delegation `id`: the token has the id as its name, under the policy of the delegation script. */
+async function movesDelegation(session: TaskSession<Extra>, tx: string, id: string, quantity: bigint): Promise<boolean> {
+  const policy = session.chain.deployment.delegation.hash;
+  const info = await txInfoOf(session.fetchImpl, session.settings.urls.koios, tx);
+  return info.minted.some((one) => one.policy === policy && one.name === id && one.quantity === quantity);
+}
+
+/**
+ * True when a vault input of `startTx`, or of a transaction before it in the chain of vault outputs, satisfies `wanted`. A payment spends one vault output and makes the next one, and a close spends the last
+ * output (a close can spend the outputs of several vaults), so the vault inputs of a transaction are followed back, at most DEPTH_OF_VAULT_CHAIN transactions deep.
+ */
+async function vaultInputsReach(session: TaskSession<Extra>, startTx: string, wanted: (input: string) => boolean): Promise<boolean> {
+  const credential = session.chain.deployment.vault.hash;
+  const seen = new Set<string>();
+  let level = [startTx];
+  for (let depth = 0; depth < DEPTH_OF_VAULT_CHAIN && level.length > 0; depth += 1) {
+    const before: string[] = [];
+    for (const tx of level) {
+      if (seen.has(tx)) continue;
+      seen.add(tx);
+      for (const input of (await txInfoOf(session.fetchImpl, session.settings.urls.koios, tx)).inputs) {
+        if (input.credential !== credential) continue;
+        if (wanted(input.ref)) return true;
+        before.push(txOf(input.ref));
+      }
+    }
+    level = before;
+  }
+  return false;
+}
+
+/** The transaction that opened the vault lineage that holds `vaultRef`: the first transaction of the chain of vault outputs behind it, which is the one that spends no vault output. A payment spends one. */
+async function openingOf(session: TaskSession<Extra>, vaultRef: string): Promise<string | null> {
+  const credential = session.chain.deployment.vault.hash;
+  let tx = txOf(vaultRef);
+  for (let depth = 0; depth < DEPTH_OF_VAULT_CHAIN; depth += 1) {
+    const spent = (await txInfoOf(session.fetchImpl, session.settings.urls.koios, tx)).inputs.filter((input) => input.credential === credential);
+    if (spent.length === 0) return tx;
+    if (spent.length > 1) return null;
+    tx = txOf(spent[0]!.ref);
+  }
+  return null;
+}
+
 async function checkLedger(session: TaskSession<Extra>, loaded: Loaded, facts: Readonly<Facts>, times: ReadonlyMap<string, number>, problems: Problems): Promise<Reads> {
   const env = envOf(session);
   const { record } = loaded;
   const reads: Reads = { delegations: [], vaults: [], subDelegations: [], approval: null };
   for (const [i, entry] of record.delegations.entries()) {
+    await mustHold(problems, `delegations[${i}].tx`, 'does not mint the delegation token of the id', () => movesDelegation(session, entry.tx, entry.id, 1n));
+    const endedTx = entry.ended_tx;
+    if (endedTx !== null) await mustHold(problems, `delegations[${i}].ended_tx`, 'does not burn the delegation token of the id', () => movesDelegation(session, endedTx, entry.id, -1n));
     let live = false;
     try { live = (await readDelegation(env, entry.id)).chain.length > 0; } catch (err) { problems.add(`delegations[${i}].id`, `the delegation cannot be read (${shown(err)})`); continue; }
     if (entry.ended_tx === null && !live) problems.add(`delegations[${i}].id`, 'the ledger holds no live delegation with this id, and ended_tx is not set');
@@ -278,13 +332,21 @@ async function checkLedger(session: TaskSession<Extra>, loaded: Loaded, facts: R
     reads.delegations.push({ ...entry, state: live ? 'live' : 'ended' });
   }
   for (const [i, entry] of record.sub_delegations.entries()) {
+    await mustHold(problems, `sub_delegations[${i}].delegate_tx`, 'does not mint the delegation token of the id', () => movesDelegation(session, entry.delegate_tx, entry.id, 1n));
+    await mustHold(problems, `sub_delegations[${i}].undelegate_tx`, 'does not burn the delegation token of the id', () => movesDelegation(session, entry.undelegate_tx, entry.id, -1n));
     try {
       if ((await readDelegation(env, entry.id)).chain.length > 0) problems.add(`sub_delegations[${i}].id`, 'the ledger still holds the sub-delegation as live: it must be ended');
     } catch (err) { problems.add(`sub_delegations[${i}].id`, `the sub-delegation cannot be read (${shown(err)})`); }
     reads.subDelegations.push({ ...entry });
   }
   for (const [i, entry] of record.vaults.entries()) {
-    if (entry.close_tx !== null) { reads.vaults.push({ ...entry, state: 'closed' }); continue; }
+    await mustHold(problems, `vaults[${i}].open_tx`, 'is not the transaction that opened the vault lineage of ref: the chain of vault outputs behind ref does not start with it', async () => (await openingOf(session, entry.ref)) === entry.open_tx);
+    const closeTx = entry.close_tx;
+    if (closeTx !== null) {
+      await mustHold(problems, `vaults[${i}].close_tx`, 'does not spend the vault lineage of ref: no vault input of the transaction is ref, and none descends from it', () => vaultInputsReach(session, closeTx, (input) => input === entry.ref));
+      reads.vaults.push({ ...entry, state: 'closed' });
+      continue;
+    }
     try {
       const page = await readVaults(env, { vaultRef: entry.ref }, session.clock.now());
       const found = page.items[0];
@@ -323,6 +385,7 @@ async function checkApproval(session: TaskSession<Extra>, loaded: Loaded, facts:
       problems.add('approval.attestation', 'no output of the attestation address holds the token of the approval');
       return null;
     }
+    if (txOf(view.ref) !== loaded.record.approval.tx) problems.add('approval.tx', 'is not the transaction of the output that holds the approval on the chain');
     for (const line of check.expectations.filter((one) => one.result === 'fail')) problems.add(`approval.${line.id}`, `${line.label}: ${line.detail}`);
     for (const line of check.conditions.filter((one) => one.result === 'fail')) problems.add('approval.attestation', `${line.label}: ${line.detail}`);
     const datum = view.attestation;
