@@ -207,6 +207,7 @@ describe('set', () => {
   });
   const BAD_VALUES: ReadonlyArray<readonly [string, unknown]> = [
     ['a new line', `a\n${SECRET}`], ['a carriage return', `a\r${SECRET}`], ['a NUL byte', `a\u0000${SECRET}`], ['another control character', `a\u0001${SECRET}`], ['a delete character', `a\u007f${SECRET}`],
+    ['a line separator', `a\u2028${SECRET}`], ['a paragraph separator', `a\u2029${SECRET}`],
     ['a double quote', `a"${SECRET}`], ['a backslash', `a\\${SECRET}`], ['a dollar sign', `a$${SECRET}`], ['a number', 5], ['null', null], ['undefined', undefined], ['a list', [SECRET]],
   ];
   for (const [what, value] of BAD_VALUES) {
@@ -224,6 +225,7 @@ describe('set', () => {
   const QUOTING: ReadonlyArray<readonly [string, string]> = [
     ['plain', 'plain'], ['', ''], ['a=b', 'a=b'], ['é ü', '"é ü"'], ['two words', '"two words"'], ['abcd#0', '"abcd#0"'], [' lead', '" lead"'], ['trail ', '"trail "'], ['tab\there', '"tab\there"'],
     ["'q", `"'q"`], ["it's", "it's"], [`Bearer ${SECRET}`, `"Bearer ${SECRET}"`], ['a'.repeat(300), 'a'.repeat(300)], ['#', '"#"'], [' ', '" "'],
+    ['a\u0085b', 'a\u0085b'],
   ];
   for (const [value, written] of QUOTING) {
     it(`writes the value ${JSON.stringify(value.length > 40 ? `${value.slice(0, 10)}...` : value)} as ${JSON.stringify(written.length > 40 ? `${written.slice(0, 10)}...` : written)}, and reads it back as it was`, () => {

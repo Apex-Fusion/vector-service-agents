@@ -46,7 +46,7 @@ const damaged = (where: string, rule: string): EnvFileError => new EnvFileError(
 /** The reason that a value cannot be written, or null. The value is never part of it. */
 function valueProblem(value: unknown): string | null {
   if (typeof value !== 'string') return 'is not text';
-  if (/[\n\r]/.test(value)) return 'holds a line break';
+  if (/[\n\r\u2028\u2029]/.test(value)) return 'holds a line break';
   if (value.includes('\u0000')) return 'holds a NUL byte';
   if (/[\u0001-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value)) return 'holds a control character';
   if (value.includes('"')) return 'holds a double quote, which cannot be written so that every reader reads it back as it is';
