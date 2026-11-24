@@ -14,7 +14,7 @@ import {
 import type { KoiosOptions, LedgerWorld } from '../../../../packages/buyer-core/test/fixtures/ledger-read-world.ts';
 import { readCompliance } from '../../src/compliance/index.ts';
 import type { ComplianceDeps, FactState } from '../../src/compliance/index.ts';
-import { ABSENT, AGENT_ID, DAY, DID, ID, MINUTE, NOW, OTHER_ID, REGISTRY, STRANGER, ManualClock, datum, depsOf, golden, id, readItems, revoked, view } from './support.ts';
+import { ABSENT, AGENT_ID, DAY, DID, ID, MINUTE, NOW, OTHER_ID, REGISTRY, STRANGER, UNREADABLE, ManualClock, datum, depsOf, golden, id, readItems, revoked, view } from './support.ts';
 
 /** One attestation of a scenario: its identifier and datum. A reason that a number cannot hold also has its exact value and the bytes of the datum, because the codec of the builders refuses to make such a datum. */
 interface Row {
@@ -196,6 +196,15 @@ describe('the real list', () => {
     const rows = [row(ID, datum())];
     const loose = worldOf(rows, { ignoreAssetFilter: true });
     expect(await readCompliance(realDeps(loose), DID, NOW)).toStrictEqual(golden('fact-valid.json'));
+  });
+
+  test('a stale output and a new output of one token make the fact unreadable, in either order: the place in the page does not decide', async () => {
+    const stale = attestationUtxo(ID, datum());
+    const fresh = attestationUtxo(ID, datum(revoked(NOW - DAY, 1)));
+    expect(await readCompliance(realDeps(ledgerWorld([stale, fresh, ...noise()])), DID, NOW)).toStrictEqual(UNREADABLE);
+    expect(await readCompliance(realDeps(ledgerWorld([fresh, stale, ...noise()])), DID, NOW)).toStrictEqual(UNREADABLE);
+    // The twin: the new output alone is read.
+    expect(await readCompliance(realDeps(ledgerWorld([fresh, ...noise()])), DID, NOW)).toMatchObject({ state: 'invalid', attestation: ID, attestation_state: 'revoked' });
   });
 
   test('a list of 120 attestations of the registry is read page by page: the revoked attestation of the bidder is on the last page, and the older active one is beside it', async () => {

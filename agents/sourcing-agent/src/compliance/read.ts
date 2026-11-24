@@ -15,7 +15,7 @@
 //   5. `attestationState` of buyer-core gives the state of that item at `nowMs`: active, revoked, expired or not_yet_valid. Active is `valid`. Each other state is `invalid`, and `attestation_state` names it.
 //      No kept item is `absent`.
 //   6. A source that cannot be read is `unreadable`. It is never `absent` and never `valid`. That covers a list that throws or does not answer in 20 seconds, a page that is not an object with a list `items`,
-//      a next page that does not lead on, more than 100 pages, an item whose datum cannot be read, and a bidder, a key hash or a time that is not in its form.
+//      a next page that does not lead on, more than 100 pages, an item whose datum cannot be read, an identifier that appears twice, and a bidder, a key hash or a time that is not in its form.
 //
 // What the reader reads of an item. Of every item: the identifier, and the subject, the issuer, the type and the issue time of the datum. Of the item that decides: also the dates, the status, the reason of a
 // revocation and the hash of the reply. The reason is `revokeReason` of the view. It is exact, while `datum.status.reason` is NaN for a reason that a number cannot hold. The address of the reply of the bidder
@@ -199,9 +199,12 @@ async function judge(deps: ComplianceDeps, did: Did, nowMs: number): Promise<Com
   const items = answer?.value ?? null;
   if (items === null) return noAttestation('unreadable');
   const looked: Item[] = [];
+  const seen = new Set<string>();
   for (const raw of items) {
     const item = look(raw);
-    if (item === null) return noAttestation('unreadable');
+    // An identifier that appears twice is a stale output and a new output of one token, or a row that two pages both hold. Their place in the page would decide, so the list is not read.
+    if (item === null || seen.has(item.id)) return noAttestation('unreadable');
+    seen.add(item.id);
     looked.push(item);
   }
   const subject = agentIdOf(did);

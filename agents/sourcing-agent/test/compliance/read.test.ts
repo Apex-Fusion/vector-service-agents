@@ -318,6 +318,27 @@ describe('the pages of the list', () => {
   });
 });
 
+describe('an attestation that the list shows twice', () => {
+  // A stale output and a new output of one token carry one identifier. Their place in the page would decide, so the list cannot be trusted.
+  const COPIES: ReadonlyArray<readonly [string, Partial<AttestationDatum>, Partial<AttestationDatum>]> = [
+    ['an active copy and a revoked copy of one attestation of the bidder', {}, revoked(NOW - DAY, 1)],
+    ['a revoked copy and an active copy of one attestation of the bidder', revoked(NOW - DAY, 1), {}],
+    ['two equal copies of one attestation of the bidder', {}, {}],
+    ['two copies of an attestation about another bidder, which the reader drops', { subject: OTHER_ID }, { subject: OTHER_ID, ...revoked(NOW - DAY, 1) }],
+  ];
+
+  test.each(COPIES)('%s: the fact is unreadable, in either order of the page and across two pages', async (_name, first, second) => {
+    const base = view(ID, datum());
+    const copy = (over: Partial<AttestationDatum>) => view(id(2), datum({ issuedAt: NOW - DAY, ...over }));
+    expect(await readItems([base, copy(first), copy(second)])).toStrictEqual(UNREADABLE);
+    expect(await readItems([base, copy(second), copy(first)])).toStrictEqual(UNREADABLE);
+    expect(await readCompliance(depsOf(paged([[base, copy(first)], [copy(second)]]).list), DID, NOW)).toStrictEqual(UNREADABLE);
+    // The twin: the same attestations with two identifiers are read.
+    const apart = await readItems([base, copy(first), view(id(3), datum({ issuedAt: NOW - DAY, ...second }))]);
+    expect(apart.state).not.toBe('unreadable');
+  });
+});
+
 describe('the reply of the bidder', () => {
   const REPLY = 'cd'.repeat(32);
   /** The address of a reply: the bytes of a text, in hex, as a datum holds them. */
