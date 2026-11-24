@@ -463,6 +463,16 @@ describe('advert: the cleanup', () => {
 // ---- the data and the output ----
 
 describe('advert: the data and the output', () => {
+  it('shows the four steps and the next step in the status, and calls no tool and reads no manifest', async () => {
+    const f = await stakeAdvertWorld({ go: null });
+    expect(await f.run(advert, 'status')).toBe(0);
+    const lines = f.w.screen.lines.join('\n');
+    for (const step of ['reorder-agent:reorder-agent-v1', 'order-desk:lot-small', 'order-desk:lot-medium', 'order-desk:lot-large']) expect(lines).toContain(step);
+    expect(lines).toContain('next: reorder-agent:reorder-agent-v1');
+    expect(f.hosted.calls).toEqual([]);
+    expect(f.net.urls).toEqual([]);
+    nothingSigned(f);
+  });
   it('lists the steps of the data in order, and shows no seed in the output, the state, the facts or the evidence', async () => {
     const f = await stakeAdvertWorld();
     expect(advert.steps(USE, { has: () => false, value: () => undefined })).toEqual(['reorder-agent:reorder-agent-v1', 'order-desk:lot-small', 'order-desk:lot-medium', 'order-desk:lot-large']);

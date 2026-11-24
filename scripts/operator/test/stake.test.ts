@@ -456,6 +456,15 @@ describe('stake: the verification of create', () => {
 // ---- the cleanup and the secrets ----
 
 describe('stake: the cleanup and the output', () => {
+  it('shows the four steps and the next step in the status, and reads no ledger output to build anything', async () => {
+    const f = await stakeAdvertWorld({ go: null });
+    expect(await f.run(stake, 'status')).toBe(0);
+    const lines = f.w.screen.lines.join('\n');
+    for (const step of ['reorder-agent:open', 'reorder-agent:create', 'order-desk:open', 'order-desk:create']) expect(lines).toContain(step);
+    expect(lines).toContain('next: reorder-agent:open');
+    expect(f.hosted.calls).toEqual([]);
+    nothingSigned(f);
+  });
   it('says that the minimum of a stake never returns to its owner, exits 0, and builds nothing', async () => {
     const f = await stakeAdvertWorld({ go: null });
     expect(await f.run(stake, 'cleanup')).toBe(0);
