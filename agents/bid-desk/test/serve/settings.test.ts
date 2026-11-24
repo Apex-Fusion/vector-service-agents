@@ -115,6 +115,7 @@ const instanceRule = (text: string): string => `environment variable BID_DESK_IN
 const organisationRule = (text: string): string =>
   `environment variable BID_DESK_ORGANISATION must be a domain name in lower case with at least two labels and at most 64 characters, and it has ${text.length} characters`;
 const originRule = (text: string): string => `environment variable BID_DESK_PUBLIC_ORIGIN must be an https origin with no user, path, query or fragment, and it has ${text.length} characters`;
+const OGMIOS_HTTPS = 'environment variable VECTOR_OGMIOS_URL must be an https address';
 const SIXTY_FOUR = `${'a'.repeat(60)}.org`;
 const REFUSALS: readonly Row[] = [
   ['BID_DESK_INSTANCE', undefined, /^environment variable BID_DESK_INSTANCE is required \(.*\) and is not set$/, 'bravo'],
@@ -160,8 +161,9 @@ const REFUSALS: readonly Row[] = [
   ['AGENT_DID', 'someone', 'environment variable AGENT_DID must be did:vector: and 64 lowercase hex characters, and it has 7 characters', ANOTHER_DID],
   ['AGENT_DID', `did:vector:${'AB'.repeat(32)}`, 'environment variable AGENT_DID must be did:vector: and 64 lowercase hex characters, and it has 75 characters', ANOTHER_DID],
   ['IDENTITY_GATEWAY_URL', 'http://gateway.example.test', /^environment variable IDENTITY_GATEWAY_URL must be an https origin with no user, path, query or fragment, and it has 27 characters$/, 'https://gateway.example.test'],
-  ['VECTOR_OGMIOS_URL', 'ftp://node.example.test', 'environment variable VECTOR_OGMIOS_URL must be an http or https address with no user and no password, and it has 23 characters', 'http://127.0.0.1:1337'],
+  ['VECTOR_OGMIOS_URL', 'ftp://node.example.test', 'environment variable VECTOR_OGMIOS_URL must be an http or https address with no user and no password, and it has 23 characters', 'https://127.0.0.1:1337'],
   ['VECTOR_OGMIOS_URL', 'not an address', 'environment variable VECTOR_OGMIOS_URL must be an http or https address, and it has 14 characters', 'https://ogmios.example.test'],
+  ['VECTOR_OGMIOS_URL', 'http://127.0.0.1:1337', OGMIOS_HTTPS, 'https://127.0.0.1:1337'],
   ['VECTOR_KOIOS_URL', 'https://user:password@koios.example.test', /^environment variable VECTOR_KOIOS_URL must be an http or https address with no user and no password/, 'https://koios.example.test'],
   ['VECTOR_SUBMIT_URL', 'submit.example.test', /^environment variable VECTOR_SUBMIT_URL must be an http or https address/, 'https://submit.example.test/api/submit/tx'],
   ['VECTOR_MARKETPLACE_INDEXER_URL', 'mailto:ops@example.test', /^environment variable VECTOR_MARKETPLACE_INDEXER_URL must be an http or https address/, 'https://indexer.example.test'],
@@ -277,13 +279,20 @@ describe('the readers give what they read', () => {
     });
     expect(GATEWAY_DEFAULT).toBe('https://id.vector.apexfusion.org');
     expect(endpointsFromEnv(envWith({
-      VECTOR_OGMIOS_URL: 'http://127.0.0.1:1337', VECTOR_KOIOS_URL: 'https://koios.example.test/', VECTOR_SUBMIT_URL: 'https://submit.example.test/api/submit/tx',
+      VECTOR_OGMIOS_URL: 'https://127.0.0.1:1337', VECTOR_KOIOS_URL: 'https://koios.example.test/', VECTOR_SUBMIT_URL: 'https://submit.example.test/api/submit/tx',
       VECTOR_MARKETPLACE_INDEXER_URL: ' https://indexer.example.test/ ', IDENTITY_GATEWAY_URL: 'https://gateway.example.test',
     }))).toStrictEqual({
-      gatewayUrl: 'https://gateway.example.test', ogmiosUrl: 'http://127.0.0.1:1337', koiosUrl: 'https://koios.example.test/', submitUrl: 'https://submit.example.test/api/submit/tx',
+      gatewayUrl: 'https://gateway.example.test', ogmiosUrl: 'https://127.0.0.1:1337', koiosUrl: 'https://koios.example.test/', submitUrl: 'https://submit.example.test/api/submit/tx',
       indexerUrl: 'https://indexer.example.test/',
     });
     expect(endpointsFromEnv(envWith({ VECTOR_MARKETPLACE_INDEXER_URL: '', IDENTITY_GATEWAY_URL: ' ', VECTOR_OGMIOS_URL: '' }))).toStrictEqual(endpointsFromEnv(FULL_ENV));
+  });
+
+  test('an address of the node with the scheme http is refused by name, and its https twin is accepted', () => {
+    for (const [http, https] of [['http://node.example.test:1337', 'https://node.example.test:1337'], ['http://127.0.0.1', 'https://127.0.0.1'], ['HTTP://node.example.test', 'HTTPS://node.example.test']] as const) {
+      expect(message(() => endpointsFromEnv(envWith({ VECTOR_OGMIOS_URL: http }))), http).toBe(OGMIOS_HTTPS);
+      expect(endpointsFromEnv(envWith({ VECTOR_OGMIOS_URL: https })).ogmiosUrl, https).toBe(https);
+    }
   });
 });
 

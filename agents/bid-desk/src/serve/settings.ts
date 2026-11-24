@@ -237,11 +237,19 @@ export interface Endpoints {
   readonly indexerUrl: string | undefined;
 }
 
+/**
+ * The endpoints of the chain, the identity gateway and the indexer. `VECTOR_OGMIOS_URL` must be an https address. The other agent services take the same rule, and it keeps the agents uniform: the address of the
+ * node means the same in each of them.
+ */
 export function endpointsFromEnv(env: NodeJS.ProcessEnv): Endpoints {
   const indexer = given(env.VECTOR_MARKETPLACE_INDEXER_URL);
+  const ogmiosUrl = addressOf('VECTOR_OGMIOS_URL', given(env.VECTOR_OGMIOS_URL), VECTOR_OGMIOS_URL);
+  if (new URL(ogmiosUrl).protocol !== 'https:') {
+    throw new Error('environment variable VECTOR_OGMIOS_URL must be an https address');
+  }
   return {
     gatewayUrl: httpsOriginOf('IDENTITY_GATEWAY_URL', given(env.IDENTITY_GATEWAY_URL) || GATEWAY_DEFAULT),
-    ogmiosUrl: addressOf('VECTOR_OGMIOS_URL', given(env.VECTOR_OGMIOS_URL), VECTOR_OGMIOS_URL),
+    ogmiosUrl,
     koiosUrl: addressOf('VECTOR_KOIOS_URL', given(env.VECTOR_KOIOS_URL), VECTOR_KOIOS_URL),
     submitUrl: addressOf('VECTOR_SUBMIT_URL', given(env.VECTOR_SUBMIT_URL), VECTOR_SUBMIT_URL),
     indexerUrl: indexer === '' ? undefined : addressOf('VECTOR_MARKETPLACE_INDEXER_URL', indexer, indexer),

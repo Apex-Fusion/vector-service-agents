@@ -58,12 +58,12 @@ describe('loadConfig on a full environment', () => {
   test('reads every optional setting: the listener, the state directory, the endpoints, the budget and the window; a blank one is not set', () => {
     const config = loadConfig(full({
       PORT: '9200', HOST: '127.0.0.1', BID_DESK_STATE_DIR: '/var/bid-desk', CHECKS_READ_BUDGET_MS: '900', ADVERT_MAX_PROCESSING_MS: '600000',
-      VECTOR_OGMIOS_URL: 'http://127.0.0.1:1337', VECTOR_KOIOS_URL: 'https://koios.example.test/', VECTOR_SUBMIT_URL: 'https://submit.example.test/api/submit/tx',
+      VECTOR_OGMIOS_URL: 'https://127.0.0.1:1337', VECTOR_KOIOS_URL: 'https://koios.example.test/', VECTOR_SUBMIT_URL: 'https://submit.example.test/api/submit/tx',
       VECTOR_MARKETPLACE_INDEXER_URL: ' https://indexer.example.test/ ', IDENTITY_GATEWAY_URL: 'https://gateway.example.test',
     }));
     expect([config.port, config.host, config.stateDir, config.checksBudgetMs]).toStrictEqual([9200, '127.0.0.1', '/var/bid-desk', 900]);
     expect(config.endpoints).toStrictEqual({
-      gatewayUrl: 'https://gateway.example.test', ogmiosUrl: 'http://127.0.0.1:1337', koiosUrl: 'https://koios.example.test/', submitUrl: 'https://submit.example.test/api/submit/tx',
+      gatewayUrl: 'https://gateway.example.test', ogmiosUrl: 'https://127.0.0.1:1337', koiosUrl: 'https://koios.example.test/', submitUrl: 'https://submit.example.test/api/submit/tx',
       indexerUrl: 'https://indexer.example.test/',
     });
     const published = JSON.parse(config.manifest.text) as { terms: { max_processing_ms: number } };
@@ -138,7 +138,8 @@ const REFUSALS: readonly Row[] = [
   ['LLM_MAX_SUPPLIER_BOND_LOVELACE', undefined, /^environment variable LLM_MAX_SUPPLIER_BOND_LOVELACE is required/, '2000000'],
   ['LLM_MAX_BUYER_BOND_LOVELACE', '2.5', /^environment variable LLM_MAX_BUYER_BOND_LOVELACE must be a whole number of lovelace/, '2000000'],
   ['IDENTITY_GATEWAY_URL', 'http://gateway.example.test', /^environment variable IDENTITY_GATEWAY_URL must be an https origin/, 'https://gateway.example.test'],
-  ['VECTOR_OGMIOS_URL', 'ftp://node.example.test', /^environment variable VECTOR_OGMIOS_URL must be an http or https address/, 'http://node.example.test'],
+  ['VECTOR_OGMIOS_URL', 'ftp://node.example.test', /^environment variable VECTOR_OGMIOS_URL must be an http or https address/, 'https://node.example.test'],
+  ['VECTOR_OGMIOS_URL', 'http://node.example.test', /^environment variable VECTOR_OGMIOS_URL must be an https address$/, 'https://node.example.test'],
   ['VECTOR_IDENTITY_LEGACY_ROOT', undefined, /^environment variable .*but VECTOR_IDENTITY_LEGACY_ROOT is not: set both VECTOR_IDENTITY_LEGACY_ROOT and VECTOR_IDENTITY_CONFIG_SEED/, IDENTITY_SETTINGS.VECTOR_IDENTITY_LEGACY_ROOT],
   ['IDENTITY_POLICY_ID', 'ab'.repeat(28), /^environment variable IDENTITY_POLICY_ID /, POLICY],
 ];
@@ -416,8 +417,10 @@ describe('src/index.ts as a process', () => {
     probe.listen(0, '127.0.0.1', () => { const { port } = probe.address() as { port: number }; probe.close(() => resolve(port)); });
   });
   beforeAll(async () => {
-    const node = `http://127.0.0.1:${await closedPort()}`;
-    offChain = { VECTOR_OGMIOS_URL: node, VECTOR_KOIOS_URL: `${node}/`, VECTOR_SUBMIT_URL: `${node}/api/submit/tx`, VECTOR_MARKETPLACE_INDEXER_URL: node, IDENTITY_GATEWAY_URL: 'https://gateway.example.test' };
+    const port = await closedPort();
+    const node = `http://127.0.0.1:${port}`;
+    // The node is the one address that the start takes as https only. Nothing listens at it either.
+    offChain = { VECTOR_OGMIOS_URL: `https://127.0.0.1:${port}`, VECTOR_KOIOS_URL: `${node}/`, VECTOR_SUBMIT_URL: `${node}/api/submit/tx`, VECTOR_MARKETPLACE_INDEXER_URL: node, IDENTITY_GATEWAY_URL: 'https://gateway.example.test' };
   });
 
   /** The settings of a full deployment of one instance on a state directory of its own, with the real parts. */

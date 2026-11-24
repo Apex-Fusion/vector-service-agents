@@ -503,6 +503,7 @@ describe('agents/bid-desk/README.md: the settings', () => {
     expect([cell('ADVERT_EXPLORER_URL', 2), cell('FAULT_MODE', 2), cell('BID_DESK_SERVICE_PKH', 2), cell('IDENTITY_ADDRESS', 2)]).toStrictEqual(['empty', 'empty', 'derived', 'derived from the policy']);
     expect([config.fault.mode, config.service.pkh, SERVICE.pkh]).toStrictEqual(['', SERVICE.pkh, SERVICE.pkh]);
     for (const name of ['VECTOR_OGMIOS_URL', 'VECTOR_KOIOS_URL', 'VECTOR_SUBMIT_URL', 'VECTOR_MARKETPLACE_INDEXER_URL']) expect(cell(name, 2), name).toBe('the default of `packages/buyer-core`');
+    expect(cell('VECTOR_OGMIOS_URL', 1)).toContain('It must be an `https://` address');
   });
 
   test('the fault switch is empty or quote_off_price_list, as the table says, and a public key must hash to the key hash beside it', () => {
@@ -770,6 +771,7 @@ describe('agents/bid-desk/README.md: Run it and Deploy', () => {
     ['BID_DESK_INSTANCE that is not alfa, bravo or charlie', { BID_DESK_INSTANCE: 'delta' }, /^environment variable BID_DESK_INSTANCE must be alfa, bravo or charlie/, { BID_DESK_INSTANCE: 'bravo' }],
     ['BID_DESK_ORGANISATION that is not a domain name in lower case', { BID_DESK_ORGANISATION: 'Alfa' }, /^environment variable BID_DESK_ORGANISATION must be a domain name in lower case/, { BID_DESK_ORGANISATION: 'alfa.example.test' }],
     ['BID_DESK_PUBLIC_ORIGIN that is not an https origin', { BID_DESK_PUBLIC_ORIGIN: 'http://bids.example.test' }, /^environment variable BID_DESK_PUBLIC_ORIGIN must be an https origin/, { BID_DESK_PUBLIC_ORIGIN: 'https://bids.example.test' }],
+    ['VECTOR_OGMIOS_URL that is an http address', { VECTOR_OGMIOS_URL: 'http://node.example.test' }, /^environment variable VECTOR_OGMIOS_URL must be an https address/, { VECTOR_OGMIOS_URL: 'https://node.example.test' }],
     [
       'CHECKS_READ_BUDGET_MS outside its range', { CHECKS_READ_BUDGET_MS: String(CHECKS_READ_BUDGET_MAX_MS + 1) },
       new RegExp(`^environment variable CHECKS_READ_BUDGET_MS must be a whole number of milliseconds from ${CHECKS_READ_BUDGET_MIN_MS} to ${CHECKS_READ_BUDGET_MAX_MS}`), { CHECKS_READ_BUDGET_MS: String(CHECKS_READ_BUDGET_MAX_MS) },
@@ -797,6 +799,7 @@ describe('agents/bid-desk/README.md: Run it and Deploy', () => {
     expect(run).toContain('when `FAULT_MODE` names a value that the Bid Desk does not list,');
     expect(run).toContain('when `IDENTITY_POLICY_ID` is not the identity policy that `VECTOR_IDENTITY_LEGACY_ROOT` and `VECTOR_IDENTITY_CONFIG_SEED` give,');
     expect(run).toContain('when `BID_DESK_INSTANCE` is not `alfa`, `bravo` or `charlie`, when `BID_DESK_ORGANISATION` is not a domain name in lower case, when `BID_DESK_PUBLIC_ORIGIN` is not an https origin,');
+    expect(run).toContain('when `VECTOR_OGMIOS_URL` is an http address,');
     expect(run).toContain(`when \`CHECKS_READ_BUDGET_MS\` is not from ${CHECKS_READ_BUDGET_MIN_MS} to ${CHECKS_READ_BUDGET_MAX_MS},`);
     expect(run).toContain('when `ADVERT_MAX_PROCESSING_MS` is below 8 min or above 24 h, or when it cannot write to its state directory.');
     expect(MAX_PROCESSING_WINDOW_MS / 3_600_000).toBe(24);
