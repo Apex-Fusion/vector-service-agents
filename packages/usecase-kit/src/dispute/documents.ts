@@ -535,7 +535,8 @@ const KINDS_WORDS = `${KINDS_QUOTED.slice(0, -1).join(', ')} or ${KINDS_QUOTED[K
 /**
  * The evidence document of a challenge. It is about the statement that its kind names in `EVIDENCE_STATEMENTS`: its header and its statement row say which one. It refuses an input that is not in its form
  * (`bad_shape`: the detail names the member and never repeats the value), facts that show no contradiction (`no_contradiction`: nothing is worth a challenge), a confirmation that is not tied to the purchase
- * order by its hash (`confirmation_not_for_order`), and a document over the limit (`document_too_large`). It never cuts a document.
+ * order by its hash (`confirmation_not_for_order`), an intake record that is not tied to the request by its request number (`record_not_for_request`), and a document over the limit (`document_too_large`). It
+ * never cuts a document.
  */
 export function evidenceDocument(input: EvidenceDocumentInput): ProtocolResult<JurorDocument, DocumentCode> {
   const copy = parseJsonValue(input, 'evidence');
