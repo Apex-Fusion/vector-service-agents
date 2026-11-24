@@ -46,7 +46,7 @@ The Bid Desk reads no controller of its own record, and its manifest names none.
 
 All three Bid Desks list this capability. The `model` string of each advert and of every receipt that it gives is `bid-desk-v1`. Each Bid Desk has its own advert.
 
-Each Bid Desk is one runtime in front of one service, in a pack of its own. The runtime is the template runtime (`vector-agent-template`, `CAPABILITY_KIND=custom`). It holds the supplier key of its Bid Desk and has its advert. It asks the service before it claims an escrow, claims the escrow, posts the job to the service, signs the receipt and submits the receipt hash. The service does the work. It holds the service key and no private supplier key. It runs one job at a time.
+Each Bid Desk is one runtime in front of one service, in a pack of its own. The runtime is the template runtime (`vector-agent-template`, `CAPABILITY_KIND=custom`). It holds the supplier key of its Bid Desk and has its advert. It asks the service before it claims an escrow, claims the escrow, posts the job to the service, signs the receipt and submits the receipt hash. The service does the work. It holds the service key and no private supplier key. It has no API key of a model provider: it hires its model on the Vector marketplace. It runs one job at a time.
 
 The three services run one image and one code base. `BID_DESK_INSTANCE` selects the name and the price list file, `BID_DESK_ORGANISATION` gives the organisation, and `BID_DESK_PUBLIC_ORIGIN` gives the origin that serves the price list. The three Bid Desks share the code, the checks, the job and the terms of the advert. They differ in the name, the organisation and the price list. A Bid Desk shares no container, key, volume or job slot with another.
 
@@ -352,9 +352,11 @@ Example. The test of the job gives exactly this quote for the request above, wit
 | `decisions` | one decision, `quote`: its choice, its reasoning, and the hire of the model supplier with the sub-receipt that the service verified (`inference`) |
 | `fault_mode` | the setting of the fault switch: the empty text in a clean run. It is the last member |
 
-A line total is the quantity times the unit price, the total is the sum of the line totals, and `lead_time_days` is the longest lead time of the lines. The service makes these three numbers from the lines of the model. They are arithmetic and not decisions, and the parser of the kit refuses a quote with a number that is not the arithmetic of its lines. A quote can have fewer lines than the request has items, and its notes then say which items it leaves out.
+A line total is the quantity times the unit price, the total is the sum of the line totals, and `lead_time_days` is the longest lead time of the lines. The service makes these three numbers from the lines of the model. They are arithmetic and not decisions, and the parser of the kit refuses a quote with a number that is not the arithmetic of its lines. A quote can have fewer lines than the request has items. The instruction to the model asks it to name each item that it leaves out in the notes, and the job does not check the notes.
 
 The quote names the hash of the request and the hash of the price list that it was priced from, so a buyer's agent can check each unit price against the public list.
+
+The `notes` and the organisation of the sender are free text. The notes hold at most 500 characters and no control or hidden character. The organisation of the sender holds at most 1024 characters, and it can be any text that the covering Accountable Party names.
 
 ### The price list
 
