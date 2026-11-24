@@ -1,0 +1,16 @@
+{
+  "schema": "vector.usecase.priorauth-request.v1",
+  "request_number": "run1-1",
+  "tenant": "run1",
+  "order_id": "ORD-1001",
+  "patient_ref": "SYN-PT-0001",
+  "ordering_clinician_ref": "SYN-CL-0007",
+  "service_code": "SYN-MRI-LS",
+  "diagnosis_codes": ["M54.16", "M51.16"],
+  "justification": "Criterion C1 is met. The progress note REC-0002 records low back pain that spreads to the left leg for 3 weeks, and the progress note REC-0005 records that the pain in the left leg continues at 7 weeks.\nCriterion C2 is met. The medication record REC-0003 and the therapy record REC-0004 document conservative therapy: naproxen for 4 weeks and 6 sessions of physical therapy over 3 weeks, with little change.\nCriterion C3 is met. The progress note REC-0005 documents new numbness in the left foot and weakness of ankle dorsiflexion.\nCriterion C4 is met. The imaging record REC-0001 lists a plain X-ray of the lumbar spine.",
+  "guideline_refs": ["C1", "C2", "C3", "C4"],
+  "record_refs": ["REC-0001", "REC-0002", "REC-0003", "REC-0004", "REC-0005"],
+  "record_set_sha256": "14aa6337663c538a6a4243d840d56be7ae8210c6980a5a7c0ab6749db48805f9",
+  "insurer_did": "did:vector:b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8",
+  "advert_ref": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3#1"
+}

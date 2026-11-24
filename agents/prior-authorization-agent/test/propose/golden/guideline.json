@@ -1,0 +1,12 @@
+{
+  "code": "SYN-MRI-LS",
+  "title": "Imaging of the lumbar spine",
+  "version": "2026.1",
+  "criteria": [
+    { "id": "C1", "text": "Low back pain with pain in the leg for at least 6 weeks." },
+    { "id": "C2", "text": "Conservative therapy for at least 6 weeks is tried and documented, for example physical therapy or medication." },
+    { "id": "C3", "text": "A nerve deficit or a warning sign is documented, for example weakness, numbness or loss of bladder control." },
+    { "id": "C4", "text": "Plain X-rays of the spine, if any, are listed." }
+  ],
+  "documentation": ["The dates of the conservative therapy.", "The findings of the last examination."]
+}
