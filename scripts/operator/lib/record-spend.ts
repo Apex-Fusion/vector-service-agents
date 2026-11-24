@@ -16,6 +16,7 @@ import { PreconditionError } from '../../checks/lib/session.ts';
 import type { TxFacts } from '../../checks/lib/txfacts.ts';
 import { VerificationError, VERIFY_WINDOW } from '../../checks/lib/verify.ts';
 import type { IrreversibleTag } from './approval.ts';
+import { readLimited } from './build-record.ts';
 import type { HostedBuild, LandHost, RecordFact, TaskSession } from './contract.ts';
 import { readRunning, requireRuntimesFree, runtimesOf } from './free.ts';
 import { landHosted } from './land-hosted.ts';
@@ -41,6 +42,7 @@ const OUTPUT_REF = /^[0-9a-f]{64}#(?:0|[1-9][0-9]{0,9})$/;
 // The identity builder uses a script reference and one spend redeemer. Only the collateral return, total collateral and action signers are optional.
 const BODY_REQUIRED = [0, 1, 2, 3, 8, 11, 13, 18];
 const BODY_OPTIONAL = [14, 16, 17];
+const PROTOCOL_PARAMETERS = 'queryLedgerState/protocolParameters';
 const TX_INFO_LIMIT_BYTES = 512 * 1024;
 
 type RecordReader = Pick<TaskSession, 'chain'>;
@@ -332,6 +334,35 @@ function lovelaceOf(value: unknown): bigint | null {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? BigInt(value) : null;
 }
 
+/** Read the value the node gives, before the provider can supply a default. */
+async function reclaimCoefficient({ settings, fetchImpl }: Pick<TaskSession, 'settings' | 'fetchImpl'>): Promise<bigint> {
+  let answer: unknown = null;
+  try {
+    const response = await fetchImpl(settings.urls.ogmios, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, redirect: 'error', signal: AbortSignal.timeout(15_000),
+      body: JSON.stringify({ jsonrpc: '2.0', method: PROTOCOL_PARAMETERS, params: {}, id: 1 }),
+    });
+    if (response.ok) {
+      const bytes = await readLimited(response, 512 * 1024);
+      if (bytes !== null) answer = JSON.parse(new TextDecoder().decode(bytes)) as unknown;
+    } else {
+      await response.body?.cancel();
+    }
+  } catch {
+    throw new PreconditionError('The node protocol parameters could not be read for reclaim.');
+  }
+  if (!isObject(answer) || answer.jsonrpc !== '2.0' || answer.id !== 1 || answer.error !== undefined || !isObject(answer.result)) {
+    throw new PreconditionError('The node did not return a protocol-parameters result for reclaim.');
+  }
+  const { minUtxoDepositCoefficient, coinsPerUtxoByte } = answer.result;
+  const coefficient = lovelaceOf(minUtxoDepositCoefficient ?? coinsPerUtxoByte);
+  if (coefficient === null || coefficient <= 0n || coefficient > BigInt(Number.MAX_SAFE_INTEGER)
+    || (minUtxoDepositCoefficient != null && coinsPerUtxoByte != null && lovelaceOf(coinsPerUtxoByte) !== coefficient)) {
+    throw new PreconditionError('The node did not give one explicit positive minimum-output coefficient for reclaim.');
+  }
+  return coefficient;
+}
+
 function archivedRows(value: unknown, withDetails: boolean, txHash?: string): RecordSpendValueRow[] {
   if (!Array.isArray(value) || value.length === 0) throw new VerificationError('The confirmed transaction has no complete input and output lists.');
   const seen = new Set<string>();
@@ -351,6 +382,15 @@ function archivedRows(value: unknown, withDetails: boolean, txHash?: string): Re
   });
 }
 
+/** Vector Koios can report phase-two validity only on the individual script rows. */
+function confirmedPhaseTwo(row: Record<string, unknown>): boolean {
+  const { valid_contract: verdict, plutus_contracts: scripts } = row;
+  if (verdict !== undefined && verdict !== true) return false;
+  if (scripts === undefined) return verdict === true;
+  if (!Array.isArray(scripts) || scripts.some((script: unknown) => !isObject(script) || script.valid_contract !== true)) return false;
+  return verdict === true || scripts.length > 0;
+}
+
 /** Read the fee, spent outputs and created outputs of one confirmed record spend. Details are raw fields for the caller to check. */
 export async function readConfirmedRecordSpend(
   session: Pick<LandHost, 'chain' | 'node'>, txHash: string, { withDetails = false }: { withDetails?: boolean } = {},
@@ -361,7 +401,7 @@ export async function readConfirmedRecordSpend(
   let confirmations: number | null;
   try {
     const [answer, status] = await Promise.all([
-      koiosPostList(koiosUrl, 'tx_info', { _tx_hashes: [txHash], _inputs: true, ...(withDetails ? { _assets: true, _scripts: true } : {}) }, fetchImpl, '', TX_INFO_LIMIT_BYTES),
+      koiosPostList(koiosUrl, 'tx_info', { _tx_hashes: [txHash], _inputs: true, _scripts: true, ...(withDetails ? { _assets: true } : {}) }, fetchImpl, '', TX_INFO_LIMIT_BYTES),
       session.node.txStatus(txHash),
     ]);
     rows = answer;
@@ -370,10 +410,11 @@ export async function readConfirmedRecordSpend(
     throw new VerificationError('The confirmed record spend could not be read from the indexer.');
   }
   const row = rows[0];
-  if (rows.length !== 1 || !isObject(row) || row.tx_hash !== txHash || (row.valid_contract !== undefined && row.valid_contract !== true)
+  if (rows.length !== 1 || !isObject(row) || row.tx_hash !== txHash
     || confirmations === null || !Number.isSafeInteger(confirmations) || confirmations < 1) {
     throw new VerificationError('The indexer does not confirm the exact record spend.');
   }
+  if (!confirmedPhaseTwo(row)) throw new VerificationError('The confirmed record spend has no affirmative phase-two validity evidence.');
   const fee = lovelaceOf(row.fee);
   if (fee === null) throw new VerificationError('The confirmed record spend has no actual fee.');
   return { fee, inputs: archivedRows(row.inputs, withDetails), outputs: archivedRows(row.outputs, withDetails, txHash) };
@@ -450,7 +491,11 @@ export function recordSpendStep<Extra>(spec: RecordSpendSpec<Extra>): StepHandle
       let minimum: bigint | null = null;
       if (reclaim) {
         if (prior.effective !== 'Revoked' && prior.effective !== 'Retired') throw new PreconditionError('The record is not Revoked or Retired.');
+        const coefficient = await reclaimCoefficient(session);
         const { lucid } = await session.chain.context(fee);
+        if (lucid.config().protocolParameters?.coinsPerUtxoByte !== coefficient) {
+          throw new PreconditionError('The wallet context does not use the node minimum-output coefficient for reclaim.');
+        }
         minimum = ledgerMinLovelace(lucid, address, unit, encodeIdentityDatum(before.record));
         if (minimum >= before.utxo.assets.lovelace) throw new PreconditionError('The record has no deposit above the ledger minimum.');
       }
