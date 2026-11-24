@@ -362,9 +362,16 @@ export interface ScriptSpend {
   readonly action: number;
   readonly fields: readonly unknown[];
 }
+export interface ScriptTxIo {
+  readonly ref: string;
+  readonly credential: string | null;
+  readonly address: string | null;
+}
 export interface ScriptTxInfo extends TxInfo {
-  readonly outputs: readonly { readonly ref: string; readonly credential: string | null }[];
+  readonly inputs: readonly ScriptTxIo[];
+  readonly outputs: readonly ScriptTxIo[];
   readonly spends: readonly ScriptSpend[];
+  readonly fee: bigint | null;
 }
 
 const POLICY_ID = /^[0-9a-f]{56}$/;
@@ -465,12 +472,17 @@ export async function scriptTxInfoOf(fetchImpl: typeof fetch, koiosUrl: string, 
     }
     spends.push({ script: run.script_hash, input, valid: run.valid_contract, action: value.constructor, fields: value.fields });
   }
+  const addressOf = (io: Record<string, unknown>): string | null =>
+    isObject(io.payment_addr) && typeof io.payment_addr.bech32 === 'string' ? io.payment_addr.bech32 : null;
+  const inputs = (row.inputs as Record<string, unknown>[]).map((input, i) => ({ ...base.inputs[i]!, address: addressOf(input) }));
   const outputs = (row.outputs as unknown[]).map((output, i) => {
     if (!isObject(output) || typeof output.tx_index !== 'number' || !REF.test(`${txHash}#${output.tx_index}`)
       || (output.tx_hash !== undefined && output.tx_hash !== txHash)) throw new Error('Koios gives an output without a valid reference');
-    return { ref: `${txHash}#${output.tx_index}`, credential: base.outputs[i]!.credential };
+    return { ref: `${txHash}#${output.tx_index}`, credential: base.outputs[i]!.credential, address: addressOf(output) };
   });
-  return { ...base, outputs, spends };
+  const fee = row.fee;
+  const validFee = typeof fee === 'string' ? /^\d{1,30}$/.test(fee) : typeof fee === 'number' && Number.isSafeInteger(fee) && fee >= 0;
+  return { ...base, inputs, outputs, spends, fee: validFee ? BigInt(fee as number | string) : null };
 }
 
 /** The block time of a transaction in POSIX milliseconds, read from Koios `tx_info` (the node gives the confirmations only). */

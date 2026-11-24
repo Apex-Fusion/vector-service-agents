@@ -21,7 +21,7 @@ import type { IdentityEscrowDatum } from '../../../packages/vector-read/src/inde
 import { bytesOf, constrFields, decodeIdentityDatum, decodeVaultDatum, outRefOf, sameDelegator } from '../../../packages/vector-read/src/identity-codec.ts';
 import { ACCEPT_WINDOW_MS, dataOfKoiosJson, documentUri, readDocument } from '../../../packages/buyer-core/src/index.ts';
 import { findConfigRecord } from '../../../packages/buyer-core/src/vendored/mcp/identity-deployment.ts';
-import { decodePlutusData } from '../../../packages/vector-read/src/guarded-decode.ts';
+import { addressDetails, decodePlutusData } from '../../../packages/vector-read/src/guarded-decode.ts';
 import { decodeJuryDatum } from '../../../packages/buyer-core/src/vendored/mcp/jury-codec.ts';
 import { REDEEMER } from '../../../packages/buyer-core/src/vendored/mcp/marketplace-constants.ts';
 import type { KoiosUtxo } from '../../../packages/buyer-core/src/vendored/mcp/marketplace-indexer.ts';
@@ -37,7 +37,7 @@ import { checkAttestation, escrowPaidFromVault, findRecord, keyHashOf, koiosUtxo
 import type { LedgerEnv } from '../lib/platform.ts';
 import { FlagError } from '../lib/runner.ts';
 import { hireRoleOf, parseReport, parseRunRecord, readJsonFile, scriptTxInfoOf, UnknownTransactionError, txInfoOf, txTimeOf } from '../lib/run-record.ts';
-import type { HireEntry, Report, RunRecord, ScriptSpend, ScriptTxInfo, TxInfo } from '../lib/run-record.ts';
+import type { HireEntry, Report, RunRecord, ScriptSpend, ScriptTxInfo, ScriptTxIo, TxInfo } from '../lib/run-record.ts';
 import { holdsSecret } from '../lib/secrets.ts';
 
 /** A transaction on the explorer of the network: this text and the hash. */
@@ -272,35 +272,110 @@ async function vaultRefund(session: EvidenceSession, payment: Extract<VaultPayme
     || refund === null || refund.address.paymentCredential.type !== 'Script' || refund.address.paymentCredential.hash !== vault.hash
     || refund.address.stakeCredential !== null || returned.type !== 'Returned'
     || !sameDelegator(returned.owner, before.owner)) throw new PreconditionError('the committed refund is not for the vault owner that paid');
-  const wanted = info.outputs.filter((out) => out.credential === vault.hash);
-  const short = 'the reclaim does not return the full escrow value to the correct vault owner';
-  if (wanted.length === 0) throw new PreconditionError(short);
-  const refs = new Set(wanted.map((out) => out.ref));
-  if (refs.size !== wanted.length) throw new PreconditionError('the reclaim lists a duplicate vault output');
-  const rows = await koiosUtxoInfo(session.settings.urls.koios, [...refs], session.fetchImpl, HISTORICAL_OUTPUT_MAX);
-  const byRef = new Map(rows.map((row) => [fromOutput(row), row]));
-  if (byRef.size !== rows.length || byRef.size !== refs.size || [...refs].some((ref) => !byRef.has(ref))) {
-    throw new PreconditionError('the exact vault outputs of the reclaim cannot be read');
+  return netVaultReturn(session, spent, info, (row) => {
+    if (row.address !== vault.address || typeof row.inline_datum?.bytes !== 'string') return false;
+    try {
+      const datum = decodeVaultDatum(row.inline_datum.bytes);
+      return datum.type === 'Returned' && sameDelegator(datum.owner, before.owner);
+    } catch { return false; }
+  });
+}
+
+type Value = Map<string, bigint>;
+const LOVELACE = 'lovelace';
+
+function addValue(value: Value, row: KoiosUtxo, sign: 1n | -1n): void {
+  value.set(LOVELACE, (value.get(LOVELACE) ?? 0n) + sign * unitsOf(row.value));
+  for (const { policy, name, quantity } of assetsOf(row)) {
+    const unit = policy + name;
+    value.set(unit, (value.get(unit) ?? 0n) + sign * quantity);
   }
-  const matched: string[] = [];
-  const totals = new Map<string, bigint>();
-  let lovelace = 0n;
-  for (const ref of refs) {
-    const row = byRef.get(ref)!;
-    if (row.address !== vault.address || typeof row.inline_datum?.bytes !== 'string') continue;
-    let datum;
-    try { datum = decodeVaultDatum(row.inline_datum.bytes); } catch { continue; } // A different datum is not a refund.
-    if (datum.type !== 'Returned' || !sameDelegator(datum.owner, before.owner)) continue;
-    matched.push(ref);
-    lovelace += unitsOf(row.value);
-    for (const asset of assetsOf(row)) {
-      const unit = asset.policy + asset.name;
-      totals.set(unit, (totals.get(unit) ?? 0n) + asset.quantity);
+}
+
+function paymentTypeAt(io: ScriptTxIo, row: KoiosUtxo): 'Key' | 'Script' {
+  if (io.address === null || io.address !== row.address) throw new PreconditionError('the address of a regular input or output is unproven');
+  let payment;
+  try { payment = addressDetails(io.address).paymentCredential; } catch { throw new PreconditionError('a regular input or output has an invalid payment address'); }
+  if (payment == null || payment.hash !== io.credential || (row.payment_cred !== undefined && row.payment_cred !== payment.hash)) {
+    throw new PreconditionError('the credential of a regular input or output is unproven');
+  }
+  return payment.type;
+}
+
+/**
+ * Account for net value, not the provenance of fungible units. A wallet must cover its own exact-address change.
+ * Non-escrow inputs pay the actual fee and any lovelace top-up. Native assets from them must return as change.
+ * All other value must go to the exact refund destination. A payment that cannot be separated is unproven.
+ */
+async function netVaultReturn(session: EvidenceSession, spent: KoiosUtxo, info: ScriptTxInfo, matches: (row: KoiosUtxo) => boolean): Promise<string[]> {
+  const short = 'the matching vault outputs do not show the full escrow value';
+  const unproven = 'the full escrow return is unproven';
+  const escrowRef = fromOutput(spent);
+  if (info.fee === null || info.minted.length !== 0) throw new PreconditionError(`${unproven}: the fee or mint is not accounted for`);
+  const regular = info.inputs.find((io) => io.ref === escrowRef);
+  if (regular === undefined) throw new PreconditionError(`${unproven}: the escrow is not a regular input`);
+  paymentTypeAt(regular, spent);
+  const inputs = info.inputs.filter((io) => io.ref !== escrowRef);
+  const refs = [...inputs, ...info.outputs].map((io) => io.ref);
+  const wanted = new Set(refs);
+  if (wanted.size !== refs.length || wanted.has(escrowRef) || info.inputs.length !== inputs.length + 1) {
+    throw new PreconditionError(`${unproven}: the reclaim lists a duplicate regular input or output`);
+  }
+  const rows = await koiosUtxoInfo(session.settings.urls.koios, refs, session.fetchImpl, HISTORICAL_OUTPUT_MAX);
+  const byRef = new Map(rows.map((row) => [fromOutput(row), row]));
+  if (byRef.size !== rows.length || byRef.size !== wanted.size || refs.some((ref) => !byRef.has(ref))) {
+    throw new PreconditionError(`${unproven}: the exact regular inputs and outputs cannot be read`);
+  }
+  const sources = new Map<string, Value>();
+  for (const input of inputs) {
+    const row = byRef.get(input.ref)!;
+    // The escrow is the only regular script input, including when another vault has the same owner.
+    if (row.is_spent !== true) throw new PreconditionError(`${unproven}: a regular funding input is not confirmed spent`);
+    if (paymentTypeAt(input, row) !== 'Key') throw new PreconditionError(`${unproven}: another regular input is a script output`);
+    const address = input.address!;
+    let value = sources.get(address);
+    if (value === undefined) {
+      value = new Map();
+      sources.set(address, value);
+    }
+    addValue(value, row, 1n);
+  }
+  const refunded: string[] = [];
+  const gross: Value = new Map();
+  let unmatched = false;
+  for (const output of info.outputs) {
+    const row = byRef.get(output.ref)!;
+    paymentTypeAt(output, row);
+    if (matches(row)) {
+      refunded.push(output.ref);
+      addValue(gross, row, 1n);
+    } else {
+      const source = sources.get(output.address!);
+      if (source === undefined) unmatched = true;
+      else addValue(source, row, -1n);
     }
   }
-  if (matched.length === 0 || lovelace < unitsOf(spent.value)
-    || assetsOf(spent).some((asset) => (totals.get(asset.policy + asset.name) ?? 0n) < asset.quantity)) throw new PreconditionError(short);
-  return matched;
+  const held: Value = new Map();
+  addValue(held, spent, 1n);
+  if (refunded.length === 0 || [...held].some(([unit, quantity]) => (gross.get(unit) ?? 0n) < quantity)) throw new PreconditionError(short);
+  if (unmatched) throw new PreconditionError(`${unproven}: an output is neither a matching refund nor change to a funding address`);
+
+  let contributed = 0n;
+  for (const source of sources.values()) {
+    const coin = source.get(LOVELACE) ?? 0n;
+    if (coin < 0n || [...source].some(([unit, quantity]) => unit !== LOVELACE && quantity !== 0n)) {
+      throw new PreconditionError(`${unproven}: a funding address does not match its change`);
+    }
+    contributed += coin;
+  }
+  if (contributed < info.fee) throw new PreconditionError(`${unproven}: the other inputs do not fund the actual fee`);
+  // E = R - (I - C - F). The top-up I - C - F is not part of the net escrow return.
+  gross.set(LOVELACE, (gross.get(LOVELACE) ?? 0n) - (contributed - info.fee));
+  if ([...held].some(([unit, quantity]) => (gross.get(unit) ?? 0n) !== quantity)
+    || [...gross].some(([unit, quantity]) => (held.get(unit) ?? 0n) !== quantity)) {
+    throw new PreconditionError(`${unproven}: the net vault return does not equal the escrow input`);
+  }
+  return refunded;
 }
 
 interface OutputAsset { readonly policy: string; readonly name: string; readonly quantity: bigint }
@@ -428,13 +503,18 @@ async function readRelease(session: Session, hire: HireEntry, discover: Discover
   return terminal?.type === 'ReleaseEscrow' ? (await terminalSpend(session, hire, terminal.tx, 'Release')).proof : null;
 }
 
-async function readSubmittedReceipt(session: EvidenceSession, post: string, submitted: string): Promise<string> {
+interface LiveSubmission { readonly ref: string; readonly receiptHash: string | null }
+
+async function readSubmittedReceipt(session: EvidenceSession, post: string, submitted: string, live: LiveSubmission | null): Promise<string> {
   const out = await outputOf(session, submitted);
   if (out.address !== session.chain.deployment.escrow.address || typeof out.is_spent !== 'boolean') {
     throw new PreconditionError('the actual Submitted escrow output is not known');
   }
   const datum = decodeIdentityEscrowDatum(out.inline_datum?.bytes ?? '');
   const hash = receiptHashOf(datum);
+  if (live !== null && (live.ref !== submitted || live.receiptHash !== hash || out.is_spent)) {
+    throw new PreconditionError('the live Submitted receipt commitment differs on the node and in Koios');
+  }
   await verifyEscrowAncestry(session, post, submitted, datum);
   await confirmed(session, txOf(submitted));
   return hash;
@@ -541,13 +621,15 @@ async function checkHires(session: EvidenceSession, loaded: Loaded, facts: Reado
     }
     let posted: Obj | null = null;
     let hasLive = false;
-    let liveSubmitted: string | null = null;
+    let liveSubmitted: LiveSubmission | null = null;
     try {
       const lineage = await resolveEscrowLineage(session.chain.provider, session.chain.koiosUrl, entry.escrow_ref, session.chain.fetchImpl, session.chain.deployment);
       // The escrow datum has a layout of its own (identity or legacy): its members are read by name, and the identity layout is the one that holds an agent id.
       posted = lineage.posted as unknown as Obj;
       hasLive = lineage.current !== null || !lineage.spent;
-      if (lineage.current?.datum.state === 'Submitted') liveSubmitted = `${lineage.current.utxo.txHash}#${lineage.current.utxo.outputIndex}`;
+      if (lineage.current?.datum.state === 'Submitted') {
+        liveSubmitted = { ref: `${lineage.current.utxo.txHash}#${lineage.current.utxo.outputIndex}`, receiptHash: lineage.current.datum.result_receipt_hash };
+      }
     } catch (err) { problems.add(`${where}.escrow_ref`, `the escrow cannot be read from the chain (${shown(err)})`); }
     if (posted === null) continue;
     const advertRef = isObject(posted.advert_ref) ? `${String(posted.advert_ref.txHash)}#${String(posted.advert_ref.index)}` : null;
@@ -569,8 +651,8 @@ async function checkHires(session: EvidenceSession, loaded: Loaded, facts: Reado
     if (view.report === null) continue;
     if (receiptHash === null && entry.accept_tx === null && entry.reclaim_tx === null) {
       try {
-        const submitted = liveSubmitted ?? (hasLive ? null : (await discover(entry.escrow_ref))?.submitted ?? null);
-        if (submitted !== null) receiptHash = await readSubmittedReceipt(session, entry.escrow_ref, submitted);
+        const submitted = liveSubmitted?.ref ?? (hasLive ? null : (await discover(entry.escrow_ref))?.submitted ?? null);
+        if (submitted !== null) receiptHash = await readSubmittedReceipt(session, entry.escrow_ref, submitted, liveSubmitted);
       } catch (err) { problems.add(`${where}.report_file`, `the actual Submitted receipt cannot be read (${shown(err)})`); }
     }
     if (receiptHash === null) { problems.add(`${where}.report_file`, 'the actual Submitted escrow receipt commitment is unproven'); continue; }

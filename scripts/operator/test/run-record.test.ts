@@ -284,9 +284,10 @@ describe('txInfoOf and txTimeOf', () => {
     const script = { script_hash: 'ab'.repeat(28), valid_contract: true, spends_input: { tx_hash: h('in'), tx_index: 2 },
       input: { redeemer: { purpose: 'spend', datum: { value: { constructor: 2, fields: [] } } } } };
     const mint = { ...script, input: { redeemer: { purpose: 'mint' } } };
-    const world = koios([row({ outputs: [], plutus_contracts: [script, mint] })]);
+    const world = koios([row({ fee: '250001', outputs: [], plutus_contracts: [script, mint] })]);
     const proof = await scriptTxInfoOf(world.fetchImpl, 'https://koios.test', hash);
     expect(proof.spends).toEqual([{ script: script.script_hash, input: `${h('in')}#2`, valid: true, action: 2, fields: [] }]);
+    expect(proof.fee).toBe(250_001n);
     expect(world.calls[0]?.body).toMatchObject({ _scripts: true });
   });
 
