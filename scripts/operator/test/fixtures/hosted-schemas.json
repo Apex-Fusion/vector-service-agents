@@ -1,0 +1,1079 @@
+{
+  "_captured": {
+    "date": "2026-11-24",
+    "server": "vector-mcp-server 3.0.0",
+    "tools_listed": 87,
+    "note": "One tools/list of the hosted MCP server of Vector mainnet. Only the input schemas of the tools that the operator pack calls. The ledger unit is written as units in the descriptions."
+  },
+  "tools": {
+    "vector_build_identity_register": {
+      "type": "object",
+      "properties": {
+        "changeAddress": {
+          "description": "Your wallet address: it pays the fee and any deposit, gives the collateral, and receives the change. Get it from vector_signer_get_address.",
+          "type": "string"
+        },
+        "controller": {
+          "description": "The controller key of the new record: an Ed25519 public key, 64 hex characters (vector_signer_get_public_key shows yours)",
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{64}$"
+        },
+        "name": {
+          "description": "Agent name, 1 to 64 bytes of UTF-8",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "description": {
+          "description": "Description, up to 256 bytes",
+          "type": "string",
+          "maxLength": 256
+        },
+        "framework": {
+          "description": "Framework, up to 64 bytes (e.g. 'LangChain', 'custom')",
+          "type": "string",
+          "maxLength": 64
+        },
+        "endpoint": {
+          "description": "Endpoint URL, up to 256 bytes (a subagent has none)",
+          "type": "string",
+          "maxLength": 256
+        },
+        "capabilities": {
+          "description": "Capability ids, up to 16 of 1 to 64 bytes, no duplicates",
+          "maxItems": 16,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          }
+        },
+        "keys": {
+          "description": "Listed keys (up to 8): the keys that act for the agent. Each new Ed25519 key signs the registration.",
+          "maxItems": 8,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "description": "Key type (default Ed25519)",
+                "type": "string",
+                "enum": [
+                  "Ed25519",
+                  "P256"
+                ]
+              },
+              "key": {
+                "description": "The public key: 64 hex characters for Ed25519, 66 for a compressed P-256 point",
+                "type": "string",
+                "pattern": "^[0-9a-fA-F]+$"
+              },
+              "purposes": {
+                "description": "What the key may do: authentication, assertion, transaction, delegation (a P-256 key: authentication and assertion only)",
+                "minItems": 1,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "authentication",
+                    "assertion",
+                    "transaction",
+                    "delegation"
+                  ]
+                }
+              },
+              "pop": {
+                "description": "P-256 only: the 64-byte ES256 signature by this key over \"did:vector:<id>#<key hash>\" (r || s, hex)",
+                "type": "string",
+                "pattern": "^[0-9a-fA-F]{128}$"
+              }
+            },
+            "required": [
+              "key",
+              "purposes"
+            ]
+          }
+        },
+        "parties": {
+          "description": "Parties (up to 8). A record needs at least one Accountable Party that covers the validity window (for example { role: \"Accountable\", signer: \"controller\" }).",
+          "minItems": 1,
+          "maxItems": 8,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "role": {
+                "description": "Accountable, Responsible, Provider, Distributor or Guardian",
+                "type": "string",
+                "enum": [
+                  "Accountable",
+                  "Responsible",
+                  "Provider",
+                  "Distributor",
+                  "Guardian"
+                ]
+              },
+              "signer": {
+                "description": "Who signs for the party: 'controller' (whoever is the record's controller), 'module1' (the approved dispute contract; Accountable or Responsible only), or a key hash (56 hex characters)",
+                "type": "string"
+              },
+              "organisation": {
+                "description": "The DID or domain of an organisation that the party acts for (never a person), 1 to 64 bytes",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "not_before": {
+                "description": "When the party starts to count; default the start of the validity window (POSIX milliseconds)",
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "not_after": {
+                "description": "When the party stops counting; default never (POSIX milliseconds)",
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "rights": {
+                "description": "The party's rights: suspend, revoke, recover. Default: the highest rights of the role (Accountable suspend+revoke, Responsible and Provider suspend, Distributor none, Guardian recover)",
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "suspend",
+                    "revoke",
+                    "recover"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "role",
+              "signer"
+            ]
+          }
+        },
+        "guardian_threshold": {
+          "description": "How many guardians must act together to replace a lost controller key (default 0: no recovery); at most the number of Guardian parties with the recover right",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "parent": {
+          "description": "The DID of the parent agent, to register a subagent: did:vector:<64 hex> (the bare 64-hex identifier also works)",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "deposit": {
+          "description": "Units that the record locks (default 10, the minimum); the controller can take it back after the record ends",
+          "type": "number",
+          "minimum": 10
+        },
+        "valid_minutes": {
+          "description": "Minutes from now until the transaction expires (default 30, at most 59): every key holder must sign and the transaction must be submitted before then",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 59
+        }
+      },
+      "required": [
+        "changeAddress",
+        "controller",
+        "name",
+        "parties"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "vector_build_identity_update": {
+      "type": "object",
+      "properties": {
+        "changeAddress": {
+          "description": "Your wallet address: it pays the fee and any deposit, gives the collateral, and receives the change. Get it from vector_signer_get_address.",
+          "type": "string"
+        },
+        "did": {
+          "description": "The DID of the agent to update: did:vector:<64 hex> (the bare 64-hex identifier also works)",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "name": {
+          "description": "New agent name, 1 to 64 bytes of UTF-8",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "description": {
+          "description": "New description, up to 256 bytes",
+          "type": "string",
+          "maxLength": 256
+        },
+        "framework": {
+          "description": "New framework, up to 64 bytes",
+          "type": "string",
+          "maxLength": 64
+        },
+        "endpoint": {
+          "description": "New endpoint URL, up to 256 bytes (a subagent has none)",
+          "type": "string",
+          "maxLength": 256
+        },
+        "capabilities": {
+          "description": "The new capability list (it replaces the old one): up to 16 ids of 1 to 64 bytes, no duplicates",
+          "maxItems": 16,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          }
+        },
+        "add_keys": {
+          "description": "Keys that join the record. Each new Ed25519 key signs; a P-256 key carries pop. A listed key cannot change: remove it in one update and add it again in a later one",
+          "maxItems": 8,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "description": "Key type (default Ed25519)",
+                "type": "string",
+                "enum": [
+                  "Ed25519",
+                  "P256"
+                ]
+              },
+              "key": {
+                "description": "The public key: 64 hex characters for Ed25519, 66 for a compressed P-256 point",
+                "type": "string",
+                "pattern": "^[0-9a-fA-F]+$"
+              },
+              "purposes": {
+                "description": "What the key may do: authentication, assertion, transaction, delegation (a P-256 key: authentication and assertion only)",
+                "minItems": 1,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "authentication",
+                    "assertion",
+                    "transaction",
+                    "delegation"
+                  ]
+                }
+              },
+              "pop": {
+                "description": "P-256 only: the 64-byte ES256 signature by this key over \"did:vector:<id>#<key hash>\" (r || s, hex)",
+                "type": "string",
+                "pattern": "^[0-9a-fA-F]{128}$"
+              }
+            },
+            "required": [
+              "key",
+              "purposes"
+            ]
+          }
+        },
+        "remove_keys": {
+          "description": "Keys that leave the record, each by its public key or its key hash",
+          "maxItems": 8,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^(?:[0-9a-fA-F]{56}|[0-9a-fA-F]{64}|[0-9a-fA-F]{66})$"
+          }
+        },
+        "add_parties": {
+          "description": "Parties that join (they come last in the list). Each signs: a key-hash party by its key, the controller party by the controller, Module-1 by its consent withdrawal",
+          "maxItems": 8,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "role": {
+                "description": "Accountable, Responsible, Provider, Distributor or Guardian",
+                "type": "string",
+                "enum": [
+                  "Accountable",
+                  "Responsible",
+                  "Provider",
+                  "Distributor",
+                  "Guardian"
+                ]
+              },
+              "signer": {
+                "description": "Who signs for the party: 'controller' (whoever is the record's controller), 'module1' (the approved dispute contract; Accountable or Responsible only), or a key hash (56 hex characters)",
+                "type": "string"
+              },
+              "organisation": {
+                "description": "The DID or domain of an organisation that the party acts for (never a person), 1 to 64 bytes",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "not_before": {
+                "description": "When the party starts to count; default the start of the validity window (POSIX milliseconds)",
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "not_after": {
+                "description": "When the party stops counting; default never (POSIX milliseconds)",
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "rights": {
+                "description": "The party's rights: suspend, revoke, recover. Default: the highest rights of the role (Accountable suspend+revoke, Responsible and Provider suspend, Distributor none, Guardian recover)",
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "suspend",
+                    "revoke",
+                    "recover"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "role",
+              "signer"
+            ]
+          }
+        },
+        "change_parties": {
+          "description": "Changes of existing parties, each named by its role and signer; fields that are not given stay. The party signs",
+          "maxItems": 8,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "role": {
+                "description": "Accountable, Responsible, Provider, Distributor or Guardian",
+                "type": "string",
+                "enum": [
+                  "Accountable",
+                  "Responsible",
+                  "Provider",
+                  "Distributor",
+                  "Guardian"
+                ]
+              },
+              "signer": {
+                "description": "Who signs for the party: 'controller' (whoever is the record's controller), 'module1' (the approved dispute contract; Accountable or Responsible only), or a key hash (56 hex characters)",
+                "type": "string"
+              },
+              "organisation": {
+                "description": "New organisation (1 to 64 bytes), or null to clear it",
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "not_before": {
+                "description": "New not_before (POSIX milliseconds)",
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "not_after": {
+                "anyOf": [
+                  {
+                    "description": "New not_after, or null for no end (POSIX milliseconds)",
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "rights": {
+                "description": "New rights: suspend, revoke, recover (within the highest rights of the role)",
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "suspend",
+                    "revoke",
+                    "recover"
+                  ]
+                }
+              },
+              "removal_after": {
+                "anyOf": [
+                  {
+                    "description": "New removal_after, or null to withdraw a removal notice (POSIX milliseconds)",
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "role",
+              "signer"
+            ]
+          }
+        },
+        "remove_parties": {
+          "description": "Parties that leave, each named by its role and signer. The party signs, unless its removal notice has ended",
+          "maxItems": 8,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "role": {
+                "description": "Accountable, Responsible, Provider, Distributor or Guardian",
+                "type": "string",
+                "enum": [
+                  "Accountable",
+                  "Responsible",
+                  "Provider",
+                  "Distributor",
+                  "Guardian"
+                ]
+              },
+              "signer": {
+                "description": "Who signs for the party: 'controller' (whoever is the record's controller), 'module1' (the approved dispute contract; Accountable or Responsible only), or a key hash (56 hex characters)",
+                "type": "string"
+              }
+            },
+            "required": [
+              "role",
+              "signer"
+            ]
+          }
+        },
+        "announce_party_removal": {
+          "description": "Removal notices for parties, each named by its role and signer. The party does not sign",
+          "maxItems": 8,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "role": {
+                "description": "Accountable, Responsible, Provider, Distributor or Guardian",
+                "type": "string",
+                "enum": [
+                  "Accountable",
+                  "Responsible",
+                  "Provider",
+                  "Distributor",
+                  "Guardian"
+                ]
+              },
+              "signer": {
+                "description": "Who signs for the party: 'controller' (whoever is the record's controller), 'module1' (the approved dispute contract; Accountable or Responsible only), or a key hash (56 hex characters)",
+                "type": "string"
+              },
+              "removal_after": {
+                "description": "When the controller may remove the party without its signature: at least 7 days after the end of the validity window (the default) (POSIX milliseconds)",
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": [
+              "role",
+              "signer"
+            ]
+          }
+        },
+        "guardian_threshold": {
+          "description": "New guardian threshold: at most the Guardian parties with the recover right whose period has not ended; 0 turns recovery off and cancels a pending recovery",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "deposit": {
+          "description": "The units that the record holds after the update (at least 10, or its ledger minimum when that is higher); default unchanged. The difference comes from or goes to the wallet",
+          "type": "number",
+          "minimum": 10
+        },
+        "valid_minutes": {
+          "description": "Minutes from now until the transaction expires (default 30, at most 59): every key holder must sign and the transaction must be submitted before then",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 59
+        }
+      },
+      "required": [
+        "changeAddress",
+        "did"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "vector_build_reputation_stake_open": {
+      "type": "object",
+      "properties": {
+        "changeAddress": {
+          "description": "Your wallet address: it pays the fee and any deposit, gives the collateral, and receives the change. Get it from vector_signer_get_address.",
+          "type": "string"
+        },
+        "did": {
+          "description": "The DID of the agent that stakes: its identity DID, did:vector:<64 hex>. A DID of the legacy registry is refused: did:vector:<64 hex> (the bare 64-hex identifier also works)",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "capabilities": {
+          "description": "Capabilities to stake on, as text: each must be one that the agent's identity record lists, byte for byte (vector_get_agent_profile shows them); for a supplier, the capability_id of its advert",
+          "minItems": 1,
+          "maxItems": 16,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          }
+        },
+        "owner_key_hash": {
+          "description": "The owner credential of the stake: a key that the agent's record declares (its controller key, or a listed key with the transaction purpose); it signs. Default your wallet key: a key hash, 56 hex characters",
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{56}$"
+        },
+        "amount": {
+          "description": "The stake that step 2 will lock; only used to check that the wallet can pay it (default the module minimum, 10 units), in units",
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "allow_second_opening": {
+          "description": "Build a new opening output although one that names the agent is already at the reputation address. Use it only when step 2 cannot use the one that exists; each opening output locks its units until a CreateStake spends it. Default false: the tool refuses and lists the opening outputs",
+          "type": "boolean"
+        },
+        "valid_minutes": {
+          "description": "Minutes from now until the transaction expires (default 30, at most 59): every key holder must sign and the transaction must be submitted before then",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 59
+        }
+      },
+      "required": [
+        "changeAddress",
+        "did",
+        "capabilities"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "vector_build_reputation_stake": {
+      "type": "object",
+      "properties": {
+        "changeAddress": {
+          "description": "Your wallet address: it pays the fee and any deposit, gives the collateral, and receives the change. Get it from vector_signer_get_address.",
+          "type": "string"
+        },
+        "did": {
+          "description": "The DID of the agent that stakes: its identity DID, did:vector:<64 hex>. A DID of the legacy registry is refused: did:vector:<64 hex> (the bare 64-hex identifier also works)",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "capabilities": {
+          "description": "Capabilities to stake on, as text: each must be one that the agent's identity record lists, byte for byte (vector_get_agent_profile shows them); for a supplier, the capability_id of its advert",
+          "minItems": 1,
+          "maxItems": 16,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          }
+        },
+        "opening_ref": {
+          "description": "The CONFIRMED opening output '<txid>#<index>' that vector_build_reputation_stake_open returned",
+          "type": "string"
+        },
+        "owner_key_hash": {
+          "description": "The owner of the stake: a key that the agent's record declares (its controller key, or a listed key with the transaction purpose); it signs. Default: the owner key that the opening output names, when the record declares that key now",
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{56}$"
+        },
+        "amount": {
+          "description": "The stake to lock: at least the module minimum, which is the default, in units",
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "valid_minutes": {
+          "description": "Minutes from now until the transaction expires (default 30, at most 59): every key holder must sign and the transaction must be submitted before then",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 59
+        }
+      },
+      "required": [
+        "changeAddress",
+        "did",
+        "capabilities",
+        "opening_ref"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "vector_get_reputation_stake": {
+      "type": "object",
+      "properties": {
+        "dids": {
+          "description": "The agents: 1 to 50 identity DIDs (did:vector:<64 hex>)",
+          "minItems": 1,
+          "maxItems": 50,
+          "type": "array",
+          "items": {
+            "description": "The DID of an agent whose stakes to read: did:vector:<64 hex> (the bare 64-hex identifier also works)",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        }
+      },
+      "required": [
+        "dids"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "vector_build_marketplace_advert_post": {
+      "type": "object",
+      "properties": {
+        "changeAddress": {
+          "description": "Your wallet address: it pays the fee and any deposit, gives the collateral, and receives the change. Get it from vector_signer_get_address.",
+          "type": "string"
+        },
+        "did": {
+          "description": "The DID of the agent the advert offers: did:vector:<64 hex> (the bare 64-hex identifier also works)",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "supplier_key_hash": {
+          "description": "The supplier key that claims and submits the jobs (default your wallet's key): a key hash, 56 hex characters",
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{56}$"
+        },
+        "capability_id": {
+          "description": "Capability id, at most 64 bytes, outside the fleet namespaces llm.text.generate.*, llm.chat.*, ocr.page.extract.* and audio.synthesize.* (for example research.summary.v1); the agent's record must list it",
+          "type": "string",
+          "minLength": 1
+        },
+        "model": {
+          "description": "Model or service version the supplier runs, at most 64 bytes",
+          "type": "string",
+          "minLength": 1
+        },
+        "max_output_tokens": {
+          "description": "Largest output the supplier commits to, in tokens (0 if not token-based)",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "max_processing_ms": {
+          "description": "Processing window in milliseconds, from 60001 to 86400000 (24 h): how long the supplier has to submit a job. A vector-agent-template supplier needs at least its SERVICE_TIMEOUT_MS + 60000 (180000 with the default)",
+          "type": "integer",
+          "minimum": 60001,
+          "maximum": 86400000
+        },
+        "price_lovelace": {
+          "description": "Price per job in lovelace (1 unit = 1000000); price + both bonds is at most 10,000 units",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "detail_hash": {
+          "description": "sha256 (64 hex) of the exact bytes detail_uri serves; required with a detail_uri (this server does not fetch it). Without a detail_uri, omit it (or pass \"\"): the sha256 of no bytes is used",
+          "type": "string",
+          "pattern": "^(?:[0-9a-fA-F]{64})?$"
+        },
+        "endpoint_url": {
+          "description": "https URL of your supplier runtime, at most 256 bytes, without whitespace, query or fragment (vector_marketplace_send_job posts jobs to <endpoint_url>/v1/job)",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "supplier_bond_lovelace": {
+          "description": "Supplier bond in lovelace: a buyer locks price + both bonds per job, and on Accept the supplier receives price + supplier bond",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "buyer_bond_lovelace": {
+          "description": "Buyer bond in lovelace; it returns to the buyer on Accept",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "detail_uri": {
+          "description": "Optional https URL of your manifest (agent.json), at most 256 bytes (default none); requires detail_hash",
+          "type": "string",
+          "maxLength": 256
+        },
+        "deposit_lovelace": {
+          "description": "The units the advert locks, in lovelace (default 2 units, raised to the ledger minimum); it returns on retirement",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "valid_minutes": {
+          "description": "Minutes from now until the transaction expires (default 30, at most 59): every key holder must sign and the transaction must be submitted before then",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 59
+        }
+      },
+      "required": [
+        "changeAddress",
+        "did",
+        "capability_id",
+        "model",
+        "max_output_tokens",
+        "max_processing_ms",
+        "price_lovelace",
+        "endpoint_url",
+        "supplier_bond_lovelace",
+        "buyer_bond_lovelace"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "vector_build_marketplace_advert_retire": {
+      "type": "object",
+      "properties": {
+        "changeAddress": {
+          "description": "Your wallet address: it pays the fee and any deposit, gives the collateral, and receives the change. Get it from vector_signer_get_address.",
+          "type": "string"
+        },
+        "advert_ref": {
+          "description": "The advert '<txid>#<index>'",
+          "type": "string"
+        },
+        "valid_minutes": {
+          "description": "Identity layout only: minutes from now until the transaction expires (default 30, at most 59). A legacy-layout Retire is valid for 5 minutes",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 59
+        }
+      },
+      "required": [
+        "changeAddress",
+        "advert_ref"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "vector_build_identity_suspend": {
+      "type": "object",
+      "properties": {
+        "changeAddress": {
+          "description": "Your wallet address: it pays the fee and any deposit, gives the collateral, and receives the change. Get it from vector_signer_get_address.",
+          "type": "string"
+        },
+        "did": {
+          "description": "The DID of the agent to suspend: did:vector:<64 hex> (the bare 64-hex identifier also works)",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "actor": {
+          "description": "Who acts: 'controller' (the default), or a party of the record that has the right, covers the validity window and signs, named as { party_index } or { role, signer }. Module-1 acts only through its dispute verdicts, which anybody applies with the verdict token (Part 2 Section 3.8); no tool acts in its name.",
+          "anyOf": [
+            {
+              "type": "string",
+              "const": "controller"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "party_index": {
+                  "description": "The party's position in the record's party list, from 0",
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 7
+                },
+                "role": {
+                  "description": "Accountable, Responsible, Provider, Distributor or Guardian",
+                  "type": "string",
+                  "enum": [
+                    "Accountable",
+                    "Responsible",
+                    "Provider",
+                    "Distributor",
+                    "Guardian"
+                  ]
+                },
+                "signer": {
+                  "description": "Who signs for the party: 'controller' (whoever is the record's controller), 'module1' (the approved dispute contract; Accountable or Responsible only), or a key hash (56 hex characters)",
+                  "type": "string"
+                }
+              }
+            }
+          ]
+        },
+        "reason": {
+          "description": "Why the agent is held (default 6, hold). A reason code or its name (Part 2 Appendix A): unspecified (0), hold (6), privilegeWithdrawn (9), legalOrder (65), providerWithdrawn (67), securityInvestigation (68). Code 64 (disputeVerdict) belongs to Module-1",
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 40
+            }
+          ]
+        },
+        "days": {
+          "description": "How long the hold lasts, in days from the start of the validity window (default 30). Do not combine with until",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 30
+        },
+        "until": {
+          "description": "When the hold ends: after the end of the validity window, at most 30 days after its start (POSIX milliseconds)",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "valid_minutes": {
+          "description": "Minutes from now until the transaction expires (default 30, at most 59): every key holder must sign and the transaction must be submitted before then",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 59
+        }
+      },
+      "required": [
+        "changeAddress",
+        "did"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "vector_build_identity_unsuspend": {
+      "type": "object",
+      "properties": {
+        "changeAddress": {
+          "description": "Your wallet address: it pays the fee and any deposit, gives the collateral, and receives the change. Get it from vector_signer_get_address.",
+          "type": "string"
+        },
+        "did": {
+          "description": "The DID of the agent whose hold ends: did:vector:<64 hex> (the bare 64-hex identifier also works)",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "author": {
+          "description": "The author whose hold ends: 'controller' (the default) or the key hash of the party that set it",
+          "type": "string"
+        },
+        "valid_minutes": {
+          "description": "Minutes from now until the transaction expires (default 30, at most 59): every key holder must sign and the transaction must be submitted before then",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 59
+        }
+      },
+      "required": [
+        "changeAddress",
+        "did"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "vector_resolve_did": {
+      "type": "object",
+      "properties": {
+        "did": {
+          "description": "The DID to resolve: did:vector:<64 hex> (canonical) or did:vector:agent:<policyId>:<nftAssetName> (legacy)",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "versionId": {
+          "description": "Resolve this version: '0', or a decimal number without leading zeros. Do not combine with versionTime.",
+          "type": "string",
+          "maxLength": 32
+        },
+        "versionTime": {
+          "description": "Resolve the DID as it was at this time: YYYY-MM-DDThh:mm:ssZ (UTC, whole seconds). Do not combine with versionId.",
+          "type": "string",
+          "maxLength": 32
+        }
+      },
+      "required": [
+        "did"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "vector_marketplace_list_suppliers": {
+      "type": "object",
+      "properties": {
+        "capability_id": {
+          "description": "Filter by capability id, e.g. 'identity.history.report.v1'",
+          "type": "string"
+        },
+        "only_free": {
+          "description": "Only suppliers currently reporting status 'free' (default true)",
+          "default": true,
+          "type": "boolean"
+        },
+        "limit": {
+          "description": "Maximum rows (default 20, max 50)",
+          "default": 20,
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "vector_get_attestation": {
+      "type": "object",
+      "properties": {
+        "attestation": {
+          "description": "The attestation: its identifier (the token name, 64 hex) that the attest build returned",
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{64}$"
+        }
+      },
+      "required": [
+        "attestation"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "vector_check_attestation": {
+      "type": "object",
+      "properties": {
+        "attestation": {
+          "description": "The attestation: its identifier (the token name, 64 hex) that the attest build returned",
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{64}$"
+        },
+        "time": {
+          "description": "The time to check at (default now) (POSIX milliseconds)",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "expected_type": {
+          "description": "The type that the attestation must have: identity (0), provenance (1), software (2), environment (3), principal_binding (4), approval (5) or other (15)",
+          "type": "string",
+          "enum": [
+            "identity",
+            "provenance",
+            "software",
+            "environment",
+            "principal_binding",
+            "approval",
+            "other"
+          ]
+        },
+        "expected_subject": {
+          "description": "The DID of the agent that the attestation must be about: did:vector:<64 hex> (the bare 64-hex identifier also works)",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "expected_issuer": {
+          "description": "The issuer that the attestation must name: a DID (compared with issuer_id), a key hash (56 hex) or an Ed25519 public key (64 hex) compared with the issuer key by its key hash, or 64 hex that can be an issuer identifier or a public key (they match by either reading)",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "expected_digest": {
+          "description": "The SHA-256 digest that the attestation must carry (64 hex)",
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{64}$"
+        }
+      },
+      "required": [
+        "attestation"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "vector_get_delegation": {
+      "type": "object",
+      "properties": {
+        "delegation": {
+          "description": "The delegation: its identifier (the token name, 64 hex) that the delegate build returned",
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{64}$"
+        }
+      },
+      "required": [
+        "delegation"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "vector_get_vault": {
+      "type": "object",
+      "properties": {
+        "vault_ref": {
+          "description": "One vault output: '<txid>#<index>'",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "owner_key_hash": {
+          "description": "The principal key that owns the vault outputs: a key hash, 56 hex characters",
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{56}$"
+        },
+        "delegation": {
+          "description": "The delegation: its identifier (the token name, 64 hex) that the delegate build returned",
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{64}$"
+        },
+        "limit": {
+          "description": "Rows in one answer (default 20, at most 50)",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50
+        },
+        "offset": {
+          "description": "Rows to skip (default 0): the next_offset of the previous answer",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "vector_get_jury_cases": {
+      "type": "object",
+      "properties": {
+        "jury": {
+          "description": "One jury deployment (script hash or address). Default: every deployment that this server follows",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "claim": {
+          "description": "The token name of a Module-1 claim (64 hex): the dispute, to show only its cases",
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{64}$"
+        },
+        "challenge": {
+          "description": "The token name of a Module-1 challenge (64 hex), to show only its cases",
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{64}$"
+        },
+        "agent": {
+          "description": "The DID of an agent, to show only the cases where it is the claimer, the auditor or a juror: did:vector:<64 hex> (the bare 64-hex identifier also works)",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    }
+  }
+}
