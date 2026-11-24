@@ -555,7 +555,7 @@ describe('the evidence and its limits', () => {
       ['r2-a-release', 'failure', 'Escrow: release', 'counterparty'],
       ['r2-a-hold', 'failure', 'Module-1 verdict and hold', 'relay'],
       ['r2-b', 'failure', 'Attestation: revoke and reply', 'operator'],
-      ['r2-c', 'failure', 'Hold removes the agent from the listing', 'agent'],
+      ['r2-c', 'failure', 'Proposal during a verified hold', 'agent'],
       ['r2-d', 'failure', 'Refusal by a system with no approval', 'agent'],
       ['r2-e', 'failure', 'Revoke of a record by a party', 'operator'],
       ['l1-01', 'lifecycle', 'Change of the controller', 'operator'],
