@@ -1,6 +1,6 @@
 // packages/usecase-kit/test/dispute/statement.test.ts: the statement of a claim that a kind of evidence is about. Each kind is about one statement, and the evidence document and the choice of the target both
-// use that statement. The question of these tests: can a challenge name a statement other than the one that its evidence is about? The old kinds stay on S1, and their documents keep their bytes (the golden
-// files are checked in documents.test.ts). Each refusal has an accepted twin.
+// use that statement. The question of these tests: can a challenge name a statement other than the one that its evidence is about? The three old kinds stay on S1, and their documents keep their bytes (the
+// golden files are checked in documents.test.ts). The intake record is about S2 (its own documents and challenges are in evidence-intake.test.ts). Each refusal has an accepted twin.
 import { describe, expect, it } from 'vitest';
 import { documentHash } from '@vsa/buyer-core';
 import { NO_OPEN_CLAIM } from '@vsa/usecase-kit/protocol';
@@ -96,6 +96,14 @@ describe('the statement of a kind of evidence', () => {
       const rows = documentOf(kind).text.split('\n');
       expect(rows[0], kind).toBe('Evidence about statement S1 of a claim on the Vector marketplace.');
       expect(rows[1], kind).toBe('Statement S1 of the claim reads: "A confirmation that this agent signs names the SKU, the lot and the quantity of the purchase order that it answers."');
+    }
+  });
+
+  it.each(KINDS)('refuses a member statement_id in the facts of the kind %s, so that the facts cannot name a statement either', (kind) => {
+    for (const id of ['S1', 'S2', 'S3']) {
+      const refused = evidenceDocument({ ...INPUTS[kind], statement_id: id } as unknown as EvidenceDocumentInput);
+      expect(refused, `${kind} with ${id}`).toMatchObject({ ok: false, code: 'bad_shape' });
+      expect(refused.ok ? '' : refused.detail).toContain('statement_id');
     }
   });
 });
