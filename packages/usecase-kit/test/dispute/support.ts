@@ -388,3 +388,62 @@ export function challengeView(overrides: Partial<ChallengeView> = {}): Challenge
     evidence_uri: documentUri(EVIDENCE_TX), challenged_at: NOW - 10 * 60_000, resolution_deadline_ms: 72 * HOUR, state: 'PendingOracle', ...overrides,
   };
 }
+
+// --- The intake record: the evidence of use case 2 about the statement S2 -------------------------------------------------------------------------------------------------
+
+/** The insurer intake agent that the agent of the samples hired, and the capability of its advert. The capability is `PRIORAUTH_CAPABILITIES.intake` of the priorauth folder: a test keeps the two equal. */
+export const INSURER_ID = 'e8'.repeat(32);
+export const INSURER = `did:vector:${INSURER_ID}`;
+export const INTAKE_CAPABILITY = 'health.priorauth.intake.v1';
+
+/** The three statements of an insurer intake agent (use case 2). An intake record is evidence about the second one. They are the texts of `INTAKE_CLAIM` of the priorauth folder: a test keeps the two equal. */
+export const INSURER_CLAIM = statements(
+  'This agent issues an intake record only for a request with a valid sign-off by the party whose delegation paid for it.',
+  'An intake record names the hash of the request this agent received.',
+  'This agent files one entry per request number.',
+);
+
+/** The text of the statement S2 of the claim of the insurer intake agent: the statement that an intake record with another hash contradicts. */
+export const INSURER_S2 = INSURER_CLAIM.statements[1].text;
+
+/** The claim document that this kit writes for `claimer` as an insurer intake agent: it is for `INTAKE_CAPABILITY`, and it states the claim of that agent. */
+export function insurerClaimDocument(claimer: string) {
+  const document = claimDocument({ agent_did: claimer, capability_id: INTAKE_CAPABILITY, manifest_sha256: MANIFEST_SHA, claim: INSURER_CLAIM });
+  if (!document.ok) throw new Error(document.detail);
+  return document.value;
+}
+
+/** A claim as `claimView` makes it, for the insurer intake agent `INSURER`: its document is `insurerClaimDocument`, and `port` gives that document at the URI of the claim. `overrides` change members. */
+export function insurerClaimView(port: ScriptedPort, overrides: Partial<ClaimView> = {}): ClaimView {
+  const claim = claimView({ claimer: INSURER, ...overrides });
+  const document = insurerClaimDocument(claim.claimer);
+  port.documents.set(claim.claim_uri, { bytes: document.bytes, type: 'claim', media_type: 'text/plain' });
+  return { ...claim, claim_hash: document.hash };
+}
+
+/** What a read of the escrow answers for a job that hired the insurer intake agent: its capability, its agent id and the buyer of the samples. `overrides` change members. */
+export const insurerEscrowJob = (overrides: Partial<EscrowJob> = {}): Extract<EscrowJobResult, { ok: true }> => escrowJob({ capability_id: INTAKE_CAPABILITY, agent_id: INSURER_ID, ...overrides });
+
+/** The job of a delivery from the insurer intake agent: its capability, the statement S2 of its claim, and the keys of the buyer. A challenge adds the escrow and the counterparty. */
+export const INTAKE_JOB = { capability_id: INTAKE_CAPABILITY, statement_text: INSURER_S2, buyer_pkhs: [BUYER_PKH] } as const;
+
+/** The parties of the evidence about an intake record: the samples, with the insurer intake agent as the claimer and the statement S2 as the statement text. */
+export const INTAKE_PARTIES = { ...PARTIES, against_did: INSURER, statement_text: INSURER_S2 } as const;
+
+/** A request of use case 2 as the Prior Authorization Agent sends it. Every value is synthetic. */
+export const PRIOR_REQUEST = {
+  schema: 'vector.usecase.priorauth-request.v1', request_number: 'run1-0001', tenant: 'run1', order_id: 'ORD-1001', patient_ref: 'PAT-0001', ordering_clinician_ref: 'CLIN-0001', service_code: 'MRI-LUMBAR',
+  diagnosis_codes: ['M54.5'], justification: 'Synthetic justification for the tests.', guideline_refs: ['GL-1'], record_refs: ['REC-1', 'REC-2'], record_set_sha256: 'ab'.repeat(32), insurer_did: INSURER,
+  advert_ref: REF_B,
+} as const;
+
+/** The canonical SHA-256 of `PRIOR_REQUEST`. A test pins it against `canonicalSha256`. */
+export const PRIOR_REQUEST_SHA = '939daf0ab21ca3cc1477ba4a7165dcdb6bbf5f328f5037741bb567dec8c067f8';
+
+/** An intake record that names another hash than the hash of `PRIOR_REQUEST`. A real record has more members: the evidence reads `request_number` and `request_sha256` only. */
+export const INTAKE_RECORD = {
+  schema: 'vector.usecase.intake-record.v1', outcome: 'done', request_number: 'run1-0001', request_sha256: 'cd'.repeat(32), status: 'complete', missing: [], intake_id: 'INT-0001',
+} as const;
+
+/** The facts of the evidence about an intake record: the request that was sent, the record that came back, and the hash that the receipt commits to for the record. */
+export const INTAKE_FACTS = { kind: 'intake_record', request: PRIOR_REQUEST, intake_record: INTAKE_RECORD, intake_record_sha256: '44'.repeat(32) } as const;

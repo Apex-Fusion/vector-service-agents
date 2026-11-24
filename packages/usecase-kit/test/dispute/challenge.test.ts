@@ -942,7 +942,7 @@ describe('the members of a disputed result', () => {
     const codes = [
       'bad_shape', 'no_open_claim', 'chain_unavailable', 'same_agent', 'job_already_disputed', 'journal_unavailable', 'claim_window_closing',
       'evidence_not_built', 'evidence_not_confirmed', 'claim_changed', 'challenge_not_built', 'challenge_not_confirmed', 'challenge_wrong_claim', 'port_error', 'document_too_large',
-      'no_contradiction', 'confirmation_not_for_order',
+      'no_contradiction', 'confirmation_not_for_order', 'record_not_for_request',
     ] as const;
     for (const code of codes) {
       const fields = disputedFields({ ok: false, code, detail: 'x', evidence: null, sent: null, challenge: null, wrong_document: null });

@@ -1,10 +1,11 @@
 // packages/usecase-kit/src/dispute/index.ts
 // The Module-1 path of an agent: the documents for a juror, the claim of a run, the challenge of a buyer-side agent and of a counterparty, and the withdrawal. Import it as `@vsa/usecase-kit/dispute`.
 export {
-  EVIDENCE_STATEMENT, JUROR_MEDIA_TYPE, JUROR_RECORD_LIMIT_BYTES, MAX_JUROR_DOCUMENT_BYTES, claimDocument, evidenceDocument, evidenceReferences, jurorRecordSize, parseClaimToken, readClaimDocument,
+  EVIDENCE_STATEMENTS, JUROR_MEDIA_TYPE, JUROR_RECORD_LIMIT_BYTES, MAX_JUROR_DOCUMENT_BYTES, claimDocument, evidenceDocument, evidenceReferences, jurorRecordSize, parseClaimToken, readClaimDocument,
 } from './documents.ts';
 export type {
-  ApprovalDigestFacts, ClaimDocumentInput, DocumentCode, EvidenceDocumentInput, EvidenceFacts, EvidenceParties, EvidenceReferences, JurorDocument, OrderConfirmationFacts, QuotePriceFacts,
+  ApprovalDigestFacts, ClaimDocumentInput, DocumentCode, EvidenceDocumentInput, EvidenceFacts, EvidenceKind, EvidenceParties, EvidenceReferences, IntakeRecordFacts, JurorDocument, OrderConfirmationFacts,
+  QuotePriceFacts, StatementId,
 } from './documents.ts';
 export { MAX_CLAIM_TYPE_BYTES, challengeDeadlineOf, withdrawableFrom } from './ports.ts';
 export type {

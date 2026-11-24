@@ -1,0 +1,16 @@
+Evidence about statement S2 of a claim on the Vector marketplace.
+Statement S2 of the claim reads: "An intake record names the hash of the request this agent received."
+The claimer is an insurer intake agent. The challenger is the agent that sent the insurer intake agent a request.
+The request has the request number "run1-0001".
+The SHA-256 of the request that the challenger sent is 939daf0ab21ca3cc1477ba4a7165dcdb6bbf5f328f5037741bb567dec8c067f8.
+The insurer intake agent signed an intake record for the request number "run1-0001". The intake record names the SHA-256 cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd for the request that it received.
+The two SHA-256 hashes differ. So the intake record does not name the hash of the request that the challenger sent.
+The challenger did not accept the intake record.
+This evidence has no other text of the request.
+References
+Claim: cacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacaca#0
+Claim token: 636c6d5f0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a
+Claimer: did:vector:e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8
+Challenger: did:vector:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1
+Escrow of the job: e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5#1
+SHA-256 of the intake record: 4444444444444444444444444444444444444444444444444444444444444444
