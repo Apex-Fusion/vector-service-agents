@@ -23,7 +23,7 @@ import type { RunKind, ScriptTxInfo, TxInfo } from '../run-record.ts';
 import data from '../../usecases/bid-evaluation.ts';
 import { isObject, lastHire, ref, txOf } from './types.ts';
 import type {
-  ApprovalRead, Assembly, Challenge, EvidenceModule, EvidenceReadSession, HistoricalHoldCandidate, Obj, Ref, ReportedHire, Shown, TerminalSpend,
+  ApprovalRead, Assembly, Challenge, EvidenceModule, EvidenceReadSession, HistoricalHoldCandidate, Obj, PublicResultProjection, PublicRouteEvidence, Ref, ReportedHire, Shown, TerminalSpend,
 } from './types.ts';
 
 export const BID_REPORT_SCHEMAS = { propose: PROPOSAL_SCHEMA, execute: RESULT_SCHEMA, quote: QUOTE_SCHEMA } as const;
@@ -847,11 +847,11 @@ function moduleDocument(a: Assembly): Readonly<Obj> & { readonly run: string } {
   const claims = a.facts.claims[a.loaded.record.label] ?? {};
   const fault = proposals.find(({ hire }) => hire.entry.step === 'propose-d')?.hire.result.fault_mode;
   const issuer = a.committedExecutes.get('execute')?.approval?.issuer_did;
-  const routeEvidence = [
+  const routeEvidence: readonly PublicRouteEvidence[] = [
     { step: 'r1-05', route: READ_VENDORS, credential: 'token', decision: 'allowed', act_links: 2, count: a.use.subagents.filter(({ parent }) => parent === sourcing(a.use)?.id).length },
     { step: 'r1-07', route: WRITE_RANKING, credential: 'token', decision: 'allowed', act_links: 1, count: 1 },
     { step: 'r2-d', route: WRITE_RANKING, credential: 'token', decision: 'refused', act_links: 1, count: 1 },
-  ].filter(({ step }) => (a.loaded.record.kind === 'clean' ? step.startsWith('r1-') : step.startsWith('r2-')) && Array.isArray(RULES[step]!(a)));
+  ];
   return {
     run: `use-case-3-${a.loaded.record.kind}`,
     claims: Object.fromEntries(a.use.agents.flatMap(({ id }) => {
@@ -883,12 +883,12 @@ function moduleDocument(a: Assembly): Readonly<Obj> & { readonly run: string } {
     resolutions: read.revocation.ok && challenged !== null ? [{ did: didOf(a, challenged), status: 'revoked', deactivated: true }] : [],
     release: read.release.ok && read.challenge.ok ? { action: 'Release', escrow_ref: read.challenge.value.hire.entry.escrow_ref,
       tx: read.release.value.tx, spent_output: read.release.value.spent_output, at: read.release.value.at } : null,
-    route_evidence: routeEvidence,
+    route_evidence: routeEvidence.filter(({ step }) => (a.loaded.record.kind === 'clean' ? step.startsWith('r1-') : step.startsWith('r2-')) && Array.isArray(RULES[step]!(a))),
   };
 }
 
-function projectPublicResult(h: ReportedHire) {
-  const fields: Record<string, string | number | boolean | null> = {};
+function projectPublicResult(h: ReportedHire): PublicResultProjection {
+  const fields: Record<string, PublicResultProjection['fields'][string]> = {};
   if (h.role === 'execute') {
     if (h.result.outcome === 'completed' || h.result.outcome === 'refused_by_system' || h.result.outcome === 'failed') fields.outcome = h.result.outcome;
     if (h.result.reason === 'approval_not_found' || h.result.reason === null) fields.reason = h.result.reason;
