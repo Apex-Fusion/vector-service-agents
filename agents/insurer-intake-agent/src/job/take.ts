@@ -8,8 +8,9 @@
 //      cannot be read, is `precheck_missing` too. A document that is no authorization request is a fault of the service (`internal`): the service parsed it before the hook.
 //
 // A failure throws an `IntakeRefusal`, and nothing is written after it. This step calls no port but `takeChecks`, so no call to the gateway, the insurer portal, the model or the intake book comes before the
-// record is taken and compared. The record is taken one time: the store removes it, and a second job for the same escrow finds none. Every reason goes to the log as a code, a reference or the name of a
-// member, and no value of the record or of the request goes to the log or to a text.
+// record is taken and compared. The record is taken one time: the store removes it, and a second job for the same escrow finds none. Every reason goes to the log as a code, or as the name of a check or a fact
+// of the record, and that name is written in this file. The log never holds the detail of a parser, because that detail can name a member of the request, and no value of the record or of the request goes to
+// the log or to a text.
 import type { JobContext } from '@vsa/service-kit';
 import type { ChecksRecord } from '@vsa/usecase-kit/checks';
 import { INTAKE_CHECKS, parsePriorAuthRequest } from '@vsa/usecase-kit/priorauth';
@@ -101,7 +102,7 @@ export function takeJob(deps: Pick<IntakeDeps, 'takeChecks' | 'log'>, request: H
 
   // 2. The authorization request, and the parts of the intake record that come from the record.
   const parsed = parsePriorAuthRequest(request.document, 'handoff.document');
-  if (!parsed.ok) throw refuse(deps.log, 'internal', INTAKE_REFUSAL_TEXT.internal, `the document of the handoff is not an authorization request: ${parsed.detail}`);
+  if (!parsed.ok) throw refuse(deps.log, 'internal', INTAKE_REFUSAL_TEXT.internal, 'the document of the handoff is not an authorization request');
   const fromRecord = readRecord(taken.record, request.sender_did);
   if (!fromRecord.ok) throw refuse(deps.log, 'precheck_missing', INTAKE_REFUSAL_TEXT.precheck_missing, `the record of passed checks cannot be used: ${fromRecord.detail}`);
   return {

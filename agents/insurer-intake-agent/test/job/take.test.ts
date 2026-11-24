@@ -20,6 +20,9 @@ import {
   recordFor,
 } from './samples.ts';
 
+/** A text of a document that no line of the log may repeat, in a member name or in a value. */
+const MARKER = 'MARKER-OF-THE-DOCUMENT-TEXT';
+
 /** The step as the job calls it: the ports of the rig, the handoff and the context. */
 const take = (rig: Rig, over: { readonly request?: Handoff; readonly escrowRef?: string } = {}): TakenJob =>
   takeJob(rig.deps, over.request ?? rig.request, over.escrowRef === undefined ? rig.context : { ...rig.context, escrowRef: over.escrowRef });
@@ -276,14 +279,21 @@ describe('the facts of the record', () => {
 });
 
 describe('the request of the handoff', () => {
-  it('must be an authorization request: a document that is not one is a fault of the service, internal (status 500), and nothing is called', async () => {
+  it.each([
+    ['a request with no diagnosis code', priorRequest({ diagnosis_codes: [] })],
+    ['a request with a member that is not listed, and the name of the member is a text of the document', priorRequest({ [MARKER]: 1 })],
+    ['a request with a member that is not listed, and the name of the member looks like a token', priorRequest({ 'Bearer eyJhbGciOiJFUzI1NiIsImtpZCI6ImRpZ': 1 })],
+    ['a request with a schema of another document', priorRequest({ schema: MARKER })],
+    ['a document with no members', {}],
+  ])('must be an authorization request: %s is a fault of the service, internal (status 500), with one fixed line in the log, and nothing is called', async (_what, document) => {
     const rig = makeRig();
-    const bad = handoffOf(priorRequest({ diagnosis_codes: [] }));
+    const bad = handoffOf(document);
     rig.kept.set(ESCROW_REF, recordFor(bad));
     const refusal = await refusalOf(() => take(rig, { request: bad }));
     expect(refusal).toMatchObject({ code: 'internal', status: 500, kind: 'job', message: 'The job stopped on a fault of the service.' });
-    expect(rig.logs[0]).toContain('authorization request');
-    expect(rig.logs[0]).toContain('diagnosis_codes');
+    expect(rig.logs).toStrictEqual(['insurer intake: internal: the document of the handoff is not an authorization request']);
+    expect(rig.logs[0]).not.toContain(MARKER);
+    expect(rig.logs[0]).not.toContain('Bearer');
     expectNothingDone(rig);
   });
 
@@ -325,7 +335,7 @@ describe('the log of a refusal', () => {
   /** The values of the request and of the record that no line of the log and no text of a refusal may hold. */
   const values = [
     String(PRIOR_REQUEST.patient_ref), String(PRIOR_REQUEST.ordering_clinician_ref), String(PRIOR_REQUEST.justification), String(PRIOR_REQUEST.record_set_sha256), SENDER_DID, ISSUER_DID, INSURER_DID,
-    ATTESTATION_ID, DELEGATION_ID, SALT, ADVERT_REF, PRIOR_REQUEST_SHA256, 'buyer.example',
+    ATTESTATION_ID, DELEGATION_ID, SALT, ADVERT_REF, PRIOR_REQUEST_SHA256, 'buyer.example', MARKER,
   ];
   /** Each breaker spoils the rig for one refusal. It gives the request of the job when that is not the request of the rig. */
   const breakers: ReadonlyArray<readonly [string, (rig: Rig) => Handoff | undefined]> = [
@@ -338,6 +348,14 @@ describe('the log of a refusal', () => {
       'a document that is no authorization request',
       (rig) => {
         const bad = handoffOf(priorRequest({ diagnosis_codes: [] }));
+        rig.kept.set(ESCROW_REF, recordFor(bad));
+        return bad;
+      },
+    ],
+    [
+      'a document with a member that is not listed, and the name of the member is a text of the document',
+      (rig) => {
+        const bad = handoffOf(priorRequest({ [MARKER]: 1 }));
         rig.kept.set(ESCROW_REF, recordFor(bad));
         return bad;
       },
