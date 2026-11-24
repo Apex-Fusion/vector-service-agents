@@ -9,14 +9,16 @@ import { testKey } from '../../../packages/buyer-core/test/fixtures/identity-wor
 import { AUDITOR_ID, CLAIMER_ID, MODULE1, MODULE1_MANIFEST, agentRecord, claimUtxo, recordUtxo } from '../../../packages/buyer-core/test/fixtures/jury-world.ts';
 import { MAINNET, attestation, attestationUtxo, delegation, delegationUtxo, recordUtxo as registryUtxo } from '../../../packages/buyer-core/test/fixtures/ledger-read-world.ts';
 import { LedgerProvider, koiosOf, ledgerWorld } from '../../../packages/usecase-kit/test/dispute/ledger.ts';
-import { decodeIdentityAdvertDatum, encodeIdentityAdvertDatum } from '../../../packages/vector-read/src/index.ts';
-import { decodeIdentityDatum, encodeIdentityDatum } from '../../../packages/vector-read/src/identity-codec.ts';
+import { decodeIdentityAdvertDatum, decodePlutusDataHex, encodeIdentityAdvertDatum } from '../../../packages/vector-read/src/index.ts';
+import type { PlutusData } from '../../../packages/vector-read/src/index.ts';
+import { decodeIdentityDatum, encodeAttestationSpend, encodeIdentityDatum, encodeIdentitySpend } from '../../../packages/vector-read/src/identity-codec.ts';
 import { HostedError } from '../../checks/lib/hosted.ts';
 import { iso } from '../../checks/lib/format.ts';
 import type { ChainAccess } from '../../checks/lib/session.ts';
+import { StateFile } from '../../checks/lib/state.ts';
 import type { UseCase } from '../lib/contract.ts';
 import { FactsFile } from '../lib/facts.ts';
-import { ATT_TYPES, PURPOSE, calculateMinLovelaceFromUTxO } from '../lib/platform.ts';
+import { ATT_TYPES, PURPOSE, blake2b256Hex, calculateMinLovelaceFromUTxO } from '../lib/platform.ts';
 import { LEGACY_PUBLIC_MANIFEST, publicManifestFile, writePublicManifest } from '../lib/registry.ts';
 import { runTask } from '../lib/runner.ts';
 import endState from '../tasks/end-state.ts';
@@ -81,17 +83,43 @@ interface Row { advert_ref: string; capability_id: string; model: string; agent_
 interface Gateway {
   verified: boolean; listed: string[]; parties: boolean; domain?: string; effective?: 'active' | 'revoked' | 'suspended';
   parent?: { parent: string; parentEpoch: number; depth: number };
+  ownHolds?: { until: string }[];
 }
 
 interface HistoryOutput {
   tx_hash: string; tx_index: number; payment_addr: { bech32: string }; value: string;
-  inline_datum: { bytes: string } | null; asset_list: { policy_id: string; asset_name: string; quantity: string }[];
+  inline_datum: { bytes: string | null; value?: unknown } | null; datum_hash: string | null;
+  asset_list: { policy_id: string; asset_name: string; quantity: string }[];
+}
+interface HistoryContract {
+  valid_contract: boolean;
+  script_hash: string;
+  spends_input: { tx_hash: string; tx_index: number };
+  input: { redeemer: { purpose: 'spend'; datum: { bytes: null; value: unknown; hash: string } } };
 }
 interface HistoryTx {
-  tx_hash: string; fee: string; valid_contract?: boolean; plutus_contracts: { valid_contract: boolean }[]; inputs: HistoryOutput[]; outputs: HistoryOutput[];
+  tx_hash: string; fee: string; valid_contract?: boolean; plutus_contracts: HistoryContract[]; inputs: HistoryOutput[]; outputs: HistoryOutput[];
 }
-interface CapturedHistory { payment: { tx: Pick<HistoryTx, 'plutus_contracts'> } }
+interface CapturedHistory { payment: { tx: Pick<HistoryTx, 'inputs' | 'plutus_contracts'> } }
 const capturedHistory: CapturedHistory = JSON.parse(readFileSync(new URL('../../../packages/buyer-core/test/fixtures/ledger-read-mainnet.json', import.meta.url), 'utf8'));
+const capturedInline = capturedHistory.payment.tx.inputs.find(({ inline_datum }) => inline_datum?.bytes === null)!.inline_datum!;
+
+function koiosValue(data: PlutusData): unknown {
+  switch (data.kind) {
+    case 'constr': return { constructor: Number(data.index), fields: data.fields.map(koiosValue) };
+    case 'int': return { int: Number.isSafeInteger(Number(data.value)) ? Number(data.value) : String(data.value) };
+    case 'bytes': return { bytes: data.hex };
+    case 'list': return { list: data.items.map(koiosValue) };
+    case 'map': return { map: data.entries.map(([k, v]) => ({ k: koiosValue(k), v: koiosValue(v) })) };
+  }
+}
+
+function datumOf(bytes: string): { bytes: null; value: unknown; hash: string } {
+  return { bytes: null, value: koiosValue(decodePlutusDataHex(bytes)), hash: blake2b256Hex(Buffer.from(bytes, 'hex')) };
+}
+
+type Output = LedgerProvider['live'][number];
+type ArchiveSpend = (tx: string, before: Output, after: Output | null, script: string, action: string, wallet?: string) => void;
 
 interface Rig {
   readonly world: TaskWorld;
@@ -107,6 +135,8 @@ interface Rig {
   readonly protocolRequests: unknown[];
   readonly history: Map<string, HistoryTx>;
   readonly unconfirmed: Set<string>;
+  readonly archive: ArchiveSpend;
+  retireAdvert(agent: string, model: string, final: Output): string;
   idOf(name: string): string;
   /** Puts a record on the ledger in place of the record of the same agent. */
   setRecord(id: string, utxo: LedgerProvider['live'][number]): void;
@@ -122,6 +152,7 @@ interface RigOptions {
   env?: Record<string, string | undefined>;
   skipAttestation?: string;
   skipSubagentEnd?: boolean;
+  subagentEpochBefore?: number;
   skipStep?: string;
   protocolParameters?: unknown;
 }
@@ -151,18 +182,31 @@ async function makeRig(options: RigOptions = {}, use: UseCase = data): Promise<R
   const feeAddress = world.keys.registry.addressOf('fee');
   const historicalShape = ({ txHash: tx_hash, outputIndex: tx_index, address, assets, datum }: LedgerProvider['live'][number]): HistoryOutput => ({
     tx_hash, tx_index, payment_addr: { bech32: address }, value: String(assets.lovelace),
-    inline_datum: datum == null ? null : { bytes: datum },
+    inline_datum: datum == null ? null : { ...capturedInline, value: koiosValue(decodePlutusDataHex(datum)) },
+    datum_hash: datum == null ? null : blake2b256Hex(Buffer.from(datum, 'hex')),
     asset_list: Object.entries(assets).filter(([unit]) => unit !== 'lovelace').map(([unit, quantity]) => ({
       policy_id: unit.slice(0, 56), asset_name: unit.slice(56), quantity: String(quantity),
     })),
   });
-  const archive = (tx: string, before: LedgerProvider['live'][number], after: LedgerProvider['live'][number]): void => {
-    const walletIn = { txHash: hash(`funding ${tx}`), outputIndex: 0, address: feeAddress, assets: { lovelace: 15_000_000n } };
-    const walletOut = { txHash: tx, outputIndex: 1, address: feeAddress, assets: { lovelace: walletIn.assets.lovelace + before.assets.lovelace! - after.assets.lovelace! - HISTORY_FEE } };
+  const archive: ArchiveSpend = (tx, before, after, script, action, wallet = feeAddress) => {
+    const walletIn = { txHash: hash(`funding ${tx}`), outputIndex: 0, address: wallet, assets: { lovelace: 15_000_000n } };
+    const walletOut = { txHash: tx, outputIndex: after === null ? 0 : 1, address: wallet, assets: { lovelace: walletIn.assets.lovelace + before.assets.lovelace! - (after?.assets.lovelace ?? 0n) - HISTORY_FEE } };
     history.set(tx, {
-      tx_hash: tx, fee: String(HISTORY_FEE), inputs: [before, walletIn].map(historicalShape), outputs: [after, walletOut].map(historicalShape),
-      plutus_contracts: capturedHistory.payment.tx.plutus_contracts.map(({ valid_contract }) => ({ valid_contract })),
+      tx_hash: tx, fee: String(HISTORY_FEE), inputs: [before, walletIn].map(historicalShape), outputs: (after === null ? [walletOut] : [after, walletOut]).map(historicalShape),
+      plutus_contracts: [{
+        ...capturedHistory.payment.tx.plutus_contracts[0]!, script_hash: script, spends_input: { tx_hash: before.txHash, tx_index: before.outputIndex },
+        input: { redeemer: { purpose: 'spend', datum: datumOf(action) } },
+      }],
     });
+  };
+  const retireAdvert = (name: string, model: string, output: Output): string => {
+    const agent = use.agents.find(({ id }) => id === name)!;
+    const supplier = agent.adverts.find((advert) => advert.model === model)!.supplierKey;
+    const tx = hash(`retire ${name} ${model}`);
+    archive(tx, output, null, MAINNET.advert.hash, 'd87b80', world.keys.registry.addressOf(supplier));
+    const journal = StateFile.open(join(world.stateDir, 'advert.state.json'), { check: 'advert', network: factsId.network, record: use.name });
+    journal.setNote(`part.retire:${name}:${model}`, { confirmed_at: iso(NOW - DAY), tx_hash: tx, refs: { retiredRef: `${output.txHash}#${output.outputIndex}` }, facts: {} });
+    return tx;
   };
   const statuses = new Map<string, string | number>();
   const webCalls: string[] = [];
@@ -219,7 +263,8 @@ async function makeRig(options: RigOptions = {}, use: UseCase = data): Promise<R
       const deactivated = effective === 'revoked';
       const metadata = {
         canonicalId, ...(deactivated ? { deactivated } : {}),
-        vectorStatus: { status: 'active', effective, ...(deactivated ? { effectiveReason: 'parentRevoked' } : effective === 'suspended' ? { effectiveReason: 'parentSuspended' } : {}) },
+        vectorStatus: { status: state.ownHolds === undefined ? 'active' : 'suspended', holds: state.ownHolds, effective,
+          ...(deactivated ? { effectiveReason: 'parentRevoked' } : effective === 'suspended' ? { effectiveReason: 'parentSuspended' } : {}) },
         ...(state.parent === undefined ? {} : { vectorParent: state.parent }),
         vectorParties: state.parties ? [{ role: 'accountable', signer: 'controller', organisation: state.domain, ...(state.verified ? { organisationVerified: true } : {}), rights: ['suspend', 'revoke'], notBefore: '2026-10-16T12:00:00Z' }] : [],
         vectorProvenance: { attestations: state.listed.map((id) => ({ id, type: 'provenance', issuer: 'did:key:z6Mk', issuedAt: '2026-11-01T10:00:00Z', solicited: true, digest: hash('digest') })) },
@@ -253,7 +298,9 @@ async function makeRig(options: RigOptions = {}, use: UseCase = data): Promise<R
   for (const agent of use.agents) {
     const id = idOf(agent.id);
     const ended = agent.end.subagents === 'ended';
-    if (ended && !options.skipSubagentEnd) facts.put('subagentEnds', [agent.id], { tx: hash(`end ${agent.id}`), at: iso(NOW - DAY), epochBefore: 0, epochAfter: 1 });
+    const epochBefore = options.subagentEpochBefore ?? 0;
+    const endTx = hash(`end ${agent.id}`);
+    if (ended && !options.skipSubagentEnd) facts.put('subagentEnds', [agent.id], { tx: endTx, at: iso(NOW - DAY), epochBefore, epochAfter: epochBefore + 1 });
     const successor = agent.end.successor === null ? null : idOf(agent.end.successor);
     if (agent.end.record === 'retired') {
       const controller = world.keys.registry.publicKeyOf(use.lifecycle!.controllers[1]);
@@ -261,15 +308,20 @@ async function makeRig(options: RigOptions = {}, use: UseCase = data): Promise<R
       const minimum = calculateMinLovelaceFromUTxO(BigInt(COINS_PER_BYTE), { ...output, assets: { ...output.assets, lovelace: 0n } });
       const reclaimed = { ...output, txHash: RECLAIM_TX, assets: { ...output.assets, lovelace: minimum } };
       ledger.live.push(reclaimed);
-      archive(RECLAIM_TX, { ...output, txHash: hash('set-successor') }, reclaimed);
+      archive(RECLAIM_TX, { ...output, txHash: hash('set-successor') }, reclaimed, MAINNET.identity.hash, encodeIdentitySpend({ type: 'Reclaim' }));
     } else if (agent.end.record === 'revoked') {
       const party = use.organisations.find(({ id: name }) => name === agent.organisation)!.accountableKey;
       const status = { type: 'Revoked', by: { type: 'KeyHash', hash: world.keys.registry.hashOf(party) }, reason: 9, invalidFrom: NOW - 2 * DAY, at: NOW - DAY, successor } as const;
       ledger.live.push(registryUtxo(id, agentRecord({ keys: [], parties: [], status })));
       facts.put('revocations', [agent.id], { tx: hash(`revoke ${agent.id}`), reason: status.reason, invalidFrom: iso(status.invalidFrom), revokedAt: iso(status.at) });
     } else {
-      const output = agent === REORDER ? ACTIVE_REORDER : agent === ORDER ? ACTIVE_ORDER : registryUtxo(id, agentRecord({ subagentEpoch: ended ? 1 : 0 }));
-      ledger.live.push(withAuthority(id, output));
+      const output = agent === REORDER ? ACTIVE_REORDER : agent === ORDER ? ACTIVE_ORDER : registryUtxo(id, agentRecord({ subagentEpoch: ended ? epochBefore + 1 : 0 }));
+      const current = withAuthority(id, ended ? { ...output, txHash: endTx } : output);
+      ledger.live.push(current);
+      if (ended) {
+        const earlier = withAuthority(id, registryUtxo(id, agentRecord({ subagentEpoch: epochBefore })));
+        archive(endTx, earlier, current, MAINNET.identity.hash, encodeIdentitySpend({ type: 'BumpEpoch' }));
+      }
     }
     for (const advert of agent.adverts) {
       const tx = hash(use === data ? `advert ${advert.model}` : `advert ${agent.id} ${advert.model}`);
@@ -292,7 +344,10 @@ async function makeRig(options: RigOptions = {}, use: UseCase = data): Promise<R
         listing.push({ advert_ref: ref, capability_id: agent.capability, model: advert.model, agent_id: id, did: did(id), supplier_pkh: supplier, status: 'free' });
         expectedRunning.push(advert.runtimeContainer);
         statuses.set(`${advert.origin}/status`, 'free');
-      } else ledger.koiosSpent.push(output);
+      } else {
+        ledger.koiosSpent.push(output);
+        retireAdvert(agent.id, advert.model, output);
+      }
     }
     const listed: string[] = [];
     const spec = use.attestations.find(({ agent: name }) => name === agent.id)!;
@@ -345,8 +400,9 @@ async function makeRig(options: RigOptions = {}, use: UseCase = data): Promise<R
         const revoked = { ...issue, status: { type: 'AttRevoked' as const, at: NOW - 2 * DAY, reason: 9 } };
         const during = attestationUtxo(id, revoked, { txHash: revokeTx });
         const now = attestationUtxo(id, { ...revoked, contested: { uri: Buffer.from(replyUri, 'utf8').toString('hex'), sha256: replySha256 } }, { txHash: contestTx });
-        archive(revokeTx, earlier, during);
-        archive(contestTx, during, now);
+        now.assets.lovelace = during.assets.lovelace! + 160_000n;
+        archive(revokeTx, earlier, during, MAINNET.attestation.hash, encodeAttestationSpend({ type: 'RevokeAtt', reason: 9 }));
+        archive(contestTx, during, now, MAINNET.attestation.hash, encodeAttestationSpend({ type: 'Contest' }));
         ledger.live.push(now);
       } else ledger.live.push(earlier);
     }
@@ -364,7 +420,7 @@ async function makeRig(options: RigOptions = {}, use: UseCase = data): Promise<R
   writeRunning();
 
   const rig: Rig = {
-    world, ledger, hosted, facts, gateway, statuses, webCalls, protocolRequests, history, unconfirmed, idOf,
+    world, ledger, hosted, facts, gateway, statuses, webCalls, protocolRequests, history, unconfirmed, idOf, archive, retireAdvert,
     get listing() { return listing; },
     set listing(rows) { listing.splice(0, listing.length, ...rows); },
     setRecord: (id, utxo) => { ledger.live = [...ledger.live.filter((candidate) => candidate.assets[`${MAINNET.identity.hash}${id}`] === undefined), withAuthority(id, utxo)]; },
@@ -494,13 +550,21 @@ describe('the task end-state', () => {
     }, SLOW);
 
     it('does not credit an end operation for children from an older epoch', async () => {
+      const rig = await makeRig({ subagentEpochBefore: 1 }, priorAuthorization);
+      const parent = 'prior-authorization-agent';
+      await expectFailure(rig, `subagents:${parent}`, 'at epoch 1');
+    }, SLOW);
+
+    it('requires the named parent spend and the BumpEpoch action', async () => {
       const rig = await makeRig({}, priorAuthorization);
       const parent = 'prior-authorization-agent';
-      const id = rig.idOf(parent);
-      rig.setRecord(id, registryUtxo(id, agentRecord({ subagentEpoch: 2 })));
       const fact = rig.facts.read().subagentEnds[parent]!;
-      rig.facts.put('subagentEnds', [parent], { ...fact, epochBefore: 1, epochAfter: 2 }, { replace: true });
-      await expectFailure(rig, `subagents:${parent}`, 'at epoch 1');
+      const history = rig.history.get(fact.tx)!;
+      const original = history.plutus_contracts[0]!.input.redeemer.datum;
+      history.plutus_contracts[0]!.input.redeemer.datum = datumOf(encodeIdentitySpend({ type: 'ChangeController' }));
+      await expectFailure(rig, `subagents:${parent}`, 'did not spend that parent record with BumpEpoch');
+      history.plutus_contracts[0]!.input.redeemer.datum = original;
+      expect(await rig.run('status')).toBe(0);
     }, SLOW);
 
     it('refuses a retired advert runtime that is still running and a live outgoing child delegation', async () => {
@@ -572,18 +636,28 @@ describe('the task end-state', () => {
       expect(rig.world.screen.text).not.toContain('end state: DONE');
     }, SLOW);
 
-    it('requires the spent original and refuses an unlisted replacement at the advert address', async () => {
+    it('follows an updated advert to a confirmed retire that credits the supplier', async () => {
       const rig = await makeRig({}, bidEvaluation);
-      const original = rig.facts.read().adverts['bid-desk-bravo']!['bid-desk-v1']!;
+      const name = 'bid-desk-bravo';
+      const model = 'bid-desk-v1';
+      const original = rig.facts.read().adverts[name]![model]!;
       const prior = rig.ledger.koiosSpent.find(({ txHash }) => txHash === original.tx)!;
-      const live = { ...prior, txHash: hash('replacement Bravo') };
-      rig.ledger.live.push(live);
-      await expectFailure(rig, 'adverts', 'the node holds an unexpected Active advert for bid-desk-bravo');
-      expect(rig.listing.some(({ advert_ref }) => advert_ref === `${live.txHash}#0`)).toBe(false);
+      const datum = decodeIdentityAdvertDatum(prior.datum!);
+      const successor = { ...prior, txHash: hash('replacement Bravo'), datum: encodeIdentityAdvertDatum({ ...datum, status: 'Retired' }) };
+      rig.ledger.live.push(successor);
+      await expectFailure(rig, 'adverts', 'the node holds an unexpected Retired advert for bid-desk-bravo');
+      expect(rig.listing.some(({ advert_ref }) => advert_ref === `${successor.txHash}#0`)).toBe(false);
       rig.ledger.live.pop();
-      rig.ledger.koiosBehind.add(prior.txHash);
-      await expectFailure(rig, 'adverts', 'the history does not show the spent advert of bid-desk-bravo/bid-desk-v1');
-      rig.ledger.koiosBehind.delete(prior.txHash);
+      const unrelated = { ...prior, txHash: hash('other supplier advert'), datum: encodeIdentityAdvertDatum({ ...datum, agent_id: hash('another record') }) };
+      rig.ledger.live.push(unrelated);
+      const retirement = rig.retireAdvert(name, model, successor);
+      await expectFailure(rig, 'adverts', 'the indexer does not confirm the exact record spend');
+      rig.archive(successor.txHash, prior, successor, MAINNET.advert.hash, 'd87a80');
+      const tx = rig.history.get(retirement)!;
+      const paid = tx.outputs[0]!.value;
+      tx.outputs[0]!.value = String(BigInt(paid) - 1n);
+      await expectFailure(rig, 'adverts', 'the supplier wallet did not receive the deposit less the transaction fee');
+      tx.outputs[0]!.value = paid;
       expect(await rig.run('status')).toBe(0);
     }, SLOW);
 
@@ -712,10 +786,19 @@ describe('the task end-state', () => {
       await expectFailure(rig, 'lifecycle', 'has no actual fee');
       tx.fee = fee;
       const wallet = tx.outputs[1]!;
+      const archiveDatum = tx.inputs[0]!;
+      const digest = archiveDatum.datum_hash;
+      archiveDatum.datum_hash = hash('another datum');
+      await expectFailure(rig, 'lifecycle', 'the transaction history datum does not match its hash');
+      archiveDatum.datum_hash = digest;
       const amount = wallet.value;
       wallet.value = String(BigInt(amount) - 1n);
       await expectFailure(rig, 'lifecycle', 'did not receive the reclaimed deposit less the transaction fee');
       wallet.value = amount;
+      expect(await rig.run('status')).toBe(0);
+      wallet.value = String(BigInt(amount) - BigInt(tx.inputs[1]!.value));
+      tx.inputs.pop();
+      tx.outputs[0]!.inline_datum = null;
       expect(await rig.run('status')).toBe(0);
     }, SLOW);
 
@@ -765,7 +848,9 @@ describe('the task end-state', () => {
       rig.setRecord(REORDER_ID, registryUtxo(REORDER_ID, agentRecord({
         status: { type: 'Suspended', holds: [holdOf({ type: 'Script', hash: MODULE1.claim.hash }, 64, JURY_UNTIL)] },
       })));
-      rig.gateway.get(did(READER_ID))!.effective = 'suspended';
+      const child = rig.gateway.get(did(READER_ID))!;
+      child.effective = 'suspended';
+      child.ownHolds = [{ until: iso(NOW - HOUR) }];
       expect(await rig.run()).toBe(4);
       expectChecks(rig, { 'record_active:reorder-agent': 'wait', 'subagents:reorder-agent': 'wait' });
       expect(rig.checks().get('subagents:reorder-agent')!.text).toContain(`inherit the jury hold until ${iso(JURY_UNTIL)}`);

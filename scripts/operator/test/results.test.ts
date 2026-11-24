@@ -1,5 +1,6 @@
 // The results task through the real runner, over saved assembler fixtures and partial evidence files in a temporary state folder.
 // A step is shown only when the evidence supports it in full. The header file comes first and verbatim. No test uses the network.
+import { createHash } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import type * as NodeFs from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -45,7 +46,7 @@ const tx = (name: string): string => hashOf(`results tx ${name}`);
 
 interface StepInput { id: string; status: 'shown' | 'not_run'; refs: unknown[]; note?: string }
 
-interface AssemblerFixture { readonly steps: readonly StepInput[]; readonly mock: unknown; readonly refusals: unknown }
+interface AssemblerFixture extends Record<string, unknown> { readonly steps: readonly StepInput[] }
 const ASSEMBLED_CLEAN = JSON.parse(readFileSync(new URL('./golden/evidence-clean.json', import.meta.url), 'utf8')) as AssemblerFixture;
 const ASSEMBLED_FAILURE = JSON.parse(readFileSync(new URL('./golden/evidence-failure.json', import.meta.url), 'utf8')) as AssemblerFixture;
 const cleanSteps = (): readonly StepInput[] => ASSEMBLED_CLEAN.steps;
@@ -57,13 +58,13 @@ const output = (kind: string, name: string) => ({ kind, value: `${tx(name)}#0` }
 
 /** An evidence file as the assembler writes it, with members that the page never reads. */
 const doc = (kind: UseCase['runs'][number]['id'], date: string, steps: unknown, over: Record<string, unknown> = {}): Record<string, unknown> => ({
-  run: `use-case-1-${kind}`, kind, date, capability_id: 'supplychain.reorder.po.v1', builder: 'https://hosted.test/mcp', result: 'a text that the page never reads', hires: [{ step: 'propose' }], steps, ...over,
+  run: `use-case-1-${kind}`, kind, date, capability_id: 'supplychain.reorder.po.v1', builder: 'https://hosted.test/mcp', result: 'not a completed result', hires: [{ step: 'propose' }], steps, ...over,
 });
 
 const cleanDoc = (over: Record<string, unknown> = {}): Record<string, unknown> =>
-  doc('clean', '2026-12-01', cleanSteps(), { mock: ASSEMBLED_CLEAN.mock, refusals: ASSEMBLED_CLEAN.refusals, ...over });
+  ({ ...ASSEMBLED_CLEAN, date: '2026-12-01', steps: cleanSteps(), ...over });
 const failureDoc = (over: Record<string, unknown> = {}): Record<string, unknown> =>
-  doc('failure', '2026-12-03', failureSteps(), { mock: ASSEMBLED_FAILURE.mock, refusals: ASSEMBLED_FAILURE.refusals, audience: 'private', ...over });
+  ({ ...ASSEMBLED_FAILURE, date: '2026-12-03', steps: failureSteps(), audience: 'private', ...over });
 
 /** True for a reference that has a kind and a value, as the evidence files label one. */
 const isLabelled = (ref: unknown): ref is { kind: string; value: string } => typeof ref === 'object' && ref !== null && 'kind' in ref && 'value' in ref && typeof ref.kind === 'string' && typeof ref.value === 'string';
@@ -134,7 +135,7 @@ describe('the task results', () => {
     expect([...results.valued].sort()).toEqual(['header-file', 'runs']);
   });
 
-  it('preserves the original page wording and layout for sufficient assembler evidence', async () => {
+  it('keeps the checked inventory wording and layout for sufficient assembler evidence', async () => {
     const rig = await makeRig();
     rig.seed();
     expect(await rig.run(...NO_ARGUMENTS(rig), '--runs', `${CLEAN},${FAILURE}`, '--submit')).toBe(0);
@@ -315,24 +316,55 @@ describe('the task results', () => {
       }
     });
 
-    it('requires distinct binding, vault and delegation references and the route evidence for the receipt step', () => {
+    it('requires distinct binding refs, a completed hire, linked receipt checks and an allowed write', () => {
       const refs = [
         { kind: 'delegation', value: tx('delegation id') }, transaction('delegation'), { kind: 'attestation', value: tx('binding id') }, transaction('binding'),
         output('vault', 'open'), transaction('open'),
       ];
       const write = [{ route: 'POST /records/orders/{order_id}/submission', credential: 'token', decision: 'allowed', act: ['agent'] }];
-      const render = (principal: unknown[], log: unknown[]) => renderPage({
+      const intakeAccept = tx('accept intake');
+      const escrow = output('escrow', 'carried hire').value;
+      const accept = tx('accept execute');
+      const result = JSON.stringify({ outcome: 'completed' });
+      const digest = createHash('sha256').update(result).digest('hex');
+      const settlement = {
+        escrow_ref: escrow, accept_tx: accept, result, result_sha256: digest,
+        receipt: { escrow_ref: escrow, response_hash: digest }, receipt_signature: 'ab'.repeat(64),
+        checks: { signature_valid: 'pass', response_hash_matches: 'pass', escrow_ref_matches: 'pass', supplier_key_matches: 'pass' },
+        hires: [
+          { step: 'execute', escrow_ref: escrow, accept_tx: accept, reclaim_tx: null, result_sha256: digest },
+          { step: 'intake', escrow_ref: output('escrow', 'intake hire').value, accept_tx: intakeAccept, reclaim_tx: null, result_sha256: tx('intake result') },
+        ],
+      };
+      const render = (principal: unknown[], log: unknown[], proof: Record<string, unknown> = {}) => renderPage({
         header: HEADER, use: priorAuthorization, runs: [parseEvidence(doc('clean', '2026-12-01', [
           { id: 'r1-01', status: 'shown', refs: principal },
           { id: 'r1-06', status: 'shown', refs: [transaction('accept intake'), output('escrow', 'accept decision')] },
-        ], { run: 'use-case-2-clean', capability_id: priorAuthorization.agents[0]!.capability, mock: { log } }), PRIOR_LABEL, priorAuthorization)],
+        ], { run: 'use-case-2-clean', capability_id: priorAuthorization.agents[0]!.capability, mock: { log }, ...proof }), PRIOR_LABEL, priorAuthorization)],
       });
       const incomplete = render([...refs.slice(0, -1), refs[1]], []);
       expect(rowOf(incomplete, 'r1-01')[4]).toBe(PAGE_TEXT.partialReference);
       expect(rowOf(incomplete, 'r1-06')[4]).toBe(PAGE_TEXT.partialReference);
-      const full = render(refs, write);
+      expect(rowOf(render(refs, write), 'r1-06')[4]).toBe(PAGE_TEXT.partialReference);
+      expect(rowOf(render(refs, [], settlement), 'r1-06')[4]).toBe(PAGE_TEXT.partialReference);
+      expect(rowOf(render(refs, write, { ...settlement, hires: settlement.hires.slice(0, 1) }), 'r1-06')[4]).toBe(PAGE_TEXT.partialReference);
+      const full = render(refs, write, settlement);
       expect(rowOf(full, 'r1-01')[4]).toBe(SHOWS['Delegation with a co-signature, attestation: principal binding, vault']!.shows);
       expect(rowOf(full, 'r1-06')[4]).toBe(SHOWS['Receipt checks, accept, token for a route']!.shows);
+    });
+
+    it('uses a linked hire for a finished escrow without claiming who spent it or who was paid', () => {
+      const ref = output('escrow', 'quote hire');
+      const render = (hires: unknown[]) => renderPage({
+        header: HEADER, use: bidEvaluation, runs: [parseEvidence(doc('failure', '2026-12-04', [
+          { id: 'r2-a-release', status: 'shown', refs: [ref] },
+        ], { run: 'use-case-3-failure', capability_id: bidEvaluation.agents[0]!.capability, hires }), 'failure', bidEvaluation)],
+      });
+      expect(rowOf(render([]), 'r2-a-release')[4]).toBe(PAGE_TEXT.partialReference);
+      expect(rowOf(render([{ escrow_ref: ref.value, accept_tx: tx('accepted'), reclaim_tx: null }]), 'r2-a-release')[4]).toBe(PAGE_TEXT.partialReference);
+      const row = rowOf(render([{ escrow_ref: ref.value, accept_tx: null, reclaim_tx: null }]), 'r2-a-release');
+      expect(row[4]).toBe(SHOWS['Escrow: release']!.shows);
+      expect(row[5]).toBe('Who spent the escrow, who received funds, or how much.');
     });
 
     it('requires two distinct wait transactions and the recorded early tool refusal', () => {

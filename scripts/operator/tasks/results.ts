@@ -89,7 +89,7 @@ export const SHOWS: Readonly<Record<string, Sentences>> = {
     doesNotShow: 'That the supplier portal is a real system. The portal is a mock service.',
   },
   'Receipt checks, accept, token for a route': {
-    shows: 'The evidence links the receipt checks and acceptance to a write with a token for that route.',
+    shows: 'The evidence records a completed hire, acceptance of the intake work and an allowed write to the route with a token.',
     doesNotShow: 'That the write reached a real system. The route is part of a mock service.',
   },
   'Vault close, undelegate': {
@@ -109,8 +109,8 @@ export const SHOWS: Readonly<Record<string, Sentences>> = {
     doesNotShow: 'That another jury decides the same way. The jury result is a sample.',
   },
   'Escrow: release': {
-    shows: 'The release watcher released the escrow after the wait. The supplier got paid.',
-    doesNotShow: 'That a verdict moves escrow funds. A verdict never moves them.',
+    shows: 'The evidence marks the escrow as finished without a recorded accept or reclaim.',
+    doesNotShow: 'Who spent the escrow, who received funds, or how much.',
   },
   'Hold removes the agent from the listing': {
     shows: 'The marketplace listing during the hold did not show the held agent.',
@@ -290,6 +290,7 @@ interface StepProof {
   readonly refs: Readonly<Record<string, number>>;
   readonly refusals?: readonly Refusal[];
   readonly routes?: readonly RouteRead[];
+  readonly settlement?: { readonly type: 'receipt'; readonly counterparty: string } | { readonly type: 'finished' };
 }
 interface CaseProof { readonly number: number; readonly steps: Readonly<Record<string, StepProof>> }
 
@@ -311,13 +312,13 @@ const PROOF: Readonly<Record<string, CaseProof>> = {
     'r1-07': { refs: HIRE },
     'r1-08': { refs: { escrow: 1, transaction: 1 } },
     'r1-09': { refs: { escrow: 2 }, routes: [['POST /supplier/orders', 'x509-svid', null]] },
-    'r1-10': { refs: { escrow: 1, transaction: 1 }, routes: [['POST /po', 'token', 1]] },
+    'r1-10': { refs: { escrow: 1, transaction: 1 }, routes: [['POST /po', 'token', 1]], settlement: { type: 'receipt', counterparty: 'order-desk' } },
     'r1-11': { refs: CLOSE },
     'r2-a': { refs: HIRE, refusals: ['ledger'] },
     'r2-b': { refs: HIRE, refusals: ['ledger'] },
     'r2-c': { refs: { claim: 1, transaction: 1, challenge: 1 } },
     'r2-d': { refs: VERDICT },
-    'r2-e': { refs: { escrow: 1 } },
+    'r2-e': { refs: { escrow: 1 }, settlement: { type: 'finished' } },
     'r2-f': { refs: HIRE },
     'r2-g': { refs: CLOSE },
     'r2-h': { refs: { transaction: 3, escrow: 1 }, refusals: ['ledger', 'tool'] },
@@ -328,7 +329,7 @@ const PROOF: Readonly<Record<string, CaseProof>> = {
     'r1-03': { refs: APPROVAL },
     'r1-04': { refs: { escrow: 2, transaction: 3 } },
     'r1-05': { refs: { escrow: 2, transaction: 2 }, routes: [['POST /insurer/requests', 'jwt-svid', null]] },
-    'r1-06': { refs: { escrow: 1, transaction: 1 }, routes: [['POST /records/orders/{order_id}/submission', 'token', 1]] },
+    'r1-06': { refs: { escrow: 1, transaction: 1 }, routes: [['POST /records/orders/{order_id}/submission', 'token', 1]], settlement: { type: 'receipt', counterparty: 'intake' } },
     'r1-07': { refs: CLOSE },
     'r2-d': { refs: { attestation: 2, escrow: 3, transaction: 6 } },
     'r2-e': { refs: { attestation: 1, escrow: 1, transaction: 2 } },
@@ -348,7 +349,7 @@ const PROOF: Readonly<Record<string, CaseProof>> = {
     'r1-07': { refs: HIRE, routes: [['POST /sourcing/rankings', 'token', 1]] },
     'r1-08': { refs: CLOSE },
     'r2-a': { refs: { escrow: 1, claim: 1, challenge: 1 } },
-    'r2-a-release': { refs: { escrow: 1 } },
+    'r2-a-release': { refs: { escrow: 1 }, settlement: { type: 'finished' } },
     'r2-a-hold': { refs: VERDICT },
     'r2-b': { refs: { attestation: 1, escrow: 1, transaction: 4 } },
     'r2-c': { refs: { escrow: 1, hold: 1, transaction: 2 } },
@@ -364,6 +365,29 @@ const PROOF: Readonly<Record<string, CaseProof>> = {
   } },
 };
 
+/** The assembler's public links, receipt and check results must agree before a row claims an accepted, completed hire. */
+function settlementOf(settlement: NonNullable<StepProof['settlement']>, refs: readonly Ref[], doc: Record<string, unknown>): boolean {
+  const hires: unknown[] = Array.isArray(doc.hires) ? doc.hires : [];
+  if (settlement.type === 'finished') {
+    const matching = hires.filter((hire) => isObject(hire) && refs.some(({ kind, value }) => kind === 'escrow' && value === hire.escrow_ref));
+    return matching.length === 1 && isObject(matching[0]) && matching[0].accept_tx === null && matching[0].reclaim_tx === null;
+  }
+  const { accept_tx: accept, escrow_ref: escrow, result_sha256: digest, result, receipt, receipt_signature: signature, checks } = doc;
+  if (typeof accept !== 'string' || !HASH.test(accept) || typeof escrow !== 'string' || !OUTPUT_REF.test(escrow)
+      || typeof digest !== 'string' || typeof result !== 'string' || createHash('sha256').update(result).digest('hex') !== digest
+      || !isObject(receipt) || receipt.escrow_ref !== escrow || receipt.response_hash !== digest
+      || typeof signature !== 'string' || !/^[0-9a-f]{128}$/.test(signature) || !isObject(checks)
+      || checks.signature_valid !== 'pass' || checks.response_hash_matches !== 'pass' || checks.escrow_ref_matches !== 'pass' || checks.supplier_key_matches !== 'pass') return false;
+  let body: unknown;
+  try { body = JSON.parse(result); } catch { return false; }
+  if (!isObject(body) || body.outcome !== 'completed') return false;
+  const carried = hires.filter((hire) => isObject(hire) && hire.escrow_ref === escrow && hire.accept_tx === accept && hire.reclaim_tx === null && hire.result_sha256 === digest);
+  const received = hires.filter((hire) => isObject(hire) && hire.step === settlement.counterparty && typeof hire.escrow_ref === 'string'
+    && OUTPUT_REF.test(hire.escrow_ref) && hire.escrow_ref !== escrow && hire.reclaim_tx === null && typeof hire.result_sha256 === 'string' && HASH.test(hire.result_sha256)
+    && typeof hire.accept_tx === 'string' && HASH.test(hire.accept_tx) && refs.some(({ kind, value }) => kind === 'transaction' && value === hire.accept_tx));
+  return carried.length === 1 && received.length === 1;
+}
+
 function proofOf(proof: StepProof | undefined, id: string, refs: readonly Ref[], doc: Record<string, unknown>): boolean {
   if (proof === undefined) return false;
   for (const [kind, count] of Object.entries(proof.refs)) {
@@ -376,6 +400,7 @@ function proofOf(proof: StepProof | undefined, id: string, refs: readonly Ref[],
     }
     if (values.size < count) return false;
   }
+  if (proof.settlement !== undefined && !settlementOf(proof.settlement, refs, doc)) return false;
   if (proof.refusals !== undefined) {
     const refusals: unknown[] = Array.isArray(doc.refusals) ? doc.refusals : [];
     for (const kind of proof.refusals) {

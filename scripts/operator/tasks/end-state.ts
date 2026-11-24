@@ -11,16 +11,17 @@ import { readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { koiosPostList } from '../../../packages/buyer-core/src/vendored/mcp/marketplace-indexer.ts';
 // The identity advert codec is at the entry of vector-read, as in the task advert.
-import { advertTextFieldsRoundTrip, decodeIdentityAdvertDatum } from '../../../packages/vector-read/src/index.ts';
-import type { IdentityAdvertDatum } from '../../../packages/vector-read/src/index.ts';
-import { decodeAttestationDatum } from '../../../packages/vector-read/src/identity-codec.ts';
+import { advertTextFieldsRoundTrip, decodeIdentityAdvertDatum, decodePlutusDataHex, encodePlutusDataHex } from '../../../packages/vector-read/src/index.ts';
+import type { IdentityAdvertDatum, PlutusData } from '../../../packages/vector-read/src/index.ts';
+import { decodeAttestationDatum, decodeIdentityDatum, encodeAttestationDatum, encodeIdentityDatum, encodeIdentitySpend } from '../../../packages/vector-read/src/identity-codec.ts';
 import { collateralAdvice, isCollateralOutput } from '../../checks/lib/collateral.ts';
 import { duration, iso, units } from '../../checks/lib/format.ts';
+import { StateFile } from '../../checks/lib/state.ts';
 import type { AdvertFact, AdvertSpec, AgentSpec, AttestationFact, Facts, LifecycleSpec, StepOutcome, SubagentSpec, TaskDefinition, TaskSession } from '../lib/contract.ts';
 import { readRunning, readRuntimeStatus, runtimesOf } from '../lib/free.ts';
 import {
-  ATT_TYPES, PURPOSE, attestationState, calculateMinLovelaceFromUTxO, createModule1Port, effectiveStatus, findRecord, formatOutRef, keyHashOf, koiosUtxoInfo, liveDelegations, module1FromManifest,
-  parseOutRef, readAttestation, readManifest, withdrawableFrom,
+  ATT_TYPES, PURPOSE, attestationState, blake2b256Hex, calculateMinLovelaceFromUTxO, createModule1Port, effectiveStatus, findRecord, formatOutRef, keyHashOf, koiosUtxoInfo, liveDelegations,
+  module1FromManifest, parseOutRef, readAttestation, readManifest, withdrawableFrom,
 } from '../lib/platform.ts';
 import type { AttestationView, RecordUtxo } from '../lib/platform.ts';
 import { codeOf, findPublicManifest } from '../lib/registry.ts';
@@ -361,7 +362,6 @@ async function adverts(ctx: Context): Promise<Check> {
   const groups = new Map<string, Map<string, ExpectedAdvert>>();
   const known = new Map<string, ExpectedAdvert>();
   const owners = new Map<string, string>();
-  const suppliers = new Map<string, string>();
   const lookup = ctx.publicKeys();
   for (const agent of ctx.session.use.agents) {
     const group = groups.get(agent.capability) ?? new Map<string, ExpectedAdvert>();
@@ -382,7 +382,6 @@ async function adverts(ctx: Context): Promise<Check> {
         continue;
       }
       const supplier = keyHashOf(key);
-      suppliers.set(supplier, agent.id);
       const fact = held[model];
       if (fact === undefined) {
         problems.push(`the facts hold no reference for the advert ${agent.id}/${model}: run the task advert first`);
@@ -426,27 +425,30 @@ async function adverts(ctx: Context): Promise<Check> {
       }
       continue;
     }
-    if (datum?.status !== 'Active') continue;
-    const owner = owners.get(datum.agent_id) ?? suppliers.get(datum.supplier_pkh);
-    if (owner !== undefined) problems.push(`the node holds an unexpected Active advert for ${owner} (${ref})`);
+    if (datum === null) continue;
+    const owner = owners.get(datum.agent_id);
+    if (owner !== undefined) problems.push(`the node holds an unexpected ${datum.status} advert for ${owner} (${ref})`);
   }
 
   const retiredRefs = new Set<string>();
   for (const [ref, want] of known) if (want.agent.end.advert === 'retired' && !live.has(ref)) retiredRefs.add(ref);
-  const historical = new Set<string>();
-  const spent = new Set<string>();
-  if (retiredRefs.size !== 0) for (const output of await koiosUtxoInfo(koiosUrl, [...retiredRefs], fetchImpl)) {
-    const ref = advertRef(formatOutRef(output.tx_hash, output.tx_index));
-    if (!retiredRefs.has(ref) || historical.has(ref)) throw new Error('the advert history gave another output or gave one twice');
-    historical.add(ref);
+  const spendNotes = retiredRefs.size === 0 ? null : StateFile.peek(join(ctx.session.settings.stateDir, 'advert.state.json'));
+  if (spendNotes !== null && (spendNotes.check !== 'advert' || spendNotes.record !== ctx.session.use.name || spendNotes.network !== ctx.session.settings.network.name)) {
+    throw new Error('the advert journal is for another task, use case or network');
+  }
+  const returned = new Set<string>();
+  for (const ref of retiredRefs) {
     const want = known.get(ref)!;
-    const bytes = output.inline_datum?.bytes;
-    const datum = advertDatum(bytes);
-    if (output.address === address && output.is_spent === true && Array.isArray(output.asset_list) && output.asset_list.length === 0
-        && output.value === String(want.spec.depositLovelace) && output.reference_script == null && datum !== null
-        && advertTextFieldsRoundTrip(bytes!) && matchesAdvert(datum, want)) {
-      spent.add(ref);
+    const wallet = lookup.get(want.spec.supplierKey)?.address;
+    const note = spendNotes?.notes[`part.retire:${want.agent.id}:${want.spec.model}`];
+    if (wallet == null || !isObject(note) || !isObject(note.refs) || typeof note.refs.retiredRef !== 'string'
+        || typeof note.tx_hash !== 'string' || typeof note.confirmed_at !== 'string' || timeOf(note.confirmed_at) === null) {
+      problems.push(`the advert journal holds no confirmed retire of ${want.agent.id}/${want.spec.model} (${ref})`);
+      continue;
     }
+    const receipt = await verifyAdvertRetire(ctx, want, ref, advertRef(note.refs.retiredRef), note.tx_hash, wallet);
+    if (receipt === null) returned.add(ref);
+    else problems.push(`the retire of ${want.agent.id}/${want.spec.model} (${ref}): ${receipt}`);
   }
   let until = 0;
   const counts = new Map<string, number>();
@@ -458,8 +460,7 @@ async function adverts(ctx: Context): Promise<Check> {
       if (agent.end.advert === 'retired') {
         if (listing !== undefined) problems.push(`the indexer still lists the retired advert ${agent.id}/${model} (${ref})`);
         if (live.has(ref)) continue;
-        if (!spent.has(ref)) problems.push(`the history does not show the spent advert of ${agent.id}/${model} (${ref})`);
-        else retired.push(`${agent.id}/${model} (${ref})`);
+        if (returned.has(ref)) retired.push(`${agent.id}/${model} (${ref})`);
         continue;
       }
       if (!live.has(ref)) {
@@ -498,7 +499,7 @@ async function adverts(ctx: Context): Promise<Check> {
   if (waits.length > 0) return waiting(name, `${waits.join('; ')}: the adverts return when the hold ends`, until);
   const active = [...counts].map(([agent, count]) => `${agent} ${count}`).join(', ');
   return passed(name, `the indexer lists exactly the adverts of the data (${active}), with matching node outputs`
-    + (retired.length === 0 ? '' : `; these advert outputs are spent, and no replacement is live or listed (${retired.join(', ')})`));
+    + (retired.length === 0 ? '' : `; the node shows no unspent replacement, and confirmed retires return each deposit less its transaction fee (${retired.join(', ')})`));
 }
 
 // ---- 4. the claims ----
@@ -751,10 +752,12 @@ interface RecordSpendValueRow {
   readonly address: string;
   readonly lovelace: bigint;
   readonly inline_datum?: unknown;
+  readonly datum_hash?: unknown;
   readonly asset_list?: unknown;
 }
 
-interface RecordSpendValueFlow { fee: bigint; inputs: RecordSpendValueRow[]; outputs: RecordSpendValueRow[] }
+interface RecordSpendScript { scriptHash: string; inputRef: string; redeemer: { hash?: unknown; bytes?: unknown; value?: unknown } }
+interface RecordSpendValueFlow { fee: bigint; inputs: RecordSpendValueRow[]; outputs: RecordSpendValueRow[]; spends?: readonly RecordSpendScript[] }
 
 function lovelaceOf(value: unknown): bigint | null {
   if (typeof value === 'string' && /^[0-9]{1,20}$/.test(value)) return BigInt(value);
@@ -776,7 +779,7 @@ function archivedRows(value: unknown, withDetails: boolean, txHash?: string): Re
     const ref = formatOutRef(origin, index);
     if (seen.has(ref)) throw new Error('the confirmed transaction lists the same output reference more than once');
     seen.add(ref);
-    return { ref, address, lovelace: amount, ...(withDetails ? { inline_datum: item.inline_datum, asset_list: item.asset_list } : {}) };
+    return { ref, address, lovelace: amount, ...(withDetails ? { inline_datum: item.inline_datum, datum_hash: item.datum_hash, asset_list: item.asset_list } : {}) };
   });
 }
 
@@ -787,7 +790,7 @@ async function readConfirmedRecordSpend(
   if (!ID.test(txHash)) throw new Error('the record spend has no usable transaction hash');
   const { koiosUrl, fetchImpl } = session.chain;
   const [rows, status] = await Promise.all([
-    koiosPostList(koiosUrl, 'tx_info', { _tx_hashes: [txHash], _inputs: true, ...(withDetails ? { _assets: true, _scripts: true } : {}) }, fetchImpl, '', 512 * 1024),
+    koiosPostList(koiosUrl, 'tx_info', { _tx_hashes: [txHash], _inputs: true, _scripts: true, ...(withDetails ? { _assets: true } : {}) }, fetchImpl, '', 512 * 1024),
     session.node.txStatus(txHash),
   ]).catch(() => { throw new Error('the confirmed record spend could not be read'); });
   const { confirmations } = status;
@@ -797,29 +800,159 @@ async function readConfirmedRecordSpend(
     throw new Error('the indexer does not confirm the exact record spend as applied');
   }
   const scripts: unknown[] | null = Array.isArray(row.plutus_contracts) ? row.plutus_contracts : null;
-  if ((scripts !== null && scripts.some((script) => !isObject(script) || script.valid_contract !== true))
-      || (withDetails && row.valid_contract !== true && (scripts === null || scripts.length === 0))) {
+  if ((row.plutus_contracts !== undefined && (scripts === null || scripts.some((script) => !isObject(script) || script.valid_contract !== true)))
+      || (row.valid_contract !== true && (scripts === null || scripts.length === 0))) {
     throw new Error('the transaction history does not confirm valid script execution');
   }
   const fee = lovelaceOf(row.fee);
   if (fee === null) throw new Error('the confirmed record spend has no actual fee');
-  return { fee, inputs: archivedRows(row.inputs, withDetails), outputs: archivedRows(row.outputs, withDetails, txHash) };
+  const inputs = archivedRows(row.inputs, withDetails);
+  const spends: RecordSpendScript[] = [];
+  if (withDetails && scripts !== null) for (const script of scripts) {
+    if (!isObject(script)) continue;
+    const redeemer = isObject(script.input) ? script.input.redeemer : null;
+    if (!isObject(redeemer) || redeemer.purpose !== 'spend') continue;
+    const { script_hash: hash, spends_input: input } = script;
+    if (typeof hash !== 'string' || !KEY_HASH.test(hash) || !isObject(input) || typeof input.tx_hash !== 'string' || !ID.test(input.tx_hash)
+        || typeof input.tx_index !== 'number' || !Number.isSafeInteger(input.tx_index) || input.tx_index < 0 || !isObject(redeemer.datum)) {
+      throw new Error('the transaction history gives no usable spend redeemer');
+    }
+    const inputRef = formatOutRef(input.tx_hash, input.tx_index);
+    if (!inputs.some(({ ref }) => ref === inputRef) || spends.some((entry) => entry.inputRef === inputRef)) {
+      throw new Error('the transaction history redeemer does not name a unique regular input');
+    }
+    spends.push({ scriptHash: hash, inputRef, redeemer: redeemer.datum });
+  }
+  return { fee, inputs, outputs: archivedRows(row.outputs, withDetails, txHash), spends };
 }
 
-interface TokenOutput { readonly ref: string; readonly lovelace: bigint; readonly datum: string }
+/** Convert the bounded JSON representation without rounding integers or guessing which variant the object denotes. */
+function plutusOfKoios(value: unknown, depth = 0): PlutusData {
+  if (depth >= 32 || !isObject(value)) throw new Error('the transaction history has no usable Plutus datum');
+  const keys = Object.keys(value);
+  const nest = (child: unknown): PlutusData => plutusOfKoios(child, depth + 1);
+  if (keys.length === 1) {
+    if ((typeof value.int === 'number' && Number.isSafeInteger(value.int)) || (typeof value.int === 'string' && /^-?\d{1,40}$/.test(value.int))) {
+      return { kind: 'int', value: BigInt(value.int) };
+    }
+    if (typeof value.bytes === 'string' && /^(?:[0-9a-f]{2})*$/i.test(value.bytes)) return { kind: 'bytes', hex: value.bytes.toLowerCase() };
+    if (Array.isArray(value.list)) return { kind: 'list', items: value.list.map(nest) };
+    if (Array.isArray(value.map)) return { kind: 'map', entries: value.map.map((entry: unknown) => {
+      if (!isObject(entry) || Object.keys(entry).length !== 2) throw new Error('the transaction history has no usable Plutus datum');
+      return [nest(entry.k), nest(entry.v)];
+    }) };
+  }
+  if (keys.length === 2 && typeof value.constructor === 'number' && Number.isSafeInteger(value.constructor)
+      && value.constructor >= 0 && Array.isArray(value.fields)) {
+    return { kind: 'constr', index: BigInt(value.constructor), fields: value.fields.map(nest) };
+  }
+  throw new Error('the transaction history has no usable Plutus datum');
+}
 
-function tokenOutput(outputs: readonly RecordSpendValueRow[], script: { address: string; hash: string }, id: string): TokenOutput | null {
-  let found: TokenOutput | null = null;
-  for (const { ref, address, lovelace, asset_list: assets, inline_datum: datum } of outputs) {
-    if (address !== script.address) continue;
-    if (!Array.isArray(assets)) return null;
-    const matching = assets.find((asset: unknown) => isObject(asset) && asset.policy_id === script.hash && asset.asset_name === id) as Record<string, unknown> | undefined;
+/** Compare data in one canonical encoding, but tie a hash to the actual bytes when the archive gives them. */
+function historyDatum(inline: unknown, hash: unknown, equivalent?: string): string | null {
+  if (inline != null && !isObject(inline)) throw new Error('the transaction history has an invalid datum member');
+  const bytes = isObject(inline) ? inline.bytes : null;
+  const value = isObject(inline) ? inline.value : null;
+  if (bytes != null && (typeof bytes !== 'string' || !/^(?:[0-9a-f]{2})+$/i.test(bytes))) throw new Error('the transaction history has invalid datum bytes');
+  if (hash != null && (typeof hash !== 'string' || !ID.test(hash))) throw new Error('the transaction history has an invalid datum hash');
+  const normalized = typeof bytes === 'string' ? encodePlutusDataHex(decodePlutusDataHex(bytes)) : null;
+  const fromValue = value == null ? null : encodePlutusDataHex(plutusOfKoios(value));
+  if (normalized !== null && fromValue !== null && normalized !== fromValue) throw new Error('the transaction history datum bytes and value disagree');
+  const canonical = normalized ?? fromValue;
+  if (hash == null) return canonical;
+  const exactBytes = typeof bytes === 'string' ? bytes : canonical ?? equivalent;
+  if (exactBytes === undefined) return null;
+  if (blake2b256Hex(Buffer.from(exactBytes, 'hex')) === hash) return canonical ?? encodePlutusDataHex(decodePlutusDataHex(exactBytes));
+  if (typeof bytes !== 'string' && equivalent !== undefined && blake2b256Hex(Buffer.from(equivalent, 'hex')) === hash) {
+    const tied = encodePlutusDataHex(decodePlutusDataHex(equivalent));
+    if (canonical === tied) return tied;
+  }
+  throw new Error('the transaction history datum does not match its hash');
+}
+
+async function archivedDatum(ctx: Context, row: RecordSpendValueRow, equivalent?: string): Promise<string | null> {
+  const datum = historyDatum(row.inline_datum, row.datum_hash, equivalent);
+  if (datum !== null) return datum;
+  const { koiosUrl, fetchImpl } = ctx.session.chain;
+  const [output, ...extra] = await koiosUtxoInfo(koiosUrl, [row.ref], fetchImpl);
+  if (output === undefined || extra.length !== 0 || formatOutRef(output.tx_hash, output.tx_index) !== row.ref
+      || output.address !== row.address || lovelaceOf(output.value) !== row.lovelace
+      || (row.datum_hash != null && output.datum_hash !== row.datum_hash)) return null;
+  return historyDatum(output.inline_datum, output.datum_hash, equivalent);
+}
+
+function tokenOutput(outputs: readonly RecordSpendValueRow[], script: { address: string; hash: string }, id: string): RecordSpendValueRow | null {
+  let found: RecordSpendValueRow | null = null;
+  for (const row of outputs) {
+    if (row.address !== script.address) continue;
+    if (!Array.isArray(row.asset_list)) return null;
+    const assets: unknown[] = row.asset_list;
+    const matching = assets.find((asset) => isObject(asset) && asset.policy_id === script.hash && asset.asset_name === id);
     if (matching === undefined) continue;
-    if (found !== null || assets.length !== 1 || (matching.quantity !== '1' && matching.quantity !== 1) || !isObject(datum)
-        || typeof datum.bytes !== 'string' || datum.bytes === '') return null;
-    found = { ref, lovelace, datum: datum.bytes };
+    if (found !== null || assets.length !== 1 || !isObject(matching) || (matching.quantity !== '1' && matching.quantity !== 1)) return null;
+    found = row;
   }
   return found;
+}
+
+function witnessMatches(witness: RecordSpendScript, expected: string): boolean {
+  return historyDatum(witness.redeemer, witness.redeemer.hash, expected) === expected;
+}
+
+// These two tags are the empty constructors of the identity advert validator.
+const ADVERT_UPDATE = 'd87a80';
+const ADVERT_RETIRE = 'd87b80';
+
+/** Follow recorded updates back to the declared advert. Only a confirmed Retire with actual supplier credit ends this lineage. */
+async function verifyAdvertRetire(ctx: Context, want: ExpectedAdvert, original: string, final: string, txHash: string, wallet: string): Promise<string | null> {
+  const script = ctx.session.chain.deployment.advert;
+  const spend = await readConfirmedRecordSpend(ctx.session, txHash, { withDetails: true });
+  const actions = spend.spends?.filter(({ scriptHash }) => scriptHash === script.hash) ?? [];
+  let input = spend.inputs.find(({ ref }) => ref === final);
+  if (input === undefined || actions.length !== 1 || actions[0]!.inputRef !== final || !witnessMatches(actions[0]!, ADVERT_RETIRE)) {
+    return 'the transaction did not spend the advert with the Retire redeemer';
+  }
+  const supplierInputs = spend.inputs.filter(({ ref }) => ref !== final);
+  if (spend.outputs.length === 0 || [...supplierInputs, ...spend.outputs].some(({ address }) => address !== wallet)) {
+    return 'the retirement did not keep all other inputs and outputs at the supplier wallet';
+  }
+  if (walletCredit(wallet, spend) !== input.lovelace - spend.fee || input.lovelace <= spend.fee) return 'the supplier wallet did not receive the deposit less the transaction fee';
+  for (let depth = 0; depth < 16; depth += 1) {
+    const bytes = await archivedDatum(ctx, input);
+    const datum = advertDatum(bytes);
+    if (input.address !== script.address || !Array.isArray(input.asset_list) || input.asset_list.length !== 0
+        || datum === null || datum.agent_id !== want.didId || datum.supplier_pkh !== want.supplier) return 'an advert in the lineage does not match the expected record and supplier';
+    if (input.ref === original) {
+      return input.lovelace === want.spec.depositLovelace && advertTextFieldsRoundTrip(bytes!) && matchesAdvert(datum, want)
+        ? null : 'the original advert does not match its recorded terms or deposit';
+    }
+    const update = await readConfirmedRecordSpend(ctx.session, parseOutRef(input.ref).txHash, { withDetails: true });
+    const previous = update.spends?.filter(({ scriptHash }) => scriptHash === script.hash) ?? [];
+    const inputRef = input.ref;
+    const made = update.outputs.find(({ ref }) => ref === inputRef);
+    if (previous.length !== 1 || !witnessMatches(previous[0]!, ADVERT_UPDATE) || made === undefined || made.address !== input.address
+        || made.lovelace !== input.lovelace || !Array.isArray(made.asset_list) || made.asset_list.length !== 0
+        || (await archivedDatum(ctx, made, bytes!)) !== bytes) {
+      return 'the retirement cannot be traced back through the advert updates';
+    }
+    const predecessor = update.inputs.find(({ ref }) => ref === previous[0]!.inputRef);
+    if (predecessor === undefined) return 'the advert update does not show its spent input';
+    if (predecessor.lovelace > input.lovelace && (update.inputs.some(({ ref, address }) => ref !== predecessor.ref && address !== wallet)
+        || update.outputs.some(({ ref, address }) => ref !== inputRef && address !== wallet)
+        || walletCredit(wallet, update) !== predecessor.lovelace - input.lovelace - update.fee)) {
+      return 'an advert update reduced the deposit without a matching supplier credit';
+    }
+    input = predecessor;
+  }
+  return 'the advert lineage reaches its read limit';
+}
+
+function walletCredit(address: string, { inputs, outputs }: RecordSpendValueFlow): bigint {
+  let net = 0n;
+  for (const output of outputs) if (output.address === address) net += output.lovelace;
+  for (const input of inputs) if (input.address === address) net -= input.lovelace;
+  return net;
 }
 
 /** The issue output became revoked in the named spend. The contest spends that revoked output and leaves the current one. */
@@ -832,17 +965,23 @@ async function complianceLineage(ctx: Context, fact: Facts['compliance'][string]
   const revoked = tokenOutput(revoke.outputs, script, view.id);
   const contested = tokenOutput(contest.inputs, script, view.id);
   const current = tokenOutput(contest.outputs, script, view.id);
-  if (issued?.datum == null || revoked?.datum == null || contested?.ref !== revoked.ref || contested.datum !== revoked.datum
-      || parseOutRef(issued.ref).txHash !== fact.tx || current?.ref !== formatOutRef(view.utxo.txHash, view.utxo.outputIndex)
-      || current.datum !== view.utxo.datum || current.lovelace !== view.utxo.assets.lovelace
-      || revoked.lovelace !== issued.lovelace || contested.lovelace !== revoked.lovelace || current.lovelace !== contested.lovelace) return false;
-  const before = decodeAttestationDatum(issued.datum);
-  const after = decodeAttestationDatum(revoked.datum);
+  const chainBytes = view.utxo.datum;
+  if (issued === null || revoked === null || contested === null || current === null || !chainBytes || contested.ref !== revoked.ref
+      || parseOutRef(issued.ref).txHash !== fact.tx || current.ref !== formatOutRef(view.utxo.txHash, view.utxo.outputIndex)
+      || current.lovelace !== view.utxo.assets.lovelace || revoked.lovelace < issued.lovelace || contested.lovelace !== revoked.lovelace
+      || current.lovelace < contested.lovelace) return false;
+  const [before, presented, result] = await Promise.all([
+    archivedDatum(ctx, issued), archivedDatum(ctx, contested), archivedDatum(ctx, current, chainBytes),
+  ]);
+  if (before === null || presented === null || result !== encodePlutusDataHex(decodePlutusDataHex(chainBytes))) return false;
+  const afterBytes = await archivedDatum(ctx, revoked, presented);
+  if (afterBytes !== presented) return false;
+  const initial = decodeAttestationDatum(before);
+  const after = decodeAttestationDatum(presented);
   const latest = view.attestation;
-  return before.status.type === 'AttActive' && before.contested === null && after.status.type === 'AttRevoked' && after.contested === null
-    && latest.status.type === 'AttRevoked' && after.status.at === latest.status.at && after.status.reason === latest.status.reason
-    && before.subject === latest.subject && before.issuer === latest.issuer && before.digest === latest.digest
-    && after.subject === latest.subject && after.issuer === latest.issuer && after.digest === latest.digest;
+  return initial.status.type === 'AttActive' && initial.contested === null && after.status.type === 'AttRevoked' && after.contested === null
+    && latest.status.type === 'AttRevoked' && encodeAttestationDatum({ ...initial, status: after.status }) === encodeAttestationDatum(after)
+    && encodeAttestationDatum({ ...after, contested: latest.contested }) === encodeAttestationDatum(latest);
 }
 
 async function compliance(ctx: Context, spec: NonNullable<TaskSession['use']['compliance']>): Promise<Check> {
@@ -937,6 +1076,25 @@ async function subagents(ctx: Context, agent: AgentSpec, children: readonly Suba
         || !Number.isSafeInteger(fact.epochAfter) || fact.epochAfter !== fact.epochBefore + 1 || parentEpoch < fact.epochAfter) {
       return failed(name, `the epoch of ${agent.id} on the node does not support the end of its subagents in the facts`);
     }
+    const bump = await readConfirmedRecordSpend(ctx.session, fact.tx, { withDetails: true });
+    const { id, utxo } = parent.read.output;
+    const identity = ctx.session.chain.deployment.identity;
+    const before = tokenOutput(bump.inputs, identity, id);
+    const after = tokenOutput(bump.outputs, identity, id);
+    const redeemer = before === null ? undefined : bump.spends?.find(({ scriptHash, inputRef }) => scriptHash === identity.hash && inputRef === before.ref);
+    if (before === null || after === null || redeemer === undefined || !witnessMatches(redeemer, encodeIdentitySpend({ type: 'BumpEpoch' }))) {
+      return failed(name, `the recorded transaction of ${agent.id} did not spend that parent record with BumpEpoch`);
+    }
+    const equivalent = after.ref === formatOutRef(utxo.txHash, utxo.outputIndex) ? utxo.datum ?? undefined : undefined;
+    const [input, output] = await Promise.all([archivedDatum(ctx, before), archivedDatum(ctx, after, equivalent)]);
+    if (input === null || output === null) return failed(name, `the BumpEpoch transaction of ${agent.id} has no usable parent datums`);
+    const prior = decodeIdentityDatum(input);
+    const next = decodeIdentityDatum(output);
+    if (prior.subagentEpoch !== fact.epochBefore || next.subagentEpoch !== fact.epochAfter
+        || (equivalent !== undefined && output !== encodePlutusDataHex(decodePlutusDataHex(equivalent)))
+        || encodeIdentityDatum({ ...prior, subagentEpoch: fact.epochAfter }) !== encodeIdentityDatum(next)) {
+      return failed(name, `the recorded BumpEpoch did not make exactly the epoch change of ${agent.id}`);
+    }
     expectedEpoch = fact.epochBefore;
   }
   const problems: string[] = [];
@@ -954,7 +1112,12 @@ async function subagents(ctx: Context, agent: AgentSpec, children: readonly Suba
       continue;
     }
     const deactivated = resolved.metadata.deactivated === true;
-    if (!ended && holdEnd !== null && isObject(status) && status.status === 'active' && status.effective === 'suspended'
+    const noOwnHold = isObject(status) && (status.status === 'active'
+        || (status.status === 'suspended' && Array.isArray(status.holds) && status.holds.length !== 0 && status.holds.every((hold: unknown) => {
+          const until = isObject(hold) && typeof hold.until === 'string' ? timeOf(hold.until) : null;
+          return until !== null && until <= ctx.now;
+        })));
+    if (!ended && holdEnd !== null && noOwnHold && isObject(status) && status.effective === 'suspended'
         && status.effectiveReason === 'parentSuspended' && !deactivated) {
       inherited.push(child.id);
     } else if (!isObject(status) || (ended
@@ -995,17 +1158,20 @@ async function lifecycle(ctx: Context, spec: LifecycleSpec): Promise<Check> {
   const identity = ctx.session.chain.deployment.identity;
   const before = tokenOutput(reclaim.inputs, identity, output.id);
   const after = tokenOutput(reclaim.outputs, identity, output.id);
-  if (before === null || after === null || parseOutRef(before.ref).txHash !== facts['set-successor']!.tx
-      || after.ref !== formatOutRef(reclaimTx, output.utxo.outputIndex) || after.datum !== output.utxo.datum
-      || before.datum !== after.datum || after.lovelace !== output.utxo.assets.lovelace) {
+  const bytes = output.utxo.datum;
+  if (before === null || after === null || !bytes || parseOutRef(before.ref).txHash !== facts['set-successor']!.tx
+      || after.ref !== formatOutRef(reclaimTx, output.utxo.outputIndex) || after.lovelace !== output.utxo.assets.lovelace) {
     return failed(name, 'the reclaim transaction does not spend the recorded predecessor and leave the tombstone that the node holds');
   }
+  const canonical = encodePlutusDataHex(decodePlutusDataHex(bytes));
+  const [beforeDatum, afterDatum] = await Promise.all([archivedDatum(ctx, before, bytes), archivedDatum(ctx, after, bytes)]);
+  if (beforeDatum !== canonical || afterDatum !== canonical) return failed(name, 'the reclaim transaction does not preserve the tombstone datum that the node holds');
   const incoming = reclaim.inputs.filter(({ ref }) => ref !== before.ref);
   const outgoing = reclaim.outputs.filter(({ ref }) => ref !== after.ref);
-  if (incoming.length === 0 || outgoing.length === 0 || [...incoming, ...outgoing].some(({ address }) => address !== feeWallet)) {
+  if (outgoing.length === 0 || [...incoming, ...outgoing].some(({ address }) => address !== feeWallet)) {
     return failed(name, 'the reclaim transaction has an input or payment outside the fee wallet and identity output');
   }
-  const received = outgoing.reduce((total, coin) => total + coin.lovelace, 0n) - incoming.reduce((total, coin) => total + coin.lovelace, 0n);
+  const received = walletCredit(feeWallet, reclaim);
   const release = before.lovelace - after.lovelace;
   if (received <= 0n || received !== release - reclaim.fee) return failed(name, 'the fee wallet did not receive the reclaimed deposit less the transaction fee');
   return passed(name, `all lifecycle steps are recorded; ${record.read.did} is Retired and names ${successor.did}; the deposit above the ledger minimum was reclaimed, and the fee wallet received ${units(received)}`);

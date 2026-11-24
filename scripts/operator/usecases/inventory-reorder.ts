@@ -240,7 +240,7 @@ const USE_CASE: UseCase = {
     },
     { id: 'r2-d', run: 'failure', what: 'The jury decides. The Order Desk gets a hold of 7 days, reason 64.', primitive: 'Module-1 verdict and hold', actor: 'relay' },
     {
-      id: 'r2-e', run: 'failure', what: 'The release watcher of the Order Desk releases the escrow 600 seconds after the submit. The supplier is paid.',
+      id: 'r2-e', run: 'failure', what: 'Check whether the Order Desk escrow ended without an accept or reclaim.',
       primitive: 'Escrow: release', actor: 'counterparty',
     },
     { id: 'r2-f', run: 'failure', what: 'A new `propose` that names the Order Desk during the hold finds no listed advert and fails.', primitive: 'Hold removes the agent from the listing', actor: 'agent' },
