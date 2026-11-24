@@ -3,11 +3,11 @@
 // decision `ranking`, and the ranking. Every source of data comes in through a port: this folder reads no environment variable and no key, and it does not import the folders of the other parts of the agent
 // (`model`, `bidders`, `quotes`, `scoring`, `execute` and `serve`).
 //
-//   propose   the front steps of the job, the refusal of a request that it cannot serve, the deadline and the two reserves, and the codes of a failed proposal (src/propose.ts)
+//   propose   `runPropose`, the refusal of a request that it cannot serve, the deadline and the two reserves, and the codes of a failed proposal (src/propose.ts)
+//   ranking   the quote that the agent holds, the order check, the excluded list and the ranking, made from what the job holds (src/ranking.ts)
 //   ports     `ProposeDeps` and the shapes that two folders share (src/ports.ts)
 //   result    the two forms of a result: the proposal and the failed proposal, each with `bidders` and `quotes` (src/result.ts)
-export { PROPOSE_DEADLINE_MS, PROPOSE_FAILURES, ProposeRefusal, RANKING_RESERVE_MS, SCORING_RESERVE_MS, runFront } from './propose.ts';
-export type { Front, Fronted } from './propose.ts';
+export { PROPOSE_DEADLINE_MS, PROPOSE_FAILURES, ProposeRefusal, RANKING_RESERVE_MS, SCORING_RESERVE_MS, runPropose } from './propose.ts';
 export type {
   AcceptedQuote, BidderFile, BidderLineage, BidderStatus, BidderToHire, BidderView, ComplianceFact, DecisionAnswer, DiscoverResult, ExcludedQuote, FactState, ProposeDeps, ProposeRequest, QuoteOutcome,
   QuoteRecord, QuotesInput, QuotesResult, RankInput, RankScored, RankingChoice, ScoreSubject, ScoredQuote, ScoringInput, ScoringResult, ShortlistChoice,

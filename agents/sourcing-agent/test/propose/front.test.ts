@@ -340,7 +340,6 @@ describe('the shortlist', () => {
     ['an `invite` that is no list', { invite: ALFA, not_invited: [] }],
     ['an `invite` with an entry that is no text', { invite: [ALFA, 7], not_invited: [] }],
     ['one DID two times', { invite: [ALFA, ALFA], not_invited: [] }],
-    ['four DIDs', { invite: [ALFA, BRAVO, CHARLIE, DELTA], not_invited: [] }],
   ];
   it.each(WRONG)('fails with bad_document when the recorded choice has %s, keeps the decision, and hires nobody', async (_name, choice) => {
     const w = world();

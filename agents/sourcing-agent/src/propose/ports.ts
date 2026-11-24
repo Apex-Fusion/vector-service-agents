@@ -185,7 +185,7 @@ export interface ScoreSubject {
 export interface ScoringInput {
   readonly tenant: TenantId;
   readonly delegation: DelegationId;
-  /** The date of the job, as `YYYY-MM-DD` in UTC. */
+  /** The date on which the scoring starts, as `YYYY-MM-DD` in UTC, by the clock of the job. */
   readonly today: string;
   readonly weights: Weights;
   readonly rfq: RfqDocument;

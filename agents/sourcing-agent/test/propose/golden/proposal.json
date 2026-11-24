@@ -1,0 +1,771 @@
+{
+  "schema": "vector.usecase.proposal.v1",
+  "use_case": "bid-evaluation",
+  "decisions": [
+    {
+      "name": "shortlist",
+      "choice": {
+        "invite": [
+          "did:vector:b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1",
+          "did:vector:b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+          "did:vector:b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3"
+        ],
+        "not_invited": []
+      },
+      "reasoning": "The reasoning of decision 1.",
+      "inference": {
+        "path": "marketplace",
+        "sub_job": {
+          "capability_id": "llm.text.generate.v1",
+          "advert_ref": "7171717171717171717171717171717171717171717171717171717171717171#0",
+          "escrow_ref": "8181818181818181818181818181818181818181818181818181818181818181#0",
+          "supplier_pkh": "91919191919191919191919191919191919191919191919191919191",
+          "receipt": {
+            "escrow_ref": "8181818181818181818181818181818181818181818181818181818181818181#0",
+            "model": "deepseek/deepseek-v4-flash"
+          },
+          "receipt_signature": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+          "verification": {
+            "escrow_ref_matches": true,
+            "response_hash_matches": true,
+            "supplier_key_matches": true,
+            "signature_valid": true,
+            "on_chain_hash_matches": true,
+            "prompt_hash_matches": true,
+            "model_matches": true,
+            "fields_match": true
+          }
+        },
+        "accepted": "confirmed"
+      }
+    },
+    {
+      "name": "accept_quote",
+      "choice": {
+        "accept": true,
+        "mismatch": []
+      },
+      "reasoning": "The reasoning of decision 11.",
+      "inference": {
+        "path": "marketplace",
+        "sub_job": {
+          "capability_id": "llm.text.generate.v1",
+          "advert_ref": "7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b#0",
+          "escrow_ref": "8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b#0",
+          "supplier_pkh": "9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b",
+          "receipt": {
+            "escrow_ref": "8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b#0",
+            "model": "deepseek/deepseek-v4-flash"
+          },
+          "receipt_signature": "abababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab",
+          "verification": {
+            "escrow_ref_matches": true,
+            "response_hash_matches": true,
+            "supplier_key_matches": true,
+            "signature_valid": true,
+            "on_chain_hash_matches": true,
+            "prompt_hash_matches": true,
+            "model_matches": true,
+            "fields_match": true
+          }
+        },
+        "accepted": "confirmed"
+      }
+    },
+    {
+      "name": "accept_quote",
+      "choice": {
+        "accept": true,
+        "mismatch": []
+      },
+      "reasoning": "The reasoning of decision 12.",
+      "inference": {
+        "path": "marketplace",
+        "sub_job": {
+          "capability_id": "llm.text.generate.v1",
+          "advert_ref": "7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c#0",
+          "escrow_ref": "8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c#0",
+          "supplier_pkh": "9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c",
+          "receipt": {
+            "escrow_ref": "8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c#0",
+            "model": "deepseek/deepseek-v4-flash"
+          },
+          "receipt_signature": "acacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacac",
+          "verification": {
+            "escrow_ref_matches": true,
+            "response_hash_matches": true,
+            "supplier_key_matches": true,
+            "signature_valid": true,
+            "on_chain_hash_matches": true,
+            "prompt_hash_matches": true,
+            "model_matches": true,
+            "fields_match": true
+          }
+        },
+        "accepted": "confirmed"
+      }
+    },
+    {
+      "name": "accept_quote",
+      "choice": {
+        "accept": true,
+        "mismatch": []
+      },
+      "reasoning": "The reasoning of decision 13.",
+      "inference": {
+        "path": "marketplace",
+        "sub_job": {
+          "capability_id": "llm.text.generate.v1",
+          "advert_ref": "7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d#0",
+          "escrow_ref": "8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d#0",
+          "supplier_pkh": "9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d",
+          "receipt": {
+            "escrow_ref": "8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d#0",
+            "model": "deepseek/deepseek-v4-flash"
+          },
+          "receipt_signature": "adadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadad",
+          "verification": {
+            "escrow_ref_matches": true,
+            "response_hash_matches": true,
+            "supplier_key_matches": true,
+            "signature_valid": true,
+            "on_chain_hash_matches": true,
+            "prompt_hash_matches": true,
+            "model_matches": true,
+            "fields_match": true
+          }
+        },
+        "accepted": "confirmed"
+      }
+    },
+    {
+      "name": "score",
+      "choice": {
+        "components": {
+          "price": 90,
+          "lead_time": 90,
+          "reliability": 90,
+          "compliance": 90
+        },
+        "score": 90
+      },
+      "reasoning": "The reasoning of decision 21.",
+      "inference": {
+        "path": "marketplace",
+        "sub_job": {
+          "capability_id": "llm.text.generate.v1",
+          "advert_ref": "8585858585858585858585858585858585858585858585858585858585858585#0",
+          "escrow_ref": "9595959595959595959595959595959595959595959595959595959595959595#0",
+          "supplier_pkh": "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
+          "receipt": {
+            "escrow_ref": "9595959595959595959595959595959595959595959595959595959595959595#0",
+            "model": "deepseek/deepseek-v4-flash"
+          },
+          "receipt_signature": "b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5",
+          "verification": {
+            "escrow_ref_matches": true,
+            "response_hash_matches": true,
+            "supplier_key_matches": true,
+            "signature_valid": true,
+            "on_chain_hash_matches": true,
+            "prompt_hash_matches": true,
+            "model_matches": true,
+            "fields_match": true
+          }
+        },
+        "accepted": "confirmed"
+      }
+    },
+    {
+      "name": "score",
+      "choice": {
+        "components": {
+          "price": 70,
+          "lead_time": 70,
+          "reliability": 70,
+          "compliance": 70
+        },
+        "score": 70
+      },
+      "reasoning": "The reasoning of decision 22.",
+      "inference": {
+        "path": "marketplace",
+        "sub_job": {
+          "capability_id": "llm.text.generate.v1",
+          "advert_ref": "8686868686868686868686868686868686868686868686868686868686868686#0",
+          "escrow_ref": "9696969696969696969696969696969696969696969696969696969696969696#0",
+          "supplier_pkh": "a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6",
+          "receipt": {
+            "escrow_ref": "9696969696969696969696969696969696969696969696969696969696969696#0",
+            "model": "deepseek/deepseek-v4-flash"
+          },
+          "receipt_signature": "b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6",
+          "verification": {
+            "escrow_ref_matches": true,
+            "response_hash_matches": true,
+            "supplier_key_matches": true,
+            "signature_valid": true,
+            "on_chain_hash_matches": true,
+            "prompt_hash_matches": true,
+            "model_matches": true,
+            "fields_match": true
+          }
+        },
+        "accepted": "confirmed"
+      }
+    },
+    {
+      "name": "score",
+      "choice": {
+        "components": {
+          "price": 80,
+          "lead_time": 80,
+          "reliability": 80,
+          "compliance": 80
+        },
+        "score": 80
+      },
+      "reasoning": "The reasoning of decision 23.",
+      "inference": {
+        "path": "marketplace",
+        "sub_job": {
+          "capability_id": "llm.text.generate.v1",
+          "advert_ref": "8787878787878787878787878787878787878787878787878787878787878787#0",
+          "escrow_ref": "9797979797979797979797979797979797979797979797979797979797979797#0",
+          "supplier_pkh": "a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7",
+          "receipt": {
+            "escrow_ref": "9797979797979797979797979797979797979797979797979797979797979797#0",
+            "model": "deepseek/deepseek-v4-flash"
+          },
+          "receipt_signature": "b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7",
+          "verification": {
+            "escrow_ref_matches": true,
+            "response_hash_matches": true,
+            "supplier_key_matches": true,
+            "signature_valid": true,
+            "on_chain_hash_matches": true,
+            "prompt_hash_matches": true,
+            "model_matches": true,
+            "fields_match": true
+          }
+        },
+        "accepted": "confirmed"
+      }
+    },
+    {
+      "name": "ranking",
+      "choice": {
+        "order": [
+          "did:vector:b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1",
+          "did:vector:b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3",
+          "did:vector:b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+        ],
+        "tie_break": ""
+      },
+      "reasoning": "The reasoning of decision 2.",
+      "inference": {
+        "path": "marketplace",
+        "sub_job": {
+          "capability_id": "llm.text.generate.v1",
+          "advert_ref": "7272727272727272727272727272727272727272727272727272727272727272#0",
+          "escrow_ref": "8282828282828282828282828282828282828282828282828282828282828282#0",
+          "supplier_pkh": "92929292929292929292929292929292929292929292929292929292",
+          "receipt": {
+            "escrow_ref": "8282828282828282828282828282828282828282828282828282828282828282#0",
+            "model": "deepseek/deepseek-v4-flash"
+          },
+          "receipt_signature": "a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2",
+          "verification": {
+            "escrow_ref_matches": true,
+            "response_hash_matches": true,
+            "supplier_key_matches": true,
+            "signature_valid": true,
+            "on_chain_hash_matches": true,
+            "prompt_hash_matches": true,
+            "model_matches": true,
+            "fields_match": true
+          }
+        },
+        "accepted": "confirmed"
+      }
+    }
+  ],
+  "sub_jobs": [
+    {
+      "capability_id": "supplychain.rfq.quote.v1",
+      "advert_ref": "4141414141414141414141414141414141414141414141414141414141414141#0",
+      "escrow_ref": "5151515151515151515151515151515151515151515151515151515151515151#0",
+      "supplier_pkh": "61616161616161616161616161616161616161616161616161616161",
+      "receipt": {
+        "escrow_ref": "5151515151515151515151515151515151515151515151515151515151515151#0",
+        "model": "bid-desk-v1"
+      },
+      "receipt_signature": "71717171717171717171717171717171717171717171717171717171717171717171717171717171717171717171717171717171717171717171717171717171",
+      "verification": {
+        "escrow_ref_matches": true,
+        "response_hash_matches": true,
+        "supplier_key_matches": true,
+        "signature_valid": true,
+        "on_chain_hash_matches": true,
+        "prompt_hash_matches": true,
+        "model_matches": true,
+        "fields_match": true
+      }
+    },
+    {
+      "capability_id": "supplychain.rfq.quote.v1",
+      "advert_ref": "4242424242424242424242424242424242424242424242424242424242424242#0",
+      "escrow_ref": "5252525252525252525252525252525252525252525252525252525252525252#0",
+      "supplier_pkh": "62626262626262626262626262626262626262626262626262626262",
+      "receipt": {
+        "escrow_ref": "5252525252525252525252525252525252525252525252525252525252525252#0",
+        "model": "bid-desk-v1"
+      },
+      "receipt_signature": "72727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272",
+      "verification": {
+        "escrow_ref_matches": true,
+        "response_hash_matches": true,
+        "supplier_key_matches": true,
+        "signature_valid": true,
+        "on_chain_hash_matches": true,
+        "prompt_hash_matches": true,
+        "model_matches": true,
+        "fields_match": true
+      }
+    },
+    {
+      "capability_id": "supplychain.rfq.quote.v1",
+      "advert_ref": "4343434343434343434343434343434343434343434343434343434343434343#0",
+      "escrow_ref": "5353535353535353535353535353535353535353535353535353535353535353#0",
+      "supplier_pkh": "63636363636363636363636363636363636363636363636363636363",
+      "receipt": {
+        "escrow_ref": "5353535353535353535353535353535353535353535353535353535353535353#0",
+        "model": "bid-desk-v1"
+      },
+      "receipt_signature": "73737373737373737373737373737373737373737373737373737373737373737373737373737373737373737373737373737373737373737373737373737373",
+      "verification": {
+        "escrow_ref_matches": true,
+        "response_hash_matches": true,
+        "supplier_key_matches": true,
+        "signature_valid": true,
+        "on_chain_hash_matches": true,
+        "prompt_hash_matches": true,
+        "model_matches": true,
+        "fields_match": true
+      }
+    }
+  ],
+  "fault_mode": "",
+  "outcome": "proposed",
+  "exit_state": null,
+  "reason": null,
+  "bidders": [
+    {
+      "did": "did:vector:b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1",
+      "advert_ref": "3131313131313131313131313131313131313131313131313131313131313131#0",
+      "status": "active",
+      "status_reason": null,
+      "lineage": {
+        "hold_until": null,
+        "ended_at": null,
+        "invalid_from": null,
+        "successor": null,
+        "recovery_pending": false
+      },
+      "accountable": "acacacacacacacacacacacacacacacacacacacacacacacacacacacac",
+      "organisation": "alfa.example",
+      "organisation_verified": true,
+      "in_catalog": true,
+      "stake_lovelace": "10000000",
+      "cases_against": 0,
+      "price_list": "valid",
+      "compliance": {
+        "state": "valid",
+        "attestation": "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1",
+        "attestation_state": "active",
+        "issued_at": "2026-11-14T12:00:00Z",
+        "valid_until": "2027-02-12T12:00:00Z",
+        "revoked_at": null,
+        "revoke_reason": null,
+        "contested": null
+      },
+      "credential": "valid"
+    },
+    {
+      "did": "did:vector:b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+      "advert_ref": "3232323232323232323232323232323232323232323232323232323232323232#0",
+      "status": "active",
+      "status_reason": null,
+      "lineage": {
+        "hold_until": null,
+        "ended_at": null,
+        "invalid_from": null,
+        "successor": null,
+        "recovery_pending": false
+      },
+      "accountable": "acacacacacacacacacacacacacacacacacacacacacacacacacacacac",
+      "organisation": "bravo.example",
+      "organisation_verified": true,
+      "in_catalog": true,
+      "stake_lovelace": "10000000",
+      "cases_against": 0,
+      "price_list": "valid",
+      "compliance": {
+        "state": "valid",
+        "attestation": "c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2",
+        "attestation_state": "active",
+        "issued_at": "2026-11-14T12:00:00Z",
+        "valid_until": "2027-02-12T12:00:00Z",
+        "revoked_at": null,
+        "revoke_reason": null,
+        "contested": null
+      },
+      "credential": "valid"
+    },
+    {
+      "did": "did:vector:b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3",
+      "advert_ref": "3333333333333333333333333333333333333333333333333333333333333333#0",
+      "status": "active",
+      "status_reason": null,
+      "lineage": {
+        "hold_until": null,
+        "ended_at": null,
+        "invalid_from": null,
+        "successor": null,
+        "recovery_pending": false
+      },
+      "accountable": "acacacacacacacacacacacacacacacacacacacacacacacacacacacac",
+      "organisation": "charlie.example",
+      "organisation_verified": true,
+      "in_catalog": true,
+      "stake_lovelace": "10000000",
+      "cases_against": 0,
+      "price_list": "valid",
+      "compliance": {
+        "state": "valid",
+        "attestation": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+        "attestation_state": "active",
+        "issued_at": "2026-11-14T12:00:00Z",
+        "valid_until": "2027-02-12T12:00:00Z",
+        "revoked_at": null,
+        "revoke_reason": null,
+        "contested": null
+      },
+      "credential": "valid"
+    }
+  ],
+  "quotes": [
+    {
+      "desk_did": "did:vector:b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1",
+      "advert_ref": "4141414141414141414141414141414141414141414141414141414141414141#0",
+      "escrow_ref": "5151515151515151515151515151515151515151515151515151515151515151#0",
+      "paid_from_vault": true,
+      "receipt": {
+        "escrow_ref": "5151515151515151515151515151515151515151515151515151515151515151#0",
+        "model": "bid-desk-v1"
+      },
+      "receipt_signature": "71717171717171717171717171717171717171717171717171717171717171717171717171717171717171717171717171717171717171717171717171717171",
+      "verification": {
+        "escrow_ref_matches": true,
+        "response_hash_matches": true,
+        "supplier_key_matches": true,
+        "signature_valid": true,
+        "on_chain_hash_matches": true,
+        "prompt_hash_matches": true,
+        "model_matches": true,
+        "fields_match": true
+      },
+      "result": {
+        "schema": "vector.usecase.quote.v1",
+        "outcome": "done",
+        "rfq_id": "rfq-2026-11",
+        "rfq_sha256": "3ae0b5134f33c971b830d5145c56df5c1cdda163e4b98be3b5b7442f67b213b8",
+        "desk_did": "did:vector:b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1",
+        "organisation": "alfa.example",
+        "lines": [
+          {
+            "sku": "GLV-NIT-M",
+            "quantity": 500,
+            "unit_price": 100,
+            "line_total": 50000,
+            "lead_time_days": 7
+          },
+          {
+            "sku": "SYR-10ML",
+            "quantity": 200,
+            "unit_price": 40,
+            "line_total": 8000,
+            "lead_time_days": 5
+          }
+        ],
+        "total": 58000,
+        "lead_time_days": 7,
+        "valid_until": "2026-12-31",
+        "notes": "Valid for the quantities of the request.",
+        "price_list_sha256": "8f6643e7d687127ddde8ef44efd7f0e2094d1843ac5e2a55afa8cd95c2466fc9",
+        "credential": "aaaaaaaa.bbbbbbbb.cccccccc",
+        "sender": {
+          "did": "did:vector:a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0",
+          "organisation": "operator.example",
+          "organisation_verified": true
+        },
+        "checks": {
+          "sender_active": true,
+          "sender_accountable": true,
+          "sender_key": true,
+          "delegation": true,
+          "delegation_usable": true,
+          "vault_paid": true,
+          "not_duplicate": true
+        },
+        "decisions": [
+          {
+            "name": "quote",
+            "choice": {
+              "lines": [],
+              "valid_until": "2026-12-31",
+              "notes": ""
+            },
+            "reasoning": "The reasoning of decision 90.",
+            "inference": {
+              "path": "marketplace",
+              "sub_job": {
+                "capability_id": "llm.text.generate.v1",
+                "advert_ref": "cacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacaca#0",
+                "escrow_ref": "dadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadada#0",
+                "supplier_pkh": "eaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaea",
+                "receipt": {
+                  "escrow_ref": "dadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadada#0",
+                  "model": "deepseek/deepseek-v4-flash"
+                },
+                "receipt_signature": "fafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafa",
+                "verification": {
+                  "escrow_ref_matches": true,
+                  "response_hash_matches": true,
+                  "supplier_key_matches": true,
+                  "signature_valid": true,
+                  "on_chain_hash_matches": true,
+                  "prompt_hash_matches": true,
+                  "model_matches": true,
+                  "fields_match": true
+                }
+              },
+              "accepted": "confirmed"
+            }
+          }
+        ],
+        "fault_mode": ""
+      },
+      "accepted": "confirmed",
+      "challenge": null
+    },
+    {
+      "desk_did": "did:vector:b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+      "advert_ref": "4242424242424242424242424242424242424242424242424242424242424242#0",
+      "escrow_ref": "5252525252525252525252525252525252525252525252525252525252525252#0",
+      "paid_from_vault": true,
+      "receipt": {
+        "escrow_ref": "5252525252525252525252525252525252525252525252525252525252525252#0",
+        "model": "bid-desk-v1"
+      },
+      "receipt_signature": "72727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272",
+      "verification": {
+        "escrow_ref_matches": true,
+        "response_hash_matches": true,
+        "supplier_key_matches": true,
+        "signature_valid": true,
+        "on_chain_hash_matches": true,
+        "prompt_hash_matches": true,
+        "model_matches": true,
+        "fields_match": true
+      },
+      "result": {
+        "schema": "vector.usecase.quote.v1",
+        "outcome": "done",
+        "rfq_id": "rfq-2026-11",
+        "rfq_sha256": "3ae0b5134f33c971b830d5145c56df5c1cdda163e4b98be3b5b7442f67b213b8",
+        "desk_did": "did:vector:b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+        "organisation": "bravo.example",
+        "lines": [
+          {
+            "sku": "GLV-NIT-M",
+            "quantity": 500,
+            "unit_price": 95,
+            "line_total": 47500,
+            "lead_time_days": 10
+          },
+          {
+            "sku": "SYR-10ML",
+            "quantity": 200,
+            "unit_price": 42,
+            "line_total": 8400,
+            "lead_time_days": 9
+          }
+        ],
+        "total": 55900,
+        "lead_time_days": 10,
+        "valid_until": "2026-12-31",
+        "notes": "Valid for the quantities of the request.",
+        "price_list_sha256": "8f6643e7d687127ddde8ef44efd7f0e2094d1843ac5e2a55afa8cd95c2466fc9",
+        "credential": "aaaaaaaa.bbbbbbbb.cccccccc",
+        "sender": {
+          "did": "did:vector:a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0",
+          "organisation": "operator.example",
+          "organisation_verified": true
+        },
+        "checks": {
+          "sender_active": true,
+          "sender_accountable": true,
+          "sender_key": true,
+          "delegation": true,
+          "delegation_usable": true,
+          "vault_paid": true,
+          "not_duplicate": true
+        },
+        "decisions": [
+          {
+            "name": "quote",
+            "choice": {
+              "lines": [],
+              "valid_until": "2026-12-31",
+              "notes": ""
+            },
+            "reasoning": "The reasoning of decision 90.",
+            "inference": {
+              "path": "marketplace",
+              "sub_job": {
+                "capability_id": "llm.text.generate.v1",
+                "advert_ref": "cacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacaca#0",
+                "escrow_ref": "dadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadada#0",
+                "supplier_pkh": "eaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaea",
+                "receipt": {
+                  "escrow_ref": "dadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadada#0",
+                  "model": "deepseek/deepseek-v4-flash"
+                },
+                "receipt_signature": "fafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafa",
+                "verification": {
+                  "escrow_ref_matches": true,
+                  "response_hash_matches": true,
+                  "supplier_key_matches": true,
+                  "signature_valid": true,
+                  "on_chain_hash_matches": true,
+                  "prompt_hash_matches": true,
+                  "model_matches": true,
+                  "fields_match": true
+                }
+              },
+              "accepted": "confirmed"
+            }
+          }
+        ],
+        "fault_mode": ""
+      },
+      "accepted": "confirmed",
+      "challenge": null
+    },
+    {
+      "desk_did": "did:vector:b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3",
+      "advert_ref": "4343434343434343434343434343434343434343434343434343434343434343#0",
+      "escrow_ref": "5353535353535353535353535353535353535353535353535353535353535353#0",
+      "paid_from_vault": true,
+      "receipt": {
+        "escrow_ref": "5353535353535353535353535353535353535353535353535353535353535353#0",
+        "model": "bid-desk-v1"
+      },
+      "receipt_signature": "73737373737373737373737373737373737373737373737373737373737373737373737373737373737373737373737373737373737373737373737373737373",
+      "verification": {
+        "escrow_ref_matches": true,
+        "response_hash_matches": true,
+        "supplier_key_matches": true,
+        "signature_valid": true,
+        "on_chain_hash_matches": true,
+        "prompt_hash_matches": true,
+        "model_matches": true,
+        "fields_match": true
+      },
+      "result": {
+        "schema": "vector.usecase.quote.v1",
+        "outcome": "done",
+        "rfq_id": "rfq-2026-11",
+        "rfq_sha256": "3ae0b5134f33c971b830d5145c56df5c1cdda163e4b98be3b5b7442f67b213b8",
+        "desk_did": "did:vector:b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3",
+        "organisation": "charlie.example",
+        "lines": [
+          {
+            "sku": "GLV-NIT-M",
+            "quantity": 500,
+            "unit_price": 105,
+            "line_total": 52500,
+            "lead_time_days": 6
+          },
+          {
+            "sku": "SYR-10ML",
+            "quantity": 200,
+            "unit_price": 38,
+            "line_total": 7600,
+            "lead_time_days": 4
+          }
+        ],
+        "total": 60100,
+        "lead_time_days": 6,
+        "valid_until": "2026-12-31",
+        "notes": "Valid for the quantities of the request.",
+        "price_list_sha256": "8f6643e7d687127ddde8ef44efd7f0e2094d1843ac5e2a55afa8cd95c2466fc9",
+        "credential": "aaaaaaaa.bbbbbbbb.cccccccc",
+        "sender": {
+          "did": "did:vector:a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0",
+          "organisation": "operator.example",
+          "organisation_verified": true
+        },
+        "checks": {
+          "sender_active": true,
+          "sender_accountable": true,
+          "sender_key": true,
+          "delegation": true,
+          "delegation_usable": true,
+          "vault_paid": true,
+          "not_duplicate": true
+        },
+        "decisions": [
+          {
+            "name": "quote",
+            "choice": {
+              "lines": [],
+              "valid_until": "2026-12-31",
+              "notes": ""
+            },
+            "reasoning": "The reasoning of decision 90.",
+            "inference": {
+              "path": "marketplace",
+              "sub_job": {
+                "capability_id": "llm.text.generate.v1",
+                "advert_ref": "cacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacaca#0",
+                "escrow_ref": "dadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadada#0",
+                "supplier_pkh": "eaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaea",
+                "receipt": {
+                  "escrow_ref": "dadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadada#0",
+                  "model": "deepseek/deepseek-v4-flash"
+                },
+                "receipt_signature": "fafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafa",
+                "verification": {
+                  "escrow_ref_matches": true,
+                  "response_hash_matches": true,
+                  "supplier_key_matches": true,
+                  "signature_valid": true,
+                  "on_chain_hash_matches": true,
+                  "prompt_hash_matches": true,
+                  "model_matches": true,
+                  "fields_match": true
+                }
+              },
+              "accepted": "confirmed"
+            }
+          }
+        ],
+        "fault_mode": ""
+      },
+      "accepted": "confirmed",
+      "challenge": null
+    }
+  ]
+}

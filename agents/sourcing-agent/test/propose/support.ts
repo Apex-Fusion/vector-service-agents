@@ -2,16 +2,19 @@
 // the scoring. The golden world is three bidders that the model invites, three quotes that it accepts, three scores and an order. A test changes one thing in a copy of it, so each refusal has the golden world
 // as its accepted twin. The clock is a number that the test moves, and the tests that need the deadline give a job that arrived almost one deadline ago, so a hang ends after a few milliseconds of real time.
 // No test uses the network.
+import { readFileSync } from 'node:fs';
 import { expect } from 'vitest';
-import { QUOTE_SCHEMA, parsePriceList, priceListSha256, quoteTotals, rfqSha256 } from '@vsa/usecase-kit/bids';
-import type { PriceList, Quote, RfqDocument, Weights } from '@vsa/usecase-kit/bids';
+import { QUOTE_SCHEMA, parsePriceList, parseRanking, priceListSha256, quoteTotals, receiptSha256, rfqSha256 } from '@vsa/usecase-kit/bids';
+import type { PriceList, Quote, Ranking, RfqDocument, Weights } from '@vsa/usecase-kit/bids';
 import type { DelegationReading } from '@vsa/usecase-kit/buyer';
 import type { Decision, DelegationId, Did, JsonValue, SubJob } from '@vsa/usecase-kit/protocol';
-import { PROPOSE_DEADLINE_MS, runFront } from '../../src/propose/index.ts';
+import { PROPOSE_DEADLINE_MS, runPropose } from '../../src/propose/index.ts';
 import type {
-  AcceptedQuote, BidderFile, BidderView, DecisionAnswer, DiscoverResult, ExcludedQuote, Fronted, ProposeDeps, ProposeRequest, QuoteRecord, QuotesInput, QuotesResult, RankInput, RankingChoice, ScoredQuote,
-  ScoringInput, ScoringResult, ShortlistChoice, SourcingFailed,
+  AcceptedQuote, BidderFile, BidderView, DecisionAnswer, DiscoverResult, ExcludedQuote, ProposeDeps, ProposeRequest, QuoteRecord, QuotesInput, QuotesResult, RankInput, RankingChoice, ScoredQuote,
+  ScoringInput, ScoringResult, ShortlistChoice, SourcingFailed, SourcingProposal, SourcingResult,
 } from '../../src/propose/index.ts';
+import { runFront } from '../../src/propose/propose.ts';
+import type { Fronted } from '../../src/propose/propose.ts';
 
 /** A byte, 32 times: a transaction hash, an agent id or a delegation id. */
 export const hex32 = (n: number): string => n.toString(16).padStart(2, '0').repeat(32);
@@ -37,7 +40,8 @@ export const ALFA = didOf(0xb1);
 export const BRAVO = didOf(0xb2);
 export const CHARLIE = didOf(0xb3);
 export const DELTA = didOf(0xb4);
-export const ECHO = didOf(0xb5);
+export const FIFTH = didOf(0xb5);
+export const SIXTH = didOf(0xb6);
 
 export const RFQ: RfqDocument = {
   rfq_id: 'rfq-2026-11',
@@ -73,7 +77,7 @@ export function subJobOf(capability: string, n: number): SubJob {
 
 /** A decision of the model, as a model hire gives it: the recorded choice, the reasoning, and the job that was paid. */
 export function decisionOf(name: string, choice: JsonValue, n: number): Decision {
-  return { name, choice, reasoning: `The reasoning of decision ${n}.`, inference: { path: 'marketplace', sub_job: subJobOf('llm.text.generate.v1', n), accepted: 'confirmed' } };
+  return { name, choice, reasoning: `The reasoning of decision ${n}.`, inference: { path: 'marketplace', sub_job: subJobOf('llm.text.generate.v1', 0x30 + n), accepted: 'confirmed' } };
 }
 
 const PRICE_LIST: PriceList = {
@@ -211,13 +215,13 @@ export function rankAnswer(order: readonly Did[], tieBreak = ''): Answered<Ranki
 
 /** The golden fan-out: an accepted quote for each invited bidder, in the order of the invitation. */
 export function goldenQuotes(input: QuotesInput): QuotesResult {
-  const names = new Map<string, [number, string]>([[ALFA, [1, 'alfa']], [BRAVO, [2, 'bravo']], [CHARLIE, [3, 'charlie']], [DELTA, [4, 'delta']], [ECHO, [5, 'echo']]]);
+  const names = new Map<string, [number, string]>([[ALFA, [1, 'alfa']], [BRAVO, [2, 'bravo']], [CHARLIE, [3, 'charlie']], [DELTA, [4, 'delta']]]);
   return { outcomes: input.invited.map((bidder) => acceptedOf(bidder.did, names.get(bidder.did)![0], names.get(bidder.did)![1])), stopped: null };
 }
 
 /** The golden scoring: a score for each subject, in the order of the subjects. */
 export function goldenScoring(input: ScoringInput): ScoringResult {
-  const numbers = new Map<string, number>([[ALFA, 1], [BRAVO, 2], [CHARLIE, 3], [DELTA, 4], [ECHO, 5]]);
+  const numbers = new Map<string, number>([[ALFA, 1], [BRAVO, 2], [CHARLIE, 3], [DELTA, 4]]);
   return { ok: true, scores: input.subjects.map((subject) => scoredOf(subject.did, numbers.get(subject.did)!)) };
 }
 
@@ -260,6 +264,8 @@ export interface World {
   readonly deps: ProposeDeps<TestKey>;
   /** Runs the steps 1 to 4. */
   front(over?: RunOptions): Promise<Fronted<TestKey>>;
+  /** Runs the whole job. */
+  run(over?: RunOptions): Promise<SourcingResult>;
 }
 
 /** The request of the golden run: the delegation of the hirer to this agent, the tenant, the request for quotation and the weights. */
@@ -279,7 +285,7 @@ export function world(): World {
     shortlist: async () => shortlistAnswer([ALFA, BRAVO, CHARLIE]),
     quotes: async (input) => goldenQuotes(input),
     scoring: async (input) => goldenScoring(input),
-    rank: async () => rankAnswer([ALFA, CHARLIE, BRAVO]),
+    rank: async (input) => rankAnswer([...input.scored].sort((a, b) => b.score - a.score).map((scored) => scored.desk_did)),
   };
   const deps: ProposeDeps<TestKey> = {
     agent: { did: AGENT_DID },
@@ -325,6 +331,7 @@ export function world(): World {
   return {
     clock, trace, calls, logs, script, deps,
     front: (over = {}) => runFront({ ...deps, ...over.deps }, { ...REQUEST, ...over.request }, over.arrivedAt ?? NOW, over.signal),
+    run: (over = {}) => runPropose({ ...deps, ...over.deps }, { ...REQUEST, ...over.request }, over.arrivedAt ?? NOW, over.signal),
   };
 }
 
@@ -350,4 +357,40 @@ export function failure(fronted: Fronted<TestKey>, reason: string): SourcingFail
   if (fronted.ok) throw new Error(`the front steps went on, and the test expected the failure ${reason}`);
   expectFailed(fronted.result, reason);
   return fronted.result;
+}
+
+/** The proposal of a result that must be a proposal. */
+export function proposed(result: SourcingResult): SourcingProposal {
+  if (result.outcome !== 'proposed') throw new Error(`the job failed with the reason ${result.reason}, and the test expected a proposal`);
+  return result;
+}
+
+/** A golden file of this folder, as the JSON that it holds. */
+export const readGolden = (name: string): unknown => JSON.parse(readFileSync(new URL(`./golden/${name}.json`, import.meta.url), 'utf8'));
+
+/** The names of a list of decisions, in order. */
+export const namesOf = (decisions: readonly Decision[]): string[] => decisions.map((decision) => decision.name);
+
+/** A result of the fan-out. */
+export const fanOf = (outcomes: QuotesResult['outcomes'], stopped: QuotesResult['stopped'] = null): QuotesResult => ({ outcomes, stopped });
+
+/** The ranking of a proposal, as the kit reads it. */
+export function rankingOf(result: SourcingProposal): Ranking {
+  const ranking = parseRanking(result.document);
+  if (!ranking.ok) throw new Error('the document of the proposal is no ranking');
+  return ranking.value;
+}
+
+/** The hash of the golden request for quotation. */
+export function rfqHash(): string {
+  const hash = rfqSha256(RFQ);
+  if (!hash.ok) throw new Error('the request has no hash');
+  return hash.value;
+}
+
+/** The hash of the signed receipt of a record, as the ranking cites it. */
+export function receiptHash(record: QuoteRecord): string {
+  const hash = receiptSha256(record.receipt, record.receipt_signature);
+  if (!hash.ok) throw new Error('the record has no receipt hash');
+  return hash.value;
 }
