@@ -1,18 +1,26 @@
+import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { isDeepStrictEqual } from 'node:util';
-import { decodeClaimDatum, soleTokenName, utxoOfKoiosRow } from '../../../packages/buyer-core/src/index.ts';
+import { decodeClaimDatum, paymentKeyHashOf, soleTokenName, utxoOfKoiosRow } from '../../../packages/buyer-core/src/index.ts';
+import type { Module1Deployment } from '../../../packages/buyer-core/src/index.ts';
 // The package entry does not export the identity build window, guardian rules or datum encoder.
 import { windowAt } from '../../../packages/buyer-core/src/vendored/mcp/identity-chain.ts';
 import { activeKey, DAYS_7_MS, eligibleGuardian, tombstone } from '../../../packages/buyer-core/src/vendored/mcp/identity-rules.ts';
+import { koiosPostList } from '../../../packages/buyer-core/src/vendored/mcp/marketplace-indexer.ts';
+import { addressDetails } from '../../../packages/vector-read/src/guarded-decode.ts';
 import { decodeIdentityAdvertDatum } from '../../../packages/vector-read/src/index.ts';
 import { encodeIdentityDatum, utf8Hex } from '../../../packages/vector-read/src/identity-codec.ts';
 import type { IdentityDatum } from '../../../packages/vector-read/src/identity-codec.ts';
 import type { Module1Provider } from '../../../packages/usecase-kit/src/dispute/index.ts';
 import { duration, iso } from '../../checks/lib/format.ts';
 import { PreconditionError } from '../../checks/lib/session.ts';
+import { StateFile } from '../../checks/lib/state.ts';
 import type { StepRecord } from '../../checks/lib/state.ts';
 import { VerificationError } from '../../checks/lib/verify.ts';
-import type { AgentSpec, LifecycleSpec, TaskDefinition, TaskSession } from '../lib/contract.ts';
+import { requireGo } from '../lib/approval.ts';
+import { proveAdvertRetirement, readConfirmedSpend, valueSeal } from '../lib/confirmed-spend.ts';
+import type { AdvertFact, AgentSpec, ClaimFact, LifecycleSpec, TaskDefinition, TaskSession } from '../lib/contract.ts';
+import { readRunning, requireRuntimesFree, runtimesOf } from '../lib/free.ts';
 import { blake2b256Hex, createModule1Port, effectiveStatus, formatOutRef, keyHashOf, koiosUtxoInfo, module1FromManifest, PURPOSE, readManifest } from '../lib/platform.ts';
 import type { RecordUtxo } from '../lib/platform.ts';
 import { readRecord, recordFact, recordSpendStep, resolverReading } from '../lib/record-spend.ts';
@@ -37,6 +45,8 @@ const TOOLS = {
   [SUCCESSOR]: 'vector_build_identity_set_successor', [RECLAIM]: 'vector_build_identity_reclaim',
 } as const;
 const IRREVERSIBLE = { [CHANGE]: 'controller-change', [COMPLETE]: COMPLETE, [RETIRE]: RETIRE, [SUCCESSOR]: 'successor' } as const;
+const PREVIOUS_RECORD = { [CHANGE]: null, [START]: CHANGE, [COMPLETE]: START, [RETIRE]: COMPLETE, [SUCCESSOR]: RETIRE, [RECLAIM]: SUCCESSOR } as const;
+const tagOf = (step: Action) => step === START || step === RECLAIM ? undefined : IRREVERSIBLE[step];
 const EARLY = 'earlyRecoveryCompletion';
 const EARLY_TIMEOUT_MS = 15_000;
 const BUILD_LEAD_MS = 60_000;
@@ -47,11 +57,18 @@ const REF = /^[0-9a-f]{64}#(?:0|[1-9][0-9]{0,9})$/;
 
 interface Target { readonly lifecycle: LifecycleSpec; readonly agent: AgentSpec }
 type Session = TaskSession<Target>;
+type Progress = Pick<Session, 'facts'> & { state: Pick<StateFile, 'step'> };
+type RecordCheck = Progress & Pick<Session, 'chain' | 'extra'>;
+type Closeout = Pick<Session, 'extra' | 'facts' | 'chain' | 'settings' | 'fetchImpl' | 'use'>
+  & { clock: Pick<Session['clock'], 'now'>; node: Pick<Session['node'], 'resolveInputs' | 'txStatus'>; registry: Pick<Session['registry'], 'addressOf'> };
+const fields = (value: unknown): Record<string, unknown> | null =>
+  typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : null;
+const digits = (value: unknown): value is string => typeof value === 'string' && /^[0-9]{1,20}$/.test(value);
 const refOf = ({ utxo }: RecordUtxo): string => formatOutRef(utxo.txHash, utxo.outputIndex);
 const datumHashOf = (record: IdentityDatum): string => blake2b256Hex(Buffer.from(encodeIdentityDatum(record), 'hex'));
 const lowerBound = (time: number): number => windowAt(time).lo;
 
-function requireNetwork(session: Session): void {
+function requireNetwork(session: Pick<Session, 'networkResult'>): void {
   if (session.networkResult()?.ok !== true) throw new PreconditionError('The node did not pass the network guard.');
 }
 
@@ -79,7 +96,7 @@ function assertController(session: Session, record: IdentityDatum, name: string)
 }
 
 /** Each verified step has its own fact and follows the exact output of the previous step. */
-function lastStep(session: Session): Step | null {
+function lastStep(session: Progress): Step | null {
   const facts = session.facts.read().lifecycle;
   let last: Step | null = null;
   let previous: StepRecord | undefined;
@@ -108,7 +125,7 @@ function lastStep(session: Session): Step | null {
   return last;
 }
 
-function verified(session: Session, step: Step): StepRecord {
+function verified(session: Progress, step: Step): StepRecord {
   const part = session.state.step(step);
   if (part === undefined || part.verified_at === null || session.facts.read().lifecycle[step] === undefined) {
     throw new PreconditionError(`Verify ${step} in this lifecycle run first.`);
@@ -116,7 +133,7 @@ function verified(session: Session, step: Step): StepRecord {
   return part;
 }
 
-function assertOutput(session: Session, step: Action, current: RecordUtxo): StepRecord {
+function assertOutput(session: RecordCheck, step: Action, current: RecordUtxo): StepRecord {
   const saved = verified(session, step);
   const { address, hash } = session.chain.deployment.identity;
   if (saved.facts.agent !== session.extra.agent.id || saved.facts.did !== `did:vector:${current.id}` || saved.refs.recordAfter !== refOf(current)
@@ -157,7 +174,7 @@ function guardianIndices(session: Session, record: IdentityDatum, lo: number, hi
 }
 
 /** An absent node output must also have a historical row that proves what was spent. */
-async function spentOutputs(session: Session, refs: string[]): Promise<Map<string, Awaited<ReturnType<typeof koiosUtxoInfo>>[number]>> {
+async function spentOutputs(session: Closeout, refs: string[]): Promise<Map<string, Awaited<ReturnType<typeof koiosUtxoInfo>>[number]>> {
   if (refs.some((ref) => !REF.test(ref)) || new Set(refs).size !== refs.length) throw new PreconditionError('The closeout facts do not identify distinct outputs.');
   if (refs.length === 0) return new Map();
   let rows: Awaited<ReturnType<typeof koiosUtxoInfo>>;
@@ -175,7 +192,136 @@ async function spentOutputs(session: Session, refs: string[]): Promise<Map<strin
   return byRef;
 }
 
-async function requireClosed(session: Session, current: RecordUtxo): Promise<void> {
+type SpentRows = Awaited<ReturnType<typeof spentOutputs>>;
+
+async function requireRetiredAdverts(session: Closeout, current: RecordUtxo, adverts: Readonly<Record<string, AdvertFact>>, rows: SpentRows): Promise<void> {
+  const { agent } = session.extra;
+  const { address, hash } = session.chain.deployment.advert;
+  try {
+    // A Retired update still holds the deposit. Only the confirmed retirement receipt can prove a release.
+    const state = StateFile.peek(join(session.settings.stateDir, 'advert.state.json'));
+    if (state === null || state.check !== 'advert' || state.network !== session.settings.network.name || state.record !== session.use.name) {
+      throw new PreconditionError('Retire the recorded adverts with advert cleanup in the default state stream first.');
+    }
+    for (const [model, fact] of Object.entries(adverts)) {
+      const advert = agent.adverts.find((candidate) => candidate.model === model);
+      const row = rows.get(fact.ref);
+      const datum = typeof row?.inline_datum?.bytes === 'string' ? decodeIdentityAdvertDatum(row.inline_datum.bytes) : null;
+      if (row?.address !== address || !digits(row.value) || advert === undefined || row.value !== String(advert.depositLovelace)
+        || !HASH.test(fact.tx) || !fact.ref.startsWith(`${fact.tx}#`) || datum === null
+        || datum.agent_id !== current.id || datum.model !== model || datum.capability_id !== agent.capability || datum.detail_uri !== fact.detailUri
+        || datum.detail_hash !== fact.detailHash || datum.endpoint_url !== fact.endpoint || datum.status !== 'Active'
+        || !activeKey(current.record, datum.supplier_pkh, PURPOSE.transaction)) {
+        throw new PreconditionError('A spent advert does not match the recorded advert of the retiring agent.');
+      }
+      const saved = fields(state.notes[`part.retire:${agent.id}:${model}`]);
+      const receipt = fields(saved?.facts);
+      const tx = saved?.tx_hash;
+      const supplier = receipt?.supplierAddress;
+      if (typeof saved?.verified_at !== 'string' || !Number.isFinite(Date.parse(saved.verified_at)) || typeof tx !== 'string' || !HASH.test(tx)
+        || fields(saved.refs)?.retiredRef !== fact.ref
+        || receipt?.phase !== 'retire' || receipt.agent !== agent.id || receipt.model !== model || receipt.supplierPkh !== datum.supplier_pkh
+        || typeof supplier !== 'string' || paymentKeyHashOf(supplier) !== datum.supplier_pkh || receipt.depositLovelace !== row.value
+        || !digits(receipt.feeLovelace) || !digits(receipt.creditLovelace) || typeof receipt.valueSeal !== 'string' || !HASH.test(receipt.valueSeal)
+        || typeof receipt.approvalSession !== 'string' || receipt.approvalSession === '') {
+        throw new PreconditionError('The recorded advert has no matching verified retirement receipt.');
+      }
+      const flow = await readConfirmedSpend(session, tx, { withDetails: true });
+      const credit = proveAdvertRetirement(flow, { advertRef: fact.ref, advertAddress: address, advertScriptHash: hash,
+        supplierAddress: supplier, depositLovelace: BigInt(row.value) });
+      if (receipt.valueSeal !== valueSeal(flow) || credit !== BigInt(receipt.creditLovelace) || flow.fee !== BigInt(receipt.feeLovelace)) {
+        throw new PreconditionError('The confirmed refund does not match the advert retirement receipt.');
+      }
+    }
+    // A replacement, including a Retired update, still locks a deposit if its output is on the node.
+    for (const output of await session.chain.provider.getUtxos(address)) {
+      if (output.address !== address) throw new Error();
+      if (typeof output.datum !== 'string') continue;
+      let datum: ReturnType<typeof decodeIdentityAdvertDatum>;
+      try { datum = decodeIdentityAdvertDatum(output.datum); } catch { continue; }
+      if (datum.agent_id === current.id) throw new PreconditionError('The retiring agent still has an unspent advert on the node.');
+    }
+  } catch (error) {
+    if (error instanceof PreconditionError) throw error;
+    throw new PreconditionError('The confirmed RetireAdvert spend and its supplier credit could not be verified.');
+  }
+}
+
+async function requireClaimBurn(session: Closeout, script: Module1Deployment['claim'], claim: ClaimFact, original: ReturnType<typeof decodeClaimDatum>, rows: SpentRows): Promise<void> {
+  const { koiosUrl, fetchImpl } = session.chain;
+  const history = await koiosPostList(koiosUrl, 'asset_history', { _asset_policy: script.hash, _asset_name: claim.claimToken }, fetchImpl, '', HISTORY_BYTES);
+  const row = fields(history[0]);
+  const events = row?.minting_txs;
+  if (history.length !== 1 || row?.policy_id !== script.hash || row.asset_name !== claim.claimToken || !Array.isArray(events) || events.length !== 2) {
+    throw new PreconditionError('The ledger does not prove one mint and one burn of the claim token.');
+  }
+  const [first, second] = events.map(fields);
+  const mint = first?.quantity === '1' || first?.quantity === 1 ? first : second;
+  const burn = mint === first ? second : first;
+  const tx = burn?.tx_hash;
+  if (mint?.tx_hash !== claim.claimTx || (mint.quantity !== '1' && mint.quantity !== 1)
+    || (burn?.quantity !== '-1' && burn?.quantity !== -1) || typeof tx !== 'string' || !HASH.test(tx) || tx === claim.claimTx
+    || typeof mint.block_time !== 'number' || !Number.isSafeInteger(mint.block_time) || mint.block_time <= 0
+    || typeof burn?.block_time !== 'number' || !Number.isSafeInteger(burn.block_time) || burn.block_time < mint.block_time) {
+    throw new PreconditionError('The ledger does not prove the recorded claim mint and its terminal burn.');
+  }
+  if (claim.withdrawTx !== 'not open' && claim.withdrawTx !== tx) {
+    throw new PreconditionError('The named claim withdrawal is not its confirmed terminal spend.');
+  }
+  const flow = await readConfirmedSpend(session, tx, { withDetails: true });
+  if (flow.outputs.some((output) => output.asset_list?.some((asset) => asset.policy_id === script.hash && asset.asset_name === claim.claimToken))) {
+    throw new PreconditionError('The named terminal spend still creates an output with the claim token.');
+  }
+  const refs = (flow.spends ?? []).filter((spend) => spend.scriptHash === script.hash).map((spend) => spend.inputRef);
+  const missing = refs.filter((ref) => !rows.has(ref));
+  const archive = await spentOutputs(session, missing);
+  let matched = 0;
+  for (const ref of refs) {
+    const held = utxoOfKoiosRow(rows.get(ref) ?? archive.get(ref));
+    if (held === null || flow.inputs.find((input) => input.ref === ref)?.address !== held.address) throw new Error();
+    const credential = addressDetails(held.address).paymentCredential;
+    if (credential?.type !== 'Script' || credential.hash !== script.hash) throw new Error();
+    if (soleTokenName(held, held.address, script.hash) !== claim.claimToken || typeof held.datum !== 'string') continue;
+    const terminal = decodeClaimDatum(held.datum);
+    if (isDeepStrictEqual({ ...terminal, state: original.state }, original)) matched += 1;
+  }
+  if (matched !== 1) throw new PreconditionError('The terminal spend does not consume the matching claim and token.');
+}
+
+async function requireClosedClaims(session: Closeout, current: RecordUtxo, claims: readonly ClaimFact[], rows: SpentRows): Promise<void> {
+  const commit = session.settings.module1Commit;
+  if (commit === null) throw new PreconditionError('Set OPERATOR_MODULE1_COMMIT to check the claim deployment before retirement.');
+  const source = `${MANIFEST_BASE}/${commit}/${session.use.moduleManifestPath}`;
+  const { chain } = session;
+  try {
+    const module1 = module1FromManifest(await readManifest(source, 'The Module-1 manifest', session.fetchImpl), source);
+    if (module1.identityHash !== chain.deployment.identity.hash) throw new PreconditionError('The claim deployment does not use this identity registry.');
+    const provider = chain.provider as Partial<Module1Provider>;
+    if (typeof provider.getSystemStartMs !== 'function') throw new Error();
+    const port = createModule1Port({ provider: provider as Module1Provider, module1, address: session.registry.addressOf('fee'), agent_id: current.id,
+      sign: () => { throw new Error('The claim closeout check signs nothing.'); }, clock: () => session.clock.now(),
+      sleep: async () => { throw new Error('The claim closeout check does not wait for a transaction.'); },
+      koios_url: chain.koiosUrl, fetch: chain.fetchImpl, identity_deployment: null });
+    const tokens = new Set(claims.map(({ claimToken }) => claimToken));
+    if ((await readLiveClaims(port)).some((claim) => claim.claimer === `did:vector:${current.id}` || tokens.has(claim.token))) {
+      throw new PreconditionError('The retiring agent still has a live or moved claim on the node.');
+    }
+    for (const claim of claims) {
+      const original = utxoOfKoiosRow(rows.get(claim.claimRef));
+      const datum = typeof original?.datum === 'string' ? decodeClaimDatum(original.datum) : null;
+      if (original === null || soleTokenName(original, module1.claim.address, module1.claim.hash) !== claim.claimToken
+        || datum === null || datum.state !== 'Open' || datum.claimerDid !== current.id) {
+        throw new PreconditionError('A spent claim does not match its recorded agent and claim token.');
+      }
+      await requireClaimBurn(session, module1.claim, claim, datum, rows);
+    }
+  } catch (error) {
+    if (error instanceof PreconditionError) throw error;
+    throw new PreconditionError('The confirmed terminal claim spend could not be verified.');
+  }
+}
+
+async function requireClosed(session: Closeout, current: RecordUtxo): Promise<void> {
   const { agent } = session.extra;
   const facts = session.facts.read();
   const adverts = facts.adverts[agent.id] ?? {};
@@ -185,57 +331,9 @@ async function requireClosed(session: Session, current: RecordUtxo): Promise<voi
     || (withdrawTx !== 'not open' && (withdrawTx === null || !HASH.test(withdrawTx))))) {
     throw new PreconditionError('A claim of the retiring agent has no valid closeout fact.');
   }
-  const commit = session.settings.module1Commit;
-  if (commit === null) throw new PreconditionError('Set OPERATOR_MODULE1_COMMIT to check the claim deployment before retirement.');
-  const source = `${MANIFEST_BASE}/${commit}/${session.use.moduleManifestPath}`;
-  const { chain } = session;
-  const advertAddress = chain.deployment.advert.address;
   const rows = await spentOutputs(session, [...Object.values(adverts).map(({ ref }) => ref), ...claims.map(({ claimRef }) => claimRef)]);
-  try {
-    for (const [model, fact] of Object.entries(adverts)) {
-      const row = rows.get(fact.ref);
-      const datum = typeof row?.inline_datum?.bytes === 'string' ? decodeIdentityAdvertDatum(row.inline_datum.bytes) : null;
-      if (row?.address !== advertAddress || !HASH.test(fact.tx) || !fact.ref.startsWith(`${fact.tx}#`) || datum === null || datum.agent_id !== current.id
-        || datum.model !== model || datum.capability_id !== agent.capability || datum.detail_uri !== fact.detailUri || datum.detail_hash !== fact.detailHash
-        || datum.endpoint_url !== fact.endpoint || datum.status !== 'Active' || !activeKey(current.record, datum.supplier_pkh, PURPOSE.transaction)) {
-        throw new PreconditionError('A spent advert does not match the recorded advert of the retiring agent.');
-      }
-    }
-    // A new advert can replace a spent output. Check every advert at the address, not only the references in the facts.
-    for (const output of await chain.provider.getUtxos(advertAddress)) {
-      if (output.address !== advertAddress) throw new Error();
-      if (typeof output.datum !== 'string') continue;
-      let datum: ReturnType<typeof decodeIdentityAdvertDatum>;
-      try { datum = decodeIdentityAdvertDatum(output.datum); } catch { continue; }
-      if (datum.agent_id === current.id && datum.status === 'Active') throw new PreconditionError('The retiring agent still has an Active advert on the node.');
-    }
-  } catch (error) {
-    if (error instanceof PreconditionError) throw error;
-    throw new PreconditionError('The node or archive did not give usable advert evidence.');
-  }
-  try {
-    const module1 = module1FromManifest(await readManifest(source, 'The Module-1 manifest', session.fetchImpl), source);
-    if (module1.identityHash !== chain.deployment.identity.hash) throw new PreconditionError('The claim deployment does not use this identity registry.');
-    for (const claim of claims) {
-      const original = utxoOfKoiosRow(rows.get(claim.claimRef));
-      if (original === null || soleTokenName(original, module1.claim.address, module1.claim.hash) !== claim.claimToken
-        || typeof original.datum !== 'string' || decodeClaimDatum(original.datum).claimerDid !== current.id) {
-        throw new PreconditionError('A spent claim does not match its recorded agent and claim token.');
-      }
-    }
-    const provider = chain.provider as Partial<Module1Provider>;
-    if (typeof provider.getSystemStartMs !== 'function') throw new Error();
-    const port = createModule1Port({ provider: provider as Module1Provider, module1, address: session.registry.addressOf('fee'), agent_id: current.id,
-      sign: () => { throw new Error('The claim closeout check signs nothing.'); }, clock: () => session.clock.now(), sleep: (ms) => session.clock.sleep(ms),
-      koios_url: chain.koiosUrl, fetch: chain.fetchImpl, identity_deployment: null });
-    const tokens = new Set(claims.map(({ claimToken }) => claimToken));
-    if ((await readLiveClaims(port)).some((claim) => claim.claimer === `did:vector:${current.id}` || tokens.has(claim.token))) {
-      throw new PreconditionError('The retiring agent still has a live or moved claim on the node.');
-    }
-  } catch (error) {
-    if (error instanceof PreconditionError) throw error;
-    throw new PreconditionError('The node or archive did not give usable claim evidence.');
-  }
+  await requireRetiredAdverts(session, current, adverts, rows);
+  await requireClosedClaims(session, current, claims, rows);
 }
 
 const earlyMessage = (due: number): string => `The build tool refused recovery completion before ${iso(due)}. No transaction was signed.`;
@@ -314,10 +412,9 @@ function waitStep(agent: AgentSpec): StepHandler<Target> {
 function actionStep(target: Target, step: Action): StepHandler<Target> {
   const { agent, lifecycle } = target;
   const [first, second] = lifecycle.controllers;
-  const from = { [CHANGE]: null, [START]: CHANGE, [COMPLETE]: START, [RETIRE]: COMPLETE, [SUCCESSOR]: RETIRE, [RECLAIM]: SUCCESSOR } as const;
   const signers = { [CHANGE]: ['controller', first], [START]: [...lifecycle.guardians, second], [COMPLETE]: [], [RETIRE]: [second],
     [SUCCESSOR]: [second, 'controller'], [RECLAIM]: [second] };
-  const tag = step === CHANGE || step === COMPLETE || step === RETIRE || step === SUCCESSOR ? IRREVERSIBLE[step] : undefined;
+  const tag = tagOf(step);
   let successor: RecordUtxo | undefined;
   return recordSpendStep<Target>({
     step, agentId: agent.id, tool: TOOLS[step], expectSigners: [...signers[step], 'fee'], ...(tag === undefined ? {} : { irreversible: tag }),
@@ -328,7 +425,7 @@ function actionStep(target: Target, step: Action): StepHandler<Target> {
       return {};
     },
     async before(current, session) {
-      const previous = from[step];
+      const previous = PREVIOUS_RECORD[step];
       if (previous !== null) assertOutput(session, previous, current);
       const record = current.record;
       const { lo, hi } = windowAt(session.clock.now());
@@ -441,6 +538,32 @@ const task: TaskDefinition<Target> = {
       throw new PreconditionError('The lifecycle data does not enroll two independent next controllers and two key guardians with the recover right.');
     }
     return { agent, lifecycle };
+  },
+  async beforeResubmit(session, command, flight) {
+    if (command !== 'run') throw new PreconditionError('Only lifecycle run can resend a pending lifecycle transaction.');
+    const last = lastStep(session);
+    const step = STEPS[last === null ? 0 : STEPS.indexOf(last) + 1];
+    const { agent } = session.extra;
+    const record = recordFact(session, agent.id);
+    if (step === undefined || step === WAIT || step !== flight.step || flight.facts.agent !== agent.id || flight.facts.did !== record.did
+      || !HASH.test(flight.txHash) || !REF.test(flight.refs.recordBefore) || !flight.inputRefs.includes(flight.refs.recordBefore)
+      || !REF.test(flight.refs.recordAfter) || !flight.refs.recordAfter.startsWith(`${flight.txHash}#`)
+      || (last !== null && verified(session, last).refs.recordAfter !== flight.refs.recordBefore)) {
+      throw new PreconditionError('The pending transaction is not the next checked spend of this lifecycle run.');
+    }
+    const tag = tagOf(step);
+    const checkApproval = () => requireGo(session.go, { task: session.task, runWallet: session.registry.addressOf('run'), nowMs: session.clock.now(),
+      irreversible: tag === undefined ? [] : [tag] });
+    checkApproval();
+    requireNetwork(session);
+    const current = await readRecord(session, record.id);
+    if (refOf(current) !== flight.refs.recordBefore) throw new PreconditionError('The node does not show the original record output of the pending spend.');
+    const prior = PREVIOUS_RECORD[step];
+    if (prior !== null) assertOutput(session, prior, current);
+    if (step === RETIRE) await requireClosed(session, current);
+    await requireRuntimesFree({ fetchImpl: session.fetchImpl, runtimes: runtimesOf(agent), out: session.out,
+      running: readRunning(join(session.settings.stateDir, 'running-images.json'), session.clock.now()) });
+    checkApproval();
   },
   async next(session) {
     const last = lastStep(session);

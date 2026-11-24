@@ -6,15 +6,17 @@ import {
 import type { RecordSpendBuild } from '../../../../packages/buyer-core/src/vendored/mcp/identity-build.ts';
 import { DAYS_7_MS, RIGHT } from '../../../../packages/buyer-core/src/vendored/mcp/identity-rules.ts';
 import { DAY, recordUtxo, rootRecord } from '../../../../packages/buyer-core/test/fixtures/identity-world.ts';
-import { claimUtxo, CLAIM_TOKEN, MODULE1_MANIFEST } from '../../../../packages/buyer-core/test/fixtures/jury-world.ts';
+import { claimUtxo, CLAIM_TOKEN, MODULE1, MODULE1_MANIFEST } from '../../../../packages/buyer-core/test/fixtures/jury-world.ts';
 import { encodeIdentityAdvertDatum } from '../../../../packages/vector-read/src/index.ts';
 import type { IdentityAdvertDatum } from '../../../../packages/vector-read/src/index.ts';
 import { encodeIdentityDatum, utf8Hex } from '../../../../packages/vector-read/src/identity-codec.ts';
 import type { IdentityDatum, Party } from '../../../../packages/vector-read/src/identity-codec.ts';
 import { iso } from '../../../checks/lib/format.ts';
 import type { HostedTools } from '../../../checks/lib/hosted.ts';
+import { StateFile } from '../../../checks/lib/state.ts';
 import type { Utxo } from '../../../checks/lib/platform.ts';
 import type { GoFile } from '../../lib/approval.ts';
+import { valueSeal } from '../../lib/confirmed-spend.ts';
 import type { AgentSpec, UseCase } from '../../lib/contract.ts';
 import { formatOutRef, PURPOSE } from '../../lib/platform.ts';
 import { loadRegistry } from '../../lib/registry.ts';
@@ -25,7 +27,7 @@ import { BRAVO, CORE_KEYS, MODULE_MANIFEST_PATH, organisationKeys, partiesOf } f
 import { liveBuildAnswer, PackHosted } from './pack-hosted.ts';
 import type { HandlerAnswer } from './pack-hosted.ts';
 import { spendWorld } from './record-spend-builds.ts';
-import { hashOf, NOW } from './task-world.ts';
+import { hashOf } from './task-world.ts';
 
 export const TARGET = 'bid-desk-bravo';
 export const SUCCESSOR = 'bravo-successor';
@@ -33,6 +35,7 @@ export const FIRST = 'l1-controller-1';
 export const SECOND = 'l1-controller-2';
 export const GUARDIAN = BRAVO.guardianKey;
 const SUPPLIER = 'bid-bravo-supplier';
+const CLAIMER = 'bid-bravo-service';
 const SUCCESSOR_AUTH = 'bravo-successor-auth';
 const CAPABILITY = 'supplychain.rfq.quote.v1';
 const COMMIT = hashOf('module manifest').slice(0, 40);
@@ -47,16 +50,31 @@ export const TOOLS = {
 
 const orderDesk = inventory.agents.find(({ id }) => id === 'order-desk')!;
 const agent: AgentSpec = { ...orderDesk, id: TARGET, name: 'Bid Desk Bravo', kind: 'bid-desk', organisation: BRAVO.id,
-  capability: CAPABILITY, endpoint: PROFILE.endpoint, adverts: [{ ...orderDesk.adverts[0]!, model: 'bid-desk-v1', supplierKey: SUPPLIER, origin: PROFILE.endpoint }],
+  capability: CAPABILITY, endpoint: PROFILE.endpoint, serviceKey: CLAIMER, statusUrls: [`${PROFILE.endpoint}/status`],
+  adverts: [{ ...orderDesk.adverts[0]!, model: 'bid-desk-v1', supplierKey: SUPPLIER, origin: PROFILE.endpoint }],
   parties: partiesOf(BRAVO), end: { record: 'retired', advert: 'retired', subagents: 'live', successor: SUCCESSOR } };
 const use: UseCase = { ...inventory, name: 'bid-evaluation', organisations: [BRAVO], agents: [agent], subagents: [],
   records: [{ id: SUCCESSOR, name: 'Bravo successor', description: 'A successor for the test', keys: [], organisation: BRAVO.id, guardianThreshold: 0, parties: [] }],
-  keys: [...CORE_KEYS, ...organisationKeys(BRAVO), ...[FIRST, SECOND, SUPPLIER, SUCCESSOR_AUTH].map((name) => ({ name, scope: 'use-case' as const, about: name }))],
+  keys: [...CORE_KEYS, ...organisationKeys(BRAVO), ...[FIRST, SECOND, SUPPLIER, CLAIMER, SUCCESSOR_AUTH].map((name) => ({ name, scope: 'use-case' as const, about: name }))],
   runs: [{ id: 'lifecycle', subject: TARGET, tenantPrefix: 'bids-lifecycle', vaultUnits: 0, perTxUnits: 0, totalUnits: 0 }],
   lifecycle: { agent: TARGET, controllers: [FIRST, SECOND], guardians: [GUARDIAN, 'controller'], successor: SUCCESSOR, waitMs: DAYS_7_MS },
 };
 
 export const refOf = (out: Utxo): string => formatOutRef(out.txHash, out.outputIndex);
+
+function spentRow(out: Utxo) {
+  return { tx_hash: out.txHash, tx_index: out.outputIndex, address: out.address, value: String(out.assets.lovelace), inline_datum: typeof out.datum === 'string' ? { bytes: out.datum } : null,
+    asset_list: Object.entries(out.assets).flatMap(([unit, amount]) => unit === 'lovelace' ? [] : [{ policy_id: unit.slice(0, 56), asset_name: unit.slice(56), quantity: String(amount) }]) };
+}
+
+function archivedSpend(tx: string, input: Utxo, paidTo: string, fee: bigint, script: string, redeemer: 1 | 2 | 3) {
+  const row = (out: Utxo) => ({ ...spentRow(out), payment_addr: { bech32: out.address } });
+  const wallet = { txHash: hashOf(`funding for ${tx}`), outputIndex: 0, address: paidTo, assets: { lovelace: 5_000_000n } };
+  const paid = (outputIndex: number, lovelace: bigint) => row({ txHash: tx, outputIndex, address: paidTo, assets: { lovelace } });
+  return { tx_hash: tx, fee: String(fee), inputs: [row(input), row(wallet)], outputs: [paid(0, input.assets.lovelace), paid(1, wallet.assets.lovelace - fee)],
+    plutus_contracts: [{ script_hash: script, valid_contract: true, spends_input: { tx_hash: input.txHash, tx_index: input.outputIndex },
+      input: { redeemer: { purpose: 'spend', datum: { bytes: `d87${(9 + redeemer).toString(16)}80`, value: { constructor: redeemer, fields: [] } } } } }] };
+}
 
 export async function lifecycleWorld() {
   const rig = await spendWorld({ use, agent: TARGET, parent: { subagentEpoch: 4 } });
@@ -66,6 +84,9 @@ export async function lifecycleWorld() {
   const builds: Record<string, RecordSpendBuild> = {};
   const override: Partial<Record<string, (args: Readonly<Record<string, unknown>>) => HandlerAnswer | undefined | Promise<HandlerAnswer | undefined>>> = {};
   const history = new Map<string, { out: Utxo; spent: boolean }>();
+  const closeouts = new Map<string, ReturnType<typeof archivedSpend>>();
+  const txStatus = w.node.txStatus.bind(w.node);
+  w.node.txStatus = async (tx) => closeouts.has(tx) ? { confirmations: 2 } : txStatus(tx);
   let showCredit = true;
   w.env.OPERATOR_MODULE1_COMMIT = COMMIT;
   const start = w.clock.now();
@@ -93,10 +114,39 @@ export async function lifecycleWorld() {
   const posted = advert(hashOf('advert post'));
   history.set(refOf(posted), { out: posted, spent: true });
   store.put('adverts', [TARGET, agent.adverts[0]!.model], { ref: refOf(posted), tx: posted.txHash, ...PROFILE, postedAt: iso(start - DAY) });
-  const originalClaim = { ...claimUtxo(CLAIM_TOKEN, { claimerDid: id }), txHash: hashOf('claim post') };
+  const advertTx = hashOf('advert terminal spend');
+  const advertDeposit = posted.assets.lovelace;
+  const advertFee = 200_000n;
+  const supplier = registry.addressOf(SUPPLIER);
+  const retirement = archivedSpend(advertTx, posted, supplier, advertFee, w.chain.deployment.advert.hash, 2);
+  closeouts.set(advertTx, retirement);
+  const values = (rows: typeof retirement.inputs) => rows.map((row) => ({
+    ref: formatOutRef(row.tx_hash, row.tx_index), address: row.payment_addr.bech32, lovelace: BigInt(row.value),
+  }));
+  const seal = valueSeal({ fee: advertFee, inputs: values(retirement.inputs), outputs: values(retirement.outputs) });
+  const setAdvertReceipt = (verified: boolean) => {
+    const state = StateFile.open(join(w.stateDir, 'advert.state.json'), { check: 'advert', network: 'vector-mainnet', record: use.name });
+    const model = agent.adverts[0]!.model;
+    state.setNote(`part.retire:${TARGET}:${model}`, { confirmed_at: iso(start), tx_hash: advertTx, verified_at: verified ? iso(start) : null,
+      refs: { retiredRef: refOf(posted) }, facts: { phase: 'retire', agent: TARGET, model, supplierPkh: registry.hashOf(SUPPLIER), supplierAddress: supplier,
+        depositLovelace: String(advertDeposit), feeLovelace: String(advertFee), creditLovelace: String(advertDeposit - advertFee), valueSeal: seal, approvalSession: 'close-advert' } });
+  };
+  const claimDatum = { claimerDid: id, claimerCredential: { type: 'VerificationKey' as const, hash: registry.hashOf(CLAIMER) }, submittedAt: start - 2 * DAY, challengeWindow: DAY };
+  const originalClaim = { ...claimUtxo(CLAIM_TOKEN, claimDatum), txHash: hashOf('claim post') };
   history.set(refOf(originalClaim), { out: originalClaim, spent: true });
+  const claimTx = hashOf('claim terminal spend');
+  const { hash: claimScript } = MODULE1.claim;
+  const mintEvent = { tx_hash: originalClaim.txHash, quantity: '1', block_time: Math.floor((start - DAY) / 1_000) };
+  const burnEvent = { tx_hash: claimTx, quantity: '-1', block_time: Math.floor(start / 1_000) };
+  let claimBurn = true;
+  closeouts.set(claimTx, archivedSpend(claimTx, originalClaim, registry.addressOf(CLAIMER), 200_000n, claimScript, 1));
+  const closeMovedClaim = () => {
+    const terminal = { ...claimUtxo(CLAIM_TOKEN, { ...claimDatum, state: 'Challenged' }), txHash: hashOf('claim after challenge') };
+    history.set(refOf(terminal), { out: terminal, spent: true });
+    closeouts.set(claimTx, archivedSpend(claimTx, terminal, registry.addressOf(CLAIMER), 200_000n, claimScript, 3));
+  };
   store.put('claims', ['clean', TARGET], { claimRef: refOf(originalClaim), claimTx: originalClaim.txHash, documentTx: hashOf('claim document'), claimToken: CLAIM_TOKEN,
-    stakeLovelace: '50000000', windowMs: DAY, stakedAt: iso(start - 2 * DAY), withdrawableFrom: iso(start - DAY), withdrawTx: hashOf('claim withdraw') });
+    stakeLovelace: '50000000', windowMs: DAY, stakedAt: iso(start - 2 * DAY), withdrawableFrom: iso(start - DAY), withdrawTx: claimTx });
 
   const fetch: typeof globalThis.fetch = async (input, init) => {
     const url = String(input);
@@ -108,12 +158,21 @@ export async function lifecycleWorld() {
         const row = history.get(ref);
         if (row === undefined) return [];
         const { out, spent } = row;
-        return [{ tx_hash: out.txHash, tx_index: out.outputIndex, address: out.address, value: String(out.assets.lovelace), is_spent: spent, inline_datum: { bytes: out.datum },
-          asset_list: Object.entries(out.assets).flatMap(([unit, amount]) => unit === 'lovelace' ? [] : [{ policy_id: unit.slice(0, 56), asset_name: unit.slice(56), quantity: String(amount) }]) }];
+        return [{ ...spentRow(out), is_spent: spent }];
       }));
     }
     if (route === '/api/v1/credential_utxos') return Response.json([]);
-    if (route === '/api/v1/tx_info' && !showCredit) return Response.json([]);
+    if (route === '/api/v1/asset_history') {
+      const payload = JSON.parse(String(init?.body));
+      if (payload._asset_policy !== claimScript || payload._asset_name !== CLAIM_TOKEN) throw new Error('Unexpected claim token history request.');
+      return Response.json([{ policy_id: claimScript, asset_name: CLAIM_TOKEN, minting_txs: claimBurn ? [burnEvent, mintEvent] : [mintEvent] }]);
+    }
+    if (route === '/api/v1/tx_info') {
+      const { _tx_hashes: hashes } = JSON.parse(String(init?.body)) as { _tx_hashes: string[] };
+      const found = closeouts.get(hashes[0]!);
+      if (found !== undefined) return Response.json([found]);
+      if (!showCredit) return Response.json([]);
+    }
     return w.chain.fetchImpl(input, init);
   };
   const build = async (name: string, args: Record<string, unknown>, nowMs = w.clock.now()): Promise<RecordSpendBuild> => {
@@ -169,6 +228,9 @@ export async function lifecycleWorld() {
     w.world.chain.held = w.world.chain.held.filter((out) => refOf(out) !== refOf(current.utxo)).concat(next);
   };
   const setCredit = (show: boolean) => { showCredit = show; };
+  const setClaimBurn = (show: boolean) => { claimBurn = show; };
   go('first');
-  return { ...rig, bravo, successor, successorId, successorDid, posted, originalClaim, history, advert, go, run, runBare, state, evidence, override, builds, build, calls: schema.calls, setCredit, replace };
+  setAdvertReceipt(true);
+  return { ...rig, bravo, successor, successorId, successorDid, posted, originalClaim, history, advert, go, run, runBare, state, evidence, override, builds, build,
+    calls: schema.calls, setCredit, replace, closeouts, advertTx, claimTx, setAdvertReceipt, setClaimBurn, closeMovedClaim };
 }

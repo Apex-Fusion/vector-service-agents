@@ -1,9 +1,10 @@
-import { existsSync } from 'node:fs';
+import { existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { DAYS_7_MS } from '../../../packages/buyer-core/src/vendored/mcp/identity-rules.ts';
 import { claimUtxo, CLAIM_TOKEN } from '../../../packages/buyer-core/test/fixtures/jury-world.ts';
 import { iso } from '../../checks/lib/format.ts';
+import { StateFile } from '../../checks/lib/state.ts';
 import { factsOf } from '../../checks/lib/txfacts.ts';
 import { SYSTEM_START_MS } from '../../checks/test/support/chain-view.ts';
 import { FIRST, GUARDIAN, SECOND, TARGET, TOOLS, lifecycleWorld, refOf } from './support/lifecycle-world.ts';
@@ -182,6 +183,59 @@ describe('recovery authority and the wait', () => {
     expect(submits(f)).toBe(2);
   });
 
+  it('resends the stored bytes only for the matching action under a valid GO and free runtime', async () => {
+    const f = await lifecycleWorld();
+    f.w.node.submitError = new Error('The node did not answer the submit call.');
+    expect(await f.run('--submit')).toBe(1);
+    const flight = f.state().in_flight!;
+    const reserve = f.w.exposure('first');
+    expect(flight.step).toBe('change-controller');
+    expect(reserve.map(({ tx_hash }) => tx_hash)).toEqual([flight.tx_hash]);
+    expect(submits(f)).toBe(0);
+    f.w.node.submitError = null;
+
+    const checkpoint = () => {
+      expect(f.state().in_flight).toEqual(flight);
+      expect(f.w.exposure('first')).toEqual(reserve);
+      expect(f.w.facts().lifecycle).toEqual({});
+      expect(submits(f)).toBe(0);
+    };
+    rmSync(f.w.goPath);
+    expect(await f.run('--submit')).toBe(2);
+    checkpoint();
+    f.go('first', ['retire']);
+    expect(await f.run('--submit')).toBe(2);
+    expect(f.w.screen.errorText).toContain('controller-change');
+    checkpoint();
+    f.go('first');
+    const state = StateFile.open(join(f.w.stateDir, 'lifecycle.l1.state.json'), { check: 'lifecycle', network: 'vector-mainnet', record: `${f.w.use.name}:l1` });
+    state.clearInFlight();
+    state.setInFlight({ ...flight, step: 'retire' });
+    expect(await f.run('--submit')).toBe(2);
+    expect(f.w.screen.errorText).toContain('is not the next checked spend');
+    expect(f.state().in_flight).toEqual({ ...flight, step: 'retire' });
+    expect(f.w.exposure('first')).toEqual(reserve);
+    expect(submits(f)).toBe(0);
+    state.clearInFlight();
+    state.setInFlight(flight);
+    expect(await f.run('cleanup', '--submit')).toBe(2);
+    expect(f.w.screen.errorText).toContain('Only lifecycle run can resend');
+    checkpoint();
+    f.showRunning([f.agent.adverts[0]!.runtimeContainer]);
+    f.setRuntime('working');
+    expect(await f.run('--submit')).toBe(2);
+    expect(f.w.screen.errorText).toContain('says working');
+    checkpoint();
+
+    f.setRuntime('free');
+    expect(await f.run('--submit'), f.w.screen.errorText).toBe(0);
+    expect(f.w.node.submitted[0]).toBe(flight.signed_cbor);
+    expect(asked(f, TOOLS.change)).toHaveLength(1);
+    expect(f.state().steps['change-controller']?.tx_hash).toBe(flight.tx_hash);
+    expect(f.state().steps['change-controller']?.verified_at).toBeTruthy();
+    expect(f.state().in_flight).toBeNull();
+  });
+
   it('requires the enrolled key guardians throughout the actual validity window', async () => {
     const f = await lifecycleWorld();
     await f.replace((record) => ({ ...record, parties: record.parties.map((party) => party.role === 'Guardian' && party.signer.type === 'KeyHash' && party.signer.hash === f.registry.hashOf(GUARDIAN)
@@ -239,11 +293,13 @@ describe('retirement and return', () => {
     expect(await f.run('--submit')).toBe(2);
     expect(f.w.screen.errorText).toContain('does not match the recorded advert');
     f.history.set(advertRef, { out: f.posted, spent: true });
-    const live = f.advert(hashOf('replacement advert'), { model: 'another-model' });
-    f.w.world.chain.held.push(live);
-    expect(await f.run('--submit')).toBe(2);
-    expect(f.w.screen.errorText).toContain('still has an Active advert');
-    f.w.world.chain.held = f.w.world.chain.held.filter((out) => refOf(out) !== refOf(live));
+    for (const status of ['Active', 'Retired'] as const) {
+      const live = f.advert(hashOf(`${status} replacement advert`), { model: 'another-model', status });
+      f.w.world.chain.held.push(live);
+      expect(await f.run('--submit')).toBe(2);
+      expect(f.w.screen.errorText).toContain('still has an unspent advert');
+      f.w.world.chain.held = f.w.world.chain.held.filter((out) => refOf(out) !== refOf(live));
+    }
     const original = f.w.facts().claims.clean![TARGET]!;
     f.store.put('claims', ['clean', TARGET], { ...original, withdrawTx: null }, { replace: true });
     expect(await f.run('--submit')).toBe(2);
@@ -259,6 +315,53 @@ describe('retirement and return', () => {
     expect(await f.run('--submit'), f.w.screen.errorText).toBe(0);
     expect((await f.record()).record.status).toMatchObject({ type: 'Retired', successor: null });
     expectOnly(f, 3, [SECOND, 'fee']);
+  });
+
+  it('requires a verified RetireAdvert receipt and actual supplier credit', async () => {
+    const f = await lifecycleWorld();
+    await complete(f);
+    const actual = f.closeouts.get(f.advertTx)!;
+    f.setAdvertReceipt(false);
+    expect(await f.run('--submit')).toBe(2);
+    expect(f.w.screen.errorText).toContain('no matching verified retirement receipt');
+    f.setAdvertReceipt(true);
+    f.closeouts.set(f.advertTx, { ...actual, plutus_contracts: actual.plutus_contracts.map((entry) => ({
+      ...entry, input: { redeemer: { purpose: 'spend', datum: { bytes: 'd87a80', value: { constructor: 1, fields: [] } } } },
+    })) });
+    expect(await f.run('--submit')).toBe(2);
+    expect(f.w.screen.errorText).toContain('RetireAdvert spend and its supplier credit could not be verified');
+    f.closeouts.set(f.advertTx, { ...actual, outputs: actual.outputs.map((row) => ({ ...row, payment_addr: { bech32: f.fee } })) });
+    expect(await f.run('--submit')).toBe(2);
+    expect(f.w.screen.errorText).toContain('RetireAdvert spend and its supplier credit could not be verified');
+    expect(asked(f, TOOLS.retire)).toHaveLength(0);
+    expect(submits(f)).toBe(3);
+    f.closeouts.set(f.advertTx, actual);
+    expect(await f.run('--submit'), f.w.screen.errorText).toBe(0);
+    expect(submits(f)).toBe(4);
+  });
+
+  it('rejects a wrong withdrawal hash or a missing burn, and leaves a proved end unattributed', async () => {
+    const f = await lifecycleWorld();
+    await complete(f);
+    const original = f.w.facts().claims.clean![TARGET]!;
+    f.store.put('claims', ['clean', TARGET], { ...original, withdrawTx: f.advertTx }, { replace: true });
+    expect(await f.run('--submit')).toBe(2);
+    expect(f.w.screen.errorText).toContain('named claim withdrawal is not its confirmed terminal spend');
+    f.store.put('claims', ['clean', TARGET], { ...original, withdrawTx: 'not open' }, { replace: true });
+    f.setClaimBurn(false);
+    expect(await f.run('--submit')).toBe(2);
+    expect(f.w.screen.errorText).toContain('does not prove one mint and one burn');
+    f.setClaimBurn(true);
+    const actual = f.closeouts.get(f.claimTx)!;
+    f.closeouts.set(f.claimTx, { ...actual, plutus_contracts: actual.plutus_contracts.map((entry) => ({ ...entry, script_hash: f.w.chain.deployment.advert.hash })) });
+    expect(await f.run('--submit')).toBe(2);
+    expect(f.w.screen.errorText).toContain('terminal spend does not consume the matching claim');
+    expect(asked(f, TOOLS.retire)).toHaveLength(0);
+    expect(submits(f)).toBe(3);
+    f.closeMovedClaim();
+    expect(await f.run('--submit'), f.w.screen.errorText).toBe(0);
+    expect(f.w.facts().claims.clean![TARGET]?.withdrawTx).toBe('not open');
+    expect(submits(f)).toBe(4);
   });
 
   it('binds the successor to an Active root, the original controller and the exact checked reference', async () => {
