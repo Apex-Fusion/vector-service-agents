@@ -353,3 +353,62 @@ test('the compose check lets a service with no key through, and refuses one that
   asList.services['mock-systems'].environment = ['PORT=9120', 'HOST=0.0.0.0', 'SUPPLIER_PRIV_KEY_HEX='];
   assert.deepEqual(composeKeyProblems(asList, deployment), ['the service mock-systems names SUPPLIER_PRIV_KEY_HEX: it holds no key'], 'a blank key in the environment as a list');
 });
+
+// ---- The operator pack: no key, no key-shaped text, and the name of a key variable in the two files that may hold it ----
+// scripts/operator makes keys and writes them into env files, so a key must never stand in one of its files. Its own source test (scripts/operator/test/sources.test.ts) reads the script files for the call that gives
+// a seed, the suffix of a key file and a run of 64 hex characters. This guard reads every file of the folder as a text, whatever its kind, and so it reaches the README and the data files too. A script file and a
+// document outside the test folder hold no run of 64 hex characters. A file of the test folder may hold one (a hash, a digest, a transaction hash), but not on a line that names a secret: a seed, a secret, a
+// private key, a mnemonic or a signing key. No file is a key file, and none holds one key and nothing else. The name of a key variable (a name that ends in _PRIV_KEY_HEX) stands only in the data of the use case,
+// which lists the variables, and in the task env, which writes them. The file that holds the marks of a secret names the mark `PRIV_KEY_HEX=` and no variable, so it passes.
+const PACK_FOLDER = 'scripts/operator';
+const KEY_VARIABLE_FILES = ['usecases/inventory-reorder.ts', 'tasks/env.ts'];
+const SECRET_LINE = /seed|secret|private|priv_key|mnemonic|signing key|_sk\b/i;
+const KEY_VARIABLE = /[A-Za-z0-9]_PRIV_KEY_HEX/;
+/** What is wrong with a file of the pack: `rel` is its path in the pack, written with a slash, and `text` is its content. */
+function packProblems(rel, text) {
+  const problems = [];
+  const inTests = rel.startsWith('test/');
+  if (rel.endsWith('.seed')) problems.push(`${rel} is a key file`);
+  if (/^\s*[0-9a-fA-F]{64}\s*$/.test(text)) problems.push(`${rel} holds one key and nothing else`);
+  if (!inTests && KEY_RUN.test(text)) problems.push(`${rel} holds a run of 64 hex characters outside the test folder`);
+  if (inTests && text.split('\n').some((line) => KEY_RUN.test(line) && SECRET_LINE.test(line))) problems.push(`${rel} holds a run of 64 hex characters on a line that names a secret`);
+  if (!inTests && KEY_VARIABLE.test(text) && !KEY_VARIABLE_FILES.includes(rel)) problems.push(`${rel} names a key variable, which only the data of the use case and the task env may do`);
+  return problems;
+}
+
+test('the operator pack holds no key and no key-shaped text, and names a key variable only in the data of the use case and in the task env', () => {
+  const files = walk(PACK_FOLDER).map((path) => path.split(sep).join('/'));
+  assert.ok(files.length > 80 && files.includes(`${PACK_FOLDER}/README.md`) && files.includes(`${PACK_FOLDER}/Dockerfile`) && files.includes(`${PACK_FOLDER}/tasks/env.ts`), `the walk reaches the files of the pack, found ${files.length}`);
+  const problems = files.flatMap((path) => packProblems(path.slice(PACK_FOLDER.length + 1), readFileSync(path, 'utf8')));
+  assert.deepEqual(problems, []);
+});
+
+test('the guard of the operator pack refuses a key file, a lone key, a key in a script or a document, a key on a line of a test that names a secret and a key variable in another file, and passes their twins', () => {
+  const KEY = 'ab'.repeat(32);
+  const refused = [
+    ['a key file', 'lib/alpha.seed', 'x', /is a key file/],
+    ['one key and nothing else', 'test/fixtures/key.txt', `${KEY}\n`, /one key and nothing else/],
+    ['a key in a script file', 'lib/x.ts', `const k = '${KEY}';`, /outside the test folder/],
+    ['an upper case key in a task', 'tasks/x.ts', `const k = '${KEY.toUpperCase()}';`, /outside the test folder/],
+    ['a key in a document', 'README.md', `Use ${KEY} as the key.`, /outside the test folder/],
+    ['a key in the Dockerfile', 'Dockerfile', `ENV KEY=${KEY}`, /outside the test folder/],
+    ['a key in a test, on a line that names a seed', 'test/x.test.ts', `const seed = '${KEY}';`, /names a secret/],
+    ['a key in a test, on a line that names a private key variable', 'test/x.test.ts', `{ SUPPLIER_PRIV_KEY_HEX: '${KEY}' }`, /names a secret/],
+    ['a key variable in another task', 'tasks/fund.ts', "const name = 'SUPPLIER_PRIV_KEY_HEX';", /names a key variable/],
+    ['a key variable in a library file', 'lib/x.ts', "const name = 'REORDER_SERVICE_PRIV_KEY_HEX';", /names a key variable/],
+    ['a key variable in the README', 'README.md', 'Set SUPPLIER_PRIV_KEY_HEX in the file.', /names a key variable/],
+  ];
+  for (const [what, rel, text, problem] of refused) assert.ok(packProblems(rel, text).some((found) => problem.test(found)), what);
+  const accepted = [
+    ['a hash in a test', 'test/x.test.ts', `const TX = '${KEY}';`],
+    ['a hash in a golden file of the test folder', 'test/golden/page.md', `| step | \`${KEY}\` |`],
+    ['63 hex characters in a script file', 'lib/x.ts', `const a = '${KEY.slice(1)}';`],
+    ['two runs of 32 hex characters in a script file', 'lib/x.ts', `const a = '${'ab'.repeat(16)}-${'cd'.repeat(16)}';`],
+    ['a key variable in the data of the use case', 'usecases/inventory-reorder.ts', "line(FILE, 'SUPPLIER_PRIV_KEY_HEX', 'secret')"],
+    ['a key variable in the task env', 'tasks/env.ts', "{ name: 'REORDER_SERVICE_PRIV_KEY_HEX' }"],
+    ['a key variable in a test', 'test/env.test.ts', "expect(file.get('SUPPLIER_PRIV_KEY_HEX')).toBe('');"],
+    ['the mark of a secret with no variable name', 'lib/secrets.ts', 'const SECRET_TEXT = /ed25519e?_sk|PRIV_KEY_HEX=|bearer\\s/i;'],
+    ['the word seed in a script file', 'lib/x.ts', 'const seed = 1;'],
+  ];
+  for (const [what, rel, text] of accepted) assert.deepEqual(packProblems(rel, text), [], what);
+});
