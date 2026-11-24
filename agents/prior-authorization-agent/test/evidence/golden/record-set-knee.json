@@ -1,0 +1,25 @@
+{
+  "order": {
+    "order_id": "ORD-1002",
+    "patient_ref": "SYN-PT-0002",
+    "service_code": "SYN-MRI-KN",
+    "service_description": "Magnetic resonance imaging of the knee, without contrast",
+    "diagnosis_codes": ["M25.561"],
+    "ordering_clinician_ref": "SYN-CL-0011",
+    "ordered_at": "2026-10-25"
+  },
+  "records": [
+    {
+      "record_id": "REC-0101",
+      "type": "progress_note",
+      "recorded_at": "2026-10-14",
+      "summary": "Pain in the right knee for 10 days after a fall. Mild swelling. Walks without help."
+    },
+    {
+      "record_id": "REC-0102",
+      "type": "imaging",
+      "recorded_at": "2026-10-14",
+      "summary": "Plain X-ray of the right knee. No fracture. Joint space is normal."
+    }
+  ]
+}

@@ -1,0 +1,71 @@
+{
+  "order": {
+    "order_id": "ORD-1001",
+    "service_code": "SYN-MRI-LS",
+    "service_description": "Magnetic resonance imaging of the lumbar spine, without contrast",
+    "diagnosis_codes": [
+      "M54.16",
+      "M51.16"
+    ],
+    "ordered_at": "2026-10-22"
+  },
+  "records": [
+    {
+      "record_id": "REC-0001",
+      "type": "imaging",
+      "recorded_at": "2026-08-10",
+      "summary": "Plain X-ray of the lumbar spine. Mild narrowing of the disc space at L4-L5. No fracture."
+    },
+    {
+      "record_id": "REC-0002",
+      "type": "progress_note",
+      "recorded_at": "2026-09-02",
+      "summary": "Low back pain that spreads to the left leg for 3 weeks. Straight leg raise is positive on the left at 40 degrees. No bowel or bladder symptoms."
+    },
+    {
+      "record_id": "REC-0003",
+      "type": "medication",
+      "recorded_at": "2026-09-02",
+      "summary": "Naproxen 500 mg twice a day for 4 weeks, then stopped. The patient reports partial relief only."
+    },
+    {
+      "record_id": "REC-0004",
+      "type": "therapy",
+      "recorded_at": "2026-09-23",
+      "summary": "Physical therapy: 6 sessions over 3 weeks. Pain 7 of 10 at the start and 6 of 10 at the end. Little change."
+    },
+    {
+      "record_id": "REC-0005",
+      "type": "progress_note",
+      "recorded_at": "2026-10-21",
+      "summary": "Pain in the left leg continues at 7 weeks. New numbness in the left foot. Weakness of ankle dorsiflexion, 4 of 5."
+    }
+  ],
+  "guideline": {
+    "code": "SYN-MRI-LS",
+    "title": "Imaging of the lumbar spine",
+    "version": "2026.1",
+    "criteria": [
+      {
+        "id": "C1",
+        "text": "Low back pain with pain in the leg for at least 6 weeks."
+      },
+      {
+        "id": "C2",
+        "text": "Conservative therapy for at least 6 weeks is tried and documented, for example physical therapy or medication."
+      },
+      {
+        "id": "C3",
+        "text": "A nerve deficit or a warning sign is documented, for example weakness, numbness or loss of bladder control."
+      },
+      {
+        "id": "C4",
+        "text": "Plain X-rays of the spine, if any, are listed."
+      }
+    ],
+    "documentation": [
+      "The dates of the conservative therapy.",
+      "The findings of the last examination."
+    ]
+  }
+}

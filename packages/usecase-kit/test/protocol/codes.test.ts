@@ -50,6 +50,7 @@ const EXPECTED_STATUS: Readonly<Record<string, number>> = {
   mock_system_failed: 502,
   hire_failed: 502,
   svid_failed: 502,
+  credential_failed: 502,
   // 503
   shutting_down: 503,
   check_unavailable: 503,
@@ -174,6 +175,25 @@ describe('the codes of the job of a counterparty after its Claim', () => {
     expectTypeOf<'svid_failed'>().toExtend<ErrorCode>();
     expectTypeOf<'precheck_missing'>().not.toExtend<RefusalCode>();
     expectTypeOf<'svid_failed'>().not.toExtend<RefusalCode>();
+  });
+});
+
+describe('credential_failed', () => {
+  it('is a 502 error code: the job of a Bid Desk could not get its credential from the identity gateway', () => {
+    expect(ERROR_STATUS.credential_failed).toBe(502);
+    expect(isErrorCode('credential_failed')).toBe(true);
+    expectTypeOf<'credential_failed'>().toExtend<ErrorCode>();
+  });
+
+  it('is no refusal code of a rule: no list of refusals holds it, and no refusal of a mock system', () => {
+    expect(isRefusalCode('credential_failed')).toBe(false);
+    expect(REFUSAL_CODES).not.toContain('credential_failed');
+    for (const kind of COUNTERPARTY_KINDS) expect(COUNTERPARTY_REFUSALS[kind], kind).not.toContain('credential_failed');
+    expect(SYSTEM_REFUSALS).not.toContain('credential_failed');
+    expect(Object.keys(SYSTEM_REFUSAL_STATUS)).not.toContain('credential_failed');
+    expect(isSystemRefusal('credential_failed')).toBe(false);
+    expect(AFTER_CLAIM_REFUSALS).not.toContain('credential_failed');
+    expectTypeOf<'credential_failed'>().not.toExtend<RefusalCode>();
   });
 });
 

@@ -1,0 +1,80 @@
+{
+  "schema": "vector.usecase.intake-record.v1",
+  "outcome": "done",
+  "request_number": "run1-1",
+  "request_sha256": "61649613323b28f100a4b553100f5eb0064a2e91474e669d317bab57726ba788",
+  "status": "complete",
+  "missing": [],
+  "intake_id": "INT-run1-0001",
+  "sender": {
+    "did": "did:vector:a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7",
+    "organisation": "echo.example",
+    "organisation_verified": true
+  },
+  "approval": {
+    "attestation": "d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2",
+    "issuer_did": "did:vector:2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e",
+    "valid_until": "2026-11-24T10:00:00.000Z"
+  },
+  "attestations": {
+    "provenance": "valid",
+    "software": "valid",
+    "principal_binding": "absent"
+  },
+  "checks": {
+    "sender_active": true,
+    "sender_accountable": true,
+    "sender_key": true,
+    "delegation": true,
+    "delegation_usable": true,
+    "vault_paid": true,
+    "approval_found": true,
+    "approval_type": true,
+    "approval_subject": true,
+    "approval_issuer": true,
+    "approval_valid": true,
+    "approval_digest": true,
+    "for_this_insurer": true,
+    "advert": true,
+    "not_duplicate": true
+  },
+  "decisions": [
+    {
+      "name": "completeness",
+      "choice": { "complete": true, "missing": [] },
+      "reasoning": "The request names the ordering clinician, has a diagnosis code, cites the criteria of the guideline, lists the supporting records and states the record set hash, so each of the five requirements is met.",
+      "inference": {
+        "path": "marketplace",
+        "sub_job": {
+          "capability_id": "llm.text.generate.v1",
+          "advert_ref": "e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6#0",
+          "escrow_ref": "5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f#0",
+          "supplier_pkh": "9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a",
+          "receipt": {
+            "escrow_ref": "5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f#0",
+            "supplier_pkh": "9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a",
+            "prompt_hash": "7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b",
+            "response_hash": "0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d",
+            "model": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 1180,
+            "completion_tokens": 64,
+            "wallclock_ms": 2310
+          },
+          "receipt_signature": "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1",
+          "verification": {
+            "escrow_ref_matches": true,
+            "response_hash_matches": true,
+            "supplier_key_matches": true,
+            "signature_valid": true,
+            "on_chain_hash_matches": true,
+            "prompt_hash_matches": true,
+            "model_matches": true,
+            "fields_match": true
+          }
+        },
+        "accepted": "confirmed"
+      }
+    }
+  ],
+  "fault_mode": ""
+}
