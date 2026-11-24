@@ -6734,11 +6734,11 @@ test('mock service image, the health check: run as the Dockerfile writes it agai
 });
 
 // ======================================================================================================================================
-// The images that CI builds and pushes. One table lists the eight: the six agents of this repository, the runtime of the agent template and the mock service. The build job builds
-// each image and pushes nothing, so that an image that no longer builds fails the pull request, and the publish job pushes each one, in the same order. A compose file names each
-// image by its digest, and the host builds none. One runtime image serves every runtime of the agents host, and CI builds it from the agent template at one pinned commit. The
-// compose files of the four agents on the present host build their runtime on the host from the same commit, and they keep doing so. These tests parse the workflow and the compose
-// files. Each guard has an accepted twin and refused copies.
+// The images that CI builds and pushes. One table lists the nine: the six agents of this repository, the runtime of the agent template, the mock service and the operator pack. The build job
+// builds each image and pushes nothing, so that an image that no longer builds fails the pull request, and the publish job pushes each one, in the same order. A compose file names each
+// image by its digest, and the host builds none. The operator pack is the one image that no compose file names: the host runs it with docker run, by its digest. One runtime image serves
+// every runtime of the agents host, and CI builds it from the agent template at one pinned commit. The compose files of the four agents on the present host build their runtime on the host
+// from the same commit, and they keep doing so. These tests parse the workflow and the compose files. Each guard has an accepted twin and refused copies.
 // ======================================================================================================================================
 import { isDeepStrictEqual } from 'node:util';
 const RT = {
@@ -6754,7 +6754,7 @@ const COMPOSE_FILE = /^docker-compose.*\.ya?ml$/;
 const composeFilesOf = (dir, base = root) => readdirSync(join(base, dir)).filter((f) => COMPOSE_FILE.test(f)).sort();
 const composeTextsOf = (dirs, base = root) => Object.fromEntries(dirs.flatMap((dir) => composeFilesOf(dir, base).map((f) => [`${dir}/${f}`, readFileSync(join(base, dir, f), 'utf8')])));
 // One row for each image, in the order of both jobs. `context` is the build context. `label` is the name of the label line that the image has besides the source line, or null.
-// `named` lists each service of a compose file that names the image: the file and the name of the service.
+// `named` lists each service of a compose file that names the image: the file and the name of the service. The operator image has no compose file, so its list is empty, and it is the one row with an empty list.
 const CI_IMAGES = [
   { file: 'agents/agent-history/Dockerfile', image: `${IMAGE_REPOSITORY}/agent-history`, context: '.', label: null, named: [[hostCompose('agent-history'), 'service']] },
   { file: 'agents/document-pipeline/Dockerfile', image: `${IMAGE_REPOSITORY}/document-pipeline`, context: '.', label: null, named: [[hostCompose('document-pipeline'), 'service']] },
@@ -6767,8 +6767,11 @@ const CI_IMAGES = [
     named: [[serverCompose('reorder-agent'), 'runtime'], [serverCompose('order-desk'), 'runtime-small'], [serverCompose('order-desk'), 'runtime-medium'], [serverCompose('order-desk'), 'runtime-large']],
   },
   { file: 'services/mock-systems/Dockerfile', image: `${IMAGE_REPOSITORY}/mock-systems`, context: '.', label: null, named: [[serverCompose('mock-systems'), 'mock-systems']] },
+  { file: 'scripts/operator/Dockerfile', image: `${IMAGE_REPOSITORY}/operator`, context: '.', label: null, named: [] },
 ];
-const MOCK_FILE = CI_IMAGES.at(-1).file;
+const imageRow = (name) => CI_IMAGES.find((row) => row.image === `${IMAGE_REPOSITORY}/${name}`);
+const MOCK_FILE = imageRow('mock-systems').file;
+const OPERATOR_FILE = imageRow('operator').file;
 const IMAGE_WORDS = ['no', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten'];
 const ciText = read('.github/workflows/ci.yml');
 // The commit that the compose file of each agent on the present host builds the runtime from: the end of the build context of its service agent, after the #.
@@ -6829,13 +6832,14 @@ function ciImageProblems(text, rows, pins) {
   return problems;
 }
 
-test('CI: the eight images of the table are built with no push in the build job and pushed in the publish job, in one order, with the tags and the label of their rows, and the guard refuses each copy that breaks one rule', () => {
+test('CI: the nine images of the table are built with no push in the build job and pushed in the publish job, in one order, with the tags and the label of their rows, and the guard refuses each copy that breaks one rule', () => {
   const pins = rtPins();
   assert.deepEqual(Object.keys(pins), ['docker-compose.advocate.yml', 'docker-compose.agent-history.yml', 'docker-compose.audio-snippets.yml', 'docker-compose.document-pipeline.yml'], 'the four compose files of the present host');
   const [PIN] = Object.values(pins);
   const OTHER = '0123456789abcdef0123456789abcdef01234567';
-  assert.equal(CI_IMAGES.length, 8, 'the table lists eight images');
-  assert.equal(new Set(CI_IMAGES.map((row) => row.image)).size, 8, 'each image once');
+  assert.equal(CI_IMAGES.length, 9, 'the table lists nine images');
+  assert.equal(new Set(CI_IMAGES.map((row) => row.image)).size, 9, 'each image once');
+  assert.equal(CI_IMAGES.at(-1).file, OPERATOR_FILE, 'the operator image is the last row');
   assert.equal(ciText.split(PIN).length - 1, 5, 'the pin stands in five places of the workflow: two refs, two checks and one label');
   assert.deepEqual(ciImageProblems(ciText, CI_IMAGES, pins), [], 'the real file passes');
   // The build job runs on every event of the workflow, beside the tests, with the read-only permissions of the workflow, and it logs in nowhere.
@@ -6865,6 +6869,7 @@ test('CI: the eight images of the table are built with no push in the build job 
   const RUNTIME = `file: ${RT.dockerfile}\n          push: `;
   const REORDER = 'agents/reorder-agent/Dockerfile';
   const ORDERS = 'agents/order-desk/Dockerfile';
+  const OPERATOR = OPERATOR_FILE;
   const block = (from) => ciText.slice(from, ciText.indexOf(STEP(MOCK_FILE), from));
   const [b0, b1] = [block(ciText.indexOf(CHECKOUT)), block(ciText.lastIndexOf(CHECKOUT))];
   const change = (from, to, n) => rtChange(ciText, from, to, n);
@@ -6899,16 +6904,16 @@ test('CI: the eight images of the table are built with no push in the build job 
     ['no label of the commit', change(`            ${RT.commitLabel}=${PIN}\n`, ''), exactly('publish', RT.dockerfile)],
     ['the label of another commit', change(`${RT.commitLabel}=${PIN}`, `${RT.commitLabel}=${OTHER}`), exactly('publish', RT.dockerfile)],
     ['no label of the source', change(`            ${RT.sourceLabel}\n`, ''), exactly('publish', RT.dockerfile)],
-    ['the steps of the runtime after the build of the mock service, in the build job', moved(b0, '  publish:\n'), /build: the Dockerfiles must be the eight of the table/],
-    ['the steps of the runtime after the build of the mock service, in the publish job', `${change(b1, '')}${b1}`, /publish: the Dockerfiles must be the eight of the table/],
+    ['the steps of the runtime after the build of the operator image, in the build job', moved(b0, '  publish:\n'), /build: the Dockerfiles must be the nine of the table/],
+    ['the steps of the runtime after the build of the operator image, in the publish job', `${change(b1, '')}${b1}`, /publish: the Dockerfiles must be the nine of the table/],
     ['the push of the runtime before the login', moved(b1, LOGIN), new RegExp(`publish: the push of ${srvEscape(RT.dockerfile)} must come after the login`)],
-    ['the steps of the runtime in another place in one job', moved(b0, STEP('agents/agent-history/Dockerfile')), /build: the Dockerfiles must be the eight of the table/],
+    ['the steps of the runtime in another place in one job', moved(b0, STEP('agents/agent-history/Dockerfile')), /build: the Dockerfiles must be the nine of the table/],
     ['a login in the build job', change(CHECKOUT, `      - uses: docker/login-action@v3\n${CHECKOUT}`), /build: the job must have no registry login/],
-    ['an image left out of the build job', change(BUILD(REORDER), ''), /build: the Dockerfiles must be the eight of the table/],
-    ['an image left out of the publish job', change(PUSH('order-desk', ORDERS), ''), /publish: the Dockerfiles must be the eight of the table/],
-    ['the two new images in the other order in the build job', change(`${BUILD(REORDER)}${BUILD(ORDERS)}`, `${BUILD(ORDERS)}${BUILD(REORDER)}`), /build: the Dockerfiles must be the eight of the table/],
-    ['the two new images in the other order in the publish job', change(`${PUSH('reorder-agent', REORDER)}${PUSH('order-desk', ORDERS)}`, `${PUSH('order-desk', ORDERS)}${PUSH('reorder-agent', REORDER)}`), /publish: the Dockerfiles must be the eight of the table/],
-    ['an image that the table does not list, in the publish job', change(PUSH('order-desk', ORDERS), `${PUSH('order-desk', ORDERS)}${PUSH('extra', 'agents/extra/Dockerfile')}`), /publish: the Dockerfiles must be the eight of the table/],
+    ['an image left out of the build job', change(BUILD(REORDER), ''), /build: the Dockerfiles must be the nine of the table/],
+    ['an image left out of the publish job', change(PUSH('order-desk', ORDERS), ''), /publish: the Dockerfiles must be the nine of the table/],
+    ['the two new images in the other order in the build job', change(`${BUILD(REORDER)}${BUILD(ORDERS)}`, `${BUILD(ORDERS)}${BUILD(REORDER)}`), /build: the Dockerfiles must be the nine of the table/],
+    ['the two new images in the other order in the publish job', change(`${PUSH('reorder-agent', REORDER)}${PUSH('order-desk', ORDERS)}`, `${PUSH('order-desk', ORDERS)}${PUSH('reorder-agent', REORDER)}`), /publish: the Dockerfiles must be the nine of the table/],
+    ['an image that the table does not list, in the publish job', change(PUSH('order-desk', ORDERS), `${PUSH('order-desk', ORDERS)}${PUSH('extra', 'agents/extra/Dockerfile')}`), /publish: the Dockerfiles must be the nine of the table/],
     ['the Order Desk pushed under the name of the Reorder Agent', change(`${IMAGE_REPOSITORY}/order-desk:latest`, `${IMAGE_REPOSITORY}/reorder-agent:latest`), exactly('publish', ORDERS)],
     ['no tag of the commit for the Reorder Agent', change(`            ${IMAGE_REPOSITORY}/reorder-agent:\${{ github.sha }}\n`, ''), exactly('publish', REORDER)],
     ['a push in the build job for the Order Desk', change(`${STEP(ORDERS)}          push: false`, `${STEP(ORDERS)}          push: true`), exactly('build', ORDERS)],
@@ -6917,9 +6922,22 @@ test('CI: the eight images of the table are built with no push in the build job 
     ['a condition of its own on the build step of the Order Desk', change(BUILD(ORDERS), BUILD(ORDERS).replace('      - uses:', "      - if: github.event_name == 'push'\n        uses:")), exactly('build', ORDERS)],
     ['another source label for the Order Desk', change(PUSH('order-desk', ORDERS), PUSH('order-desk', ORDERS).replace(RT.sourceLabel, 'org.opencontainers.image.source=other')), exactly('publish', ORDERS)],
     ['the label of the template commit on an image that has none', change(PUSH('reorder-agent', REORDER), PUSH('reorder-agent', REORDER).replace(`labels: ${RT.sourceLabel}`, `labels: |\n            ${RT.sourceLabel}\n            ${RT.commitLabel}=${PIN}`)), exactly('publish', REORDER)],
-    ['a step after the build of the mock service, in the publish job', `${ciText}      - run: echo late\n`, new RegExp(`publish: the last step must build ${srvEscape(MOCK_FILE)}`)],
-    ['a step after the build of the mock service, in the build job', change('  publish:\n', '      - run: echo late\n  publish:\n'), new RegExp(`build: the last step must build ${srvEscape(MOCK_FILE)}`)],
-    ['a comment that counts six images', change('builds the eight images', 'builds the six images'), /the comment above the build job must say that it builds the eight images/],
+    ['the operator image left out of the build job', change(BUILD(OPERATOR), ''), /build: the Dockerfiles must be the nine of the table/],
+    ['the operator image left out of the publish job', change(PUSH('operator', OPERATOR), ''), /publish: the Dockerfiles must be the nine of the table/],
+    ['the operator image and the mock service in the other order in the build job', change(`${BUILD(MOCK_FILE)}${BUILD(OPERATOR)}`, `${BUILD(OPERATOR)}${BUILD(MOCK_FILE)}`), /build: the Dockerfiles must be the nine of the table/],
+    ['the operator image and the mock service in the other order in the publish job', change(`${PUSH('mock-systems', MOCK_FILE)}${PUSH('operator', OPERATOR)}`, `${PUSH('operator', OPERATOR)}${PUSH('mock-systems', MOCK_FILE)}`), /publish: the Dockerfiles must be the nine of the table/],
+    ['the operator image pushed under the name of the Order Desk', change(`${IMAGE_REPOSITORY}/operator:latest`, `${IMAGE_REPOSITORY}/order-desk:latest`), exactly('publish', OPERATOR)],
+    ['no tag :latest for the operator image', change(`            ${IMAGE_REPOSITORY}/operator:latest\n`, ''), exactly('publish', OPERATOR)],
+    ['no tag of the commit for the operator image', change(`            ${IMAGE_REPOSITORY}/operator:\${{ github.sha }}\n`, ''), exactly('publish', OPERATOR)],
+    ['a push in the build job for the operator image', change(`${STEP(OPERATOR)}          push: false`, `${STEP(OPERATOR)}          push: true`), exactly('build', OPERATOR)],
+    ['no push in the publish job for the operator image', change(`${STEP(OPERATOR)}          push: true`, `${STEP(OPERATOR)}          push: false`), exactly('publish', OPERATOR)],
+    ['a build argument for the operator image', change(`${STEP(OPERATOR)}          push: false`, `${STEP(OPERATOR)}          build-args: SIGNING_KEY=x\n          push: false`), exactly('build', OPERATOR)],
+    ['the context of the operator image in its own folder', change(`context: .\n          file: ${OPERATOR}`, `context: scripts/operator\n          file: ${OPERATOR}`), exactly('build', OPERATOR)],
+    ['another source label for the operator image', change(PUSH('operator', OPERATOR), PUSH('operator', OPERATOR).replace(RT.sourceLabel, 'org.opencontainers.image.source=other')), exactly('publish', OPERATOR)],
+    ['the push of the operator image before the login', moved(PUSH('operator', OPERATOR), LOGIN), new RegExp(`publish: the push of ${srvEscape(OPERATOR)} must come after the login`)],
+    ['a step after the build of the operator image, in the publish job', `${ciText}      - run: echo late\n`, new RegExp(`publish: the last step must build ${srvEscape(OPERATOR_FILE)}`)],
+    ['a step after the build of the operator image, in the build job', change('  publish:\n', '      - run: echo late\n  publish:\n'), new RegExp(`build: the last step must build ${srvEscape(OPERATOR_FILE)}`)],
+    ['a comment that counts six images', change('builds the nine images', 'builds the six images'), /the comment above the build job must say that it builds the nine images/],
     ['a key twice', change(`path: ${RT.folder}\n`, `path: ${RT.folder}\n          path: ${RT.folder}\n`), /does not parse/],
   ];
   for (const [name, broken, expected] of faults) {
@@ -6931,6 +6949,7 @@ test('CI: the eight images of the table are built with no push in the build job 
   const twins = [
     ['the pin on another commit in the workflow and in the four compose files', other(ciText), Object.fromEntries(Object.keys(pins).map((file) => [file, OTHER]))],
     ['a step between the runtime and the mock service', change(STEP(MOCK_FILE), `      - run: echo ok\n${STEP(MOCK_FILE)}`, 1), pins],
+    ['a step between the mock service and the operator image', change(STEP(OPERATOR), `      - run: echo ok\n${STEP(OPERATOR)}`, 1), pins],
     ['a step before the checkout, and a comment between the steps', change(CHECKOUT, `      - run: echo ok\n      # a note\n${CHECKOUT}`, 1), pins],
     ['the one label of the Order Desk written as a block', change(PUSH('order-desk', ORDERS), PUSH('order-desk', ORDERS).replace(`labels: ${RT.sourceLabel}`, `labels: |\n            ${RT.sourceLabel}`)), pins],
   ];
@@ -6938,7 +6957,7 @@ test('CI: the eight images of the table are built with no push in the build job 
 });
 
 // The services of the compose files against the table: each service that names an image is a service that its row lists, with the name of that row (the digest or its placeholder after the
-// @ does not count), and each service that a row lists names an image.
+// @ does not count), and each service that a row lists names an image. Each row lists a service, except the row of the operator image: no compose file names that image, and the host runs it with docker run, by its digest.
 function composeImageProblems(rows, texts) {
   const problems = [];
   const expected = new Map(rows.flatMap((row) => row.named.map(([file, service]) => [`${file}#${service}`, row.image])));
@@ -6954,10 +6973,11 @@ function composeImageProblems(rows, texts) {
     }
   }
   for (const key of expected.keys()) if (!seen.has(key)) problems.push(`${key} is a row of the table, and no compose file names an image there`);
+  for (const row of rows) if (row.named.length === 0 && row.image !== `${IMAGE_REPOSITORY}/operator`) problems.push(`${row.image} is a row of the table, and no service of a compose file is listed for it`);
   return problems;
 }
 
-test('CI: each compose file of the two hosts names the image that CI pushes, and CI pushes each image that a compose file names; the guard refuses a name that is not the one of the row, a service that no row lists and a row that no compose file names', () => {
+test('CI: each compose file of the two hosts names the image that CI pushes, and CI pushes each image that a compose file names; the guard refuses a name that is not the one of the row, a service that no row lists, a row that no compose file names, and an empty row of any image but the operator image', () => {
   const texts = composeTextsOf(['deploy/host', 'deploy/server']);
   assert.deepEqual(Object.keys(texts), [...['advocate', 'agent-history', 'audio-snippets', 'document-pipeline'].map(hostCompose), ...['mock-systems', 'order-desk', 'reorder-agent'].map(serverCompose)], 'the four compose files of the present host and the three of the agents host');
   assert.deepEqual(composeImageProblems(CI_IMAGES, texts), [], 'the real files pass');
@@ -6978,11 +6998,16 @@ test('CI: each compose file of the two hosts names the image that CI pushes, and
     ['a compose file that no row lists', { ...texts, 'deploy/server/docker-compose.extra.yml': `services:\n  x:\n    image: ${IMAGE_REPOSITORY}/extra@sha256:<digest>\n` }, /docker-compose\.extra\.yml#x names the image/],
     ['a runtime that names no image', { ...texts, [reorder]: srvReplace(texts[reorder], `    image: ${RT.image}@sha256:<digest>\n`, '    build: ./runtime\n') }, /reorder-agent\.yml#runtime is a row of the table, and no compose file names an image there/],
     ['a compose file of the table that is gone', Object.fromEntries(Object.entries(texts).filter(([file]) => file !== serverCompose('mock-systems'))), /mock-systems\.yml#mock-systems is a row of the table/],
+    ['a compose file that names the operator image', { ...texts, 'deploy/server/docker-compose.operator.yml': `services:\n  x:\n    image: ${IMAGE_REPOSITORY}/operator@sha256:<digest>\n` }, /docker-compose\.operator\.yml#x names the image \S+\/operator, and no row of the table lists that service/],
   ];
   for (const [name, broken, expected] of faults) {
     const problems = composeImageProblems(CI_IMAGES, broken);
     assert.ok(problems.some((p) => expected.test(p)), `${name}: found ${JSON.stringify(problems)}`);
   }
+  // The operator image is the one row that lists no service: no compose file names it. A row of another image with an empty list is refused.
+  assert.deepEqual(CI_IMAGES.filter((row) => row.named.length === 0).map((row) => row.image), [`${IMAGE_REPOSITORY}/operator`], 'the operator image is the one row with no service');
+  const emptied = CI_IMAGES.map((row) => (row.image === `${IMAGE_REPOSITORY}/mock-systems` ? { ...row, named: [] } : row));
+  assert.ok(composeImageProblems(emptied, texts).some((p) => /mock-systems is a row of the table, and no service of a compose file is listed for it/.test(p)), 'a row of the mock service with no service');
   // The twins: the digest of 64 hex digits in place of the placeholder, and a service that the host builds from the template commit.
   const digest = (text) => srvReplace(text, '@sha256:<digest>', `@sha256:${'ab'.repeat(32)}`);
   assert.deepEqual(composeImageProblems(CI_IMAGES, { ...texts, [reorder]: digest(texts[reorder]), [orders]: digest(texts[orders]) }), [], 'the images by digest');
@@ -7455,13 +7480,44 @@ function folderNamesIn(dir, name, found = []) {
   }
   return found;
 }
-// The folders that a COPY takes whole and that hold a test folder, which the ignore file does not keep out: by the pattern for every folder named test, or by the path of the test folder.
+// The ignore file as the Docker builders read it: each line is a rule, and the last rule that matches a path, or a folder above it, decides. A line with a leading ! puts the path back. `**` crosses
+// folders, and `*` and `?` stop at a slash.
+function ignoreRulesOf(text) {
+  return text.split('\n').map((line) => line.trim()).filter((line) => line !== '' && !line.startsWith('#')).map((line) => {
+    const exclusion = line.startsWith('!');
+    const glob = (exclusion ? line.slice(1) : line).replace(/^\/+/, '').replace(/\/+$/, '');
+    let source = '';
+    for (let at = 0; at < glob.length; at += 1) {
+      const char = glob[at];
+      if (char === '*' && glob[at + 1] === '*') {
+        at += 1;
+        if (glob[at + 1] === '/') at += 1;
+        source += at + 1 >= glob.length ? '.*' : '(.*/)?';
+      } else if (char === '*') source += '[^/]*';
+      else if (char === '?') source += '[^/]';
+      else source += char.replace(/[\\^$.|+(){}[\]]/g, '\\$&');
+    }
+    return { exclusion, pattern: new RegExp(`^${source}$`) };
+  });
+}
+function reachesContext(rules, path) {
+  const parts = path.split('/');
+  const folders = parts.slice(0, -1).map((_, at) => parts.slice(0, at + 1).join('/'));
+  let ignored = false;
+  for (const rule of rules) {
+    if (rule.exclusion !== ignored) continue;
+    if (rule.pattern.test(path) || folders.some((folder) => rule.pattern.test(folder))) ignored = !rule.exclusion;
+  }
+  return !ignored;
+}
+// The folders that a COPY takes whole and that hold a test folder, which the ignore file does not keep out of the build context. The last line that matches the test folder decides: a re-include
+// that stands below the line for every folder named test brings the test folders of the re-included folder back, unless a line below it puts them out again.
 function dockerignoreProblems(ignoreText, folders) {
-  const lines = ignoreText.split('\n');
-  return folders.flatMap((folder) => folderNamesIn(folder, 'test').filter((path) => !lines.includes('**/test') && !lines.includes(path)).map((path) => `${path} is copied into an image: the ignore file keeps no test folder out`));
+  const rules = ignoreRulesOf(ignoreText);
+  return folders.flatMap((folder) => folderNamesIn(folder, 'test').filter((path) => reachesContext(rules, path)).map((path) => `${path} is copied into an image: the ignore file keeps no test folder out`));
 }
 
-test('dockerignore: no image holds a test folder, and the first comment line names the Dockerfiles that build from the repo root; the guard refuses an ignore file that leaves a test folder in', () => {
+test('dockerignore: no image holds a test folder, and the first comment line names the Dockerfiles that build from the repo root; the last line that matches decides, and the guard refuses an ignore file that leaves a test folder in', () => {
   const ignore = read('.dockerignore');
   const lines = ignore.split('\n');
   const rows = CI_IMAGES.filter((row) => row.context === '.');
@@ -7470,16 +7526,25 @@ test('dockerignore: no image holds a test folder, and the first comment line nam
   // The kit packages are copied whole by the agent images, with their test folders. The two agents of use case 1 copy their source folder only.
   for (const folder of ['packages/usecase-kit', 'packages/hire-kit', 'packages/service-kit', 'packages/id-kit', 'agents/audio-snippets']) assert.ok(withTests.includes(folder), `${folder} is copied whole and holds a test folder: ${withTests.join(', ')}`);
   assert.deepEqual(['agents/reorder-agent', 'agents/order-desk'].filter((folder) => folders.includes(folder)), [], 'the two agents of use case 1 are not copied whole');
-  assert.ok(lines.includes('**/test'), 'the ignore file has the line for every folder named test');
+  const TEST_LINES = ['**/test', 'scripts/**/test'];
+  assert.ok(TEST_LINES.every((line) => lines.includes(line)), 'the ignore file has the line for every folder named test, and the line that leaves them out again after the re-includes of the scripts folder');
   assert.deepEqual(dockerignoreProblems(ignore, folders), [], 'the real file passes');
-  const without = lines.filter((line) => line !== '**/test').join('\n');
-  const refused = dockerignoreProblems(without, folders);
-  assert.ok(refused.includes('packages/usecase-kit/test is copied into an image: the ignore file keeps no test folder out'), `a file with no line for the test folders is refused: ${JSON.stringify(refused)}`);
-  assert.equal(refused.length, withTests.flatMap((folder) => folderNamesIn(folder, 'test')).length, 'each test folder is named once');
-  // The twin: the path of each test folder in place of the pattern.
-  const paths = withTests.flatMap((folder) => folderNamesIn(folder, 'test'));
-  assert.deepEqual(dockerignoreProblems([without, ...paths].join('\n'), folders), [], 'a path for each test folder');
-  assert.equal(dockerignoreProblems([without, ...paths.slice(1)].join('\n'), folders).length, 1, 'one test folder left out of the list');
+  const tests = withTests.flatMap((folder) => folderNamesIn(folder, 'test'));
+  const named = (path) => `${path} is copied into an image: the ignore file keeps no test folder out`;
+  const text = (...dropped) => lines.filter((line) => !dropped.includes(line)).join('\n');
+  const refused = dockerignoreProblems(text(...TEST_LINES), folders);
+  assert.ok(refused.includes(named('packages/usecase-kit/test')), `a file with no line for the test folders is refused: ${JSON.stringify(refused)}`);
+  assert.deepEqual(refused, tests.map(named), 'each test folder is named once');
+  // The last line that matches decides. The re-includes of the scripts folder stand below `**/test`, so they bring the test folder of the pack back, and the line below them puts it out again.
+  assert.deepEqual(dockerignoreProblems(text('scripts/**/test'), folders), [named('scripts/operator/test')], 'without the line below the re-includes, the test folder of the pack comes back');
+  const above = lines.filter((line) => line !== 'scripts/**/test').flatMap((line) => (line === '!scripts/operator' ? ['scripts/**/test', line] : [line])).join('\n');
+  assert.deepEqual(dockerignoreProblems(above, folders), [named('scripts/operator/test')], 'the line for the scripts folder above the re-includes does not hold');
+  assert.deepEqual(dockerignoreProblems(text('**/test'), folders), tests.filter((path) => !path.startsWith('scripts/')).map(named), 'without the line for every folder, the test folders of the packages and the agents come back');
+  // The twins: the path of each test folder in place of the lines, a line that leaves out more, and the line below the re-includes at depth one, where the test folder of the pack is.
+  assert.deepEqual(dockerignoreProblems([text(...TEST_LINES), ...tests].join('\n'), folders), [], 'a path for each test folder');
+  assert.equal(dockerignoreProblems([text(...TEST_LINES), ...tests.slice(1)].join('\n'), folders).length, 1, 'one test folder left out of the list');
+  assert.deepEqual(dockerignoreProblems(`${ignore}*.tmp\n`, folders), [], 'a line that leaves out more');
+  assert.deepEqual(dockerignoreProblems(rtChange(ignore, 'scripts/**/test\n', 'scripts/*/test\n'), folders), [], 'the line at depth one');
   // The first comment line names the Dockerfiles of the repo root context.
   for (const row of rows) assert.ok(lines[0].includes(row.file), `${row.file} is named in the first comment line`);
   assert.equal(lines[0].includes(RT.dockerfile), false, 'the runtime Dockerfile has another context');

@@ -40,7 +40,7 @@ jobs:
         env:
           REQUIRE_POPPLER: "1"
           REQUIRE_ASR: "1"
-  # Every pull request and every push to main builds the eight images, with no push and no registry login, so that a stage that no longer builds fails before it
+  # Every pull request and every push to main builds the nine images, with no push and no registry login, so that a stage that no longer builds fails before it
   # reaches main. The publish job builds them again on main, and pushes them.
   build:
     runs-on: self-hosted
@@ -96,6 +96,11 @@ jobs:
         with:
           context: .
           file: services/mock-systems/Dockerfile
+          push: false
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: scripts/operator/Dockerfile
           push: false
   publish:
     needs: test
@@ -194,4 +199,13 @@ jobs:
           tags: |
             ghcr.io/apex-fusion/vector-service-agents/mock-systems:latest
             ghcr.io/apex-fusion/vector-service-agents/mock-systems:${{ github.sha }}
+          labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: scripts/operator/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/apex-fusion/vector-service-agents/operator:latest
+            ghcr.io/apex-fusion/vector-service-agents/operator:${{ github.sha }}
           labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
