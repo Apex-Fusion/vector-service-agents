@@ -515,9 +515,14 @@ function specProblems(use: UseCase): string[] {
   for (const subagent of use.subagents) {
     const parent = use.agents.find((agent) => agent.id === subagent.parent);
     const files = parent === undefined ? undefined : AGENT_FILES[parent.id];
-    const found = /its own (authentication|assertion|transaction|delegation) key and its own (authentication|assertion|transaction|delegation) key/.exec(specRow(files?.spec ?? '', 'Subagent') ?? '');
+    const row = specRow(files?.spec ?? '', 'Subagent') ?? '';
+    const found = /its own (authentication|assertion|transaction|delegation) key and its own (authentication|assertion|transaction|delegation) key/.exec(row);
     if (found === null) problems.push(`${subagent.id}: the spec of the parent has no row that gives the keys of the subagent`);
     else if (!isDeepStrictEqual(subagent.keys.map((keyUse) => keyUse.purposes), [[found[1]], [found[2]]])) problems.push(`${subagent.id}: the purposes of its keys are not ${found[1]} and ${found[2]}, one for each key, as the spec says`);
+    const named = /^`([^`]+)`/.exec(row)?.[1];
+    if (named !== subagent.name) problems.push(`${subagent.id}: the spec of the parent names the subagent ${named} and the data has ${subagent.name}`);
+    const variable = `${subagent.id.toUpperCase().replaceAll('-', '_')}_DID`;
+    if (files?.example.has(variable) !== true) problems.push(`${subagent.id}: the example of the parent has no line ${variable}`);
   }
   return problems;
 }
@@ -958,6 +963,8 @@ describe('the data of use case 1 (inventory reorder)', () => {
       ['a delegation key that gains a purpose', mapKeyUse(data, 'reorder-delegation-2', (keyUse) => ({ ...keyUse, purposes: ['delegation', 'transaction'] })), 'reorder-agent: the purposes of reorder-delegation-2 are delegation and transaction and the spec says delegation'],
       ['a service key with another purpose', mapKeyUse(data, 'order-desk-service', (keyUse) => ({ ...keyUse, purposes: ['assertion', 'transaction'] })), 'order-desk: the purposes of order-desk-service are assertion and transaction and the spec says authentication and transaction'],
       ['a subagent key with another purpose', mapKeyUse(data, 'stock-reader-delegation', (keyUse) => ({ ...keyUse, purposes: ['transaction'] })), 'stock-reader: the purposes of its keys are not authentication and delegation, one for each key, as the spec says'],
+      ['a subagent with another name than the spec gives', { ...data, subagents: data.subagents.map((subagent) => ({ ...subagent, name: 'stock-checker' })) }, 'stock-reader: the spec of the parent names the subagent stock-reader and the data has stock-checker'],
+      ['a subagent that the example of its parent has no DID line for', { ...data, subagents: data.subagents.map((subagent) => ({ ...subagent, id: 'stock-checker' })) }, 'stock-checker: the example of the parent has no line STOCK_CHECKER_DID'],
     ])('refuse %s', (_name, broken, problem) => {
       expect(specProblems(broken)).toContain(problem);
     });
