@@ -13,3 +13,5 @@ evidence.json.tmp
 # The speech model of a developer's machine (agents/audio-snippets/asr/fetch_model.py, about 148 MB), and the bytecode Python writes when a test imports asr/worker.py
 agents/audio-snippets/.models/
 __pycache__/
+# The folder that vitest writes in a package during a test run (agents/<name>/.vitest). It is a run output: it is never committed, and rx does not copy back a file that git ignores
+.vitest/
