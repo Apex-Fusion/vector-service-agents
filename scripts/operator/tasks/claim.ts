@@ -293,35 +293,70 @@ function recordStake(session: TaskSession<ClaimExtra>, agent: AgentSpec, fact: C
   recordKitLanding(session, { step: agent.id, txHash: fact.claimTx, refs: { claim: fact.claimRef }, facts: { claim_token: fact.claimToken, document_tx: fact.documentTx }, shows: showsOf(fact) });
 }
 
+/** The transaction that a part of the state file names. A part that names none is a damaged state file, and the task stops. */
+function txOfPart(part: PartNote | undefined, run: string, agent: AgentSpec, what: string): string | undefined {
+  if (part === undefined) return undefined;
+  if (part.tx_hash === null) throw new PreconditionError(`the state file of the run ${run} holds no ${what} transaction of the agent ${agent.id}`);
+  return part.tx_hash;
+}
+
 /**
- * The claim of this run exists already: the facts hold it, or the state file holds the part that the claim transaction made (the task stopped after the claim landed). The step is recorded and nothing
- * is staked. A dry run says what the next run does and writes nothing.
+ * The claim of this run exists already, or may exist. Three files can say so: the facts hold it; the state file holds the part that the claim transaction made (the task stopped after the claim landed);
+ * or the state file holds only the part of the claim document (the claim transaction was signed, and the runner let its flight go as lost, because the indexer did not know the transaction when its
+ * validity ended). In the last two cases the claim is read from the chain: it is the open claim of the agent that the claim transaction made or, with no claim part, the open claim whose claim document
+ * is the transaction of the document part. The step is recorded and nothing is staked. A claim part with no such open claim stops the task: the claim may be challenged or spent, and a new claim could be
+ * a second one. A document part with no such open claim says that no claim was made from the document, so the result is null and the caller stakes a new claim with a new document.
+ * A dry run says what the next run does and writes nothing.
  */
-async function resumeStake(session: TaskSession<ClaimExtra>, agent: AgentSpec, run: string, held: ClaimFact | undefined): Promise<StepOutcome> {
+async function resumeStake(session: TaskSession<ClaimExtra>, agent: AgentSpec, run: string, held: ClaimFact | undefined): Promise<StepOutcome | null> {
   const known = factsOf(session, agent);
-  if (session.mode === 'dry') {
-    session.out.out(`dry run: the claim of the agent ${agent.id} for the run ${run} is staked already, and the next run with --submit records the step. It stakes no second claim.`);
-    return { kind: 'dry' };
-  }
+  const claimTx = txOfPart(session.state.note<PartNote>(`part.${stepOfClaim(agent)}`), run, agent, 'claim');
+  const documentTx = txOfPart(session.state.note<PartNote>(`part.${stepOfDocument(agent)}`), run, agent, 'claim document');
   let fact = held;
   if (fact === undefined) {
-    const claimPart = session.state.note<PartNote>(`part.${stepOfClaim(agent)}`);
-    if (claimPart === undefined || claimPart.tx_hash === null) throw new PreconditionError(`the state file of the run ${run} holds no claim transaction of the agent ${agent.id}`);
+    if (claimTx === undefined && documentTx === undefined) return null;
     const module1 = await module1Of(session);
     const listed = await kitOf(session, agent, module1, known.id, null).dispute.listOpenClaims(known.did);
     if (!listed.ok) throw new PreconditionError(`the open claims of the agent ${agent.id} cannot be read (${listed.code}): ${listed.detail}`);
-    const view = listed.value.find((claim) => claim.ref.startsWith(`${claimPart.tx_hash}#`));
+    const view = listed.value.find((claim) => (claimTx === undefined ? txHashOfUri(claim.claim_uri) === documentTx : claim.ref.startsWith(`${claimTx}#`)));
     if (view === undefined) {
-      throw new PreconditionError(`the claim transaction ${claimPart.tx_hash} of the agent ${agent.id} is in the state file, and the chain shows no open claim that it made. It may be challenged or spent: read the chain before another claim is staked`);
+      if (claimTx === undefined) return null;
+      throw new PreconditionError(`the claim transaction ${claimTx} of the agent ${agent.id} is in the state file, and the chain shows no open claim that it made. It may be challenged or spent: read the chain before another claim is staked`);
     }
-    const documentPart = session.state.note<PartNote>(`part.${stepOfDocument(agent)}`);
-    const documentTx = documentPart?.tx_hash ?? txHashOfUri(view.claim_uri);
-    if (documentTx === null) throw new PreconditionError(`the claim document of the claim ${view.ref} is named by no state file part and no address that can be read, so the claim is not recorded`);
-    fact = factOfView(agent, known.did, view, documentTx, claimPart.tx_hash);
-    session.facts.put('claims', [run, agent.id], fact);
+    const documentOfClaim = documentTx ?? txHashOfUri(view.claim_uri);
+    if (documentOfClaim === null) throw new PreconditionError(`the claim document of the claim ${view.ref} is named by no state file part and no address that can be read, so the claim is not recorded`);
+    fact = factOfView(agent, known.did, view, documentOfClaim, view.ref.slice(0, view.ref.indexOf('#')));
   }
+  if (session.mode === 'dry') {
+    session.out.out(`dry run: the claim of the agent ${agent.id} for the run ${run} is staked already, and the next run with --submit records the step. It stakes no second claim. The claim is ${fact.claimRef}.`);
+    return { kind: 'dry' };
+  }
+  if (held === undefined) session.facts.put('claims', [run, agent.id], fact);
   recordStake(session, agent, fact);
   return { kind: 'done', message: `the claim of the agent ${agent.id} for the run ${run} was staked in an earlier run (${fact.claimRef}): the step is recorded, and no second claim is staked` };
+}
+
+/**
+ * An open claim of the agent with the stake, the window and the claim type of the constants that no run of the facts holds is an orphan. An earlier run can have stopped after its claim landed and lost
+ * its state, and then a new claim would be a second one for the same agent. The task stops, and the operator reads the chain: the facts do not hold the claim, so `cleanup` does not withdraw it.
+ */
+async function requireNoOrphan(session: TaskSession<ClaimExtra>, agent: AgentSpec, module1: Module1Deployment, known: { readonly id: string; readonly did: string }): Promise<void> {
+  const listed = await kitOf(session, agent, module1, known.id, null).dispute.listOpenClaims(known.did);
+  if (!listed.ok) throw new PreconditionError(`the open claims of the agent ${agent.id} cannot be read (${listed.code}): ${listed.detail}`);
+  const recorded = new Set<string>();
+  for (const byAgent of Object.values(session.facts.read().claims)) {
+    const fact = byAgent[agent.id];
+    if (fact !== undefined) recorded.add(fact.claimRef);
+  }
+  const orphans = listed.value.filter((view) => (
+    view.claim_type === claimTypeOf(agent.capability) && view.stake_lovelace === CLAIM_STAKE_LOVELACE && view.challenge_window_ms === CLAIM_WINDOW_MS && !recorded.has(view.ref)
+  ));
+  if (orphans.length > 0) {
+    throw new PreconditionError(
+      `the agent ${agent.id} has ${orphans.length} open claim(s) with the stake, the window and the claim type of the constants that no run of the facts holds (${orphans.map((view) => view.ref).join(', ')}). `
+      + 'A run that stopped after its claim landed can have made it, and a new claim would be a second one. Read the chain: the facts do not hold the claim, so cleanup does not withdraw it. Record it in the facts or withdraw it by hand, then run again',
+    );
+  }
 }
 
 async function stakeStep(session: TaskSession<ClaimExtra>, agent: AgentSpec): Promise<StepOutcome> {
@@ -329,13 +364,14 @@ async function stakeStep(session: TaskSession<ClaimExtra>, agent: AgentSpec): Pr
   if (run === null) throw new FlagError('give --run <label>');
   if (kind === null) throw new FlagError('give --kind clean or failure: the kind of the run that the claim is for');
   const known = factsOf(session, agent);
-  const held = session.facts.read().claims[run]?.[agent.id];
-  if (held !== undefined || session.state.note(`part.${stepOfClaim(agent)}`) !== undefined) return resumeStake(session, agent, run, held);
+  const resumed = await resumeStake(session, agent, run, session.facts.read().claims[run]?.[agent.id]);
+  if (resumed !== null) return resumed;
 
   const module1 = await module1Of(session);
   await requireRecordOnChain(session, agent, known.id);
   await requireFunds(session, agent, kind);
   await requireFree(session);
+  await requireNoOrphan(session, agent, module1, known);
 
   const { dispute, stops } = kitOf(session, agent, module1, known.id, claimRequest(session, agent, module1, run));
   const result = await dispute.stakeRunClaim({

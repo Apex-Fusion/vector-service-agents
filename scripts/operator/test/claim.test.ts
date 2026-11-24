@@ -528,34 +528,97 @@ describe('claim run: the guards on the transactions of the kit', () => {
 });
 
 describe('claim run: a run that stops after the claim landed', () => {
-  it('reads the claim from the chain at the next run, records the facts and the step, and stakes no second claim', async () => {
+  it('reads the claim from the chain at the next run, records the facts and the step, and stakes no second claim: it takes the claim of the run, and no other open claim of the agent', async () => {
     const rig = await makeRig();
     approve(rig);
-    const lock = lockFacts(rig);
-    // The facts file is locked: the claim lands, and the facts cannot be written. The claim stays in flight in the state file.
-    expect(await rig.run('run', '--run', RUN, '--kind', 'clean', '--submit')).toBe(1);
+    // The run run-b is staked first. The facts hold its claim, and it is another open claim of the agent when the run run-a resumes.
+    expect(await rig.run('run', '--run', 'run-b', '--kind', 'clean', '--submit')).toBe(0);
     expect(rig.ledger.accepted).toHaveLength(2);
-    expect(stateOf(rig).in_flight).toMatchObject({ step: 'claim:reorder-agent:claim', tx_hash: rig.ledger.accepted[1] });
+    const lock = lockFacts(rig);
+    // The facts file is locked: the claim of run-a lands, and the facts cannot be written. The claim stays in flight in the state file.
+    expect(await rig.run('run', '--run', RUN, '--kind', 'clean', '--submit')).toBe(1);
+    expect(rig.ledger.accepted).toHaveLength(4);
+    expect(stateOf(rig).in_flight).toMatchObject({ step: 'claim:reorder-agent:claim', tx_hash: rig.ledger.accepted[3] });
     expect(stateOf(rig).steps).toEqual({});
     rmSync(lock);
-    expect(rig.world.facts().claims).toEqual({});
-    // A dry run says what the next run does, and writes nothing.
+    expect(rig.world.facts().claims[RUN]).toBeUndefined();
+    // A third open claim of the agent, newer than the claim of run-a, that no run of the facts holds: the resume must take the claim of the run, and never the newest open claim.
+    later(rig, 1);
+    const host = makeHost(rig);
+    const hand = kitOver(rig, host, claimRequest(host, REORDER, MODULE1, 'by-hand'));
+    expect(await hand.dispute.stakeRunClaim(RUN_CLAIM)).toMatchObject({ ok: true });
+    expect(rig.ledger.accepted).toHaveLength(6);
+    expect(await openClaims(rig, CLAIMER_ID)).toHaveLength(3);
+    // A dry run says what the next run does, names the claim of the run, and writes nothing.
     rig.world.node.script.push({ confirmations: 3 });
     expect(await rig.run('run', '--run', RUN, '--kind', 'clean')).toBe(0);
     expect(rig.text()).toMatch(/is staked already, and the next run with --submit records the step/);
+    expect(rig.text()).toContain(`The claim is ${rig.ledger.accepted[3]}#0.`);
     rig.world.node.script.push({ confirmations: 3 });
     expect(await rig.run('run', '--run', RUN, '--kind', 'clean', '--submit')).toBe(0);
-    expect(rig.ledger.accepted).toHaveLength(2);
+    expect(rig.ledger.accepted).toHaveLength(6);
     const fact = claimOf(rig);
-    expect(fact).toMatchObject({ claimTx: rig.ledger.accepted[1], documentTx: rig.ledger.accepted[0], stakeLovelace: '50000000', withdrawTx: null });
+    expect(fact).toMatchObject({ claimTx: rig.ledger.accepted[3], documentTx: rig.ledger.accepted[2], stakeLovelace: '50000000', withdrawTx: null });
+    expect(fact.claimRef).toBe(`${rig.ledger.accepted[3]}#0`);
     const state = stateOf(rig);
     expect(state.steps['reorder-agent']).toMatchObject({ tx_hash: fact.claimTx, refs: { claim: fact.claimRef } });
     expect(state.notes['part.claim:reorder-agent:claim']).toMatchObject({ tx_hash: fact.claimTx });
     expect(state.in_flight).toBeNull();
-    expect(await openClaims(rig, CLAIMER_ID)).toHaveLength(1);
+    expect(claimOf(rig, REORDER, 'run-b').claimTx).toBe(rig.ledger.accepted[1]);
     // The next run goes on with the second agent.
     expect(await stakeAll(rig)).toBe(0);
+    expect(rig.ledger.accepted).toHaveLength(8);
+  }, SLOW);
+
+  it('records the claim from the chain when the runner let the flight of the claim go as lost: the state file holds only the part of the claim document, and no second claim is staked', async () => {
+    const rig = await makeRig();
+    approve(rig);
+    const lock = lockFacts(rig);
+    expect(await rig.run('run', '--run', RUN, '--kind', 'clean', '--submit')).toBe(1);
+    rmSync(lock);
+    expect(rig.ledger.accepted).toHaveLength(2);
+    expect(stateOf(rig).in_flight).toMatchObject({ step: 'claim:reorder-agent:claim', tx_hash: rig.ledger.accepted[1] });
+    // The indexer does not know the claim, and its validity ended more than a minute ago: the runner lets the flight go as lost. The claim is on the chain all the same.
+    later(rig, 1);
+    expect(await rig.run('run', '--run', RUN, '--kind', 'clean', '--submit')).toBe(0);
+    expect(rig.text()).toMatch(/it cannot land any more/);
+    const state = stateOf(rig);
+    expect(state.notes['part.claim:reorder-agent:claim']).toBeUndefined();
+    expect(state.notes['part.claim:reorder-agent:document']).toMatchObject({ tx_hash: rig.ledger.accepted[0] });
+    expect(state.in_flight).toBeNull();
+    expect(rig.ledger.accepted).toHaveLength(2);
+    const fact = claimOf(rig);
+    expect(fact).toMatchObject({ documentTx: rig.ledger.accepted[0], claimTx: rig.ledger.accepted[1], stakeLovelace: '50000000', windowMs: CLAIM_WINDOW_MS, withdrawTx: null });
+    expect(state.steps['reorder-agent']).toMatchObject({ tx_hash: fact.claimTx, refs: { claim: fact.claimRef } });
+    expect(await openClaims(rig, CLAIMER_ID)).toHaveLength(1);
+  }, SLOW);
+
+  it('stops a new claim with exit 2, in a dry run and in a submit run, when the agent has an open claim with the constants that no run of the facts holds, and stakes when the facts hold that claim', async () => {
+    const rig = await makeRig();
+    approve(rig);
+    // A claim of the constants that the facts do not hold: the kit stakes it by hand, as a run that stopped and lost its state would have left it.
+    const host = makeHost(rig);
+    const hand = kitOver(rig, host, claimRequest(host, REORDER, MODULE1, 'by-hand'));
+    const made = await hand.dispute.stakeRunClaim(RUN_CLAIM);
+    if (!made.ok) throw new Error(`${made.code}: ${made.detail}`);
+    expect(rig.ledger.accepted).toHaveLength(2);
+    for (const mode of [['--submit'], []]) {
+      expect(await rig.run('run', '--run', RUN, '--kind', 'clean', ...mode)).toBe(2);
+      expect(rig.world.machine()).toMatchObject({ outcome: 'stopped', exit: 2 });
+      expect(rig.errors()).toMatch(/the agent reorder-agent has 1 open claim\(s\) with the stake, the window and the claim type of the constants that no run of the facts holds/);
+      expect(rig.errors()).toContain(made.value.claim);
+    }
+    expect(rig.ledger.accepted).toHaveLength(2);
+    expect(rig.world.facts().claims).toEqual({});
+    // The accepted twin: a run of the facts holds the claim, so it is no orphan, and the new claim is staked.
+    const value = made.value;
+    FactsFile.open(join(rig.world.stateDir, 'facts.json'), { useCase: USE_CASE, network: 'vector-mainnet' }).put('claims', ['by-hand', 'reorder-agent'], {
+      claimRef: value.claim, documentTx: value.document.tx_hash, claimTx: value.claim_tx, claimToken: value.claim_token, stakeLovelace: String(value.stake_lovelace), windowMs: value.challenge_window_ms,
+      stakedAt: iso(value.submitted_at), withdrawableFrom: iso(withdrawableFrom({ submitted_at: value.submitted_at, challenge_window_ms: value.challenge_window_ms })), withdrawTx: null,
+    });
+    expect(await rig.run('run', '--run', RUN, '--kind', 'clean', '--submit')).toBe(0);
     expect(rig.ledger.accepted).toHaveLength(4);
+    expect(await openClaims(rig, CLAIMER_ID)).toHaveLength(2);
   }, SLOW);
 
   it('records the step from the facts when the state file is gone, and stakes no second claim', async () => {
