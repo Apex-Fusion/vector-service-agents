@@ -13,7 +13,7 @@ import { BOND_LOVELACE, LOT_PRICE_LOVELACE, TEMPLATE_ENV, manifestFromEnv } from
 import { RequestRefusal } from '../src/serve/server.ts';
 import {
   CALL_TIMEOUT_MS, CHECKS_READ_BUDGET_DEFAULT_MS, CHECKS_READ_BUDGET_MAX_MS, CHECKS_READ_BUDGET_MIN_MS, GATEWAY_DEFAULT, HOOK_READS, HOOK_READS_LIMIT_MS, HOST_DEFAULT, JOB_DEADLINE_MS,
-  MIN_PROCESSING_WINDOW_MS, PORT_DEFAULT, RUNTIME_PRECHECK_WAIT_MS, STATE_DIR_DEFAULT,
+  MAX_PROCESSING_WINDOW_MS, MIN_PROCESSING_WINDOW_MS, PORT_DEFAULT, RUNTIME_PRECHECK_WAIT_MS, STATE_DIR_DEFAULT,
 } from '../src/serve/settings.ts';
 import { JANITOR_INTERVAL_MS, JANITOR_STOP_WAIT_MS, SETTINGS, loadConfig } from '../src/serve/start.ts';
 import { FULL_ENV, LARGE, MEDIUM, MODULE1_URL, SERVICE, SMALL, envWith, message } from './serve/support.ts';
@@ -74,7 +74,7 @@ describe('agents/order-desk/README.md: the settings', () => {
     expect([manifest.version, manifest.status.chip, manifest.status.since]).toStrictEqual(['0.1.0', 'proposed', '2026-11-23']);
     expect(row('AGENT_STATUS_CHIP')).toContain('`status.chip`, in lower case. It must be live, deployed or proposed, in any case');
     expect(cell('ADVERT_MAX_PROCESSING_MS', 2)).toBe(`\`${MIN_PROCESSING_WINDOW_MS}\``);
-    expect(cell('ADVERT_MAX_PROCESSING_MS', 1)).toContain(`At least ${MIN_PROCESSING_WINDOW_MS}, because the deadline of a job assumes the ${MIN_PROCESSING_WINDOW_MS / 60_000} min window`);
+    expect(cell('ADVERT_MAX_PROCESSING_MS', 1)).toContain(`At least ${MIN_PROCESSING_WINDOW_MS}, because the deadline of a job assumes the ${MIN_PROCESSING_WINDOW_MS / 60_000} min window. At most ${MAX_PROCESSING_WINDOW_MS}, the ${MAX_PROCESSING_WINDOW_MS / 3_600_000} h that a Post accepts`);
     expect(JSON.parse(config.manifest.text).terms.tiers.map((tier: { max_processing_ms: number }) => tier.max_processing_ms)).toStrictEqual([MIN_PROCESSING_WINDOW_MS, MIN_PROCESSING_WINDOW_MS, MIN_PROCESSING_WINDOW_MS]);
     expect(cell('CHECKS_READ_BUDGET_MS', 2)).toBe(`\`${CHECKS_READ_BUDGET_DEFAULT_MS}\``);
     expect(config.checksBudgetMs).toBe(CHECKS_READ_BUDGET_DEFAULT_MS);
@@ -117,6 +117,7 @@ describe('agents/order-desk/README.md: Run it', () => {
       new RegExp(`^environment variable CHECKS_READ_BUDGET_MS must be a whole number of milliseconds from ${CHECKS_READ_BUDGET_MIN_MS} to ${CHECKS_READ_BUDGET_MAX_MS}`), { CHECKS_READ_BUDGET_MS: String(CHECKS_READ_BUDGET_MAX_MS) },
     ],
     ['ADVERT_MAX_PROCESSING_MS below 8 min', { ADVERT_MAX_PROCESSING_MS: String(MIN_PROCESSING_WINDOW_MS - 1) }, /^environment variable ADVERT_MAX_PROCESSING_MS must be at least 480000/, { ADVERT_MAX_PROCESSING_MS: String(MIN_PROCESSING_WINDOW_MS) }],
+    ['ADVERT_MAX_PROCESSING_MS above 24 h', { ADVERT_MAX_PROCESSING_MS: String(MAX_PROCESSING_WINDOW_MS + 1) }, /^environment variable ADVERT_MAX_PROCESSING_MS must be at most 86400000/, { ADVERT_MAX_PROCESSING_MS: String(MAX_PROCESSING_WINDOW_MS) }],
     ['LOTS_PUBLIC_ORIGIN that is not the origin of the small runtime', { LOTS_PUBLIC_ORIGIN: 'https://orders.example.test' }, /^environment variable LOTS_PUBLIC_ORIGIN must be the origin of the host of the small runtime/, { LOTS_PUBLIC_ORIGIN: 'https://orders-small.example.test' }],
     ['VECTOR_MODULE1_MANIFEST that is a file path', { VECTOR_MODULE1_MANIFEST: '/etc/order-desk/module1.json' }, /^environment variable VECTOR_MODULE1_MANIFEST must be an https URL/, { VECTOR_MODULE1_MANIFEST: MODULE1_URL }],
     ['VECTOR_MODULE1_MANIFEST that names a branch', { VECTOR_MODULE1_MANIFEST: 'https://raw.example.test/branch/manifest.json' }, /^environment variable VECTOR_MODULE1_MANIFEST must be pinned to a commit/, { VECTOR_MODULE1_MANIFEST: MODULE1_URL }],
@@ -131,6 +132,7 @@ describe('agents/order-desk/README.md: Run it', () => {
     const scripts = JSON.parse(textOf('../package.json')).scripts as Record<string, string>;
     expect([scripts.start, scripts.template]).toStrictEqual(['tsx src/index.ts', 'node --import tsx scripts/render-template.mjs']);
     expect(MIN_PROCESSING_WINDOW_MS / 60_000).toBe(8);
+    expect(MAX_PROCESSING_WINDOW_MS / 3_600_000).toBe(24);
     for (const [what, over, error, good] of refusals) {
       expect(message(() => loadConfig(envWith(over))), what).toMatch(error);
       expect(() => loadConfig(envWith(good)), `the twin of ${what}`).not.toThrow();
@@ -139,7 +141,7 @@ describe('agents/order-desk/README.md: Run it', () => {
     expect(run).toContain('when `ORDER_DESK_SERVICE_PKH` is not the key hash of the service key, when the service key is the key of a runtime or two runtimes have one key,');
     expect(run).toContain('when `FAULT_MODE` names a value that the Order Desk does not list,');
     expect(run).toContain(`when \`CHECKS_READ_BUDGET_MS\` is not from ${CHECKS_READ_BUDGET_MIN_MS} to ${CHECKS_READ_BUDGET_MAX_MS},`);
-    expect(run).toContain('when `ADVERT_MAX_PROCESSING_MS` is below 8 min, when `LOTS_PUBLIC_ORIGIN` is not the origin of the small runtime,');
+    expect(run).toContain('when `ADVERT_MAX_PROCESSING_MS` is below 8 min or above 24 h, when `LOTS_PUBLIC_ORIGIN` is not the origin of the small runtime,');
     expect(run).toContain('when `VECTOR_MODULE1_MANIFEST` is not an https URL pinned to a commit, when the Module-1 manifest cannot be fetched or names another identity registry than this deployment,');
   });
 

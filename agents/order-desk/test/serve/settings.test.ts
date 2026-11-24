@@ -97,6 +97,7 @@ const REFUSALS: readonly Row[] = [
   ['CHECKS_READ_BUDGET_MS', '4001', /^environment variable CHECKS_READ_BUDGET_MS must be a whole number of milliseconds from 500 to 1499, got 4001: /, '1499'],
   ['CHECKS_READ_BUDGET_MS', 'fast', 'environment variable CHECKS_READ_BUDGET_MS must be a non-negative integer, got "fast"', '1200'],
   ['ADVERT_MAX_PROCESSING_MS', '479999', /^environment variable ADVERT_MAX_PROCESSING_MS must be at least 480000 .* got 479999$/, '480000'],
+  ['ADVERT_MAX_PROCESSING_MS', '86400001', 'environment variable ADVERT_MAX_PROCESSING_MS must be at most 86400000 (24 h, the longest window that a Post accepts), got 86400001', '86400000'],
   ['ADVERT_MAX_PROCESSING_MS', 'long', 'environment variable ADVERT_MAX_PROCESSING_MS must be a non-negative integer, got "long"', '900000'],
   ['LOTS_PUBLIC_ORIGIN', undefined, /^environment variable LOTS_PUBLIC_ORIGIN is required/, 'https://orders-small.example.test'],
   ['LOTS_PUBLIC_ORIGIN', 'http://orders-small.example.test', 'environment variable LOTS_PUBLIC_ORIGIN must be an https origin with no user, path, query or fragment, got 32 characters', ORIGIN],

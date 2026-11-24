@@ -13,10 +13,10 @@ import type { AdvertDatum } from '@vsa/vector-read';
 import { loadLots } from '../../src/checks/index.ts';
 import { CONTROLLER_GAP, GAPS, NOT_SHOWN_GAP, PAGE_GAPS } from '../../src/serve/gaps.ts';
 import { BOND_LOVELACE, LOT_PRICE_LOVELACE, TEMPLATE_ENV, manifestFromEnv, renderTemplate } from '../../src/serve/manifest.ts';
-import { LOTS_FILE, LOTS_ROUTE } from '../../src/serve/settings.ts';
+import { LOTS_FILE, LOTS_ROUTE, MAX_PROCESSING_WINDOW_MS } from '../../src/serve/settings.ts';
 import { loadConfig } from '../../src/serve/start.ts';
 import type { OrderDeskManifest } from '../../src/serve/manifest.ts';
-import { AGENT_DID, FULL_ENV, LARGE, MEDIUM, ORIGIN, POLICY, SERVICE, SERVICE_ADDRESS, SMALL, envWith } from './support.ts';
+import { AGENT_DID, FULL_ENV, LARGE, MEDIUM, ORIGIN, POLICY, SERVICE, SERVICE_ADDRESS, SMALL, envWith, message } from './support.ts';
 
 const sha256 = (data: string | Buffer): string => createHash('sha256').update(data).digest('hex');
 const here = (file: string): URL => new URL(`../../${file}`, import.meta.url);
@@ -114,21 +114,32 @@ describe('the three tiers', () => {
     for (const key of [SERVICE, SMALL, MEDIUM, LARGE]) expect(text).not.toContain(key.privateKeyHex);
   });
 
+  /** The advert that the record of a tier would hold, for a Post that plans it. */
+  const advertOf = (tier: OrderDeskManifest['terms']['tiers'][number], window: number = tier.max_processing_ms): AdvertDatum & { agent_id: string } => ({
+    supplier_pkh: tier.supplier_pkh, capability_id: INVENTORY_CAPABILITIES.order, model: tier.model, max_output_tokens: 0, max_processing_ms: window,
+    price_lovelace: BigInt(tier.price_lovelace), supplier_bond_lovelace: BigInt(tier.supplier_bond_lovelace), buyer_bond_lovelace: BigInt(tier.buyer_bond_lovelace),
+    endpoint_url: tier.endpoint, detail_uri: `${tier.endpoint}/agent.json`, detail_hash: served().sha256, advertised_at: 1_790_000_000_000, status: 'Active', agent_id: AGENT_DID.slice('did:vector:'.length),
+  });
+  const post = (advert: AdvertDatum & { agent_id: string }) =>
+    planFleetPostEscrow(advert, `${'cd'.repeat(32)}#1`, 'ab'.repeat(28), 'ef'.repeat(32), 1_790_000_000_000, fleetPostTerms(advert, SERVICE_ADDRESS));
+
   test('the lock of each advert is its price and both bonds: 4, 7 and 12 million lovelace, for a Post that plans the advert of the tier', () => {
-    const buyer = 'ab'.repeat(28);
     const expected = { 'lot-small': 4_000_000n, 'lot-medium': 7_000_000n, 'lot-large': 12_000_000n };
     for (const tier of manifestOf().terms.tiers) {
-      const advert: AdvertDatum & { agent_id: string } = {
-        supplier_pkh: tier.supplier_pkh, capability_id: INVENTORY_CAPABILITIES.order, model: tier.model, max_output_tokens: 0, max_processing_ms: tier.max_processing_ms,
-        price_lovelace: BigInt(tier.price_lovelace), supplier_bond_lovelace: BigInt(tier.supplier_bond_lovelace), buyer_bond_lovelace: BigInt(tier.buyer_bond_lovelace),
-        endpoint_url: tier.endpoint, detail_uri: `${tier.endpoint}/agent.json`, detail_hash: served().sha256, advertised_at: 1_790_000_000_000, status: 'Active', agent_id: AGENT_DID.slice('did:vector:'.length),
-      };
-      const identity = fleetPostTerms(advert, SERVICE_ADDRESS);
-      const plan = planFleetPostEscrow(advert, `${'cd'.repeat(32)}#1`, buyer, 'ef'.repeat(32), 1_790_000_000_000, identity);
+      const plan = post(advertOf(tier));
       expect(plan.lockLovelace, tier.model).toBe(expected[tier.model]);
       expect(plan.lockLovelace, tier.model).toBe(BigInt(tier.price_lovelace + tier.supplier_bond_lovelace + tier.buyer_bond_lovelace));
       expect(plan.deliverBy, tier.model).toBe(1_790_000_000_000 + tier.max_processing_ms + DELIVER_BY_BUFFER_MS);
     }
+  });
+
+  test('the longest window that the settings take is the longest window that a Post plans: 24 hours is planned, and one millisecond more is refused by buyer-core as the settings refuse it', () => {
+    const [tier] = manifestOf().terms.tiers;
+    expect(MAX_PROCESSING_WINDOW_MS).toBe(86_400_000);
+    expect(() => post(advertOf(tier, MAX_PROCESSING_WINDOW_MS))).not.toThrow();
+    expect(() => post(advertOf(tier, MAX_PROCESSING_WINDOW_MS + 1))).toThrow(/longer than the 86400000 ms/);
+    expect(manifestOf({ ADVERT_MAX_PROCESSING_MS: String(MAX_PROCESSING_WINDOW_MS) }).terms.tiers.map((each) => each.max_processing_ms)).toStrictEqual([MAX_PROCESSING_WINDOW_MS, MAX_PROCESSING_WINDOW_MS, MAX_PROCESSING_WINDOW_MS]);
+    expect(message(() => served({ ADVERT_MAX_PROCESSING_MS: String(MAX_PROCESSING_WINDOW_MS + 1) }))).toContain('must be at most 86400000');
   });
 });
 
