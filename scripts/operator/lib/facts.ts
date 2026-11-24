@@ -13,7 +13,7 @@ import { writeFileAtomically } from '../../checks/lib/files.ts';
 import type { WriteIo } from '../../checks/lib/files.ts';
 import { jsonSafe } from '../../checks/lib/format.ts';
 import type {
-  AdvertFact, AttestationFact, ClaimFact, ComplianceFact, DeployFact, Facts, FactsStore, HoldFact, LifecycleFact, ManifestFact, OrganisationFact, RecordFact, RevocationFact, StakeFact, SubagentEndFact, TenantFact,
+  AdvertFact, AttestationFact, ClaimFact, ComplianceFact, DeployFact, Facts, FactsStore, HoldFact, LifecycleFact, ManifestFact, OrganisationFact, OrganisationMove, RecordFact, RevocationFact, StakeFact, SubagentEndFact, TenantFact,
 } from './contract.ts';
 import { codeOf } from './registry.ts';
 import { holdsSecret, isSecretName } from './secrets.ts';
@@ -288,6 +288,46 @@ export class FactsFile implements FactsStore {
         if (held !== null && held !== undefined && held === stored) return;
         if (held !== null && held !== undefined && !replace) throw new FactsConflict(`the field ${route.field} of the fact ${where} holds another value: set it again with replace to change it`);
         fact[route.field] = stored;
+      }
+      this.#write(facts);
+    });
+  }
+
+  /** Checks the entire move under the facts lock. An identical destination can survive an earlier move, but a different one cannot be replaced. */
+  moveOrganisations(moves: readonly OrganisationMove[]): void {
+    if (moves.length === 0) return;
+    const names = new Set<string>();
+    for (const { from, to, fact, record } of moves) {
+      for (const name of [from, to]) {
+        routeOf('organisations', [name]);
+        if (isSecretName(name)) throw new FactsError('secret', 'a path for organisations looks like a secret');
+        if (names.has(name)) throw new FactsConflict('the organisation move uses one key more than once');
+        names.add(name);
+      }
+      if (!isFact(ORGANISATION, fact) || !isFact(RECORD, record) || fact.txtValue !== record.did) {
+        throw new FactsError('value', 'an organisation move needs the matching fact and record');
+      }
+      if (holdsSecret(fact) || holdsSecret(record)) throw new FactsError('secret', 'a value for the organisation move looks like a secret');
+    }
+    this.#locked(() => {
+      const facts = this.#load();
+      let changed = false;
+      for (const { from, to, fact, record } of moves) {
+        if (!same(getFact(facts, 'records', [to]), record) || Object.entries(facts.records).some(([id, held]) => id !== to && (held.did === record.did || held.id === record.id))) {
+          throw new FactsConflict('the record attribution for the organisation move changed or is not unique');
+        }
+        const source = getFact(facts, 'organisations', [from]);
+        const target = getFact(facts, 'organisations', [to]);
+        if ((source === undefined ? !same(target, fact) : !same(source, fact)) || (target !== undefined && !same(target, fact))) {
+          throw new FactsConflict('the source or destination of the organisation move holds another fact or is missing');
+        }
+        if (source !== undefined) changed = true;
+      }
+      if (!changed) return;
+      for (const { from, to } of moves) {
+        if (!Object.hasOwn(facts.organisations, from)) continue;
+        facts.organisations[to] = facts.organisations[from]!;
+        delete facts.organisations[from];
       }
       this.#write(facts);
     });

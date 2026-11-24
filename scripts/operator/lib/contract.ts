@@ -109,6 +109,12 @@ export interface OperatorSettings {
 export interface TaskFlags { has(name: string): boolean; value(name: string): string | undefined }
 export interface RecordFact { did: string; id: string; tx: string; recordRef: string; depositLovelace: string; registeredAt: string }
 export interface OrganisationFact { txtName: string; txtValue: string; verifiedAt: string | null }
+export interface OrganisationMove {
+  readonly from: string;
+  readonly to: string;
+  readonly fact: Readonly<OrganisationFact>;
+  readonly record: Readonly<RecordFact>;
+}
 export interface StakeFact { openingRef: string; stakeRef: string | null; tokenUnit: string | null; amountLovelace: string }
 export interface AdvertFact { ref: string; tx: string; detailUri: string; detailHash: string; endpoint: string; postedAt: string }
 export interface ManifestFact { uri: string; sha256: string; bytes: number; readAt: string }
@@ -136,6 +142,8 @@ export interface FactsStore {
   read(): Readonly<Facts>;
   /** Sets one fact at `path` below `section`, or one field of a fact when `path` ends with a field name (the fact must exist; a null field counts as not set). A second value that differs from the first is an error unless `replace` is true. */
   put<S extends keyof Facts>(section: S, path: readonly string[], value: unknown, options?: { replace?: boolean }): void;
+  /** Moves organisation facts to subject keys only if the expected facts and records still agree. */
+  moveOrganisations(moves: readonly OrganisationMove[]): void;
 }
 
 // ---- landing (the landing files implement the functions over LandHost; the runner builds the TaskSession that satisfies it) ----
