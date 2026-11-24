@@ -60,8 +60,8 @@ export type JustifyAnswer = { readonly ok: true; readonly decision: Decision; re
  *   this agent with that hash, or `null`.
  * - `readInsurer` reads the advert of the Insurer Intake Agent of the insurer. It reads the chain and the list of adverts, and it sends nothing. It gives the reference of the advert, or the code of the failure.
  * - `evidence` reads the record set of the order and the guideline of its service through two subagents. It gets the time that the decision leaves it: `run.deadline` is earlier than the deadline of the job.
- * - `justify` asks the model for the justification of the request. It gets the record set and the guideline that the job checked.
- * - `counter` gives the number of the request. It stores the number before it gives it out. The job asks it only after every check passed.
+ * - `justify` asks the model for the justification of the request. It gets the record set and the guideline that the job checked, as copies that no other step of the job reads.
+ * - `counter` gives the number of the request. It stores the number before it gives it out. The job asks it once, after the checks of the two documents and of the decision passed.
  * - `clock` is the clock of the job.
  * - `log` gets one line for each job that stops, with the step and the code. A line has codes and references, and no key, token or part of a record. A function that throws changes no result.
  */
