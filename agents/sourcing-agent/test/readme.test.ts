@@ -24,7 +24,7 @@ import { BIDDER_FETCH_TIMEOUT_MS, BIDDER_READ_BUDGET_MS, FACT_READ_TIMEOUT_MS, M
 import { DESCRIPTION, ID_CHARS, REQUEST_SCHEMA, TENANT_CHARS } from '../src/serve/manifest.ts';
 import { RequestRefusal, parseJob } from '../src/serve/server.ts';
 import {
-  BUYER_BOND_LOVELACE, GATEWAY_DEFAULT, HOST_DEFAULT, JOB_DEADLINE_MS, MIN_PROCESSING_WINDOW_MS, PORT_DEFAULT, PRICE_DEFAULT_LOVELACE, STATE_DIR_DEFAULT, SUPPLIER_BOND_LOVELACE,
+  BUYER_BOND_LOVELACE, GATEWAY_DEFAULT, HOST_DEFAULT, JOB_DEADLINE_MS, MAX_PROCESSING_WINDOW_MS, MIN_PROCESSING_WINDOW_MS, PORT_DEFAULT, PRICE_DEFAULT_LOVELACE, STATE_DIR_DEFAULT, SUPPLIER_BOND_LOVELACE,
 } from '../src/serve/settings.ts';
 import { JANITOR_INTERVAL_MS, JANITOR_STOP_WAIT_MS, SETTINGS, loadConfig } from '../src/serve/start.ts';
 import { CATALOG_TIMEOUT_MS, LEDGER_BUDGET_MS, STATE_FILES, TIP_TIMEOUT_MS } from '../src/serve/wiring.ts';
@@ -153,7 +153,7 @@ describe('agents/sourcing-agent/README.md: what it is', () => {
 
   test('the escrow and the vault payment stay locked up to the window of the advert, and the jobs are in memory', () => {
     expect(MIN_PROCESSING_WINDOW_MS).toBe(5_400_000);
-    expect(intro).toContain(`stay locked up to the window of the advert, ${MIN_PROCESSING_WINDOW_MS} ms (${MIN_PROCESSING_WINDOW_MS / 60_000} minutes)`);
+    expect(intro).toContain(`stay locked up to the window of the advert, ${MIN_PROCESSING_WINDOW_MS} ms (${MIN_PROCESSING_WINDOW_MS / 60_000} minutes) by default, when a job runs to its end`);
     expect(template.interface.routes.status).toBe('/status');
     expect(intro).toContain('A restart waits until the runtime says `free` at its `/status` route.');
     expect(intro).toContain('The jobs are in memory, so a restart ends the job that runs.');
@@ -470,7 +470,7 @@ describe('agents/sourcing-agent/README.md: the settings', () => {
     expect(manifest.terms.price_lovelace).toBe(PRICE_DEFAULT_LOVELACE);
     expect(cell('ADVERT_MAX_PROCESSING_MS', 2)).toBe(`\`${MIN_PROCESSING_WINDOW_MS}\``);
     expect(manifest.terms.max_processing_ms).toBe(MIN_PROCESSING_WINDOW_MS);
-    expect(cell('ADVERT_MAX_PROCESSING_MS', 1)).toContain(`At least ${MIN_PROCESSING_WINDOW_MS}, because the deadline of a job assumes the ${MIN_PROCESSING_WINDOW_MS / 60_000} min window.`);
+    expect(cell('ADVERT_MAX_PROCESSING_MS', 1)).toContain(`At least ${MIN_PROCESSING_WINDOW_MS}, because the deadline of a job assumes the ${MIN_PROCESSING_WINDOW_MS / 60_000} min window. At most ${MAX_PROCESSING_WINDOW_MS}, the ${MAX_PROCESSING_WINDOW_MS / 3_600_000} h that a Post accepts.`);
     expect(cell('ADVERT_EXPLORER_URL', 2)).toBe('empty');
     expect(cell('FAULT_MODE', 2)).toBe('empty');
     expect(cell('IDENTITY_ADDRESS', 2)).toBe('derived from the policy');
@@ -496,6 +496,8 @@ describe('agents/sourcing-agent/README.md: the settings', () => {
     expect(cell('ADVERT_MAX_PROCESSING_MS', 1)).toContain('At least');
     expect(refusal({ ADVERT_MAX_PROCESSING_MS: String(MIN_PROCESSING_WINDOW_MS - 1) })).toMatch(/^environment variable ADVERT_MAX_PROCESSING_MS must be at least 5400000/);
     expect(() => loadConfig(completeEnv({ ADVERT_MAX_PROCESSING_MS: String(MIN_PROCESSING_WINDOW_MS) }))).not.toThrow();
+    expect(refusal({ ADVERT_MAX_PROCESSING_MS: String(MAX_PROCESSING_WINDOW_MS + 1) })).toMatch(/^environment variable ADVERT_MAX_PROCESSING_MS must be at most 86400000/);
+    expect(() => loadConfig(completeEnv({ ADVERT_MAX_PROCESSING_MS: String(MAX_PROCESSING_WINDOW_MS) }))).not.toThrow();
     expect(cell('DISPUTE_READ_TIMEOUT_MS', 1)).toContain(`at most ${READ_BUDGET_MS}`);
     expect(refusal({ DISPUTE_READ_TIMEOUT_MS: String(READ_BUDGET_MS + 1) })).toMatch(/^environment variable DISPUTE_READ_TIMEOUT_MS must be a whole number of milliseconds of at most 30000/);
     expect(() => loadConfig(completeEnv({ DISPUTE_READ_TIMEOUT_MS: String(READ_BUDGET_MS) }))).not.toThrow();
@@ -703,6 +705,7 @@ describe('agents/sourcing-agent/README.md: the times, the state and the stop', (
     expect([CATALOG_TIMEOUT_MS, TIP_TIMEOUT_MS]).toStrictEqual([10_000, 10_000]);
     expect(times).toContain(`A pass of a janitor that is still in flight at a stop is abandoned after ${JANITOR_STOP_WAIT_MS} ms.`);
     expect(times).toContain('The window is not a promise that a job takes that long.');
+    expect(times).toContain(`The most is ${MAX_PROCESSING_WINDOW_MS} ms.`);
   });
 
   test('State files names the files and folders that the wiring keeps and the number of the janitor, and the start proves that the directory can be written', async () => {
@@ -746,6 +749,7 @@ describe('agents/sourcing-agent/README.md: Run it and Deploy', () => {
     ['FAULT_MODE with a value that the Sourcing Agent does not list', { FAULT_MODE: 'confirm_wrong_lot' }, /^environment variable FAULT_MODE must be empty or "invert_scores"/, { FAULT_MODE: 'invert_scores' }],
     ['VECTOR_OGMIOS_URL that is an http address', { VECTOR_OGMIOS_URL: 'http://node.example.test' }, /^environment variable VECTOR_OGMIOS_URL must be an https address/, { VECTOR_OGMIOS_URL: 'https://node.example.test' }],
     ['ADVERT_MAX_PROCESSING_MS below the window', { ADVERT_MAX_PROCESSING_MS: String(MIN_PROCESSING_WINDOW_MS - 1) }, /^environment variable ADVERT_MAX_PROCESSING_MS must be at least 5400000/, { ADVERT_MAX_PROCESSING_MS: String(MIN_PROCESSING_WINDOW_MS) }],
+    ['ADVERT_MAX_PROCESSING_MS above 24 h', { ADVERT_MAX_PROCESSING_MS: String(MAX_PROCESSING_WINDOW_MS + 1) }, /^environment variable ADVERT_MAX_PROCESSING_MS must be at most 86400000/, { ADVERT_MAX_PROCESSING_MS: String(MAX_PROCESSING_WINDOW_MS) }],
     ['VECTOR_MODULE1_MANIFEST that is a file path', { [MODULE1]: '/etc/sourcing/module1.json' }, /^environment variable VECTOR_MODULE1_MANIFEST must be an https address/, { [MODULE1]: completeEnv()[MODULE1] as string }],
     ['VECTOR_MODULE1_MANIFEST that names a branch', { [MODULE1]: 'https://raw.example.test/branch/manifest.json' }, /^environment variable VECTOR_MODULE1_MANIFEST must be pinned to a commit/, { [MODULE1]: completeEnv()[MODULE1] as string }],
   ];
@@ -771,7 +775,7 @@ describe('agents/sourcing-agent/README.md: Run it and Deploy', () => {
     expect(run).toContain('when `MOCK_MTLS_BASE` names the host of `MOCK_PUBLIC_BASE`,');
     expect(run).toContain('when `FAULT_MODE` names a value that the Sourcing Agent does not list,');
     expect(run).toContain('when `VECTOR_OGMIOS_URL` is an http address,');
-    expect(run).toContain('when `ADVERT_MAX_PROCESSING_MS` is below 5400000,');
+    expect(run).toContain('when `ADVERT_MAX_PROCESSING_MS` is below 5400000 or above 86400000,');
     expect(run).toContain('when `VECTOR_MODULE1_MANIFEST` is not an https address pinned to a commit,');
     expect(run).toContain('when the Module-1 manifest cannot be fetched or names another identity registry than `IDENTITY_POLICY_ID`,');
     expect(run).toContain('when the node gives no start time of the chain, or when it cannot write to its state directory.');

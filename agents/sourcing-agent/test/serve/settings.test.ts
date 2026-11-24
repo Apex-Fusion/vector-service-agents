@@ -7,9 +7,9 @@ import { READ_BUDGET_MS, VECTOR_KOIOS_URL, VECTOR_OGMIOS_URL, VECTOR_SUBMIT_URL 
 import { REGISTRY_POLICY } from '@vsa/vector-read';
 import { PROPOSE_DEADLINE_MS } from '../../src/propose/index.ts';
 import {
-  BUYER_BOND_LOVELACE, GATEWAY_DEFAULT, HOST_DEFAULT, JOB_DEADLINE_MS, MIN_PROCESSING_WINDOW_MS, PORT_DEFAULT, PRICE_DEFAULT_LOVELACE, STATE_DIR_DEFAULT, SUPPLIER_BOND_LOVELACE, agentDidOf,
-  complianceIssuerOf, cosignSettingsOf, disputeOf, endpointsFromEnv, faultOf, hostOf, httpsOriginOf, limitsOf, mockBasesOf, modelOf, module1SourceOf, portOf, priceOf, processingWindowOf, quoteLimitsOf,
-  scorerDidsOf, stateDirOf, supplierKeyOf,
+  BUYER_BOND_LOVELACE, GATEWAY_DEFAULT, HOST_DEFAULT, JOB_DEADLINE_MS, MAX_PROCESSING_WINDOW_MS, MIN_PROCESSING_WINDOW_MS, PORT_DEFAULT, PRICE_DEFAULT_LOVELACE, STATE_DIR_DEFAULT, SUPPLIER_BOND_LOVELACE,
+  agentDidOf, complianceIssuerOf, cosignSettingsOf, disputeOf, endpointsFromEnv, faultOf, hostOf, httpsOriginOf, limitsOf, mockBasesOf, modelOf, module1SourceOf, portOf, priceOf, processingWindowOf,
+  quoteLimitsOf, scorerDidsOf, stateDirOf, supplierKeyOf,
 } from '../../src/serve/settings.ts';
 import { AGENT_DID, ISSUER, MODULE1_COMMIT, MODULE1_URL, PRINCIPAL, SCORER_DIDS, SUPPLIER, completeEnv, messageOf, rawKey } from './support.ts';
 
@@ -194,18 +194,22 @@ describe('the numbers of the advert', () => {
       ['a window of 5,399,999 ms', '5399999'], ['the old window of 3,600,000 ms', '3600000'], ['a window of 0', '0'], ['a window that is no number', 'x'], ['a window with a fraction', '5400000.5'],
       ['a negative window', '-5400000'], ['a key in the line', SECRET],
     ]),
+    ...rowsOf('ADVERT_MAX_PROCESSING_MS', processingWindowOf, '86400000', [['a window of 24 h and 1 ms', '86400001']]),
     ...rowsOf('ADVERT_PRICE_LOVELACE', priceOf, '4000000', [
       ['a price of 0', '0'], ['a negative price', '-1'], ['a price with a fraction', '3.5'], ['a price that is no number', 'x'], ['a key in the line', SECRET],
     ]),
   ];
   test.each(ADVERT_ROWS)('$variable: $what stops the start by its name, and the twin passes', checkRow);
 
-  test('the window is at least 5,400,000 ms with that default, and the price is a whole number of lovelace of more than 0 with the default 3,000,000', () => {
+  test('the window is from 5,400,000 ms to 86,400,000 ms with the least as the default, and the price is a whole number of lovelace of more than 0 with the default 3,000,000', () => {
     expect(processingWindowOf({})).toBe(5_400_000);
     expect(processingWindowOf({ ADVERT_MAX_PROCESSING_MS: '5400000' })).toBe(5_400_000);
     expect(processingWindowOf({ ADVERT_MAX_PROCESSING_MS: '6000000' })).toBe(6_000_000);
     expect(processingWindowOf({ ADVERT_MAX_PROCESSING_MS: '' })).toBe(5_400_000);
     expect(messageOf(() => processingWindowOf({ ADVERT_MAX_PROCESSING_MS: '5399999' }))).toMatch(/^environment variable ADVERT_MAX_PROCESSING_MS must be at least 5400000/);
+    expect(MAX_PROCESSING_WINDOW_MS).toBe(24 * 3_600_000);
+    expect(processingWindowOf({ ADVERT_MAX_PROCESSING_MS: '86400000' })).toBe(86_400_000);
+    expect(messageOf(() => processingWindowOf({ ADVERT_MAX_PROCESSING_MS: '86400001' }))).toBe('environment variable ADVERT_MAX_PROCESSING_MS must be at most 86400000 (24 h, the longest window that a Post accepts), got 86400001');
     expect(priceOf({})).toBe(3_000_000);
     expect(priceOf({ ADVERT_PRICE_LOVELACE: '4000000' })).toBe(4_000_000);
     expect(priceOf({ ADVERT_PRICE_LOVELACE: '1' })).toBe(1);

@@ -35,6 +35,8 @@ export const GATEWAY_DEFAULT = 'https://id.vector.apexfusion.org';
 export const JOB_DEADLINE_MS = PROPOSE_DEADLINE_MS;
 /** The least window of the advert (ADVERT_MAX_PROCESSING_MS) and its default: the deadline of a job, the 60 s that the runtime waits longer and 120 s more. It is 5,400,000 ms. */
 export const MIN_PROCESSING_WINDOW_MS = PROPOSE_DEADLINE_MS + 180_000;
+/** The longest window of the advert (ADVERT_MAX_PROCESSING_MS): 24 hours, the longest window that a Post accepts. */
+export const MAX_PROCESSING_WINDOW_MS = 86_400_000;
 /** The price of the advert unless ADVERT_PRICE_LOVELACE says another: 3 units. */
 export const PRICE_DEFAULT_LOVELACE = 3_000_000;
 /** The two bonds of the advert, in lovelace. The lock of the escrow is the price and both bonds: 5 units for the default price. */
@@ -107,11 +109,14 @@ export function stateDirOf(env: NodeJS.ProcessEnv): string {
 
 // --- the numbers of the advert ---------------------------------------------------------------------------------------------------------------------------
 
-/** The window that the advert gives a job: at least MIN_PROCESSING_WINDOW_MS. The manifest publishes it. */
+/** The window that the advert gives a job: from MIN_PROCESSING_WINDOW_MS to MAX_PROCESSING_WINDOW_MS. The manifest publishes it. */
 export function processingWindowOf(env: NodeJS.ProcessEnv): number {
   const ms = envInt('ADVERT_MAX_PROCESSING_MS', given(env.ADVERT_MAX_PROCESSING_MS), MIN_PROCESSING_WINDOW_MS);
   if (ms < MIN_PROCESSING_WINDOW_MS) {
     throw new Error(`environment variable ADVERT_MAX_PROCESSING_MS must be at least ${MIN_PROCESSING_WINDOW_MS} (the window of ${MIN_PROCESSING_WINDOW_MS / 60_000} min that the deadline of a job, ${JOB_DEADLINE_MS} ms, assumes), got ${ms}`);
+  }
+  if (ms > MAX_PROCESSING_WINDOW_MS) {
+    throw new Error(`environment variable ADVERT_MAX_PROCESSING_MS must be at most ${MAX_PROCESSING_WINDOW_MS} (24 h, the longest window that a Post accepts), got ${ms}`);
   }
   return ms;
 }
