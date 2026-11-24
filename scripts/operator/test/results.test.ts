@@ -325,7 +325,8 @@ describe('the task results', () => {
       const intakeAccept = tx('accept intake');
       const escrow = output('escrow', 'carried hire').value;
       const accept = tx('accept execute');
-      const result = JSON.stringify({ outcome: 'completed' });
+      const intakeEscrow = output('escrow', 'intake hire').value;
+      const result = JSON.stringify({ outcome: 'completed', handoff: { escrow_ref: intakeEscrow, accepted: 'confirmed' } });
       const digest = createHash('sha256').update(result).digest('hex');
       const settlement = {
         escrow_ref: escrow, accept_tx: accept, result, result_sha256: digest,
@@ -333,7 +334,7 @@ describe('the task results', () => {
         checks: { signature_valid: 'pass', response_hash_matches: 'pass', escrow_ref_matches: 'pass', supplier_key_matches: 'pass' },
         hires: [
           { step: 'execute', escrow_ref: escrow, accept_tx: accept, reclaim_tx: null, result_sha256: digest },
-          { step: 'intake', escrow_ref: output('escrow', 'intake hire').value, accept_tx: intakeAccept, reclaim_tx: null, result_sha256: tx('intake result') },
+          { step: 'intake-2', escrow_ref: intakeEscrow, accept_tx: intakeAccept, reclaim_tx: null, result_sha256: tx('intake result'), verdict: 'VERIFIED' },
         ],
       };
       const render = (principal: unknown[], log: unknown[], proof: Record<string, unknown> = {}) => renderPage({
@@ -348,12 +349,16 @@ describe('the task results', () => {
       expect(rowOf(render(refs, write), 'r1-06')[4]).toBe(PAGE_TEXT.partialReference);
       expect(rowOf(render(refs, [], settlement), 'r1-06')[4]).toBe(PAGE_TEXT.partialReference);
       expect(rowOf(render(refs, write, { ...settlement, hires: settlement.hires.slice(0, 1) }), 'r1-06')[4]).toBe(PAGE_TEXT.partialReference);
+      const [execute, intake] = settlement.hires;
+      const unrelated = { ...intake, step: 'intake', escrow_ref: output('escrow', 'other intake').value };
+      expect(rowOf(render(refs, write, { ...settlement, hires: [execute, unrelated] }), 'r1-06')[4]).toBe(PAGE_TEXT.partialReference);
+      expect(rowOf(render(refs, write, { ...settlement, hires: [execute, { ...intake, step: 'execute-2' }] }), 'r1-06')[4]).toBe(PAGE_TEXT.partialReference);
       const full = render(refs, write, settlement);
       expect(rowOf(full, 'r1-01')[4]).toBe(SHOWS['Delegation with a co-signature, attestation: principal binding, vault']!.shows);
       expect(rowOf(full, 'r1-06')[4]).toBe(SHOWS['Receipt checks, accept, token for a route']!.shows);
     });
 
-    it('uses a linked hire for a finished escrow without claiming who spent it or who was paid', () => {
+    it('describes only the missing accept or reclaim, not the state of the escrow', () => {
       const ref = output('escrow', 'quote hire');
       const render = (hires: unknown[]) => renderPage({
         header: HEADER, use: bidEvaluation, runs: [parseEvidence(doc('failure', '2026-12-04', [
@@ -364,7 +369,19 @@ describe('the task results', () => {
       expect(rowOf(render([{ escrow_ref: ref.value, accept_tx: tx('accepted'), reclaim_tx: null }]), 'r2-a-release')[4]).toBe(PAGE_TEXT.partialReference);
       const row = rowOf(render([{ escrow_ref: ref.value, accept_tx: null, reclaim_tx: null }]), 'r2-a-release');
       expect(row[4]).toBe(SHOWS['Escrow: release']!.shows);
-      expect(row[5]).toBe('Who spent the escrow, who received funds, or how much.');
+      expect(row[5]).toBe('Whether the escrow ended, who spent it, or who received funds.');
+    });
+
+    it('describes only the linked record output when no revocation details are present', () => {
+      const render = (record: string) => renderPage({
+        header: HEADER, use: bidEvaluation, runs: [parseEvidence(doc('failure', '2026-12-04', [
+          { id: 'r2-e', status: 'shown', refs: [transaction('record spend'), output('record', record)] },
+        ], { run: 'use-case-3-failure', capability_id: bidEvaluation.agents[0]!.capability }), 'failure', bidEvaluation)],
+      });
+      expect(rowOf(render('other record'), 'r2-e')[4]).toBe(PAGE_TEXT.partialReference);
+      const row = rowOf(render('record spend'), 'r2-e');
+      expect(row[4]).toBe('The evidence names the transaction and its record output.');
+      expect(row[5]).toBe('Which party authorized the transaction, the reason, or when signatures became invalid.');
     });
 
     it('requires two distinct wait transactions and the recorded early tool refusal', () => {

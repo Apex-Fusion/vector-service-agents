@@ -136,7 +136,7 @@ interface Rig {
   readonly history: Map<string, HistoryTx>;
   readonly unconfirmed: Set<string>;
   readonly archive: ArchiveSpend;
-  retireAdvert(agent: string, model: string, final: Output): string;
+  retireAdvert(agent: string, model: string, final: Output, run?: string): string;
   idOf(name: string): string;
   /** Puts a record on the ledger in place of the record of the same agent. */
   setRecord(id: string, utxo: LedgerProvider['live'][number]): void;
@@ -150,6 +150,7 @@ interface Rig {
 
 interface RigOptions {
   env?: Record<string, string | undefined>;
+  advertRun?: string;
   skipAttestation?: string;
   skipSubagentEnd?: boolean;
   subagentEpochBefore?: number;
@@ -199,12 +200,14 @@ async function makeRig(options: RigOptions = {}, use: UseCase = data): Promise<R
       }],
     });
   };
-  const retireAdvert = (name: string, model: string, output: Output): string => {
+  const retireAdvert = (name: string, model: string, output: Output, run?: string): string => {
     const agent = use.agents.find(({ id }) => id === name)!;
     const supplier = agent.adverts.find((advert) => advert.model === model)!.supplierKey;
-    const tx = hash(`retire ${name} ${model}`);
+    const tx = hash(`retire ${name} ${model}${run === undefined ? '' : ` ${run}`}`);
     archive(tx, output, null, MAINNET.advert.hash, 'd87b80', world.keys.registry.addressOf(supplier));
-    const journal = StateFile.open(join(world.stateDir, 'advert.state.json'), { check: 'advert', network: factsId.network, record: use.name });
+    const file = run === undefined ? 'advert.state.json' : `advert.${run}.state.json`;
+    const record = run === undefined ? use.name : `${use.name}:${run}`;
+    const journal = StateFile.open(join(world.stateDir, file), { check: 'advert', network: factsId.network, record });
     journal.setNote(`part.retire:${name}:${model}`, { confirmed_at: iso(NOW - DAY), tx_hash: tx, refs: { retiredRef: `${output.txHash}#${output.outputIndex}` }, facts: {} });
     return tx;
   };
@@ -346,7 +349,7 @@ async function makeRig(options: RigOptions = {}, use: UseCase = data): Promise<R
         statuses.set(`${advert.origin}/status`, 'free');
       } else {
         ledger.koiosSpent.push(output);
-        retireAdvert(agent.id, advert.model, output);
+        retireAdvert(agent.id, advert.model, output, options.advertRun);
       }
     }
     const listed: string[] = [];
@@ -644,13 +647,15 @@ describe('the task end-state', () => {
       const prior = rig.ledger.koiosSpent.find(({ txHash }) => txHash === original.tx)!;
       const datum = decodeIdentityAdvertDatum(prior.datum!);
       const successor = { ...prior, txHash: hash('replacement Bravo'), datum: encodeIdentityAdvertDatum({ ...datum, status: 'Retired' }) };
+      const retirement = rig.retireAdvert(name, model, successor);
+      rig.archive(successor.txHash, prior, successor, MAINNET.advert.hash, 'd87a80');
       rig.ledger.live.push(successor);
-      await expectFailure(rig, 'adverts', 'the node holds an unexpected Retired advert for bid-desk-bravo');
+      await expectFailure(rig, 'adverts', 'the node still holds the traced advert output');
       expect(rig.listing.some(({ advert_ref }) => advert_ref === `${successor.txHash}#0`)).toBe(false);
       rig.ledger.live.pop();
-      const unrelated = { ...prior, txHash: hash('other supplier advert'), datum: encodeIdentityAdvertDatum({ ...datum, agent_id: hash('another record') }) };
-      rig.ledger.live.push(unrelated);
-      const retirement = rig.retireAdvert(name, model, successor);
+      // The script allows a new output to name any record. This output is not part of the spend history.
+      rig.ledger.live.push({ ...prior, txHash: hash('unrelated advert with same datum') });
+      rig.history.delete(successor.txHash);
       await expectFailure(rig, 'adverts', 'the indexer does not confirm the exact record spend');
       rig.archive(successor.txHash, prior, successor, MAINNET.advert.hash, 'd87a80');
       const tx = rig.history.get(retirement)!;
@@ -659,6 +664,24 @@ describe('the task end-state', () => {
       await expectFailure(rig, 'adverts', 'the supplier wallet did not receive the deposit less the transaction fee');
       tx.outputs[0]!.value = paid;
       expect(await rig.run('status')).toBe(0);
+    }, SLOW);
+
+    it('accepts the matching retirement in a labelled journal and rejects distinct matching receipts', async () => {
+      const rig = await makeRig({ advertRun: 'shutdown-1' }, priorAuthorization);
+      const agent = priorAuthorization.agents[0]!;
+      const model = agent.adverts[0]!.model;
+      const original = rig.facts.read().adverts[agent.id]![model]!;
+      const prior = rig.ledger.koiosSpent.find(({ txHash }) => txHash === original.tx)!;
+      expect(await rig.run('status')).toBe(0);
+      const step = `part.retire:${agent.id}:${model}`;
+      const named = StateFile.peek(join(rig.world.stateDir, 'advert.shutdown-1.state.json'))!;
+      const defaultJournal = StateFile.open(join(rig.world.stateDir, 'advert.state.json'), { check: 'advert', network: named.network, record: priorAuthorization.name });
+      defaultJournal.setNote(step, named.notes[step]);
+      expect(await rig.run('status')).toBe(0);
+      rig.retireAdvert(agent.id, model, { ...prior, txHash: hash('old unrelated advert') }, 'previous');
+      expect(await rig.run('status')).toBe(0);
+      rig.retireAdvert(agent.id, model, prior, 'other-receipt');
+      await expectFailure(rig, 'adverts', 'more than one confirmed receipt matches');
     }, SLOW);
 
     it('requires the listed reference, supplier, datum and pure deposit to agree across the two sources', async () => {
@@ -800,6 +823,30 @@ describe('the task end-state', () => {
       tx.inputs.pop();
       tx.outputs[0]!.inline_datum = null;
       expect(await rig.run('status')).toBe(0);
+    }, SLOW);
+
+    it('checks the raw hash and decoded value of the exact output when historic bytes use another encoding', async () => {
+      const rig = await makeRig({}, bidEvaluation);
+      const tx = rig.history.get(RECLAIM_TX)!;
+      const saved = tx.inputs[0]!;
+      const onNode = rig.ledger.at(`${RECLAIM_TX}#0`)!;
+      const canonical = onNode.datum!;
+      expect(canonical).toMatch(/^d8799f[0-9a-f]+ff$/);
+      // A definite list encodes the same fourteen fields with different bytes.
+      const raw = `d8798e${canonical.slice(6, -2)}`;
+      const previous = { ...onNode, txHash: saved.tx_hash, outputIndex: saved.tx_index, assets: { ...onNode.assets, lovelace: BigInt(saved.value) } };
+      saved.datum_hash = blake2b256Hex(Buffer.from(raw, 'hex'));
+      await expectFailure(rig, 'lifecycle', 'the transaction history datum does not match its hash');
+      rig.ledger.koiosSpent.push({ ...previous, datum: raw, outputIndex: saved.tx_index + 1 });
+      await expectFailure(rig, 'lifecycle', 'the transaction history datum does not match its hash');
+      rig.ledger.koiosSpent.pop();
+      rig.ledger.koiosSpent.push({ ...previous, datum: raw });
+      expect(await rig.run('status')).toBe(0);
+      rig.ledger.koiosSpent.pop();
+      const different = encodeIdentityDatum({ ...decodeIdentityDatum(canonical), name: '78' });
+      saved.datum_hash = blake2b256Hex(Buffer.from(different, 'hex'));
+      rig.ledger.koiosSpent.push({ ...previous, datum: different });
+      await expectFailure(rig, 'lifecycle', 'the transaction history datum bytes and value disagree');
     }, SLOW);
 
     it('does not substitute a default for missing, invalid or conflicting protocol parameters', async () => {

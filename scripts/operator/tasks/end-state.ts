@@ -7,7 +7,7 @@
 // The data names which records and adverts stay live and which end. No claim, delegation or hold can be left open. Each check gives its result (`ok`, `wait` or `fail`) and a line that says
 // what is still to do. A source that cannot be read is a `fail`: it is never a pass. The task signs
 // nothing: the claims are read through the read methods of a chain port whose signature throws.
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { koiosPostList } from '../../../packages/buyer-core/src/vendored/mcp/marketplace-indexer.ts';
 // The identity advert codec is at the entry of vector-read, as in the task advert.
@@ -337,6 +337,7 @@ function advertRef(ref: string): string {
 }
 
 interface ExpectedAdvert {
+  readonly retireStep: string;
   readonly agent: AgentSpec; readonly spec: AdvertSpec; readonly fact: AdvertFact; readonly didId: string; readonly supplier: string;
 }
 
@@ -354,6 +355,41 @@ function advertDatum(bytes: string | null | undefined): IdentityAdvertDatum | nu
   try { return decodeIdentityAdvertDatum(bytes); } catch { return null; }
 }
 
+interface RetireReceipt { readonly tx: string; readonly ref: string }
+const ADVERT_JOURNAL = /^advert(?:\.([a-z0-9][a-z0-9-]{0,31}))?\.state\.json$/;
+
+/** The note names a candidate spend. The chain, not the note, proves which advert that spend retired. */
+function retireReceipts(ctx: Context, steps: ReadonlySet<string>): ReadonlyMap<string, ReadonlyMap<string, RetireReceipt>> {
+  const { settings, use } = ctx.session;
+  const receipts = new Map<string, Map<string, RetireReceipt>>();
+  for (const name of readdirSync(settings.stateDir)) {
+    const label = ADVERT_JOURNAL.exec(name);
+    if (label === null) continue;
+    const journal = StateFile.peek(join(settings.stateDir, name));
+    if (journal === null || journal.check !== 'advert' || journal.network !== settings.network.name
+        || journal.record !== (label[1] === undefined ? use.name : `${use.name}:${label[1]}`)) {
+      throw new Error('an advert journal does not match its task, run, use case or network');
+    }
+    for (const step of steps) {
+      const note = journal.notes[step];
+      if (note === undefined) continue;
+      if (!isObject(note) || !isObject(note.refs) || typeof note.refs.retiredRef !== 'string' || typeof note.tx_hash !== 'string' || !ID.test(note.tx_hash)
+          || typeof note.confirmed_at !== 'string' || timeOf(note.confirmed_at) === null) {
+        throw new Error(`an advert journal holds no usable confirmed receipt for ${step}`);
+      }
+      const ref = advertRef(note.refs.retiredRef);
+      const tx = note.tx_hash;
+      let copies = receipts.get(step);
+      if (copies === undefined) {
+        copies = new Map();
+        receipts.set(step, copies);
+      }
+      copies.set(`${tx}:${ref}`, { tx, ref });
+    }
+  }
+  return receipts;
+}
+
 async function adverts(ctx: Context): Promise<Check> {
   const name = 'adverts';
   const problems: string[] = [];
@@ -361,7 +397,7 @@ async function adverts(ctx: Context): Promise<Check> {
   const retired: string[] = [];
   const groups = new Map<string, Map<string, ExpectedAdvert>>();
   const known = new Map<string, ExpectedAdvert>();
-  const owners = new Map<string, string>();
+  const owners = new Set<string>();
   const lookup = ctx.publicKeys();
   for (const agent of ctx.session.use.agents) {
     const group = groups.get(agent.capability) ?? new Map<string, ExpectedAdvert>();
@@ -372,7 +408,7 @@ async function adverts(ctx: Context): Promise<Check> {
       continue;
     }
     if (owners.has(record.id)) throw new Error('two agents have the same record identifier in the facts');
-    owners.set(record.id, agent.id);
+    owners.add(record.id);
     const held = ctx.facts.adverts[agent.id] ?? {};
     for (const spec of agent.adverts) {
       const { model } = spec;
@@ -397,7 +433,7 @@ async function adverts(ctx: Context): Promise<Check> {
         problems.push(`the advert fact of ${agent.id}/${model} does not name its post transaction and manifest`);
         continue;
       }
-      const entry = { agent, spec, fact, didId: record.id, supplier };
+      const entry = { agent, spec, fact, didId: record.id, supplier, retireStep: `part.retire:${agent.id}:${model}` };
       known.set(ref, entry);
       group.set(ref, entry);
     }
@@ -405,9 +441,9 @@ async function adverts(ctx: Context): Promise<Check> {
       if (!agent.adverts.some((spec) => spec.model === model)) problems.push(`the facts hold an advert ${agent.id}/${model} that the data do not name`);
     }
   }
-  const { provider, deployment, fetchImpl, koiosUrl } = ctx.session.chain;
+  const { provider, deployment } = ctx.session.chain;
   const address = deployment.advert.address;
-  // The full address query is not filtered by an indexer, a capability or the recorded references. It includes hidden replacements.
+  // Read the node directly. Only a known reference or a traced spend can attribute an output to these adverts.
   const unspent = await provider.getUtxos(address);
   const live = new Set<string>();
   for (const output of unspent) {
@@ -415,40 +451,46 @@ async function adverts(ctx: Context): Promise<Check> {
     const ref = advertRef(formatOutRef(output.txHash, output.outputIndex));
     if (live.has(ref)) throw new Error('the node returned the same advert output twice');
     live.add(ref);
-    const datum = advertDatum(output.datum);
+    // A datum can name any DID. Do not credit or reject an advert that has no link to a fact.
     const expected = known.get(ref);
-    if (expected !== undefined) {
-      if (expected.agent.end.advert === 'retired') problems.push(`the node still holds an unspent output for a retired advert (${ref})`);
-      else if (datum === null || !advertTextFieldsRoundTrip(output.datum!) || !matchesAdvert(datum, expected)
-          || output.assets.lovelace !== expected.spec.depositLovelace || Object.keys(output.assets).length !== 1 || output.scriptRef != null) {
-        problems.push(`the node output ${ref} does not match the advert of ${expected.agent.id}/${expected.spec.model}`);
-      }
+    if (expected === undefined) continue;
+    if (expected.agent.end.advert === 'retired') {
+      problems.push(`the node still holds an unspent output for a retired advert (${ref})`);
       continue;
     }
-    if (datum === null) continue;
-    const owner = owners.get(datum.agent_id);
-    if (owner !== undefined) problems.push(`the node holds an unexpected ${datum.status} advert for ${owner} (${ref})`);
+    const datum = advertDatum(output.datum);
+    if (datum === null || !advertTextFieldsRoundTrip(output.datum!) || !matchesAdvert(datum, expected)
+        || output.assets.lovelace !== expected.spec.depositLovelace || Object.keys(output.assets).length !== 1 || output.scriptRef != null) {
+      problems.push(`the node output ${ref} does not match the advert of ${expected.agent.id}/${expected.spec.model}`);
+    }
   }
 
-  const retiredRefs = new Set<string>();
-  for (const [ref, want] of known) if (want.agent.end.advert === 'retired' && !live.has(ref)) retiredRefs.add(ref);
-  const spendNotes = retiredRefs.size === 0 ? null : StateFile.peek(join(ctx.session.settings.stateDir, 'advert.state.json'));
-  if (spendNotes !== null && (spendNotes.check !== 'advert' || spendNotes.record !== ctx.session.use.name || spendNotes.network !== ctx.session.settings.network.name)) {
-    throw new Error('the advert journal is for another task, use case or network');
-  }
+  const toVerify = new Map<string, ExpectedAdvert>();
+  for (const [ref, want] of known) if (want.agent.end.advert === 'retired' && !live.has(ref)) toVerify.set(ref, want);
+  const receipts = toVerify.size === 0 ? null : retireReceipts(ctx, new Set([...toVerify.values()].map(({ retireStep }) => retireStep)));
   const returned = new Set<string>();
-  for (const ref of retiredRefs) {
-    const want = known.get(ref)!;
+  for (const [ref, want] of toVerify) {
+    const tag = `${want.agent.id}/${want.spec.model} (${ref})`;
     const wallet = lookup.get(want.spec.supplierKey)?.address;
-    const note = spendNotes?.notes[`part.retire:${want.agent.id}:${want.spec.model}`];
-    if (wallet == null || !isObject(note) || !isObject(note.refs) || typeof note.refs.retiredRef !== 'string'
-        || typeof note.tx_hash !== 'string' || typeof note.confirmed_at !== 'string' || timeOf(note.confirmed_at) === null) {
-      problems.push(`the advert journal holds no confirmed retire of ${want.agent.id}/${want.spec.model} (${ref})`);
+    const candidates = receipts?.get(want.retireStep);
+    if (wallet == null || candidates === undefined) {
+      problems.push(`the advert journals hold no confirmed retire of ${tag}`);
       continue;
     }
-    const receipt = await verifyAdvertRetire(ctx, want, ref, advertRef(note.refs.retiredRef), note.tx_hash, wallet);
-    if (receipt === null) returned.add(ref);
-    else problems.push(`the retire of ${want.agent.id}/${want.spec.model} (${ref}): ${receipt}`);
+    let matches = 0;
+    let why = 'no receipt matches the recorded advert';
+    for (const { ref: final, tx } of candidates.values()) {
+      try {
+        const problem = await verifyAdvertRetire(ctx, want, ref, final, tx, wallet, live);
+        if (problem === null) matches += 1;
+        else why = problem;
+      } catch (err) {
+        why = shown(err);
+      }
+      if (matches > 1) break;
+    }
+    if (matches === 1) returned.add(ref);
+    else problems.push(`the retire of ${tag}: ${matches > 1 ? 'more than one confirmed receipt matches the recorded advert' : why}`);
   }
   let until = 0;
   const counts = new Map<string, number>();
@@ -499,7 +541,7 @@ async function adverts(ctx: Context): Promise<Check> {
   if (waits.length > 0) return waiting(name, `${waits.join('; ')}: the adverts return when the hold ends`, until);
   const active = [...counts].map(([agent, count]) => `${agent} ${count}`).join(', ');
   return passed(name, `the indexer lists exactly the adverts of the data (${active}), with matching node outputs`
-    + (retired.length === 0 ? '' : `; the node shows no unspent replacement, and confirmed retires return each deposit less its transaction fee (${retired.join(', ')})`));
+    + (retired.length === 0 ? '' : `; confirmed retires return each traced deposit less its transaction fee, with no traced output left unspent (${retired.join(', ')})`));
 }
 
 // ---- 4. the claims ----
@@ -756,8 +798,13 @@ interface RecordSpendValueRow {
   readonly asset_list?: unknown;
 }
 
-interface RecordSpendScript { scriptHash: string; inputRef: string; redeemer: { hash?: unknown; bytes?: unknown; value?: unknown } }
-interface RecordSpendValueFlow { fee: bigint; inputs: RecordSpendValueRow[]; outputs: RecordSpendValueRow[]; spends?: readonly RecordSpendScript[] }
+interface RecordSpendScript { readonly scriptHash: string; readonly inputRef: string; readonly redeemer: { hash?: unknown; bytes?: unknown; value?: unknown } }
+interface RecordSpendValueFlow {
+  readonly fee: bigint;
+  readonly inputs: readonly RecordSpendValueRow[];
+  readonly outputs: readonly RecordSpendValueRow[];
+  readonly spends?: readonly RecordSpendScript[];
+}
 
 function lovelaceOf(value: unknown): bigint | null {
   if (typeof value === 'string' && /^[0-9]{1,20}$/.test(value)) return BigInt(value);
@@ -849,8 +896,11 @@ function plutusOfKoios(value: unknown, depth = 0): PlutusData {
   throw new Error('the transaction history has no usable Plutus datum');
 }
 
-/** Compare data in one canonical encoding, but tie a hash to the actual bytes when the archive gives them. */
-function historyDatum(inline: unknown, hash: unknown, equivalent?: string): string | null {
+/** The structured value needs the original bytes before its hash can be verified. */
+interface DatumHashCheck { readonly canonical: string; readonly hash: string }
+
+/** Compare data in one canonical encoding and check the hash against the original bytes when available. */
+function historyDatum(inline: unknown, hash: unknown, equivalent?: string): string | DatumHashCheck | null {
   if (inline != null && !isObject(inline)) throw new Error('the transaction history has an invalid datum member');
   const bytes = isObject(inline) ? inline.bytes : null;
   const value = isObject(inline) ? inline.value : null;
@@ -868,18 +918,26 @@ function historyDatum(inline: unknown, hash: unknown, equivalent?: string): stri
     const tied = encodePlutusDataHex(decodePlutusDataHex(equivalent));
     if (canonical === tied) return tied;
   }
+  if (typeof bytes !== 'string' && canonical !== null) return { canonical, hash };
   throw new Error('the transaction history datum does not match its hash');
 }
 
 async function archivedDatum(ctx: Context, row: RecordSpendValueRow, equivalent?: string): Promise<string | null> {
-  const datum = historyDatum(row.inline_datum, row.datum_hash, equivalent);
-  if (datum !== null) return datum;
+  const found = historyDatum(row.inline_datum, row.datum_hash, equivalent);
+  if (typeof found === 'string') return found;
+  const hash = found?.hash ?? row.datum_hash;
   const { koiosUrl, fetchImpl } = ctx.session.chain;
-  const [output, ...extra] = await koiosUtxoInfo(koiosUrl, [row.ref], fetchImpl);
+  const [output, ...extra] = await koiosUtxoInfo(koiosUrl, [row.ref], fetchImpl, 512 * 1024);
   if (output === undefined || extra.length !== 0 || formatOutRef(output.tx_hash, output.tx_index) !== row.ref
       || output.address !== row.address || lovelaceOf(output.value) !== row.lovelace
-      || (row.datum_hash != null && output.datum_hash !== row.datum_hash)) return null;
-  return historyDatum(output.inline_datum, output.datum_hash, equivalent);
+      || (hash != null && output.datum_hash != null && output.datum_hash !== hash)) {
+    if (found !== null) throw new Error('the transaction history datum does not match its hash');
+    return null;
+  }
+  if (found !== null && typeof output.inline_datum?.bytes !== 'string') throw new Error('the transaction history datum does not match its hash');
+  const checked = historyDatum(output.inline_datum, hash ?? output.datum_hash, equivalent);
+  if (found !== null && checked !== found.canonical) throw new Error('the transaction history datum bytes and value disagree');
+  return typeof checked === 'string' ? checked : null;
 }
 
 function tokenOutput(outputs: readonly RecordSpendValueRow[], script: { address: string; hash: string }, id: string): RecordSpendValueRow | null {
@@ -905,7 +963,9 @@ const ADVERT_UPDATE = 'd87a80';
 const ADVERT_RETIRE = 'd87b80';
 
 /** Follow recorded updates back to the declared advert. Only a confirmed Retire with actual supplier credit ends this lineage. */
-async function verifyAdvertRetire(ctx: Context, want: ExpectedAdvert, original: string, final: string, txHash: string, wallet: string): Promise<string | null> {
+async function verifyAdvertRetire(
+  ctx: Context, want: ExpectedAdvert, original: string, final: string, txHash: string, wallet: string, live: ReadonlySet<string>,
+): Promise<string | null> {
   const script = ctx.session.chain.deployment.advert;
   const spend = await readConfirmedRecordSpend(ctx.session, txHash, { withDetails: true });
   const actions = spend.spends?.filter(({ scriptHash }) => scriptHash === script.hash) ?? [];
@@ -919,6 +979,7 @@ async function verifyAdvertRetire(ctx: Context, want: ExpectedAdvert, original: 
   }
   if (walletCredit(wallet, spend) !== input.lovelace - spend.fee || input.lovelace <= spend.fee) return 'the supplier wallet did not receive the deposit less the transaction fee';
   for (let depth = 0; depth < 16; depth += 1) {
+    if (live.has(input.ref)) return `the node still holds the traced advert output ${input.ref}`;
     const bytes = await archivedDatum(ctx, input);
     const datum = advertDatum(bytes);
     if (input.address !== script.address || !Array.isArray(input.asset_list) || input.asset_list.length !== 0

@@ -250,7 +250,7 @@ const USE_CASE: UseCase = {
     },
     {
       id: 'r2-a-release', run: 'failure', actor: 'counterparty', primitive: 'Escrow: release',
-      what: 'Check whether the Bid Desk Charlie quote escrow ended without an accept or reclaim.',
+      what: 'Check the Bid Desk Charlie quote escrow for an accept or reclaim.',
     },
     { id: 'r2-a-hold', run: 'failure', actor: 'relay', primitive: 'Module-1 verdict and hold', what: 'The jury decides. Bid Desk Charlie gets a hold of 7 days, reason 64.' },
     {
@@ -267,7 +267,7 @@ const USE_CASE: UseCase = {
     },
     {
       id: 'r2-e', run: 'failure', actor: 'operator', primitive: 'Revoke of a record by a party',
-      what: 'The Accountable key of the organisation of Bid Desk Charlie revokes its record with a reason code and a time from which its signatures are invalid. The record becomes a tombstone, and the gateway says that the DID is gone.',
+      what: 'Record the transaction and the record output for Bid Desk Charlie.',
     },
     { id: 'l1-01', run: 'lifecycle', actor: 'operator', primitive: 'Change of the controller', what: 'The old and the new controller of Bid Desk Bravo change the controller.' },
     { id: 'l1-02', run: 'lifecycle', actor: 'operator', primitive: 'Recovery start', what: 'Both guardians and the next controller start a recovery.' },
