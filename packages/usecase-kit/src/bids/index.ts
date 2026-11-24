@@ -9,6 +9,8 @@
 //   ranking    the ranking of the Sourcing Agent with its excluded list, the hash of a quote receipt, and the builder of the ranking
 //   pricelist  the price list of a Bid Desk, the rule of the price, and the hash of the bytes of the list
 //   claims     the claim statements of the two agents
+//   quote        the quote that a Bid Desk returns, its 7 checks, and the arithmetic of its lines
+//   quote-rules  the rules that tie a quote to the request that it answers and to the price list that it was priced from, and the check of each line against the list
 export { BID_CAPABILITIES, BID_DESK_MODEL, MAX_ITEM_QUANTITY, SOURCING_MODEL, parseRfqId, parseSku } from './ids.ts';
 export { MAX_RFQ_ITEMS, parseRfqDocument, rfqSha256 } from './rfq.ts';
 export type { RfqDocument, RfqItem } from './rfq.ts';
@@ -23,3 +25,5 @@ export type { PriceBreak, PriceEntry, PriceList } from './pricelist.ts';
 export { BID_DESK_CLAIM, SOURCING_CLAIM } from './claims.ts';
 export { QUOTE_CHECKS, QUOTE_SCHEMA, parseQuote, quoteTotals } from './quote.ts';
 export type { Quote, QuoteLine } from './quote.ts';
+export { checkQuoteAnswersRfq, checkQuoteFromList, lineChecks } from './quote-rules.ts';
+export type { LineCheck } from './quote-rules.ts';
