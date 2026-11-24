@@ -241,6 +241,8 @@ describe('the decision score of a scorer', () => {
     secondBidderDecides(w, async () => ({ ok: false, code }));
     await expectSecondFailed(w, code, false);
     expect(w.scoreCalls.filter((call) => call.request.file.did === BIDDERS[1].did)).toHaveLength(1);
+    expect(w.logs).toHaveLength(1);
+    expect(w.logs[0]).toContain(code);
   });
 
   it.each([
@@ -257,6 +259,9 @@ describe('the decision score of a scorer', () => {
     const result = await w.run();
     expectFailed(result, 'internal', [FIRST, THIRD]);
     expect(JSON.stringify(result)).not.toContain('The model said');
+    expect(w.logs).toHaveLength(1);
+    expect(w.logs[0]).toContain('internal');
+    expect(w.logs.join('\n')).not.toContain('The model said');
     await expectRecordedAndEnded(w, 3);
   });
 

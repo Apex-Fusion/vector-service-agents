@@ -116,12 +116,12 @@ function isDecision(value: unknown): value is Decision {
 }
 
 /**
- * Why a scorer must not send now, or null. The caller hung up (`aborted`), or `deadline_ms` leaves less than `SCORER_NEED_MS` (`deadline`). A clock or a deadline that is not a number counts as no time left:
- * a time that is not known is never enough time.
+ * Why a scorer must not send at the time `now`, or null. The caller hung up (`aborted`), or `deadline_ms` leaves less than `SCORER_NEED_MS` (`deadline`). A clock or a deadline that is not a number counts as no
+ * time left: a time that is not known is never enough time.
  */
-function stopOf(run: Run): Stop | null {
+function stopOf(run: Run, now: number): Stop | null {
   if (run.signal?.aborted === true) return 'aborted';
-  return run.deadline - run.deps.clock.now() >= SCORER_NEED_MS ? null : 'deadline';
+  return run.deadline - now >= SCORER_NEED_MS ? null : 'deadline';
 }
 
 /**
@@ -271,7 +271,9 @@ async function scorerJob(run: Run, index: number, scorer: Scorer, subject: Score
   if (handle.signal.aborted) throw new Error('the time of the job ended');
   if (hungUp()) return failed('aborted');
   const answer: unknown = await deps.score({ today: input.today, weights: input.weights, rfq: input.rfq, quote: subject.quote, file: subject.file, vendor: vendorFor(vendors.value, subject.organisation) });
-  return outcomeOf(run, index, subject, answer);
+  const outcome = outcomeOf(run, index, subject, answer);
+  if (!outcome.ok) note(run, `${head}: the decision gave no score: ${outcome.code}`);
+  return outcome;
 }
 
 /**
@@ -287,13 +289,15 @@ async function runScorer(run: Run, index: number): Promise<ScorerOutcome> {
     const scorer = deps.scorers[index];
     const subject = input.subjects[index];
     if (scorer === undefined || subject === undefined) return failed('internal');
-    const before = stopOf(run);
+    // One read of the clock decides both: a scorer that passes the check has at least `MIN_CONFIRMATION_WAIT_MS` for the confirmations. The wait for the turn of the wallet, the Delegate and the 30
+    // confirmations take what the budget says, and the job and the end step come after them, all inside `deadline_ms`.
+    const now = deps.clock.now();
+    const before = stopOf(run, now);
     if (before !== null) {
       note(run, `${head}: no Delegate was sent: ${before}`);
       return failed(before);
     }
-    // The wait for the turn of the wallet, the Delegate and the 30 confirmations take what the budget says, and the job and the end step come after them, all inside `deadline_ms`.
-    const left = Math.floor(run.deadline - deps.clock.now());
+    const left = Math.floor(run.deadline - now);
     const confirmationWaitMs = Math.min(DEFAULT_CONFIRMATION_WAIT_MS, left - SCORER_JOB_TIMEOUT_MS - END_TIMEOUT_MS);
     const result = await withSubDelegation(
       {
@@ -302,7 +306,7 @@ async function runScorer(run: Run, index: number): Promise<ScorerOutcome> {
         beforeSend: async (reference) => {
           // The turn of the wallet may have come late, so the checks of the start are made again right before the send. The hook throws before this run takes the id: nothing is sent, this run records nothing, and
           // it removes nothing.
-          const stop = stopOf(run);
+          const stop = stopOf(run, deps.clock.now());
           if (stop !== null) {
             flag.stop = stop;
             note(run, `${head}: no Delegate was sent for the sub-delegation ${reference.id}: ${stop}`);
