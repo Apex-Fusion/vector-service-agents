@@ -2,26 +2,30 @@
 // specs/sourcing-agent.md is the public page of the agent, and the manifest links to its Response section. These tests hold the page to the code and to the deploy pack: the status, the identity rows, the
 // numbers of the terms and the windows, the request limit, the request fields of the schema that the manifest publishes, the example requests and the example proposal (made here with the real `runPropose` over
 // scripted ports), the steps of the two jobs and the codes that they name, the file of a bidder (made with the real reader), and the ranking. The tests read the page, the manifest, the env example, the compose
-// file of the pack and some source files, and no network. The test of the headings holds the headings that the page has.
+// file of the pack and some source files, and no network. The test of the headings holds the thirteen headings of the page and the seven sub-headings of Interface.
 import { createHash } from 'node:crypto';
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { describe, expect, test } from 'vitest';
 import { parse } from 'yaml';
-import { ACCEPT_WINDOW_MS } from '@vsa/buyer-core';
+import { ACCEPT_WINDOW_MS, HIRE_ACTION } from '@vsa/buyer-core';
 import { MAX_BODY, RESERVATION_MS } from '@vsa/service-kit';
-import { CONFIRMATIONS_REQUIRED } from '@vsa/usecase-kit/access';
+import { CONFIRMATIONS_REQUIRED, GATEWAY_FAILURES, SUB_DELEGATION_FAILURES, tokenTarget } from '@vsa/usecase-kit/access';
 import {
-  BID_CAPABILITIES, BID_DESK_MODEL, EXCLUDED_REASONS, MAX_ITEM_QUANTITY, MAX_RFQ_ITEMS, QUOTE_SCHEMA, SCORE_COMPONENTS, SOURCING_MODEL, WEIGHT_NAMES, buildRanking, parsePriceList, parseQuote, parseRanking, priceFor,
+  BID_CAPABILITIES, BID_DESK_CLAIM, BID_DESK_MODEL, EXCLUDED_REASONS, MAX_ITEM_QUANTITY, MAX_RFQ_ITEMS, QUOTE_SCHEMA, SCORE_COMPONENTS, SOURCING_CLAIM, SOURCING_MODEL, WEIGHT_NAMES, buildRanking, parsePriceList, parseQuote,
+  parseRanking, priceFor,
   priceListSha256, quoteTotals, receiptSha256, rfqSha256,
 } from '@vsa/usecase-kit/bids';
 import type { PriceList, Quote } from '@vsa/usecase-kit/bids';
-import { checkRuntimeBody, checkWirePayload } from '@vsa/usecase-kit/buyer';
+import { COUNTERPARTY_REFUSED, EARLIER_PAY_MAY_LAND, INCONSISTENT_OUTCOME, INTERRUPTION_REASONS, PAY_UNCONFIRMED, checkRuntimeBody, checkWirePayload } from '@vsa/usecase-kit/buyer';
+import { COSIGN_SETTINGS, COSIGN_STATUS, parseAllowlist, parseCosignSettings } from '@vsa/usecase-kit/cosign';
+import { HIRE_MIN_MS } from '@vsa/usecase-kit/decision';
 import { readFaultSwitch, withFaultMode } from '@vsa/usecase-kit/fault';
 import {
-  COUNTERPARTY_REFUSALS, ERROR_STATUS, MAX_REQUEST_BYTES, PROPOSE_OUTCOMES, RECEIPT_CHECKS, RUNTIME_BODY_LIMIT_BYTES, agentIdOf, canonicalJson, checkRequestSize, parseProposal, parseRequest, proposalDigest,
+  APPROVAL_ATT_TYPE, APPROVAL_DEPOSIT_LOVELACE, COSIGN_ROUTE, COSIGN_RULE, COUNTERPARTY_REFUSALS, ERROR_STATUS, EXECUTE_OUTCOMES, EXIT_STATES, FAULT_MODES, MAX_REQUEST_BYTES, PROPOSE_OUTCOMES, RECEIPT_CHECKS,
+  RUNTIME_BODY_LIMIT_BYTES, agentIdOf, canonicalJson, checkRequestSize, exitStateOf, parseProposal, parseRequest, proposalDigest,
 } from '@vsa/usecase-kit/protocol';
-import type { Decision, Did, JsonObject, JsonValue, ProtocolResult, ReceiptVerification, SubJob } from '@vsa/usecase-kit/protocol';
-import { CLAIM_STAKE_LOVELACE, CLAIM_WINDOW_MS } from '../../../scripts/operator/lib/claim-constants.ts';
+import type { Decision, Did, ExecuteOutcome, JsonObject, JsonValue, ProtocolResult, ReceiptVerification, SubJob } from '@vsa/usecase-kit/protocol';
+import { CLAIM_STAKE_LOVELACE, CLAIM_WINDOW_MS, RUN_APPROVAL_VALIDITY_MS } from '../../../scripts/operator/lib/claim-constants.ts';
 import { USE_CASE_NAMES } from '../../../scripts/operator/usecases/names.ts';
 import { MAX_CANDIDATES, readBidders } from '../src/bidders/index.ts';
 import type { BidderFile, BidderView } from '../src/bidders/index.ts';
@@ -30,15 +34,19 @@ import { ACCEPT_QUOTE_DECISION, MAX_INVITED, RANKING_DECISION, SCORE_DECISION, S
 import { bidderFacts } from '../src/model/bidder.ts';
 import { PROPOSE_DEADLINE_MS, PROPOSE_FAILURES, ProposeRefusal, RANKING_RESERVE_MS, SCORING_RESERVE_MS, runPropose } from '../src/propose/index.ts';
 import type { ProposeDeps, ProposeRequest, QuoteRecord } from '../src/propose/index.ts';
+import { BID_DESK_REFUSALS, CHALLENGE_CODES, CODE, NOT_ACTIVE_STATUSES } from '../src/quotes/ports.ts';
 import { QUOTE_CODES, QUOTE_HIRE_RESERVE_MS } from '../src/quotes/index.ts';
 import { SCORER_JOB_TIMEOUT_MS, SCORER_NEED_MS, SCORERS_NEED_MS, SCORING_FAILURES, SUB_DELEGATION_VALID_MS } from '../src/scoring/index.ts';
+import { reversedOf, scoreFaultOf } from '../src/scoring/fault.ts';
+import { CHALLENGE_GAP, KEYS_GAP, NOT_SHOWN_GAP, gapsFor } from '../src/serve/gaps.ts';
 import { DESCRIPTION, ID_CHARS, REQUEST_SCHEMA, TEMPLATE_ENV, manifestFromEnv } from '../src/serve/manifest.ts';
 import { RequestRefusal, parseJob } from '../src/serve/server.ts';
 import {
-  BUYER_BOND_LOVELACE, JOB_DEADLINE_MS, MIN_PROCESSING_WINDOW_MS, PRICE_DEFAULT_LOVELACE, SUPPLIER_BOND_LOVELACE, priceOf, processingWindowOf, scorerDidsOf, supplierKeyOf,
+  BUYER_BOND_LOVELACE, JOB_DEADLINE_MS, MIN_PROCESSING_WINDOW_MS, PRICE_DEFAULT_LOVELACE, SUPPLIER_BOND_LOVELACE, module1SourceOf, priceOf, processingWindowOf, scorerDidsOf, supplierKeyOf,
 } from '../src/serve/settings.ts';
 import { SETTINGS } from '../src/serve/start.ts';
-import { DESKS, addDesk, deskOf, extraDesk, goldenWorld, ok, priceListText, revokedCompliance, revokedOf, rowOf, stubOf } from './bidders/support.ts';
+import { STATE_FILES } from '../src/serve/wiring.ts';
+import { DESKS, addDesk, advertOf, deskOf, extraDesk, goldenWorld, manifestText, ok, priceListText, revokedCompliance, revokedOf, rowOf, stubOf } from './bidders/support.ts';
 import type { Desk } from './bidders/support.ts';
 import { proposed, world } from './propose/support.ts';
 
@@ -62,9 +70,11 @@ const PAGE_DATE = '2026-11-24';
 const STATUS_LINE = `PROPOSED (built, not deployed). Since ${PAGE_DATE}.`;
 
 describe('specs/sourcing-agent.md', () => {
-  test('the page has the headings that it has so far in order, and Interface has the four sub-headings that the tests below read', () => {
-    expect([...page.matchAll(/^## (.+)$/gm)].map((hit) => hit[1])).toStrictEqual(['Status', 'Identity', 'Capability id', 'Terms', 'Interface']);
-    expect([...page.matchAll(/^### (.+)$/gm)].map((hit) => hit[1])).toStrictEqual(['Request', 'Response', 'The bidder file', 'The ranking']);
+  test('the page has the thirteen headings of its profile in order, and Interface has the seven sub-headings that the tests below read', () => {
+    expect([...page.matchAll(/^## (.+)$/gm)].map((hit) => hit[1])).toStrictEqual([
+      'Status', 'Identity', 'Capability id', 'Terms', 'Interface', 'What the receipt commits to', 'Claim statements', 'Fault switch', 'Operator and data handling', 'Known gaps', 'How to hire it', 'Changelog', 'Links',
+    ]);
+    expect([...page.matchAll(/^### (.+)$/gm)].map((hit) => hit[1])).toStrictEqual(['Request', 'Response', 'The bidder file', 'The ranking', 'Outcomes', 'Errors', 'The co-sign route']);
   });
 
   test('the opening line, the capability, the model string and the status are the manifest and the pack', () => {
@@ -871,5 +881,423 @@ describe('specs/sourcing-agent.md, Interface, The ranking', () => {
       'The score is not worked out again from the components and the weights: the model decides the numbers, and the job holds only that each number is from 0 to 100.',
       'It is a member only when the gateway verified the organisation: the sourcing record refuses the value `null`, so the member is left out when there is none |',
     ]) expect(ranking, part).toContain(part);
+  });
+});
+
+// ---- Outcomes, Errors and the co-sign route ---------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+/** The rows of a table of statuses and codes, as "status:code" for each code in backticks of the second cell. */
+const codePairs = (body: string): string[] => body.split('\n').filter((line) => /^\| \d/.test(line)).flatMap((line) => {
+  const [status, cell] = line.substring(2).split(' | ');
+  return [...cell.matchAll(/`([a-z][a-z0-9_]*)`/g)].map((hit) => `${status}:${hit[1]}`);
+});
+/** The cells of each row of the table that starts with `header`. */
+function rowsOf(body: string, header: string): string[][] {
+  const lines = body.split('\n');
+  const at = lines.indexOf(header);
+  if (at < 0) throw new Error(`no table has the header ${header}`);
+  const rows: string[][] = [];
+  for (let index = at + 2; index < lines.length && lines[index].startsWith('| '); index += 1) rows.push(lines[index].substring(2, lines[index].length - 2).split(' | '));
+  return rows;
+}
+/** The text of a source from the end of `head` to the next `end`. */
+function declared(path: string, head: string, end: string): string {
+  const source = text(path);
+  const start = source.indexOf(head);
+  if (start < 0) throw new Error(`${path} has no ${head}`);
+  return source.substring(start + head.length, source.indexOf(end, start + head.length));
+}
+/** The names in single quotes of a piece of source text. */
+const quoted = (piece: string): string[] => [...piece.matchAll(/'([a-z][a-z_]*)'/g)].map((hit) => hit[1]);
+/** The members of the type `export type <name> = 'a' | 'b';` of a source. */
+const unionOf = (path: string, name: string): string[] => quoted(declared(path, `export type ${name} = `, ';'));
+/** The first group of each match of `pattern` in a source. */
+const callsIn = (path: string, pattern: RegExp): string[] => [...text(path).matchAll(pattern)].map((hit) => hit[1]);
+
+/**
+ * The codes that the jobs write, read from the code. `propose` writes the codes of its own list, the codes of the scorers (with the prefixed codes of the sub-delegation set apart), the codes of the quote fan-out
+ * (its closed list is the own codes of the folder and every code of the protocol), and the codes of the model decisions of the kit. `execute` writes the codes of its own list. A code of the protocol that no list
+ * above names stands in the class of the protocol: a Bid Desk can answer with it before its Claim.
+ */
+function reasonsOfJobs(): { readonly propose: ReadonlySet<string>; readonly execute: ReadonlySet<string>; readonly protocol: ReadonlySet<string> } {
+  const kit = 'packages/usecase-kit/src/';
+  const ports = 'agents/sourcing-agent/src/quotes/ports.ts';
+  const prefixed = SUB_DELEGATION_FAILURES.map((code) => `sub_delegation_${code}`);
+  const scoring = SCORING_FAILURES.filter((code) => !prefixed.includes(code));
+  if (scoring.length + prefixed.length !== SCORING_FAILURES.length) throw new Error('the list of the codes of the scorers does not hold the prefixed list of the sub-delegation');
+  const hireKit = unionOf('packages/hire-kit/src/hire.ts', 'HireFailure');
+  const decision = [
+    ...hireKit.map((code) => `llm_${code}`),
+    ...unionOf(`${kit}decision/answer.ts`, 'AnswerFault'),
+    ...['decide', 'limits', 'prompt', 'spec'].flatMap((file) => callsIn(`${kit}decision/${file}.ts`, /refused\('(bad_[a-z]+)'/g)),
+    ...callsIn(`${kit}decision/decide.ts`, /failure\('[a-z_]+', '([a-z_]+)'/g),
+    ...callsIn(`${kit}decision/decide.ts`, /new HireEnded\('([a-z_]+)'/g),
+  ];
+  const listed = (head: string): string[] => quoted(declared(ports, head, ']'));
+  const quote = [
+    ...Object.values(CODE), ...NOT_ACTIVE_STATUSES, ...CHALLENGE_CODES, ...BID_DESK_REFUSALS, ...Object.values(INTERRUPTION_REASONS),
+    ...listed('const EXCLUDED_WORDS = ['), ...listed('const ANSWER_CODES = ['), ...listed('const REFUSED_CODES = ['), ...listed('const HIRE_KIT_FAILURES = ['), ...listed('const HIRE_FLOW_FAILURES = ['),
+    EARLIER_PAY_MAY_LAND, COUNTERPARTY_REFUSED, INCONSISTENT_OUTCOME, PAY_UNCONFIRMED,
+  ];
+  const propose = new Set<string>([...PROPOSE_FAILURES, ...scoring, ...decision, ...quote]);
+  const execute = new Set<string>(EXECUTE_FAILURES);
+  const protocol = new Set<string>(Object.keys(ERROR_STATUS).filter((code) => !propose.has(code) && !execute.has(code)));
+  return { propose, execute, protocol };
+}
+
+describe('specs/sourcing-agent.md, Interface, Outcomes, Errors and the co-sign route', () => {
+  test('the outcomes table lists the three outcomes that execute writes, with the exit states of the kit', () => {
+    const outcomes = sub('Outcomes');
+    expect(firstCells(outcomes, '| Outcome | Exit state | When |').map((cell) => cell.replaceAll('`', ''))).toStrictEqual(['completed', 'refused_by_system', 'failed']);
+    expect(EXECUTE_OUTCOMES).toEqual(expect.arrayContaining(['completed', 'refused_by_system', 'failed']));
+    const states = EXIT_STATES.map((state) => `\`${state}\``);
+    const lastState = states.pop();
+    expect(outcomes).toContain(`The exit state is ${states.join(', ')} or ${lastState}.`);
+    const state = (outcome: ExecuteOutcome, reason: string | null): string => exitStateOf({ outcome, reason, challenge_filed: false, delegation_ended: false });
+    expect(state('completed', null)).toBe('Completed');
+    expect(['approval_expired', 'delegation_ended', 'approval_not_found', 'approval_digest_mismatch'].map((reason) => state('refused_by_system', reason))).toStrictEqual(['Expired', 'Cancelled', 'Rejected', 'Rejected']);
+    expect(state('failed', 'token_failed')).toBe('Failed');
+    expect(row(outcomes, '`completed`')).toBe('| `completed` | `Completed` | the sourcing record wrote the ranking |');
+    expect(row(outcomes, '`refused_by_system`')).toContain('| `Rejected`, but `Expired` for `approval_expired` and `Cancelled` for `delegation_ended` |');
+    expect(row(outcomes, '`failed`')).toContain('| `Failed` |');
+    // `execute` builds these three results and no other: it hires nobody and files no challenge.
+    const execute = text('agents/sourcing-agent/src/execute/execute.ts');
+    for (const used of ['completedResult(', "refusedResult('system'", 'failedResult(']) expect(execute, used).toContain(used);
+    for (const unused of ['vaultRefusedResult', 'disputedResult', "refusedResult('counterparty'", 'hireCounterparty', 'challengeDelivery']) expect(execute, unused).not.toContain(unused);
+    // An ended delegation gives no token, so the job says `token_failed`. `Cancelled` comes from a refusal of the record itself.
+    expect(text('agents/sourcing-agent/test/execute/token.test.ts')).toContain('is token_failed when the hirer ended the delegation');
+    expect(text('agents/sourcing-agent/test/execute/refusals.test.ts')).toContain("[403, 'delegation_ended', 'Cancelled']");
+    expect(outcomes).toContain(
+      '`execute` writes these three outcomes and no other. It hires nobody, so it has no `vault_refused` and no `refused_by_counterparty`. It files no challenge, so it has no `disputed`. A delegation that the hirer ended gives no token, and the job ends `failed` with `token_failed`: the exit state `Cancelled` comes only when the sourcing record itself refuses with `delegation_ended`. A `propose` job ends with `proposed` or with `failed`, and a proposal has no exit state.',
+    );
+  });
+
+  test('the Errors table gives each code the status of the kit and is the table of the README, and the answers with no message are the ones of the service kit', () => {
+    const errors = sub('Errors');
+    const pairs = codePairs(errors);
+    const serverOwn: Record<string, number> = { bad_context: 400, not_found: 404 };
+    for (const pair of pairs) {
+      const [status, code] = pair.split(':');
+      expect([code, Number(status)], pair).toStrictEqual([code, (ERROR_STATUS as Record<string, number>)[code] ?? serverOwn[code]]);
+    }
+    // The README has the same table, row for row, and its own test holds it to the code.
+    expect(pairs).toStrictEqual(codePairs((readme.split('\n## Errors\n')[1] ?? '').split('The co-sign route has its own codes:')[0]));
+    expect(readme).toContain('| any other route | 404 `{"error":"not_found"}` |');
+    expect(pairs.map((pair) => pair.split(':')[1])).toStrictEqual(['bad_wire', 'request_too_large', 'bad_shape', 'bad_context', 'delegation_not_mine', 'unauthorized', 'not_found', 'busy', 'internal', 'shutting_down']);
+    expect(errors).toContain(
+      'A call that the service refuses has the body `{ "error": "<code>", "message": "<words>" }`, with the status of the first table. Four answers carry the code only, with no `message`: the 401, the 404, the 409 of a job, and a 500 for an error that the service does not name. The 409 of `POST /precheck` has a `message`. A refusal with a status of 500 or more gets fixed words, and the whole message is in the log. A job that the service runs and that does not end well is no HTTP error: it is a 200 result with the outcome `failed` and a `reason` code.',
+    );
+    // The service kit writes the four answers with the code only, and the 409 of the hook and a refusal of 500 or more with a message.
+    const server = text('packages/service-kit/src/server.ts');
+    for (const answer of [
+      "return send(401, { error: 'unauthorized' });", "return send(404, { error: 'not_found' });", "if (taken === 'busy') return send(409, { error: 'busy' });", "return send(500, { error: 'internal' });",
+      "return send(409, { error: 'busy', message: BUSY_TEXT });", 'return send(refusal.status, { error: refusal.code, message: operatorsText(refusal.code) });',
+    ]) expect(server, answer).toContain(answer);
+  });
+
+  test('the reasons table lists each code that a job writes and the job that writes it: the set is the set that the code gives, and the prefix and the class are the ones of the code', () => {
+    const errors = sub('Errors');
+    const { propose, execute, protocol } = reasonsOfJobs();
+    // One row holds each code, with the job that writes it: both jobs, or one of them.
+    const rows = rowsOf(errors, '| Reason | Job | What it says |');
+    const written = new Map<string, string>();
+    for (const [codes, job] of rows) {
+      for (const code of namesOf([codes])) {
+        expect(written.has(code), `${code} stands in one row`).toBe(false);
+        written.set(code, job.replaceAll('`', ''));
+      }
+    }
+    const expected = new Map([...new Set([...propose, ...execute])].map((code): [string, string] => [code, propose.has(code) ? (execute.has(code) ? 'both' : 'propose') : 'execute']));
+    expect(expected.size).toBeGreaterThan(100);
+    expect([...written].sort()).toStrictEqual([...expected].sort());
+    expect([...new Set(written.values())].sort()).toStrictEqual(['both', 'execute', 'propose']);
+    // The class of the protocol: the closed list of the quote fan-out holds every code of the protocol, and the codes of the class are the ones that no row names.
+    expect(Object.keys(ERROR_STATUS).every((code) => QUOTE_CODES.includes(code))).toBe(true);
+    expect(QUOTE_CODES.every((code) => propose.has(code) || execute.has(code) || protocol.has(code))).toBe(true);
+    expect(protocol.size).toBeGreaterThan(10);
+    expect(protocol.has('bad_wire')).toBe(true);
+    expect([...protocol].some((code) => written.has(code))).toBe(false);
+    // `token_failed` and `mock_system_failed` are codes of the protocol that only `execute` writes as its own: `propose` writes them only as codes of the class.
+    expect([written.get('token_failed'), written.get('mock_system_failed')]).toStrictEqual(['execute', 'execute']);
+    expect(['token_failed', 'mock_system_failed'].every((code) => !PROPOSE_FAILURES.includes(code) && !SCORING_FAILURES.includes(code))).toBe(true);
+    expect(errors).toContain(
+      'The next table lists each code that a job writes as the `reason` of a `failed` result. The column Job says which job writes it: `propose`, `execute` or both. The same list holds the code of a bidder that the job leaves out (`excluded` of the ranking) and the code that stops the quote hires. The other outcomes have their own reasons: see Outcomes. The reason of a `refused_by_system` result is a code of the sourcing record, and the record chooses it. Two rows stand for a class of codes and not for one code: `sub_delegation_<code>`, and the code of the protocol that a Bid Desk answers with.',
+    );
+    // The prefix: the codes after it are the list of the access folder, and the scoring writes each of them with its prefix.
+    const cell = (first: string): string[] => rows.find((cells) => cells[0] === first) ?? [];
+    expect(namesOf([cell('`sub_delegation_<code>`')[2]])).toStrictEqual([...SUB_DELEGATION_FAILURES]);
+    expect(SCORING_FAILURES).toEqual(expect.arrayContaining(SUB_DELEGATION_FAILURES.map((code) => `sub_delegation_${code}`)));
+    expect(cell('`sub_delegation_<code>`')[1]).toBe('`propose`');
+    expect(GATEWAY_FAILURES).toContain('gateway_refused');
+    expect(SCORING_FAILURES.some((code) => code.startsWith('token_'))).toBe(false);
+    // The class of the protocol: a Bid Desk answers an error before its Claim with a code of the kit, and the reason is that code.
+    expect(cell('a code of the protocol')[1]).toBe('`propose`');
+    expect(cell('a code of the protocol')[2]).toContain('such as `bad_wire` (400)');
+    expect(cell('`counterparty_refused`')[2]).toContain('the protocol does not list the code of its answer');
+    // The seven refusal codes of a Bid Desk are the row of its refusals, and the bidder is left out as refused.
+    expect(namesOf([cell('`sender_not_active`, `sender_unaccountable`, `sender_key_mismatch`, `delegation_invalid`, `delegation_ended`, `not_vault_paid`, `duplicate_rfq`')[0] ?? '']).sort()).toStrictEqual([...BID_DESK_REFUSALS].sort());
+    expect([...BID_DESK_REFUSALS].sort()).toStrictEqual(['delegation_ended', 'delegation_invalid', 'duplicate_rfq', 'not_vault_paid', 'sender_key_mismatch', 'sender_not_active', 'sender_unaccountable']);
+    expect(BID_DESK_REFUSALS.size).toBe(7);
+    expect(COUNTERPARTY_REFUSALS['bid-desk']).toHaveLength(7);
+    // The 60 seconds of `llm_out_of_time`.
+    expect(HIRE_MIN_MS).toBe(60_000);
+    expect(cell('`llm_out_of_time`, `hire_threw`')[2]).toContain(`less than ${HIRE_MIN_MS / 1000} s were left`);
+    // The window of the reasons of a failed hire: the interrupted hire and the unconfirmed Pay.
+    expect([INTERRUPTION_REASONS.decision_error, INTERRUPTION_REASONS.other, PAY_UNCONFIRMED]).toStrictEqual(['decision_error', 'hire_interrupted', 'pay_unconfirmed']);
+  });
+
+  test('the co-sign route: the path, the rule, the allowlist and the codes are the kit and the manifest, and the table is the table of the README', () => {
+    const cosign = sub('The co-sign route');
+    expect(COSIGN_ROUTE).toBe('/cosign/delegate');
+    expect(manifest.behaviour.cosign).toMatchObject({ route: COSIGN_ROUTE, rule: COSIGN_RULE });
+    expect(cosign).toContain(`\`POST ${COSIGN_ROUTE}\` is an open route of the service: it needs no token, and it takes no job slot.`);
+    expect(cosign).toContain(`\n> ${COSIGN_RULE}\n`);
+    expect(COSIGN_SETTINGS.allowlist).toBe('COSIGN_ALLOWLIST');
+    expect(SETTINGS).toContain('COSIGN_ALLOWLIST');
+    expect(must(parseAllowlist('')).size).toBe(0);
+    expect(parseCosignSettings({}).ok).toBe(false);
+    expect(cosign).toContain('The route signs only for a principal key on the allowlist that the operator sets with `COSIGN_ALLOWLIST`. The empty allowlist holds nobody, and a service with no such setting does not start.');
+    const pairs = codePairs(cosign);
+    for (const pair of pairs) {
+      const [status, code] = pair.split(':');
+      expect(Number(status), pair).toBe((COSIGN_STATUS as Record<string, number>)[code]);
+    }
+    // The handler of the kit answers 405 to a method that is not POST. The service registers the route for POST only, so any other method gets the 404 of the service, and the page lists no 405.
+    expect(COSIGN_STATUS.method_not_allowed).toBe(405);
+    expect(pairs.map((pair) => pair.split(':')[1]).sort()).toStrictEqual(Object.keys(COSIGN_STATUS).filter((code) => code !== 'method_not_allowed').sort());
+    expect(text('agents/sourcing-agent/src/serve/server.ts')).toContain("methods: ['POST']");
+    expect(text('packages/service-kit/src/routes.ts')).toContain("if (method === 'POST') return route.post && query === -1 ? route : undefined;");
+    expect(cosign).toContain('The route takes `POST` only. Any other method gets the 404 `not_found` of the service, as an unknown path does.');
+    // The README has the same co-sign table, row for row.
+    expect(pairs).toStrictEqual(codePairs((readme.split('The co-sign route has its own codes:')[1] ?? '').split('\n## ')[0]));
+    expect(cosign).toContain('The code `key_in_use` means that the delegation key is in use: the agent signed another body for it whose window is open, or a live delegation on the ledger names it.');
+  });
+});
+
+describe('specs/sourcing-agent.md, the receipt, the claim and the fault switch', () => {
+  test('What the receipt commits to: the fields of the table, the members of the results that it holds, and the checks of the sub-receipt', () => {
+    const receipt = section('What the receipt commits to');
+    expect(receipt).toContain('The service signs no receipt. The runtime builds the receipt, signs it with the supplier key and submits its hash in the Submit transaction.');
+    expect(row(receipt, '`escrow_ref`')).toBe('| `escrow_ref` | the escrow UTxO, `<txid>#<index>`: 64 lower-case hex characters, a hash sign, and an output index with no leading zero |');
+    expect(row(receipt, '`supplier_pkh`')).toBe('| `supplier_pkh` | the key hash of the supplier key |');
+    expect(row(receipt, '`prompt_hash`')).toBe('| `prompt_hash` | sha256 of the UTF-8 bytes of the wire payload, as the buyer committed it in the escrow datum |');
+    expect(row(receipt, '`response_hash`')).toBe('| `response_hash` | sha256 of the UTF-8 bytes of the result exactly as the service returned them |');
+    expect(row(receipt, '`model`')).toBe('| `model` | `sourcing-agent-v1` |');
+    expect(receipt).toContain(
+      'The receipt of a `propose` job commits the ranking, its salt and its digest, the file of every candidate as the agent read it, every quote with the signed receipt of its Bid Desk, every model decision with its reasoning and the sub-job that bought it, and any challenge that the agent filed.',
+    );
+    expect(receipt).toContain('The receipt of an `execute` job commits the outcome and the one write to the sourcing record, with its reference when it has one.');
+    expect(receipt).toContain('It does not commit to the ranking being right, to the prices of the Bid Desks being fair, or to any order being placed. The use case ends at the approved ranking.');
+    expect(receipt).toContain('The signature is Ed25519 over the canonical JSON of the receipt. The sha256 of the canonical JSON of `{ receipt, signature }` is the `result_receipt_hash` in the Submitted escrow datum.');
+    // What a `propose` result holds, and what an `execute` result holds.
+    for (const path of ['document.rfq_sha256', 'salt', 'proposal_digest', 'bidders.0.compliance', 'quotes.0.receipt', 'quotes.0.receipt_signature', 'quotes.0.challenge', 'decisions.0.reasoning', 'decisions.0.inference.sub_job']) expect(PROPOSED, path).toHaveProperty(path);
+    const completed = JSON.parse(readFileSync(new URL('agents/sourcing-agent/test/execute/golden/completed.json', root), 'utf8')) as Record<string, unknown>;
+    for (const path of ['outcome', 'writes.0.route', 'writes.0.ref']) expect(completed, path).toHaveProperty(path);
+    expect(RECEIPT_CHECKS).toEqual(expect.arrayContaining(['signature_valid', 'on_chain_hash_matches']));
+    expect(RUN.result.quotes[0].challenge).toBeNull();
+    expect(row(runbook, 'Sourcing')).toContain('`sourcing-agent-v1`');
+  });
+
+  test('Claim statements: the table is the claim of the kit and the manifest, and a claim has no reference to a claim', () => {
+    const claim = section('Claim statements');
+    expect(claim.split('\n').filter((line) => /^\| S[123] \|/.test(line))).toStrictEqual(SOURCING_CLAIM.statements.map((statement) => `| ${statement.id} | ${statement.text} |`));
+    expect(SOURCING_CLAIM.statements.map((statement) => statement.id)).toStrictEqual(['S1', 'S2', 'S3']);
+    expect(manifest.behaviour.claim).toStrictEqual(SOURCING_CLAIM);
+    expect(Object.keys(manifest.behaviour.claim)).toStrictEqual(['statements']);
+    expect(claim).toContain(
+      `The service stakes no claim, and no code of the service calls the staking of one. No command of this repository stakes a claim for this agent yet. Until one does, a challenge against it ends with \`no_open_claim\`. The design is that, before each run, the operator stakes one claim with the service key of the agent: ${CLAIM_STAKE_LOVELACE / 1_000_000n} units, which is ${CLAIM_STAKE_LOVELACE} lovelace, with a challenge window of ${CLAIM_WINDOW_MS / 3_600_000} hours. After the window, the operator withdraws the claim when nobody challenged it. A claim has these three statements. The manifest holds them in \`behaviour.claim\`, with no reference to a claim. A challenge names the text of a statement.`,
+    );
+    // The `quote` member of an entry is built from the held quote (S1 and S2), and `execute` writes the document as the hirer holds it (S3).
+    expect(text('agents/sourcing-agent/src/propose/ranking.ts')).toContain('The model writes the order and nothing more. A word of the model never reaches the `quote` member of an entry');
+    expect(text('agents/sourcing-agent/src/execute/execute.ts')).toContain('ranking: request.proposal.document, salt: request.proposal.salt');
+    // The agent challenges the first statement of the claim of a Bid Desk, and the page quotes it.
+    expect(text('agents/sourcing-agent/src/quotes/evidence.ts')).toContain('statement_text: BID_DESK_CLAIM.statements[0].text,');
+    expect(claim).toContain(
+      'The job builds the `quote` member of each ranked entry from the quote that it holds and accepted, and the model never writes it: that holds S1 and S2. `execute` writes the document as the hirer holds it: that holds S3 together with the approval check of the sourcing record. The agent challenges the claim of a Bid Desk and never its own claim. It uses the first statement of the claim of the Bid Desk: "The unit price of every line in a quote is the price its published price list gives for that SKU and quantity."',
+    );
+    expect(BID_DESK_CLAIM.statements[0].text).toBe('The unit price of every line in a quote is the price its published price list gives for that SKU and quantity.');
+  });
+
+  test('the fault switch: invert_scores reverses the scorer of the first quote on the decimal text, the decision of the model stays, and any other value stops the start', () => {
+    const fault = section('Fault switch');
+    expect(FAULT_MODES['sourcing-agent']).toStrictEqual(['invert_scores']);
+    expect(manifest.behaviour.fault_modes).toStrictEqual(['invert_scores']);
+    expect([reversedOf(80.2), reversedOf(0), reversedOf(100)]).toStrictEqual([19.8, 100, 0]);
+    const inverting = scoreFaultOf(readFaultSwitch('sourcing-agent', 'invert_scores'));
+    const choice = { components: { price: 80.2, lead_time: 10, reliability: 50, compliance: 100 }, score: 66.5 };
+    expect(inverting(0, choice)).toStrictEqual({ components: { price: 19.8, lead_time: 90, reliability: 50, compliance: 0 }, score: 33.5 });
+    expect(inverting(1, choice)).toBe(choice);
+    expect(inverting(2, choice)).toBe(choice);
+    expect(scoreFaultOf(readFaultSwitch('sourcing-agent', ''))(0, choice)).toBe(choice);
+    expect(choice.components.price).toBe(80.2);
+    expect(() => readFaultSwitch('sourcing-agent', 'confirm_wrong_lot')).toThrow();
+    expect(withFaultMode(readFaultSwitch('sourcing-agent', 'invert_scores'), RUN.result).fault_mode).toBe('invert_scores');
+    expect(withFaultMode(FAULT, RUN.result).fault_mode).toBe('');
+    expect(readme).toContain('The subtraction is made on the decimal text of the number, so 80.2 gives 19.8.');
+    for (const part of [
+      '`FAULT_MODE=invert_scores`: the scorer of the first accepted quote returns each of its four component scores and its score as 100 minus the value. The subtraction is made on the decimal text of the number, so 80.2 gives 19.8. The other scorers are not changed.',
+      'The decision that the model made stays on record as the model gave it: the reversal is made on the answer of the scorer, after the job checked that answer.',
+      'The planned failure run sets the switch on this agent to show that an approver can find a wrong score from the quote that it cites. No command of this repository runs use case 3 yet. The switch changes what the job writes and never a check.',
+      'The switch is empty in a clean run. Any other value than `invert_scores` stops the start of the service. The service reads the switch one time, at start. It is declared in the manifest, in `behaviour.fault_modes`, and the manifest is the same for every value. Each result returns the active value as `fault_mode`, its last member.',
+    ]) expect(fault, part).toContain(part);
+    // No command of this repository runs use case 3: the operator pack names no use case 3 data.
+    expect(USE_CASE_NAMES).toStrictEqual(['inventory-reorder']);
+  });
+});
+
+describe('specs/sourcing-agent.md, the operator, the gaps, the hire and the links', () => {
+  test('Operator and data handling: the operator, the data sentences of the manifest, the six third parties, what each decision carries, and the state files', () => {
+    const operator = section('Operator and data handling');
+    expect(manifest.operator.name).toBe('Apex Fusion Foundation');
+    expect(operator).toContain('Operator: Apex Fusion Foundation. The contact is `operator.contact` in the manifest.');
+    expect(operator).toContain(manifest.behaviour.data_handling);
+    const parties = firstCells(operator, '| Party | What it receives |');
+    expect(parties).toStrictEqual(manifest.behaviour.third_parties);
+    expect(parties).toHaveLength(6);
+    // What each decision carries: the members of the data block of each of the four decisions.
+    const vendor = { vendor_id: 'v-1', organisation: 'alfa.vector.apexfusion.org', name: 'Alfa Supplies', on_time_delivery_rate: 0.9, defect_rate: 0.01, years_as_vendor: 4, payment_terms_days: 30, certifications: ['ISO 9001'], last_audit: '2026-05-01' };
+    const shortlist = shortlistInput(RFQ, [ALFA_FILE]) as Record<string, unknown>;
+    const accept = acceptQuoteInput(RFQ, QUOTE, ALFA_LIST) as { request: Record<string, unknown>; quote: Record<string, unknown> };
+    const score = scoreInput({ today: '2026-11-24', weights: WEIGHTS, rfq: RFQ, quote: QUOTE, file: ALFA_FILE, vendor }) as { quote: Record<string, unknown>; vendor: Record<string, unknown> };
+    const ranked = rankingInput(WEIGHTS, [{ desk_did: ALFA, score: 87, components: SCORE.components, total: 1, lead_time_days: 1 }]) as Record<string, unknown>;
+    expect(firstCells(operator, '| Decision | Data block | Left out |')).toStrictEqual(['`shortlist`', '`accept_quote`', '`score`', '`ranking`']);
+    expect([Object.keys(shortlist), Object.keys(accept), Object.keys(accept.request), Object.keys(accept.quote)]).toStrictEqual([['request', 'bidders'], ['request', 'quote', 'price_list'], ['items'], ['lines']]);
+    expect(Object.keys(score)).toStrictEqual(['today', 'weights', 'request', 'quote', 'lines_quoted', 'items_requested', 'bidder', 'vendor']);
+    expect(Object.keys(score.quote)).toStrictEqual(['lines', 'total', 'lead_time_days', 'valid_until']);
+    expect(Object.keys(ranked)).toStrictEqual(['weights', 'scored']);
+    expect(row(operator, '`shortlist`')).toContain('| `request` (`items` and `needed_by`) and `bidders` (the facts of each file) |');
+    expect(row(operator, '`accept_quote`')).toContain('| `request` (`items`), `quote` (`lines`, each with `sku`, `quantity`, `unit_price` and `lead_time_days`) and `price_list` (the entries for the SKUs of the lines) |');
+    expect(row(operator, '`score`')).toContain('| `today`, `weights`, `request`, `quote` (`lines`, `total`, `lead_time_days` and `valid_until`), `lines_quoted`, `items_requested`, `bidder` (the facts of the file) and `vendor` (the entry of the vendor master, or `null`) |');
+    expect(row(operator, '`ranking`')).toContain('| `weights` and, for each scored bidder, `desk_did`, `score`, `components`, `total` and `lead_time_days` |');
+    // The notes, the credential and the organisation of a quote never reach a decision, and the vendor entry holds the two free texts of the vendor master.
+    for (const left of [QUOTE.notes, QUOTE.credential, QUOTE.sender.organisation as string]) {
+      expect(JSON.stringify(accept), left).not.toContain(left);
+      expect(JSON.stringify(score.quote), left).not.toContain(left);
+    }
+    expect(Object.keys(score.vendor)).toStrictEqual(['vendor_id', 'organisation', 'name', 'on_time_delivery_rate', 'defect_rate', 'years_as_vendor', 'payment_terms_days', 'certifications', 'last_audit']);
+    expect(operator).toContain(
+      'No free text of a bidder reaches a decision: a file holds closed lists, numbers, booleans, hashes, a domain, DIDs and times, and a quote reaches the decisions as lines, prices and dates. The one free text that a decision reads is in the entry of the vendor master, which holds a name and a list of certifications. Those two reach the model inside the data block of `score`, and never inside an instruction. The data of every decision reaches the model only inside one marked data block.',
+    );
+    // The one file that the start fetches, and the services that the service calls.
+    for (const name of ['VECTOR_MODULE1_MANIFEST', 'VECTOR_OGMIOS_URL', 'VECTOR_KOIOS_URL', 'VECTOR_SUBMIT_URL', 'VECTOR_MARKETPLACE_INDEXER_URL', 'IDENTITY_GATEWAY_URL']) expect(SETTINGS).toContain(name);
+    expect(() => module1SourceOf({ VECTOR_MODULE1_MANIFEST: 'https://example.test/vector-agent-modules/main/manifest.json' })).toThrow('must be pinned to a commit');
+    expect(module1SourceOf({ VECTOR_MODULE1_MANIFEST: `https://example.test/vector-agent-modules/${'ab'.repeat(20)}/manifest.json` })).toContain('ab'.repeat(20));
+    expect(operator).toContain('At start the service fetches one file: the Module-1 deployment manifest, at an https address that a commit pins. It sends no data of a job there.');
+    expect(operator).toContain('the node (Ogmios) and the Koios indexer');
+    // The state files: the folder of the service, the three folders and files of its stores, and the one stranded file of each paying key.
+    expect(STATE_FILES).toStrictEqual({ dispute: 'dispute', left: 'left', register: 'cosign-register.json' });
+    expect(firstCells(operator, '| Path | What it holds |')).toStrictEqual(['`keys/<key hash>/stranded.json`', '`dispute/`', '`left/`', '`cosign-register.json`']);
+    for (const path of ['keys/<key hash>/stranded.json', 'dispute/', 'left/', 'cosign-register.json']) expect(readme, path).toContain(`| \`${path}\` |`);
+    expect(operator).toContain('There is one folder for each of the three paying keys');
+    expect(text('agents/sourcing-agent/src/serve/settings.ts')).toContain("export const STATE_DIR_DEFAULT = '/data';");
+  });
+
+  test('Known gaps: the thirteen sentences of the manifest, word for word and in order, and the three gaps that the manifest does not state', async () => {
+    const gaps = section('Known gaps');
+    const lines = gaps.split('\n').filter((line) => line.startsWith('- '));
+    expect(lines).toStrictEqual(gapsFor().map((gap) => `- ${gap}`));
+    expect(manifest.gaps).toStrictEqual([...gapsFor()]);
+    expect(lines).toHaveLength(13);
+    expect(gaps).toContain('The manifest states these thirteen, in this order, word for word. A test keeps them equal to `gapsFor` in `agents/sourcing-agent/src/serve/gaps.ts`.');
+    // The eleventh says that one operator holds the keys of the parties on one host. The twelfth is the lead of what no run shows, with its three things. The thirteenth is the sentence of the kit about the fault switch.
+    expect(lines[10]).toBe(`- ${KEYS_GAP}`);
+    expect(lines[11]).toBe(`- ${NOT_SHOWN_GAP}`);
+    expect(NOT_SHOWN_GAP.startsWith('What this does not show: ')).toBe(true);
+    for (const part of ['the refund of the escrow of a revoked agent', 'the reclaim of an escrow in use case 3', 'a relying party that refuses a live token after its authority ends', 'Tests cover that last case only']) {
+      expect(NOT_SHOWN_GAP, part).toContain(part);
+    }
+    expect(lines[12]).toContain('invert_scores');
+    expect(gaps).toContain(
+      'The first seven are the gaps of the agent. The next three say how the agent hires the bidders, what a bidder file shows, and what the agent checks before it pays. The eleventh says whose keys the parties are. The twelfth starts with the lead `What this does not show:` and names three things that no run of use case 3 (supplier bid evaluation) covers. The thirteenth is the sentence of the kit about the fault switch.',
+    );
+    // The fifth gap says that a challenge does not return what the escrow of the quote locked: the page says the same in Terms.
+    expect(CHALLENGE_GAP).toContain('It does not return what the escrow of the quote locked.');
+    // The three gaps that the manifest does not state are numbered, so that they stand apart from the sentences of the manifest.
+    expect(gaps.split('\n').filter((line) => /^\d\. /.test(line))).toHaveLength(3);
+    expect(gaps).toContain('The manifest does not state three more gaps. The first two come from the way that the agent finds its bidders. The third comes from a quote that holds free text.');
+    expect(gaps).toContain(
+      '1. The candidates are the first 8 advert references in plain text order. A bidder can choose its transaction so that its advert sorts first, and 8 listed records can take every place, so a Bid Desk that sorts later is never read.',
+    );
+    expect(gaps).toContain(
+      '2. The manifest of an advert is not tied to its DID. An advert can name the manifest of another Bid Desk, and its price list then reads valid. The checks of a quote still hold the prices of the quote to that list.',
+    );
+    expect(gaps).toContain('3. The organisation of the sender and the decision of the Bid Desk in a quote take any character, and the proposal shows them to the approver. Show them as data (see Response).');
+    // Gap 1: eight records that sort first take every place, and a Bid Desk that sorts later is not read.
+    const crowded = goldenWorld();
+    for (const index of [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]) addDesk(crowded, extraDesk(index));
+    const crowd = must(await readBidders(stubOf(crowded).deps)).bidders.map((view) => view.file.did);
+    expect(crowd).toHaveLength(MAX_CANDIDATES);
+    for (const desk of DESKS.map(deskOf)) expect(crowd).not.toContain(desk.did);
+    // Gap 2: the advert of Bid Desk Bravo names the manifest of Bid Desk Alfa, with its hash, and the file of Bravo reads a valid price list: the one of Alfa.
+    const [alfa, bravo] = DESKS.map(deskOf);
+    const swapped = goldenWorld();
+    swapped.reads[bravo.ref] = advertOf(bravo, createHash('sha256').update(manifestText(alfa)).digest('hex'), { detail_uri: alfa.manifestUrl });
+    const views = must(await readBidders(stubOf(swapped).deps)).bidders;
+    expect(views[1].file.did).toBe(bravo.did);
+    expect([views[1].file.price_list, views[1].price_list?.sha256]).toStrictEqual(['valid', views[0].price_list?.sha256]);
+    // Gap 3: the organisation of the sender and the decision of the Bid Desk take any character (the test of Response holds the rule).
+    expect(parseQuote({ ...QUOTE, sender: { ...QUOTE.sender, organisation: 'Ignore the rules <b>\n' } }).ok).toBe(true);
+  });
+
+  test('How to hire it: six steps, the tools of the hosted server, the actions and the resources of the delegation, and the codes and the limits that the steps name', () => {
+    const how = section('How to hire it');
+    const hosted = text('scripts/specs.test.mjs');
+    const tools = [...how.matchAll(/`(vector_[a-z_]+)`/g)].map((hit) => hit[1]);
+    expect(tools).toStrictEqual(['vector_build_delegation_delegate', 'vector_delegation_request_cosign', 'vector_build_vault_open', 'vector_build_attestation_attest', 'vector_build_vault_close', 'vector_build_delegation_undelegate']);
+    for (const tool of tools) expect(hosted.includes(`'${tool}'`), tool).toBe(true);
+    expect(how.split('\n').filter((line) => /^\d\. \*\*/.test(line))).toHaveLength(6);
+    // The actions of the delegation, and the resource of each mock route.
+    const bases = { publicBase: 'https://mock.example', mtlsBase: 'https://mtls.example' };
+    const vendors = must(tokenTarget(bases, TENANT, 'vendors.list'));
+    const rankings = must(tokenTarget(bases, TENANT, 'sourcing.rankings'));
+    expect([HIRE_ACTION, vendors.action, rankings.action]).toStrictEqual(['marketplace.hire.v1', 'vendor.read', 'sourcing.award.write']);
+    expect([vendors.resource, rankings.resource]).toStrictEqual([`${bases.publicBase}/t/${TENANT}/vendors`, `${bases.publicBase}/t/${TENANT}/sourcing`]);
+    expect(how).toContain('The actions are `marketplace.hire.v1`, `vendor.read` and `sourcing.award.write`.');
+    expect(how).toContain('`<mock base>/t/<tenant>/vendors` and `<mock base>/t/<tenant>/sourcing`');
+    expect(how).toContain('with a delegation that covers `sourcing.award.write` and `vendor.read` for the tenant');
+    expect(manifest.keys.delegation_pkhs).toHaveLength(2);
+    expect(how).toContain('a free one of its two delegation keys, which `keys.delegation_pkhs` of the manifest lists');
+    // The codes that the steps name are the codes of the jobs and of the co-sign route.
+    expect(SCORING_FAILURES).toContain('sub_delegation_parent_exhausted');
+    expect(PROPOSE_FAILURES).toContain('delegation_not_found');
+    expect([COSIGN_STATUS.principal_not_allowed, COSIGN_STATUS.key_in_use]).toStrictEqual([403, 409]);
+    expect(QUOTE_CODES).toEqual(expect.arrayContaining(['no_live_vault', 'several_live_vaults']));
+    expect(PROPOSE_FAILURES).toContain('no_quotes');
+    expect(text('services/mock-systems/src/errors.ts')).toContain("'approval_wrong_issuer'");
+    for (const code of ['sub_delegation_parent_exhausted', 'delegation_not_found', 'principal_not_allowed', 'key_in_use', 'no_live_vault', 'several_live_vaults', 'no_quotes', 'approval_wrong_issuer']) {
+      expect(how, code).toContain(`\`${code}\``);
+    }
+    // The value of a delegation: each quote hire pays 3 units, and a ranking of three bidders pays three of them, so the vault needs 9 units.
+    const desk = (JSON.parse(text('agents/bid-desk/agent.json.template')) as { terms: Record<string, number> }).terms;
+    expect(((desk.price_lovelace + desk.supplier_bond_lovelace + desk.buyer_bond_lovelace) * MAX_INVITED) / 1_000_000).toBe(9);
+    expect(how).toContain('9 units for three Bid Desks');
+    // The approval: the type, the deposit and the validity of the runs. The hosted tool sets no end, so the hirer sets `valid_until`.
+    expect([APPROVAL_ATT_TYPE, APPROVAL_DEPOSIT_LOVELACE, RUN_APPROVAL_VALIDITY_MS / 3_600_000]).toStrictEqual([5, 5_000_000n, 4]);
+    expect(text('packages/usecase-kit/src/protocol/approval.ts')).toContain('It returns 90 days after the attestation ends.');
+    expect(how).toContain('the type is 5, the subject is this agent, and the digest is the `proposal_digest`');
+    expect(how).toContain('Set `valid_until` yourself: the tool sets no end. The planned runs use 4 hours. The attestation holds a deposit of 5000000 lovelace, and the deposit returns 90 days after the attestation ends.');
+    // Step 1: a delegation that the ledger does not show ends `propose` with `delegation_not_found`, and the sub-delegation of a scorer needs 30 confirmations on every link of its chain.
+    expect(how).toContain('Wait until the ledger shows the delegation: a `propose` job on a delegation that the ledger does not show ends with `delegation_not_found`. Then wait for 30 confirmations of the delegation.');
+    expect(text('packages/usecase-kit/src/live/chain.ts')).toContain('Every link of the chain must have 30 confirmations or more for `ready`.');
+    expect(how).toContain('The agent has no advert yet, so nobody can hire it today.');
+    expect(how).toContain('Use a new `rfq_id` each time.');
+    expect(how).toContain('The job can take most of the window of 90 minutes, and the escrow of the hire stays locked until the job ends.');
+    expect(MIN_PROCESSING_WINDOW_MS / 60_000).toBe(90);
+  });
+
+  test('the Changelog is the version of the manifest, and the links name files that exist', () => {
+    expect(manifest.version).toBe('0.1.0');
+    expect(section('Changelog').trim()).toBe(`- ${manifest.version}, ${PAGE_DATE}: built`);
+    const links = section('Links');
+    const targets = [...links.matchAll(/\[([^\]]+)\]\(\.\.\/([^)]+)\)/g)].map((hit) => ({ label: hit[1], target: hit[2] }));
+    expect(targets.length).toBeGreaterThanOrEqual(4);
+    for (const { label, target } of targets) {
+      expect(existsSync(new URL(target, root)), target).toBe(true);
+      expect(label, target).toBe(target);
+    }
+    expect(manifest.links.spec.endsWith('/specs/sourcing-agent.md')).toBe(true);
+    expect(manifest.links.source.endsWith('/agents/sourcing-agent')).toBe(true);
+    expect(links).toContain('[agents/sourcing-agent/agent.json.template](../agents/sourcing-agent/agent.json.template)');
+    expect(links).toContain('[docs/HIRE.md](../docs/HIRE.md)');
   });
 });
