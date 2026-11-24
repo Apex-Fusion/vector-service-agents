@@ -32,7 +32,8 @@ export interface TerminalSpend {
   readonly tx: string;
   readonly spent_output: string;
   readonly at: number;
-  readonly refund_output: string | null;
+  /** All outputs that match the committed Returned datum and refund address, in transaction order. */
+  readonly refund_outputs: readonly string[];
 }
 export type VaultPayment =
   | { readonly paid: true; readonly why: ''; readonly vault_ref: string; readonly delegation: string }
@@ -95,7 +96,7 @@ export interface CaseRead { readonly listed: CaseView | null; readonly indexed: 
 
 export interface Assembly {
   readonly purpose: 'run' | 'status'; readonly use: UseCase; readonly loaded: Loaded; readonly facts: Readonly<Facts>;
-  /** Ledger-checked Accept or Reclaim for named transactions, by original escrow reference. A no-report Reclaim has a verified refund output. */
+  /** Ledger-checked Accept or Reclaim for named transactions, by original escrow reference. A no-report Reclaim has verified refund outputs. */
   readonly reads: Reads; readonly mock: MockRead | null; readonly terminals: ReadonlyMap<string, TerminalSpend>;
   readonly times: ReadonlyMap<string, number>; readonly faults: readonly FaultEntry[]; readonly extra: Readonly<Obj>;
   readonly challenge: Challenge | null; readonly caseRead: CaseRead | null; readonly approvalStates: readonly (ApprovalRead | null)[];

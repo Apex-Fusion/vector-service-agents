@@ -437,20 +437,24 @@ export async function txInfoOf(fetchImpl: typeof fetch, koiosUrl: string, txHash
   return basicTxInfo(await txRowOf(fetchImpl, koiosUrl, txHash, false));
 }
 
-/** Read the input, redeemer and validation result of each enqueued spend, not a text label from an indexer. */
+/** Read successful script runs and the redeemers of the spends. Vector reports validation on each run. */
 export async function scriptTxInfoOf(fetchImpl: typeof fetch, koiosUrl: string, txHash: string): Promise<ScriptTxInfo> {
   const row = await txRowOf(fetchImpl, koiosUrl, txHash, true);
   const base = basicTxInfo(row);
-  if (row.valid_contract === false || !Array.isArray(row.plutus_contracts)) throw new Error('Koios does not show successful script validation');
+  if ((row.valid_contract !== undefined && row.valid_contract !== true) || !Array.isArray(row.plutus_contracts)) {
+    throw new Error('Koios does not show successful script validation');
+  }
   const spends: ScriptSpend[] = [];
   for (const run of row.plutus_contracts) {
     const redeemer = isObject(run) && isObject(run.input) && isObject(run.input.redeemer) ? run.input.redeemer : null;
     if (redeemer === null || !isObject(run)) throw new Error('Koios gives a script run without its redeemer');
+    if (run.valid_contract !== true) throw new Error('Koios does not show successful script validation for every run');
     if (redeemer.purpose !== 'spend') continue;
     const value = isObject(redeemer.datum) ? redeemer.datum.value : null;
     if (!isObject(value) || !Object.hasOwn(value, 'constructor') || typeof value.constructor !== 'number' || !Number.isSafeInteger(value.constructor)
-         || !Array.isArray(value.fields) || typeof run.script_hash !== 'string' || !POLICY_ID.test(run.script_hash)
-         || typeof run.valid_contract !== 'boolean') throw new Error('Koios gives an incomplete script spend');
+         || !Array.isArray(value.fields) || typeof run.script_hash !== 'string' || !POLICY_ID.test(run.script_hash)) {
+      throw new Error('Koios gives an incomplete script spend');
+    }
     let input: string | null = null;
     if (run.spends_input !== null && run.spends_input !== undefined) {
       const ref = run.spends_input;

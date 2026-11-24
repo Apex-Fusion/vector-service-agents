@@ -37,7 +37,7 @@ import { checkAttestation, escrowPaidFromVault, findRecord, keyHashOf, koiosUtxo
 import type { LedgerEnv } from '../lib/platform.ts';
 import { FlagError } from '../lib/runner.ts';
 import { hireRoleOf, parseReport, parseRunRecord, readJsonFile, scriptTxInfoOf, UnknownTransactionError, txInfoOf, txTimeOf } from '../lib/run-record.ts';
-import type { HireEntry, Report, RunRecord, ScriptTxInfo, TxInfo } from '../lib/run-record.ts';
+import type { HireEntry, Report, RunRecord, ScriptSpend, ScriptTxInfo, TxInfo } from '../lib/run-record.ts';
 import { holdsSecret } from '../lib/secrets.ts';
 
 /** A transaction on the explorer of the network: this text and the hash. */
@@ -230,12 +230,17 @@ async function confirmAll(session: EvidenceSession, txs: ReadonlyMap<string, str
 const scriptInfo = (session: EvidenceSession, tx: string): Promise<ScriptTxInfo> =>
   scriptTxInfoOf(session.fetchImpl, session.settings.urls.koios, tx);
 
-function checkedSpend(info: ScriptTxInfo, script: string, input: string, action: number, fields: number): boolean {
+function spendOf(info: ScriptTxInfo, script: string, input: string, action: number, fields: number): ScriptSpend | undefined {
   const sameScript = info.spends.filter((run) => run.script === script);
   const exact = sameScript.filter((run) => run.input === input
     || (run.input === null && sameScript.length === 1 && info.inputs.filter((row) => row.credential === script).length === 1));
-  return exact.length === 1 && exact[0]!.valid && exact[0]!.action === action && exact[0]!.fields.length === fields
-    && info.inputs.some((row) => row.ref === input && row.credential === script);
+  const run = exact.length === 1 ? exact[0] : undefined;
+  return run?.valid === true && run.action === action && run.fields.length === fields
+    && info.inputs.some((row) => row.ref === input && row.credential === script) ? run : undefined;
+}
+
+function checkedSpend(info: ScriptTxInfo, script: string, input: string, action: number, fields: number): boolean {
+  return spendOf(info, script, input, action, fields) !== undefined;
 }
 
 async function confirmed(session: EvidenceSession, hash: string): Promise<void> {
@@ -257,7 +262,7 @@ const unitsOf = (amount: unknown): bigint => {
 };
 
 async function vaultRefund(session: EvidenceSession, payment: Extract<VaultPayment, { paid: true }>, spent: KoiosUtxo,
-    escrow: IdentityEscrowDatum, info: ScriptTxInfo): Promise<string> {
+    escrow: IdentityEscrowDatum, info: ScriptTxInfo): Promise<string[]> {
   const { vault } = session.chain.deployment;
   const funded = await outputOf(session, payment.vault_ref);
   const before = decodeVaultDatum(funded.inline_datum?.bytes ?? '');
@@ -267,36 +272,89 @@ async function vaultRefund(session: EvidenceSession, payment: Extract<VaultPayme
     || refund === null || refund.address.paymentCredential.type !== 'Script' || refund.address.paymentCredential.hash !== vault.hash
     || refund.address.stakeCredential !== null || returned.type !== 'Returned'
     || !sameDelegator(returned.owner, before.owner)) throw new PreconditionError('the committed refund is not for the vault owner that paid');
-  const refs = info.outputs.filter((out) => out.credential === vault.hash).map((out) => out.ref);
-  if (refs.length === 0) throw new PreconditionError('the reclaim does not return the full escrow value to the correct vault owner');
-  const rows = await koiosUtxoInfo(session.settings.urls.koios, refs, session.fetchImpl, HISTORICAL_OUTPUT_MAX);
-  const spentAssets = assetsOf(spent);
-  const match = rows.filter((row) => refs.includes(fromOutput(row)) && row.address === vault.address
-    && typeof row.inline_datum?.bytes === 'string' && unitsOf(row.value) >= unitsOf(spent.value)
-    && hasAllAssets(row, spentAssets)
-    && (() => { const datum = decodeVaultDatum(row.inline_datum!.bytes); return datum.type === 'Returned' && sameDelegator(datum.owner, before.owner); })());
-  if (match.length !== 1) throw new PreconditionError('the reclaim does not return the full escrow value to the correct vault owner');
-  return fromOutput(match[0]!);
+  const wanted = info.outputs.filter((out) => out.credential === vault.hash);
+  const short = 'the reclaim does not return the full escrow value to the correct vault owner';
+  if (wanted.length === 0) throw new PreconditionError(short);
+  const refs = new Set(wanted.map((out) => out.ref));
+  if (refs.size !== wanted.length) throw new PreconditionError('the reclaim lists a duplicate vault output');
+  const rows = await koiosUtxoInfo(session.settings.urls.koios, [...refs], session.fetchImpl, HISTORICAL_OUTPUT_MAX);
+  const byRef = new Map(rows.map((row) => [fromOutput(row), row]));
+  if (byRef.size !== rows.length || byRef.size !== refs.size || [...refs].some((ref) => !byRef.has(ref))) {
+    throw new PreconditionError('the exact vault outputs of the reclaim cannot be read');
+  }
+  const matched: string[] = [];
+  const totals = new Map<string, bigint>();
+  let lovelace = 0n;
+  for (const ref of refs) {
+    const row = byRef.get(ref)!;
+    if (row.address !== vault.address || typeof row.inline_datum?.bytes !== 'string') continue;
+    let datum;
+    try { datum = decodeVaultDatum(row.inline_datum.bytes); } catch { continue; } // A different datum is not a refund.
+    if (datum.type !== 'Returned' || !sameDelegator(datum.owner, before.owner)) continue;
+    matched.push(ref);
+    lovelace += unitsOf(row.value);
+    for (const asset of assetsOf(row)) {
+      const unit = asset.policy + asset.name;
+      totals.set(unit, (totals.get(unit) ?? 0n) + asset.quantity);
+    }
+  }
+  if (matched.length === 0 || lovelace < unitsOf(spent.value)
+    || assetsOf(spent).some((asset) => (totals.get(asset.policy + asset.name) ?? 0n) < asset.quantity)) throw new PreconditionError(short);
+  return matched;
 }
 
 interface OutputAsset { readonly policy: string; readonly name: string; readonly quantity: bigint }
 function assetsOf(row: KoiosUtxo): OutputAsset[] {
   if (!Array.isArray(row.asset_list)) throw new PreconditionError('the assets of an output cannot be read');
+  const seen = new Set<string>();
   return row.asset_list.map((one) => {
     if (!isObject(one) || typeof one.policy_id !== 'string' || !SCRIPT_HASH.test(one.policy_id)
       || typeof one.asset_name !== 'string' || !/^(?:[0-9a-f]{2}){0,32}$/.test(one.asset_name)) throw new PreconditionError('an output asset is not well formed');
+    const unit = one.policy_id + one.asset_name;
+    if (seen.has(unit)) throw new PreconditionError('an output lists an asset twice');
+    seen.add(unit);
     return { policy: one.policy_id, name: one.asset_name, quantity: unitsOf(one.quantity) };
   });
 }
 
-function hasAllAssets(row: KoiosUtxo, spent: readonly OutputAsset[]): boolean {
-  const assets = assetsOf(row);
-  return spent.every((one) => assets.some((asset) => asset.policy === one.policy && asset.name === one.name && asset.quantity >= one.quantity));
+/** Trace the Claim and Submit spends back to the recorded Post. */
+async function verifyEscrowAncestry(session: EvidenceSession, post: string, ref: string, datum: IdentityEscrowDatum): Promise<void> {
+  const stages = datum.state === 'Submitted' ? [REDEEMER.Submit, REDEEMER.Claim] : datum.state === 'Claimed' ? [REDEEMER.Claim] : [];
+  const credential = session.chain.deployment.escrow.hash;
+  let preceding = ref;
+  for (const stage of stages) {
+    if (preceding === post) throw new PreconditionError('the terminal spend has the wrong escrow lineage');
+    const child = await scriptInfo(session, txOf(preceding));
+    const outputs = child.outputs.filter((out) => out.credential === credential);
+    const parents = child.inputs.filter((input) => input.credential === credential);
+    const parent = parents.length === 1 ? parents[0]!.ref : undefined;
+    const spend = parent === undefined ? undefined : spendOf(child, credential, parent, stage, stage === REDEEMER.Submit ? 1 : 0);
+    if (outputs.length !== 1 || outputs[0]!.ref !== preceding || spend === undefined || parent === undefined) {
+      throw new PreconditionError('no input of the transaction descends from escrow_ref by the verified spend chain');
+    }
+    const committed = spend.fields[0];
+    if (stage === REDEEMER.Submit && (!isObject(committed) || committed.bytes !== receiptHashOf(datum))) {
+      throw new PreconditionError('the Submit redeemer does not match the receipt commitment of the Submitted datum');
+    }
+    preceding = parent;
+  }
+  if (preceding !== post) throw new PreconditionError('no input of the transaction descends from escrow_ref by the verified spend chain');
+}
+
+function receiptHashOf(datum: IdentityEscrowDatum): string {
+  const hash = datum.result_receipt_hash;
+  if (datum.state !== 'Submitted' || hash === null || !HASH.test(hash)) throw new PreconditionError('the actual Submitted escrow has no receipt commitment');
+  return hash;
+}
+
+interface CheckedTerminal {
+  readonly proof: TerminalSpend;
+  readonly receiptHash: string | null;
 }
 
 /** Verify the ledger's successful terminal redeemer and the exact sequence of escrow inputs. */
 async function terminalSpend(session: EvidenceSession, hire: HireEntry, tx: string, action: TerminalSpend['action'],
-    payment?: Extract<VaultPayment, { paid: true }>): Promise<TerminalSpend> {
+    payment?: Extract<VaultPayment, { paid: true }>): Promise<CheckedTerminal> {
   const { escrow } = session.chain.deployment;
   const info = await scriptInfo(session, tx);
   const inputs = info.inputs.filter((row) => row.credential === escrow.hash);
@@ -307,51 +365,79 @@ async function terminalSpend(session: EvidenceSession, hire: HireEntry, tx: stri
   const row = await outputOf(session, spent);
   const datum = decodeIdentityEscrowDatum(row.inline_datum?.bytes ?? '');
   if (row.address !== escrow.address || row.is_spent !== true) throw new PreconditionError('the exact escrow input is not spent');
-  const lineage = datum.state === 'Submitted' && action !== 'Reclaim' ? [REDEEMER.Submit, REDEEMER.Claim]
-    : datum.state === 'Claimed' && action === 'Reclaim' ? [REDEEMER.Claim]
-    : datum.state === 'Open' && action === 'Reclaim' ? [] : null;
-  if (lineage === null || (payment !== undefined && (datum.state !== 'Open' || spent !== hire.escrow_ref))) {
+  const expected = action === 'Reclaim' ? datum.state === 'Open' || datum.state === 'Claimed' : datum.state === 'Submitted';
+  if (!expected || (payment !== undefined && (datum.state !== 'Open' || spent !== hire.escrow_ref))) {
     throw new PreconditionError('the terminal spend has the wrong escrow state');
   }
-  let preceding = spent;
-  for (const stage of lineage) {
-    if (preceding === hire.escrow_ref) throw new PreconditionError('the terminal spend has the wrong escrow lineage');
-    const child = await scriptInfo(session, txOf(preceding));
-    const outputs = child.outputs.filter((out) => out.credential === escrow.hash);
-    const parents = child.inputs.filter((input) => input.credential === escrow.hash);
-    if (outputs.length !== 1 || outputs[0]!.ref !== preceding || parents.length !== 1
-        || !checkedSpend(child, escrow.hash, parents[0]!.ref, stage, stage === REDEEMER.Submit ? 1 : 0)) {
-      throw new PreconditionError('no input of the transaction descends from escrow_ref by the verified spend chain');
-    }
-    preceding = parents[0]!.ref;
-  }
-  if (preceding !== hire.escrow_ref) throw new PreconditionError('no input of the transaction descends from escrow_ref by the verified spend chain');
+  await verifyEscrowAncestry(session, hire.escrow_ref, spent, datum);
   if (action === 'Release' && (datum.submitted_at === null || info.timeMs < datum.submitted_at + ACCEPT_WINDOW_MS)) {
     throw new PreconditionError('the release is before the end of the accept window');
   }
-  const refund = payment === undefined ? null : await vaultRefund(session, payment, row, datum, info);
+  const refund_outputs = payment === undefined ? [] : await vaultRefund(session, payment, row, datum, info);
   await confirmed(session, tx);
-  return { action, tx, spent_output: spent, at: info.timeMs, refund_output: refund };
+  return { proof: { action, tx, spent_output: spent, at: info.timeMs, refund_outputs }, receiptHash: action === 'Reclaim' ? null : receiptHashOf(datum) };
 }
 
-/** This indexer route locates the spend. Only the ledger proves that it is a Release. */
-async function readRelease(session: Session, hire: HireEntry): Promise<TerminalSpend | null> {
-  if (hire.accept_tx !== null || hire.reclaim_tx !== null) return null;
-  const response = await session.fetchImpl(`${session.extra.indexer}/escrows/${encodeURIComponent(hire.escrow_ref)}/lineage`, {
+interface EscrowHistory {
+  readonly submitted: string | null;
+  readonly terminal: { readonly type: string; readonly tx: string } | null;
+}
+type DiscoverEscrow = (ref: string) => Promise<EscrowHistory | null>;
+
+/** The indexer gives candidate references only. Share the read between receipt and release checks. */
+function escrowDiscovery(session: Session): DiscoverEscrow {
+  const known = new Map<string, Promise<EscrowHistory | null>>();
+  return (ref) => {
+    let found = known.get(ref);
+    if (found === undefined) {
+      found = discoverEscrowHistory(session, ref);
+      known.set(ref, found);
+    }
+    return found;
+  };
+}
+
+async function discoverEscrowHistory(session: Session, ref: string): Promise<EscrowHistory | null> {
+  const response = await session.fetchImpl(`${session.extra.indexer}/escrows/${encodeURIComponent(ref)}/lineage`, {
     method: 'GET', headers: { accept: 'application/json' }, redirect: 'error', signal: AbortSignal.timeout(INDEXER_TIMEOUT_MS),
   });
   if (response.status === 404) return null;
   if (response.status !== 200) throw new PreconditionError(`escrow lineage lookup returned HTTP ${response.status}`);
   const text = await response.text();
   if (text.length > HISTORICAL_OUTPUT_MAX) throw new PreconditionError('escrow lineage lookup exceeds its size limit');
-  const body: unknown = JSON.parse(text);
-  if (!isObject(body) || body.original_ref !== hire.escrow_ref || !Object.hasOwn(body, 'terminal')) throw new PreconditionError('escrow lineage lookup did not identify this escrow');
+  let body: unknown;
+  try { body = JSON.parse(text); } catch { throw new PreconditionError('escrow lineage lookup gives no JSON'); }
+  if (!isObject(body) || body.original_ref !== ref || !Array.isArray(body.rows)) throw new PreconditionError('escrow lineage lookup did not identify this escrow');
+  const submissions = body.rows.filter((row: unknown): row is Obj => isObject(row) && row.state === 'Submitted');
+  const candidate = submissions[0]?.utxo_ref;
+  if (submissions.length > 1 || (submissions.length === 1 && (typeof candidate !== 'string' || !REF.test(candidate)))) {
+    throw new PreconditionError('escrow lineage lookup did not identify one Submitted output');
+  }
+  const submitted = typeof candidate === 'string' ? candidate : null;
   const terminal = body.terminal;
-  if (terminal === null) return null;
+  if (terminal === null) return { submitted, terminal: null };
   if (!isObject(terminal) || typeof terminal.tx_hash !== 'string' || !HASH.test(terminal.tx_hash) || typeof terminal.type !== 'string') {
     throw new PreconditionError('escrow lineage lookup did not identify a terminal transaction');
   }
-  return terminal.type === 'ReleaseEscrow' ? terminalSpend(session, hire, terminal.tx_hash, 'Release') : null;
+  return { submitted, terminal: { type: terminal.type, tx: terminal.tx_hash } };
+}
+
+async function readRelease(session: Session, hire: HireEntry, discover: DiscoverEscrow): Promise<TerminalSpend | null> {
+  if (hire.accept_tx !== null || hire.reclaim_tx !== null) return null;
+  const terminal = (await discover(hire.escrow_ref))?.terminal;
+  return terminal?.type === 'ReleaseEscrow' ? (await terminalSpend(session, hire, terminal.tx, 'Release')).proof : null;
+}
+
+async function readSubmittedReceipt(session: EvidenceSession, post: string, submitted: string): Promise<string> {
+  const out = await outputOf(session, submitted);
+  if (out.address !== session.chain.deployment.escrow.address || typeof out.is_spent !== 'boolean') {
+    throw new PreconditionError('the actual Submitted escrow output is not known');
+  }
+  const datum = decodeIdentityEscrowDatum(out.inline_datum?.bytes ?? '');
+  const hash = receiptHashOf(datum);
+  await verifyEscrowAncestry(session, post, submitted, datum);
+  await confirmed(session, txOf(submitted));
+  return hash;
 }
 
 /** The file holds the exact text passed as payload, not a reconstruction from a result or a receipt. */
@@ -402,7 +488,8 @@ async function recordKeysOf(session: EvidenceSession, fact: RecordFact): Promise
  * The receipt of a hire is the account that the supplier gives of the job, so the task reads it against the chain. Its supplier_pkh is the one of the escrow datum, and its signature verifies with a key of the record
  * of the agent that hashes to that supplier_pkh (`verifyReceipt` of buyer-core: Ed25519 over the canonical receipt, by the rules of the ledger).
  */
-async function checkReceipt(session: EvidenceSession, view: ReportedHire, posted: Obj, fact: RecordFact | undefined, keys: Map<string, Promise<readonly string[]>>, problems: Problems): Promise<void> {
+async function checkReceipt(session: EvidenceSession, view: ReportedHire, posted: Obj, receiptHash: string, fact: RecordFact | undefined,
+    keys: Map<string, Promise<readonly string[]>>, problems: Problems): Promise<void> {
   const member = `hires[${view.index}].report_file`;
   const supplier = posted.supplier_pkh;
   if (typeof supplier !== 'string' || view.report.receipt.supplier_pkh !== supplier) {
@@ -424,14 +511,14 @@ async function checkReceipt(session: EvidenceSession, view: ReportedHire, posted
   }
   const { checks } = verifyReceipt({
     receipt: view.report.receipt, signature: view.report.receipt_signature, escrowRef: view.entry.escrow_ref, result: view.report.result, supplierPubKeyHex: key, escrowSupplierPkh: supplier,
-    escrowPromptHash: String(posted.prompt_hash), escrowAgentId: typeof posted.agent_id === 'string' ? posted.agent_id : null, resultReceiptHashOnChain: null,
+    escrowPromptHash: String(posted.prompt_hash), escrowAgentId: typeof posted.agent_id === 'string' ? posted.agent_id : null, resultReceiptHashOnChain: receiptHash,
   });
-  for (const name of ['supplier_key_matches', 'signature_valid', 'prompt_hash_matches'] as const) {
+  for (const name of ['supplier_key_matches', 'signature_valid', 'prompt_hash_matches', 'on_chain_hash_matches'] as const) {
     if (checks[name].state !== 'pass') problems.add(member, `the check ${name} of the receipt fails: ${shown(checks[name].note)}`);
   }
 }
 
-async function checkHires(session: EvidenceSession, loaded: Loaded, facts: Readonly<Facts>, problems: Problems): Promise<{
+async function checkHires(session: EvidenceSession, loaded: Loaded, facts: Readonly<Facts>, discover: DiscoverEscrow, problems: Problems): Promise<{
   terminals: ReadonlyMap<string, TerminalSpend>; committedApprovals: ReadonlyMap<string, CommittedApproval | null>;
 }> {
   const terminals = new Map<string, TerminalSpend>();
@@ -454,34 +541,46 @@ async function checkHires(session: EvidenceSession, loaded: Loaded, facts: Reado
     }
     let posted: Obj | null = null;
     let hasLive = false;
+    let liveSubmitted: string | null = null;
     try {
       const lineage = await resolveEscrowLineage(session.chain.provider, session.chain.koiosUrl, entry.escrow_ref, session.chain.fetchImpl, session.chain.deployment);
       // The escrow datum has a layout of its own (identity or legacy): its members are read by name, and the identity layout is the one that holds an agent id.
       posted = lineage.posted as unknown as Obj;
       hasLive = lineage.current !== null || !lineage.spent;
+      if (lineage.current?.datum.state === 'Submitted') liveSubmitted = `${lineage.current.utxo.txHash}#${lineage.current.utxo.outputIndex}`;
     } catch (err) { problems.add(`${where}.escrow_ref`, `the escrow cannot be read from the chain (${shown(err)})`); }
-    if (posted !== null) {
-      const advertRef = isObject(posted.advert_ref) ? `${String(posted.advert_ref.txHash)}#${String(posted.advert_ref.index)}` : null;
-      if (advertRef !== entry.advert_ref) problems.add(`${where}.advert_ref`, 'is not the advert that the escrow on the chain was posted for');
-      const record = facts.records[agent];
-      if (record === undefined || posted.agent_id !== record.id) problems.add(`${where}.escrow_ref`, `the escrow on the chain is not for the agent ${agent}`);
-      if (view.report !== null) await checkReceipt(session, view, posted, record, keys, problems);
-      if (view.role === 'execute' && loaded.record.approvals.length !== 0 && typeof posted.prompt_hash === 'string') {
-        try {
-          const request = committedApproval(session, loaded.record, entry.step, posted.prompt_hash);
-          if (request !== undefined) committedApprovals.set(entry.step, request);
-        } catch (err) { problems.add(`${where}.request`, `read_failed: ${shown(err)}`); }
-      }
-    }
+    if (posted === null) continue;
+    const advertRef = isObject(posted.advert_ref) ? `${String(posted.advert_ref.txHash)}#${String(posted.advert_ref.index)}` : null;
+    if (advertRef !== entry.advert_ref) problems.add(`${where}.advert_ref`, 'is not the advert that the escrow on the chain was posted for');
+    const record = facts.records[agent];
+    if (record === undefined || posted.agent_id !== record.id) problems.add(`${where}.escrow_ref`, `the escrow on the chain is not for the agent ${agent}`);
+    let receiptHash: string | null = null;
     for (const member of ['accept_tx', 'reclaim_tx'] as const) {
       const end = entry[member];
       if (end === null) continue;
       if (hasLive) { problems.add(`${where}.${member}`, 'the escrow is not finished on the chain: it is not spent, or it has a live continuation'); continue; }
       if (view.report === null && payment === undefined) continue;
       try {
-        const terminal = await terminalSpend(session, entry, end, member === 'accept_tx' ? 'Accept' : 'Reclaim', payment);
-        terminals.set(entry.escrow_ref, terminal);
+        const checked = await terminalSpend(session, entry, end, member === 'accept_tx' ? 'Accept' : 'Reclaim', payment);
+        terminals.set(entry.escrow_ref, checked.proof);
+        receiptHash = checked.receiptHash;
       } catch (err) { problems.add(`${where}.${member}`, `the spend of the escrow cannot be proved (${shown(err)})`); }
+    }
+    if (view.report === null) continue;
+    if (receiptHash === null && entry.accept_tx === null && entry.reclaim_tx === null) {
+      try {
+        const submitted = liveSubmitted ?? (hasLive ? null : (await discover(entry.escrow_ref))?.submitted ?? null);
+        if (submitted !== null) receiptHash = await readSubmittedReceipt(session, entry.escrow_ref, submitted);
+      } catch (err) { problems.add(`${where}.report_file`, `the actual Submitted receipt cannot be read (${shown(err)})`); }
+    }
+    if (receiptHash === null) { problems.add(`${where}.report_file`, 'the actual Submitted escrow receipt commitment is unproven'); continue; }
+    const beforeReceipt = problems.lines.length;
+    await checkReceipt(session, view, posted, receiptHash, record, keys, problems);
+    if (problems.lines.length === beforeReceipt && view.role === 'execute' && loaded.record.approvals.length !== 0 && typeof posted.prompt_hash === 'string') {
+      try {
+        const request = committedApproval(session, loaded.record, entry.step, posted.prompt_hash);
+        if (request !== undefined) committedApprovals.set(entry.step, request);
+      } catch (err) { problems.add(`${where}.request`, `read_failed: ${shown(err)}`); }
     }
   }
   return { terminals, committedApprovals };
@@ -1245,7 +1344,7 @@ async function readPaidFromVault(session: EvidenceSession, loaded: Loaded, hire:
   return { paid: false, why };
 }
 
-function baseAssembly(session: Session, loaded: Loaded, purpose: Assembly['purpose']): Assembly {
+function baseAssembly(session: Session, loaded: Loaded, purpose: Assembly['purpose'], discover = escrowDiscovery(session)): Assembly {
   return {
     purpose, use: session.use, loaded, facts: session.facts.read(), reads: EMPTY_READS, mock: null, terminals: new Map(), times: new Map(), faults: [], extra: {},
     challenge: null, caseRead: null, approvalStates: [], committedApprovals: new Map(), lifecycleTransactions: new Set(),
@@ -1255,7 +1354,7 @@ function baseAssembly(session: Session, loaded: Loaded, purpose: Assembly['purpo
     },
     readRelease(hire) {
       if (!loaded.hires.some((one) => one.entry === hire)) throw new PreconditionError('the hire is not in the run');
-      return readRelease(session, hire);
+      return readRelease(session, hire, discover);
     },
   };
 }
@@ -1289,7 +1388,8 @@ async function assemble(session: Session): Promise<{ kind: 'wait'; message: stri
   const loaded = loadRun(session, problems);
   const { record } = loaded;
   const module = session.extra.module;
-  let a = baseAssembly(session, loaded, 'run');
+  const discover = escrowDiscovery(session);
+  let a = baseAssembly(session, loaded, 'run', discover);
   if (record.kind === 'lifecycle') {
     const txs = transactionsOf(a, module, problems);
     await confirmAll(session, txs, problems);
@@ -1307,7 +1407,8 @@ async function assemble(session: Session): Promise<{ kind: 'wait'; message: stri
       try { times.set(hash, await txTimeOf(session.fetchImpl, session.settings.urls.koios, hash)); } catch (err) { problems.add(`hires[${i}]`, `the block time of a transaction cannot be read (${shown(err)})`); }
     }
   }
-  const checkedHires = await checkHires(session, loaded, a.facts, problems);
+  const checkedHires = await checkHires(session, loaded, a.facts, discover, problems);
+  problems.stop();
   const reads = await checkLedger(session, record, problems);
   const mock = await readMock(session, loaded, a.facts, problems);
   const faults = checkFaults(session, loaded, times, problems);
