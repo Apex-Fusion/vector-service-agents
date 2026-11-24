@@ -339,7 +339,7 @@ describe('agents/sourcing-agent/README.md: the request', () => {
     expect(verdict('x'.repeat(MAX_REQUEST_BYTES + 1))).toBe('request_too_large');
   });
 
-  test('an execute request holds the proposal as propose gave it, and the member approval, which is a reference or null', () => {
+  test('an execute request holds the proposal as propose gave it, and the member approval, which is a reference or null, and the ranking must be for the tenant of the request', async () => {
     const base = executeWorld().request() as unknown as Record<string, unknown>;
     const { approval: _approval, ...withoutApproval } = base;
     expect(verdict(base)).toBe('accepted');
@@ -350,6 +350,12 @@ describe('agents/sourcing-agent/README.md: the request', () => {
     expect(verdict({ ...base, rfq: RFQ })).toBe('bad_shape');
     expect(executeText).toContain('The digest must be the digest of the salt and the document.');
     expect(executeText).toContain('The member must be there.');
+    expect(executeText).toContain('Its tenant must be the tenant of the request');
+    const w = executeWorld();
+    const elsewhere = await w.run(w.request(undefined, undefined, 'other-tenant'));
+    expect([elsewhere.outcome, elsewhere.reason]).toStrictEqual(['failed', 'ranking_not_for_tenant']);
+    expect(w.record.written).toHaveLength(0);
+    expect((await w.run(w.request())).outcome).toBe('completed');
   });
 });
 
@@ -644,6 +650,8 @@ describe('agents/sourcing-agent/README.md: the errors and the reasons', () => {
     expect(refusedExit('refused_by_system', 'delegation_ended').exit_state).toBe('Cancelled');
     expect(reasons).toContain('`approval_expired` gives `Expired` and `delegation_ended` gives `Cancelled`');
     expect(reasons).toContain('A `mock_system_failed` can leave the ranking written: read the sourcing record before you send `execute` again.');
+    expect(reasons).toContain('The code of a model decision that failed passes through as it is.');
+    expect(textOf('../src/serve/wiring.ts').split('if (!decided.ok) return { ok: false, code: decided.reason };').length - 1).toBe(4);
   });
 });
 
