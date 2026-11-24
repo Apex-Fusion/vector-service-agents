@@ -31,6 +31,7 @@ describe('a delivery that the model does not accept', () => {
     const request = w.request();
     const result = await w.run(request);
     expect(result).toMatchObject({ outcome: 'disputed', reason: null, exit_state: 'Escalated', challenge: CHALLENGE, writes: [] });
+    expect(result.exit_state).toBe(exitStateOf({ outcome: 'disputed', reason: null, challenge_filed: true, delegation_ended: false }));
     expect(result.decisions).toStrictEqual([acceptDecision(false, ['request_sha256'])]);
     const escrow = hireOf(result).escrow_ref;
     // The chain posts the escrow with the delegation key of the agent, so the keys that the challenge names hold the buyer that the datum of the escrow names.

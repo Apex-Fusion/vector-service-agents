@@ -145,7 +145,6 @@ describe('a decision that failed, or that cannot be read', () => {
     ['a choice that accepts and names the hash', () => ({ ok: true, decision: acceptDecision(true, ['request_sha256']), choice: { accept: true, mismatch: ['request_sha256'] } })],
     ['a choice that does not accept and names no value', () => ({ ok: true, decision: acceptDecision(false), choice: { accept: false, mismatch: [] } })],
     ['a choice that is not the choice of the decision that was recorded', () => ({ ok: true, decision: acceptDecision(false, ['request_sha256']), choice: { accept: true, mismatch: [] } })],
-    ['a choice that accepts when the decision that was recorded does not', () => ({ ok: true, decision: acceptDecision(false, ['request_sha256']), choice: { accept: true, mismatch: [] } })],
   ];
   for (const [name, answer] of FAILURES) {
     it(`is decision_failed, never an acceptance, and the delivery stays unaccepted: ${name}`, async () => {

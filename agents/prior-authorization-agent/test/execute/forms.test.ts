@@ -26,6 +26,7 @@ describe('a hire that is paid, accepted and recorded', () => {
     const result = await w.run(request);
     expect(words(result)).toBe('completed none Completed');
     expect(result).toMatchObject({ schema: 'vector.usecase.result.v1', use_case: 'prior-authorization', proposal_digest: request.proposal.proposal_digest, challenge: null, fault_mode: '' });
+    expect(result.exit_state).toBe(exitStateOf({ outcome: 'completed', reason: null, challenge_filed: false, delegation_ended: false }));
     expect(result.writes).toStrictEqual([{ system: 'records', route: 'POST /records/orders/{order_id}/submission', status: 201, ref: 'SUB-run1-0001' }]);
     expect(result.decisions).toStrictEqual([acceptDecision(true)]);
     expect(hireOf(result)).toMatchObject({
@@ -153,11 +154,14 @@ describe('a Pay that the vault refuses', () => {
     ended.endDelegation();
     const result = await ended.run();
     expect(result).toMatchObject({ outcome: 'vault_refused', reason: 'no_delegation', exit_state: 'Cancelled', handoff: null, challenge: null });
+    expect(result.exit_state).toBe(exitStateOf({ outcome: 'vault_refused', reason: 'no_delegation', challenge_filed: false, delegation_ended: true }));
     expect(footprint(ended)).toStrictEqual(NOTHING);
     // The twin: a vault too small to pay, under a delegation that stands.
     const small = await world({ vault: false });
     small.m.chain.openVault({ delegation: DELEGATION, lovelace: 1_300_000n, limit: LIMIT });
-    expect(await small.run()).toMatchObject({ outcome: 'vault_refused', reason: 'below_minimum', exit_state: 'Failed' });
+    const stood = await small.run();
+    expect(stood).toMatchObject({ outcome: 'vault_refused', reason: 'below_minimum', exit_state: 'Failed' });
+    expect(stood.exit_state).toBe(exitStateOf({ outcome: 'vault_refused', reason: 'below_minimum', challenge_filed: false, delegation_ended: false }));
     expect(footprint(small)).toStrictEqual(NOTHING);
   });
 });
