@@ -92,8 +92,8 @@ export interface JobServerOptions<Req, Res> {
   manifestText: string;
   /** The token the runtime sends as the authorization header of every call (SERVICE_AUTH_HEADER), which POST / and POST /precheck require. A server is never made without one. */
   authHeader: string;
-  /** The request JSON (the content of the wire message) as the request of the job; throws what refusalOf reads for a request it refuses. */
-  parse: (requestJson: string) => Req;
+  /** Parse the decoded request. The second argument is the original wire message, including its framing and escapes. */
+  parse: (requestJson: string, wirePayload: string) => Req;
   /**
    * Runs one job, which arrived at `arrivedAt` (the clock's time). With abortOnClose it is given `signal`, which aborts when the caller hangs up. `context` is what
    * the runtime said of the escrow in the six context headers of the call (src/context.ts), and is undefined for a call that came with none.
@@ -304,7 +304,8 @@ export function createJobServer<Req, Res>(opts: JobServerOptions<Req, Res>): Ser
       // The answer of a pre-check is about one escrow, so its context is needed. The body is the job's, read and parsed as for a job.
       if (isPrecheck) {
         const context = requireContext(req.headers);
-        const request = opts.parse(parseWire(await readBody(req)));
+        const wire = await readBody(req);
+        const request = opts.parse(parseWire(wire), wire);
         const refuseSlot = (why: 'busy' | 'held' | 'draining') => {
           if (why === 'draining') {
             log('pre-check refused: the service is stopping');
@@ -330,7 +331,8 @@ export function createJobServer<Req, Res>(opts: JobServerOptions<Req, Res>): Ser
       }
       // The context of the call, when the runtime sent one, is read before the body: a call with a bad header is refused with no upload read.
       const context = parseContext(req.headers);
-      const request = opts.parse(parseWire(await readBody(req)));
+      const wire = await readBody(req);
+      const request = opts.parse(parseWire(wire), wire);
       const taken = slot.take(context?.escrowRef, clock());
       if (taken === 'busy') return send(409, { error: 'busy' });
       if (taken === 'held') {

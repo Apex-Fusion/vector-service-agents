@@ -159,7 +159,7 @@ Do these steps after the snippet is installed.
 
    The output must be `600 agents:agents .env.mock-systems`, then `ok: no placeholder is left`, then `ok: the token has the right form`.
 
-5. Pull the image, and put its digest in the compose file. CI pushes the image under `:latest` and under `:<full git commit sha>`. Use the tag of the commit that was reviewed. The pull needs no login when the package is public. If the answer says `denied`, the package is private: make it public in the settings of the package, or log in to `ghcr.io` with a token that has the scope `read:packages`.
+5. Pull the image, and put its digest in the compose file. CI pushes the image under `:latest` and `:<full git commit sha>`. Use the tag of a reviewed commit with a successful `publish` job. The pull needs no login when the package is public. If the answer says `denied`, the package is private: make it public in the settings of the package, or log in to `ghcr.io` with a token that has the scope `read:packages`.
 
    ```sh
    IMAGE=ghcr.io/apex-fusion/vector-service-agents/mock-systems
@@ -217,6 +217,55 @@ The body has two fields:
 
 The call has a third field, `seed`. It replaces whole parts of the default data: the stock, the catalogue, the records, the guidelines, the requirements and the vendors. Leave it out, and the tenant gets the default data.
 
+For use case 3, none of the default vendor organisations at `example.org` matches a Bid Desk. Scoring continues without vendor data. To give one tenant vendor data for all three desks, save the example body as `tenant.json`. In the command above, replace the `--data` argument with `--data @tenant.json`. Each vendor `organisation` must equal the desk's `BID_DESK_ORGANISATION`. Use spaces between words in vendor names and certifications. The Sourcing Agent rejects tabs and line breaks in these fields.
+
+```json
+{
+  "tenant": "demo-1",
+  "organisations": {
+    "supplier": "supplier.example.org",
+    "insurer": "insurer.example.org"
+  },
+  "seed": {
+    "vendors": [
+      {
+        "vendor_id": "V-1001",
+        "organisation": "alfa.vector.apexfusion.org",
+        "name": "Supplier Alfa (synthetic)",
+        "on_time_delivery_rate": 0.97,
+        "defect_rate": 0.01,
+        "years_as_vendor": 6,
+        "payment_terms_days": 30,
+        "certifications": ["ISO 9001"],
+        "last_audit": "2026-03-14"
+      },
+      {
+        "vendor_id": "V-1002",
+        "organisation": "bravo.vector.apexfusion.org",
+        "name": "Supplier Bravo (synthetic)",
+        "on_time_delivery_rate": 0.92,
+        "defect_rate": 0.03,
+        "years_as_vendor": 4,
+        "payment_terms_days": 45,
+        "certifications": ["ISO 9001"],
+        "last_audit": "2026-01-22"
+      },
+      {
+        "vendor_id": "V-1003",
+        "organisation": "charlie.vector.apexfusion.org",
+        "name": "Supplier Charlie (synthetic)",
+        "on_time_delivery_rate": 0.85,
+        "defect_rate": 0.06,
+        "years_as_vendor": 2,
+        "payment_terms_days": 60,
+        "certifications": [],
+        "last_audit": "2025-11-05"
+      }
+    ]
+  }
+}
+```
+
 The answer is `201` for a new tenant and `200` for a tenant that was made again (`"created":false`). The body lists the URL of each system of the tenant (`resources`) and the audience for JWT-SVIDs (`audiences`). A token must name one of these URLs exactly.
 The service holds 100 tenants at most. The 101st name gets `409`. No call removes a tenant. To make room, restart the service, which loses every tenant.
 
@@ -259,7 +308,9 @@ docker compose -f docker-compose.mock-systems.yml down
 
 ## 7. Add an agent
 
-The deploy pack of an agent has its compose file, its env example, its snippet and its own runbook. The packs of use case 1 (inventory reorder) are the Reorder Agent, with `RUNBOOK-reorder-agent.md`, and the Order Desk, with `RUNBOOK-order-desk.md`. The packs of use case 2 (prior authorization) are the Prior Authorization Agent, with `RUNBOOK-prior-authorization-agent.md`, and the Insurer Intake Agent, with `RUNBOOK-insurer-intake-agent.md`. They fit the marker block only: their upstreams are container names, and Caddy on the host cannot resolve them. The runbook of each pack of use case 1 says which tasks of the operator pack make the keys, the records, the stakes, the env files and the advert. README.md, section "The operator image", describes the pack. The runbooks of the other packs give the keys, the registration and the advert. These steps are only for the host.
+The deploy pack of an agent has its compose file, its env example, its snippet and its own runbook. The packs of use case 1 (inventory reorder) are the Reorder Agent, with `RUNBOOK-reorder-agent.md`, and the Order Desk, with `RUNBOOK-order-desk.md`. The packs of use case 2 (prior authorization) are the Prior Authorization Agent, with `RUNBOOK-prior-authorization-agent.md`, and the Insurer Intake Agent, with `RUNBOOK-insurer-intake-agent.md`. The packs of use case 3 (supplier bid evaluation) are the Sourcing Agent, with `RUNBOOK-sourcing-agent.md`, and the three Bid Desks, with `RUNBOOK-bid-desk.md`. They fit the marker block only: their upstreams are container names, and Caddy on the host cannot resolve them. The runbook of each pack of use case 1 says which tasks of the operator pack make the keys, the records, the stakes, the env files and the advert. README.md, section "The operator image", describes the pack. The runbooks of the other packs give the keys, the registration and the advert. These steps are only for the host.
+
+For each pack listed above, use its own runbook from the first DNS and folder steps through the public checks. Do not run `setup.sh` on its existing host. Install its files and pin its images as that runbook says. Follow "The start order": put the confirmed advert reference in `ADVERT_REF` before the runtime starts. The numbered steps below apply only to other packs.
 
 1. Make the DNS record of each host name of the agent (step 5). Wait until it resolves to `<host address>`.
 2. Make the folder of the agent. Use the name of the agent:
@@ -289,8 +340,8 @@ The deploy pack of an agent has its compose file, its env example, its snippet a
 
    The second command must print `ok: no public container port`. If a container port is public, stop the container. Write `127.0.0.1:` before the port in the compose file. Start the container again.
 6. Put the block of the agent in the proxy. There are two ways. Use the one that fits the host, and use only that one:
-   - Snippet folder. Caddy runs on the host (the set-up of this runbook), and the upstreams of the snippet are ports on `127.0.0.1`. The packs of use case 1 do not fit this way. The packs of use case 2 do not fit this way either. Install the snippet of the agent as `/etc/caddy/agents/<agent>.snippet`, as in step 6. Check the whole configuration and reload Caddy.
-   - Marker block. Caddy runs in a container, and it mounts one Caddyfile (README, section "A host whose proxy runs in a container"). The packs of use case 1 use this way only. The packs of use case 2 use this way only. Join the Caddy container to the network of the project of the agent. Append the lines of the snippet, from its BEGIN marker to its END marker, to the Caddyfile, in place. Validate the whole file in the Caddy container, and reload Caddy. The runbook of the pack gives the commands, in its section "The Caddy block".
+   - Snippet folder. Caddy runs on the host (the set-up of this runbook), and the upstreams of the snippet are ports on `127.0.0.1`. The packs of use case 1 do not fit this way. The packs of use case 2 do not fit this way either. The packs of use case 3 do not fit this way either. Install the snippet of the agent as `/etc/caddy/agents/<agent>.snippet`, as in step 6. Check the whole configuration and reload Caddy.
+   - Marker block. Caddy runs in a container, and it mounts one Caddyfile (README, section "A host whose proxy runs in a container"). The packs of use case 1 use this way only. The packs of use case 2 use this way only. The packs of use case 3 use this way only. For all these packs, install the block after you start the service and before you start the runtime. Join the Caddy container to the network of the project of the agent. Append the lines of the snippet, from its BEGIN marker to its END marker, to the Caddyfile, in place. Validate the whole file in the Caddy container, and reload Caddy. The runbook of the pack gives the commands, in its section "The Caddy block".
 7. Check the public name:
 
    ```sh
@@ -298,6 +349,8 @@ The deploy pack of an agent has its compose file, its env example, its snippet a
    ```
 
 ## 8. Remove an agent
+
+For a pack named in step 7, follow the whole section "Back out" in its own runbook. The numbered steps below apply only to other packs.
 
 1. The operator retires the advert first, as the runbook of the agent says. Then nobody can post an escrow against an agent that stops.
 2. Check that the runtime says `free` (section "The restart rule"). Wait while it says `working`.
@@ -321,6 +374,25 @@ The deploy pack of an agent has its compose file, its env example, its snippet a
      The runbook of the pack gives the commands, in its section "Back out".
 4. Remove the DNS records of the agent.
 5. Keep `/srv/agents/<agent>` and its keys. Delete them only when each wallet of the agent is empty. A deleted key cannot be made again.
+
+### Check the ledger before a use case 3 stop
+
+Use a synced Vector mainnet Ogmios node. Check `queryNetwork/tip` on that node. Its tip must be current and at or after the block of every confirmed Retire. Use the identity marketplace script addresses of this pack's deployment. `buyerIdentityDeployment` in [buyer-core](../../packages/buyer-core/src/deployment.ts) derives `advert.address` and `escrow.address` from the pack's public identity settings. Do not copy the env file.
+
+Send this read-only request after any Retire and before either stop path. Replace the two script addresses and the node URL:
+
+```sh
+curl -fsS --max-time 30 -H 'Content-Type: application/json' --data \
+  '{"jsonrpc":"2.0","id":1,"method":"queryLedgerState/utxo","params":{"addresses":["<advert address>","<escrow address>"]}}' \
+  '<Ogmios URL>'
+```
+
+Require a complete `result` array with no JSON-RPC `error`. Use `address` to select the decoder of each inline `datum`: `decodeIdentityAdvertDatum` or `decodeIdentityEscrowDatum` in [vector-read](../../packages/vector-read/src/datum.ts). Use the intended `agent_id` and `supplier_pkh` from the deployment record.
+
+- At the advert address, require no `Active` output for that agent, supplier and model. The exact output of each retired advert must be absent from the unspent outputs.
+- At the escrow address, require no output in state `Open`, `Claimed` or `Submitted` for that agent and supplier. Check all advert references, including earlier ones. A `Submitted` output still needs Accept or Release even when `/status` says `free`.
+
+Record the tip and the result of both checks. Do not treat an output you cannot classify as settled. An empty indexer result, a stale node or a failed read is not proof. If either check is not clear, leave the containers and the proxy block in place.
 
 ## Keys
 

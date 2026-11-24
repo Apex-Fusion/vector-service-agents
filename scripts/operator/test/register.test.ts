@@ -1,7 +1,8 @@
 // The task `register`: the three records of use case 1 (the Reorder Agent, its subagent `stock-reader` and the Order Desk), the TXT gate, the signers, the consent of Module-1, the check of the
 // record that landed, and the wait for the organisation check. A fake tool builds a REAL registration over the identity fixtures with the real builder and answers in the format of the live
 // tools, so the real guards judge real bytes. A fake `fetch` stands for the three public resolvers and the gateway. The task runs through the real runner. Each refusal has an accepted twin.
-import { describe, expect, it } from 'vitest';
+import { decode, encode, RECURSION_DESIRED } from '@dnsquery/dns-packet';
+import { describe, expect, it, vi } from 'vitest';
 import { chmodSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -29,6 +30,8 @@ import { FakeClock, ThrowingSigner, World } from './support/fakes.ts';
 import { PACK_SCHEMAS, PackHosted, liveBuildAnswer } from './support/pack-hosted.ts';
 import { NOW, ScriptedNode, USE_CASE, hashOf, taskWorld } from './support/task-world.ts';
 import type { TaskWorld } from './support/task-world.ts';
+
+vi.mock('node:http2', () => ({ connect: vi.fn(() => { throw new Error('registration tests must use the injected DNS fetch'); }) }));
 
 // ---- the data ----
 
@@ -122,11 +125,22 @@ class RegisterHosted extends PackHosted {
 // ---- the resolvers and the gateway ----
 
 interface GatewayEntry { organisation: string; verified: boolean; role?: string; status?: 'active' | 'revoked' }
+const DNS_MESSAGE = 'application/dns-message';
+
+function dnsQuestion(url: URL) {
+  expect([...url.searchParams.keys()]).toEqual(['dns']);
+  const query = decode(Buffer.from(url.searchParams.get('dns')!, 'base64url'));
+  expect(query).toMatchObject({ id: 0, type: 'query', flags: RECURSION_DESIRED, answers: [], authorities: [], additionals: [] });
+  expect(query.questions).toHaveLength(1);
+  const question = query.questions![0]!;
+  expect(question).toMatchObject({ class: 'IN', type: 'TXT' });
+  return question;
+}
 
 /** A `fetch` for the three resolvers (DNS-over-HTTPS) and the gateway. It keeps each URL that it was asked for. */
 class Net {
   readonly urls: string[] = [];
-  /** The records that each resolver holds: resolver name, then TXT name, then the texts of the records as the resolver writes them. */
+  /** The TXT values, by resolver and record name. */
   readonly records = new Map<string, Map<string, string[]>>();
   readonly gateway = new Map<string, GatewayEntry>();
   gatewayFails: Error | null = null;
@@ -134,22 +148,30 @@ class Net {
   /** The TXT lookups that were made. */
   lookups(): URL[] { return this.urls.map((url) => new URL(url)).filter((url) => RESOLVERS.some((resolver) => new URL(resolver.url).host === url.host)); }
 
-  /** Publishes the value at the name on the resolvers (all three by default). Cloudflare and Quad9 write the text with quotes, and Google writes it without. */
+  /** Publishes the value at the name on the resolvers (all three by default). */
   publish(name: string, value: string, only: readonly string[] = RESOLVER_NAMES): void {
     for (const resolver of only) {
       const held = this.records.get(resolver) ?? new Map<string, string[]>();
-      held.set(name, [...(held.get(name) ?? []), resolver === 'google' ? value : `"${value}"`]);
+      held.set(name, [...(held.get(name) ?? []), value]);
       this.records.set(resolver, held);
     }
   }
 
-  readonly fetchImpl = (async (input: string | URL | Request): Promise<Response> => {
+  readonly fetchImpl: typeof fetch = async (input, init) => {
     const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
     this.urls.push(url.href);
     const resolver = RESOLVERS.find((one) => new URL(one.url).host === url.host);
     if (resolver !== undefined) {
-      const texts = this.records.get(resolver.name)?.get(url.searchParams.get('name') ?? '') ?? [];
-      return new Response(JSON.stringify(texts.length === 0 ? { Status: 3 } : { Status: 0, Answer: texts.map((data) => ({ name: url.searchParams.get('name'), type: 16, TTL: 60, data })) }), { status: 200 });
+      expect(`${url.origin}${url.pathname}`).toBe(resolver.url);
+      expect(init).toMatchObject({ method: 'GET', redirect: 'manual', signal: expect.any(AbortSignal) });
+      expect(new Headers(init?.headers).get('accept')).toBe(DNS_MESSAGE);
+      const question = dnsQuestion(url);
+      const texts = this.records.get(resolver.name)?.get(question.name) ?? [];
+      const response = encode({
+        id: 0, type: 'response', flags: texts.length === 0 ? 0x0183 : 0x0180, questions: [question],
+        answers: texts.map((data) => ({ type: 'TXT', class: 'IN', name: question.name, ttl: 60, data })),
+      });
+      return new Response(Buffer.from(response), { status: 200, headers: { 'content-type': DNS_MESSAGE } });
     }
     if (url.origin === GATEWAY) {
       if (this.gatewayFails !== null) throw this.gatewayFails;
@@ -164,7 +186,7 @@ class Net {
       return new Response(JSON.stringify({ didDocument: ended ? null : { id: did }, didResolutionMetadata: {}, didDocumentMetadata: metadata }), { status: ended ? 410 : 200 });
     }
     throw new Error('the test fetch was asked for a host that it does not know');
-  }) as typeof fetch;
+  };
 }
 
 // ---- the fixture ----
@@ -395,7 +417,7 @@ describe('register --submit: the note and the TXT gate', () => {
       publish(f, shown, RESOLVER_NAMES.filter((name) => name !== hidden));
       expect(await f.run('--submit')).toBe(2);
       expect(f.net.lookups().map((url) => url.host).sort()).toEqual(RESOLVERS.map((resolver) => new URL(resolver.url).host).sort());
-      expect(f.net.lookups().map((url) => url.searchParams.get('name'))).toEqual([shown.txt!.name, shown.txt!.name, shown.txt!.name]);
+      expect(f.net.lookups().map((url) => dnsQuestion(url).name)).toEqual([shown.txt!.name, shown.txt!.name, shown.txt!.name]);
       const text = errorText(f);
       expect(text).toContain(`publish the TXT value ${shown.did} at ${shown.txt!.name}, then run again`);
       expect(text).toContain(hidden);
@@ -433,7 +455,7 @@ describe('register --submit: the note and the TXT gate', () => {
     // The twin: a dry run of the new data writes a new note, and the value that is published at the new name lets the run land.
     publish(f, await dry(f));
     expect(await f.run('--submit')).toBe(0);
-    expect(f.net.lookups().every((url) => url.searchParams.get('name') === '_did.changed.example')).toBe(true);
+    expect(f.net.lookups().every((url) => dnsQuestion(url).name === '_did.changed.example')).toBe(true);
   });
   it('stops before it builds when the domain of the organisation is not the domain of an Accountable party of the record, because the gateway would check another name than the TXT name', async () => {
     const f = await fixture();
@@ -594,7 +616,7 @@ describe('register --all', () => {
     expect(f.w.machine()).toMatchObject({ outcome: 'failed', exit: 1, step: 'order-desk' });
     // Three lookups, all for the first record: the subagent has no TXT, and the Order Desk was not looked up.
     expect(f.net.lookups()).toHaveLength(3);
-    expect(f.net.lookups().every((url) => url.searchParams.get('name') === first.txt!.name)).toBe(true);
+    expect(f.net.lookups().every((url) => dnsQuestion(url).name === first.txt!.name)).toBe(true);
     expect(Object.keys(f.w.state('register').notes).sort()).toEqual(['dry.reorder-agent']);
     const records = f.w.facts().records;
     expect(Object.keys(records).sort()).toEqual(['reorder-agent', 'stock-reader']);

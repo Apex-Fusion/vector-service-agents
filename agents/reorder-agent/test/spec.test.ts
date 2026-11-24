@@ -10,10 +10,10 @@ import { describe, expect, test } from 'vitest';
 import { parse } from 'yaml';
 import { ACCEPT_WINDOW_MS, HIRE_ACTION } from '@vsa/buyer-core';
 import { isRuntimeRefusal } from '@vsa/hire-kit';
-import { MAX_BODY, RESERVATION_MS } from '@vsa/service-kit';
+import { RESERVATION_MS } from '@vsa/service-kit';
 import { CONFIRMATIONS_REQUIRED, GATEWAY_FAILURES, SUB_DELEGATION_FAILURES, tokenTarget } from '@vsa/usecase-kit/access';
 import {
-  BAD_DOCUMENT, COUNTERPARTY_REFUSED, EARLIER_PAY_MAY_LAND, INCONSISTENT_OUTCOME, INTERRUPTION_REASONS, PAY_UNCONFIRMED, VAULT_REASON_MISSING, checkAuthority, checkRuntimeBody, checkWirePayload, completedResult,
+  BAD_DOCUMENT, COUNTERPARTY_REFUSED, EARLIER_PAY_MAY_LAND, INCONSISTENT_OUTCOME, INTERRUPTION_REASONS, PAY_UNCONFIRMED, VAULT_REASON_MISSING, checkAuthority, completedResult,
   disputedResult, failedResult, findLiveVault, handoffOf, proposedResult, refusedResult, vaultRefusedResult,
 } from '@vsa/usecase-kit/buyer';
 import type { LedgerReads } from '@vsa/usecase-kit/buyer';
@@ -23,7 +23,7 @@ import { readFaultSwitch, withFaultMode } from '@vsa/usecase-kit/fault';
 import { INVENTORY_CAPABILITIES, LOT_NAMES, PO_SCHEMA, REORDER_CLAIM, parseOrderConfirmation, parsePurchaseOrder, poNumberOf } from '@vsa/usecase-kit/inventory';
 import {
   AFTER_CLAIM_REFUSALS, APPROVAL_ATT_TYPE, APPROVAL_DEPOSIT_LOVELACE, COSIGN_ROUTE, COSIGN_RULE, COUNTERPARTY_REFUSALS, ERROR_STATUS, EXECUTE_OUTCOMES, EXIT_STATES, FAULT_MODES, MAX_REQUEST_BYTES, PROPOSE_OUTCOMES,
-  RECEIPT_CHECKS, RUNTIME_BODY_LIMIT_BYTES, canonicalJson, checkRequestSize, exitStateOf, makeProposal, parseOutputRef, parseProposal, parseRequest,
+  RECEIPT_CHECKS, canonicalJson, exitStateOf, makeProposal, parseOutputRef, parseProposal, parseRequest,
 } from '@vsa/usecase-kit/protocol';
 import type { Decision, ExecuteOutcome, ExecuteRequest, ExecuteResult, HandoffRecord, ProtocolResult, ReceiptVerification, SubJob, WriteRecord } from '@vsa/usecase-kit/protocol';
 import { NOT_ACCEPTED } from '../src/execute/decision.ts';
@@ -34,7 +34,7 @@ import { PROPOSE_DEADLINE_MS, PROPOSE_FAILURES, ProposeRefusal, runPropose } fro
 import type { ProposeDeps, ProposeRequest } from '../src/propose/index.ts';
 import { CHALLENGE_GAP, KEYS_GAP, NOT_SHOWN_GAP, gapsFor } from '../src/serve/gaps.ts';
 import { REQUEST_SCHEMA, TEMPLATE_ENV, manifestFromEnv } from '../src/serve/manifest.ts';
-import { RequestError, parseJob } from '../src/serve/server.ts';
+import { parseJob } from '../src/serve/server.ts';
 import { BUYER_BOND_LOVELACE, JOB_DEADLINE_MS, MIN_PROCESSING_WINDOW_MS, PRICE_DEFAULT_LOVELACE, SUPPLIER_BOND_LOVELACE, module1SourceOf, priceOf, processingWindowOf, supplierKeyOf } from '../src/serve/settings.ts';
 import { SETTINGS } from '../src/serve/start.ts';
 
@@ -192,7 +192,7 @@ describe('specs/reorder-agent.md', () => {
     const terms = section('Terms');
     const limits = manifest.terms.input_limits;
     expect(limits).toStrictEqual({ request_bytes: MAX_REQUEST_BYTES, sku_chars: 64, tenant_chars: 48 });
-    expect(row(terms, 'Request')).toBe(`| Request | at most ${limits.request_bytes} bytes of request JSON; \`sku\` 1 to ${limits.sku_chars} characters; \`tenant\` 1 to ${limits.tenant_chars} characters |`);
+    expect(row(terms, 'Request')).toBe(`| Request | at most ${limits.request_bytes} bytes of wire payload; \`sku\` 1 to ${limits.sku_chars} characters; \`tenant\` 1 to ${limits.tenant_chars} characters |`);
     expect(row(terms, 'Sub-delegation')).toBe(`| Sub-delegation | \`stock-reader\` gets its token after ${CONFIRMATIONS_REQUIRED} confirmations of the sub-delegation |`);
     expect(CONFIRMATIONS_REQUIRED).toBe(30);
     expect([REORDER_DECISION.name, ACCEPT_DECISION.name]).toStrictEqual(['reorder', 'accept_delivery']);
@@ -202,34 +202,6 @@ describe('specs/reorder-agent.md', () => {
     expect(row(terms, 'Reservation')).toBe(`| Reservation | a go from \`POST /precheck\` reserves the job slot for ${RESERVATION_MS / 1000} s |`);
   });
 
-  test('the request limit is 900000 bytes of request JSON, and it is safe only below the 1 MiB limit of the runtime on the escaped body', () => {
-    const terms = section('Terms');
-    expect([MAX_REQUEST_BYTES, RUNTIME_BODY_LIMIT_BYTES, MAX_BODY]).toStrictEqual([900_000, 1_048_576, 1_000_000]);
-    for (const part of [
-      'The service counts the request JSON in bytes of UTF-8, and it refuses a request JSON of more than 900000 bytes with `request_too_large` (400). It reads at most 1000000 bytes of wire payload.',
-      'The wire payload carries the request JSON as a string inside a one-message array (see Interface).',
-      'The limit of 900000 bytes is safe only below the 1 MiB limit of the runtime, 1048576 bytes, on the escaped body.',
-      'A request JSON under 900000 bytes can give a body above 1048576 bytes, and the runtime refuses that body. A sender keeps the body of its call at or below 1048576 bytes.',
-      'The two requests of this agent are a few kilobytes, so they are far below both limits.',
-    ]) expect(terms, part).toContain(part);
-    // The service counts the request JSON: one byte over the limit is refused as too large, and the limit itself passes the size check and fails as a request that is no JSON.
-    const codeOf = (request: string): string => {
-      try {
-        parseJob(request);
-        return 'accepted';
-      } catch (error) {
-        return error instanceof RequestError ? error.code : 'other';
-      }
-    };
-    expect(codeOf('x'.repeat(MAX_REQUEST_BYTES + 1))).toBe('request_too_large');
-    expect(codeOf('x'.repeat(MAX_REQUEST_BYTES))).toBe('bad_shape');
-    expect(checkRequestSize('x'.repeat(MAX_REQUEST_BYTES)).ok).toBe(true);
-    // A request JSON of quote marks is 440000 bytes. Its wire payload is under the limit of 900000 bytes, and the body of the call to the runtime, which escapes it a second time, is over 1048576 bytes.
-    const quotes = '"'.repeat(440_000);
-    expect(quotes.length).toBeLessThan(MAX_REQUEST_BYTES);
-    expect(checkWirePayload(quotes).ok).toBe(true);
-    expect(checkRuntimeBody(quotes)).toMatchObject({ ok: false, code: 'request_too_large' });
-  });
 
   test('the economics: what the supplier receives, the window to accept, the vault and the fees', () => {
     const terms = section('Terms');

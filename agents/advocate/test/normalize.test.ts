@@ -103,14 +103,34 @@ describe('normalizeMapped (R-E36)', () => {
     expect(wrong).toStrictEqual([]);
   });
 
-  test('the part of the text a run of characters comes from reads, by the rule, as a text that holds the run (but for a capital sigma, which the end of a part lowers as the end of a word)', () => {
+  // Keep the full seeded set. Exclude capital sigma because lower case depends on what follows it.
+  const texts = textsAtRandom(PALETTE.filter((c) => !SIGMAS.includes(c)), 400, 2026);
+  const batchSize = 50;
+  const batches = Array.from({ length: Math.ceil(texts.length / batchSize) }, (_, i) =>
+    [i + 1, texts.slice(i * batchSize, (i + 1) * batchSize)] as const,
+  );
+  test.each(batches)('the source of each run normalizes to text that contains it (batch %i)', (_batch, inputs) => {
     const wrong: string[] = [];
-    for (const s of textsAtRandom(PALETTE.filter((c) => !SIGMAS.includes(c)), 400, 2026)) {
+    for (const s of inputs) {
       const { text, from, to } = normalizeMapped(s);
+      // Many result characters can come from the same source span. Normalize each span once.
+      const byEnd = new Map<number, string>();
+      let start = -1;
       for (let a = 0; a < text.length; a += 1) {
+        if (text[a] === ' ') continue;
+        if (start !== from[a]) {
+          start = from[a];
+          byEnd.clear();
+        }
         for (let b = a; b < text.length; b += 1) {
-          if (text[a] === ' ' || text[b] === ' ') continue;
-          if (!normalizeText(s.slice(from[a], to[b])).includes(text.slice(a, b + 1))) wrong.push(JSON.stringify([s, a, b]));
+          if (text[b] === ' ') continue;
+          const end = to[b];
+          let source = byEnd.get(end);
+          if (source === undefined) {
+            source = normalizeText(s.slice(start, end));
+            byEnd.set(end, source);
+          }
+          if (!source.includes(text.slice(a, b + 1))) wrong.push(JSON.stringify([s, a, b]));
         }
       }
     }

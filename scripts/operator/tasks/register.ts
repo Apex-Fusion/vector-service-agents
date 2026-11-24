@@ -173,7 +173,7 @@ async function requireTxt(session: Session, step: string, did: string, txt: Txt)
       + 'the data changed after the dry run. Run the dry run again, publish this value, then run again with --submit.',
     );
   }
-  const shown = await checkTxt(session.fetchImpl, txt.name, txt.value);
+  const shown = await checkTxt(session.dohLookup, txt.name, txt.value);
   if (shown.ok) return;
   const missing = shown.resolvers.filter((one) => !one.seen).map((one) => `${one.resolver} (${one.error ?? 'not seen'})`);
   throw new PreconditionError(`the TXT value is not public on all three resolvers: publish the TXT value ${txt.value} at ${txt.name}, then run again. Not seen: ${missing.join('; ')}.`);
