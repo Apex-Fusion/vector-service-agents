@@ -409,7 +409,11 @@ sleep 120; if curl -s --max-time 5 http://127.0.0.1:8107/status | grep -q '"stat
 
 When the command prints the last words, nothing was restarted. Run it again after the job ends. The stop of section "Back out" follows the same three steps.
 
-The runtime says `free` when it holds no job of its own. When the runtime hangs up on a job, the service stops that job at its next step, and a step that has started runs to its end. So the service can work for a short time after the runtime says `free`. The service logs the end of each job with the line `<operation> done in <ms> ms` (`docker logs --tail 20 sourcing-service`). Read the log before a restart, and wait for that line when a job is still open.
+The runtime says `free` when it holds no job of its own. When the runtime hangs up on a job, the service stops that job at its next step, and a step that has started runs to its end. The longest such step is a quote hire that has paid: it runs to its end, up to 1,830,000 ms (the reserve of a quote hire, about 30 minutes). So the service can work for up to that time after the runtime says `free`. Before a restart of the service:
+
+1. Read the log: `docker logs --tail 20 sourcing-service`. The service logs the end of each job with the line `<operation> done in <ms> ms`.
+2. When a job is still open, wait for that line.
+3. Then run the command above.
 
 The allowlist of the co-sign route is an env line: `COSIGN_ALLOWLIST` in `.env.sourcing-agent`. The service reads it at start, so a new principal needs the service created again, with the command above. The register of the keys that a co-signed delegation uses is on the volume, so a restart does not free a key that was used. A call to the route that arrives while the service stops gets no answer: the caller asks again.
 
