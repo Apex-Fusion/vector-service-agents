@@ -5,12 +5,14 @@ import type { RecordSpendDatum, RecordSpendValueFlow } from '../lib/confirmed-sp
 import { blake2b256Hex } from '../lib/platform.ts';
 
 const captured = JSON.parse(readFileSync(new URL('../../../packages/buyer-core/test/fixtures/ledger-read-mainnet.json', import.meta.url), 'utf8')).payment.tx;
+// The capture omits the transaction fee. Add an explicit test fee only for projection cases that need it.
+const fixture = { ...captured, fee: '200000' };
 const bytes = 'd87b80';
 const hash = blake2b256Hex(Buffer.from(bytes, 'hex'));
 const otherHash = '1'.repeat(64);
 const value = { constructor: 2, fields: [] };
 
-function project(row = captured) {
+function project(row: typeof captured) {
   return readConfirmedSpend({
     chain: {
       koiosUrl: 'https://indexer.test/api/v1',
@@ -25,7 +27,8 @@ function project(row = captured) {
 
 describe('the confirmed spend proof', () => {
   it('distinguishes explicit empty assets from missing fields in the captured Koios shape', async () => {
-    const row = structuredClone(captured);
+    await expect(project(captured)).rejects.toThrow('has no actual fee');
+    const row = structuredClone(fixture);
     delete row.inputs[0].asset_list;
     row.inputs[1].asset_list = null;
     const projected = await project(row);
@@ -37,7 +40,7 @@ describe('the confirmed spend proof', () => {
   });
 
   it('refuses conflicting archived datum hashes and bytes', async () => {
-    const row = structuredClone(captured);
+    const row = structuredClone(fixture);
     row.inputs[1].inline_datum.hash = otherHash;
     await expect(project(row)).rejects.toThrow('contradictory hashes for one datum');
     delete row.inputs[1].inline_datum.hash;
