@@ -1,4 +1,4 @@
-import { readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { encodeIdentitySpend } from '../../../packages/vector-read/src/identity-codec.ts';
@@ -34,7 +34,18 @@ async function refuses(f: World, id: string, member?: string) {
 
 describe('public lifecycle evidence', () => {
   it('writes the golden through the registered writer, without ordinary run inputs', async () => {
-    const f = await lifecycleEvidenceWorld();
+    const f = await lifecycleEvidenceWorld(undefined, { producerRefusal: true });
+    const identity = `${use.name}:${f.report.label}`;
+    expect(f.state.snapshot().record).toBe(identity);
+    expect(f.adState.snapshot().record).toBe(use.name);
+    expect(JSON.parse(readFileSync(f.journalPath, 'utf8'))).toMatchObject({
+      check: 'lifecycle', record: identity,
+      entries: [{ step: 'recovery-wait', status: 'tool_refused', expected: true, tool: 'vector_build_identity_recovery_complete' }],
+    });
+    expect(f.producerCalls).toEqual([{ name: 'vector_build_identity_recovery_complete', args: {
+      did: f.state.step('recovery-start')!.facts.did, changeAddress: f.keyEntries.fee!.address,
+    } }]);
+    expect(existsSync(f.w.goPath)).toBe(false);
     const got = await f.produce();
     expect(got.exit, got.error).toBe(0);
     expect(got.file).toBe(join('evidence', `${f.report.date}-${f.agent.id}-run-1.json`));
@@ -70,6 +81,23 @@ describe('public lifecycle evidence', () => {
     expect(got.doc).toMatchObject({ lifecycle: { claim_closeouts: [{ terminal_tx: f.burnTx, outcome: 'terminal_burn' }] } });
   });
 
+  const producerMismatches = [
+    { record: use.name },
+    { record: `${use.name}:l2` },
+    { record: 'inventory-reorder:l1' },
+    { check: 'advert' },
+  ];
+  it.each(producerMismatches)('refuses a lifecycle state with a different producer identity: %j', async (identity) => {
+    const f = await lifecycleEvidenceWorld();
+    editJson(f.statePath, (row) => Object.assign(row, identity));
+    await refuses(f, 'l1-01', 'lifecycle.state');
+  });
+  it.each(producerMismatches)('refuses an early refusal with a different producer identity: %j', async (identity) => {
+    const f = await lifecycleEvidenceWorld();
+    editJson(f.journalPath, (row) => Object.assign(row, identity));
+    await refuses(f, 'l1-03', 'refusals');
+  });
+
   const changes: readonly [Changed, string, string][] = [
     ['controller', 'l1-01', 'record_ref'],
     ['guardian-period', 'l1-02', 'guardians'],
@@ -94,6 +122,27 @@ describe('public lifecycle evidence', () => {
     ['missing controller signature', 'l1-01', 'required_signers', (f) => f.signers.get(f.txs['change-controller'])!.pop()],
     ['wrong guardian signer', 'l1-02', 'required_signers', (f) => { f.signers.get(f.txs['recovery-start'])![0] = '12'.repeat(28); }],
     ['wrong fee collateral', 'l1-01', 'fee', (f) => { f.rowsOf('change-controller').collateral_inputs[0]!.tx_hash = hashOf('other collateral'); }],
+    ['missing deployed identity reference', 'l1-01', 'reference_inputs', (f) => f.rowsOf('change-controller').reference_inputs.shift()],
+    ['foreign script reference', 'l1-01', 'reference_inputs', (f) => {
+      f.rowsOf('change-controller').reference_inputs[0]!.tx_index = f.w.chain.deployment.refs.advert!.outputIndex;
+    }],
+    ['unavailable deployed identity script', 'l1-01', 'deployed identity script', (f) => {
+      const { txHash, outputIndex } = f.w.chain.deployment.refs.identity!;
+      f.w.world.chain.held = f.w.world.chain.held.filter((u) => u.txHash !== txHash || u.outputIndex !== outputIndex);
+    }],
+    ['missing sealed configuration reference', 'l1-02', 'reference_inputs', (f) => f.rowsOf('recovery-start').reference_inputs.pop()],
+    ['foreign sealed configuration reference', 'l1-02', 'reference_inputs', (f) => {
+      f.rowsOf('recovery-start').reference_inputs[1]!.tx_hash = hashOf('another configuration');
+    }],
+    ['unavailable sealed configuration', 'l1-01', 'sealed Module-1 configuration', (f) => {
+      f.w.world.chain.held = f.w.world.chain.held.filter((u) => u.address !== f.w.chain.deployment.configHolder.address);
+    }],
+    ['unnecessary sealed configuration reference', 'l1-07', 'reference_inputs', (f) => {
+      f.rowsOf('reclaim').reference_inputs.push(f.rowsOf('retire').reference_inputs[1]!);
+    }],
+    ['extra unrelated reference', 'l1-06', 'reference_inputs', (f) => {
+      f.rowsOf('set-successor').reference_inputs.push({ tx_hash: hashOf('extra reference'), tx_index: 0 });
+    }],
     ['wrong predecessor', 'l1-02', 'script_spend', (f) => {
       const tx = f.rowsOf('recovery-start');
       const unrelated = hashOf('another child output');
@@ -121,7 +170,7 @@ describe('public lifecycle evidence', () => {
     ['live claim', 'l1-05', 'closeout', (f) => f.w.world.chain.held.push(f.claim)],
     ['absent claim burn', 'l1-05', 'claims', (f) => f.history.minting_txs.shift()],
     ['unrelated withdrawal action', 'l1-05', 'claims', (f) => { f.rows.get(f.burnTx)!.plutus_contracts[0]!.input.redeemer.datum.hash = hashDatum('d87c80'); }],
-    ['wrong successor reference', 'l1-06', 'successor', (f) => { f.rowsOf('set-successor').reference_inputs[1]!.tx_hash = hashOf('unrelated root'); }],
+    ['wrong successor reference', 'l1-06', 'reference_inputs', (f) => { f.rowsOf('set-successor').reference_inputs[1]!.tx_hash = hashOf('unrelated root'); }],
     ['wrong resolver successor', 'l1-06', 'resolutions', (f) => { f.resolve.old.didDocumentMetadata.vectorStatus.successor = `did:vector:${hashOf('wrong successor')}`; }],
     ['wrong successor verification list', 'l1-06', 'resolutions', (f) => f.resolve.next.didDocument.verificationMethod.pop()],
     ['missing minimum coefficient', 'l1-07', 'ledger_minimum', (f) => { f.params.coefficient = null; }],

@@ -1,15 +1,17 @@
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { vi } from 'vitest';
 import { addressDetails } from '../../../../packages/vector-read/src/guarded-decode.ts';
 import { encodeIdentityAdvertDatum } from '../../../../packages/vector-read/src/index.ts';
 import { encodeIdentityDatum, encodeIdentitySpend, utf8Hex } from '../../../../packages/vector-read/src/identity-codec.ts';
 import type { IdentityDatum, IdentitySpend, Party } from '../../../../packages/vector-read/src/identity-codec.ts';
 import { didKeyOf, ledgerMinLovelace } from '../../../../packages/buyer-core/src/vendored/mcp/attestation-build.ts';
+import { buildRecoveryComplete } from '../../../../packages/buyer-core/src/vendored/mcp/identity-build.ts';
 import { DAYS_7_MS, PURPOSE, RIGHT, tombstone } from '../../../../packages/buyer-core/src/vendored/mcp/identity-rules.ts';
 import { blockfrostUrl } from '../../../../packages/buyer-core/src/vendored/mcp/jury-document.ts';
 import { WITHDRAW_CLAIM_REDEEMER } from '../../../../packages/buyer-core/src/vendored/mcp/jury-codec.ts';
 import { fixtureProtocolParameters } from '../../../../packages/buyer-core/test/fixtures/fixture-provider.ts';
-import { rootRecord } from '../../../../packages/buyer-core/test/fixtures/identity-world.ts';
+import { CONFIG_UTXO, M1, REF_UTXOS, rootRecord } from '../../../../packages/buyer-core/test/fixtures/identity-world.ts';
 import { claimUtxo, MODULE1, MODULE1_MANIFEST } from '../../../../packages/buyer-core/test/fixtures/jury-world.ts';
 import { EvidenceFile } from '../../../checks/lib/evidence.ts';
 import { iso } from '../../../checks/lib/format.ts';
@@ -22,6 +24,7 @@ import { blake2b256Hex, formatOutRef } from '../../lib/platform.ts';
 import { publicManifestFile } from '../../lib/registry.ts';
 import { runTask } from '../../lib/runner.ts';
 import evidence from '../../tasks/evidence.ts';
+import lifecycle from '../../tasks/lifecycle.ts';
 import use from '../../usecases/bid-evaluation.ts';
 import { PackHosted } from './pack-hosted.ts';
 import { hashOf, taskWorld } from './task-world.ts';
@@ -69,8 +72,8 @@ const changeOut = (txHash: string, outputIndex: number, address: string, lovelac
 export type Changed = 'controller' | 'guardian-period' | 'recovery-key' | 'recovery-period' | 'early-complete' | 'complete-controller' | 'complete-pending'
   | 'retire-pointer' | 'reclaim-minimum' | 'successor-status' | 'unattributed-claim';
 
-export async function lifecycleEvidenceWorld(change?: Changed) {
-  const names = [...new Set(['controller', 'fee', org.accountableKey, ...spec.controllers, ...spec.guardians, ...succ.keys.map(({ key }) => key),
+export async function lifecycleEvidenceWorld(change?: Changed, { producerRefusal = false } = {}) {
+  const names = [...new Set(['run', 'controller', 'fee', 'provider', org.accountableKey, ...spec.controllers, ...spec.guardians, ...succ.keys.map(({ key }) => key),
     advertSpec.supplierKey, agent.serviceKey])];
   const w = await taskWorld({ use, keys: names, shared: use.keys.filter(({ scope }) => scope === 'shared').map(({ name }) => name),
     env: { OPERATOR_USE_CASE: 'inventory-reorder', VECTOR_KOIOS_URL: KOIOS, VECTOR_OGMIOS_URL: OGMIOS, OPERATOR_HOSTED_URL: HOSTED, OPERATOR_MODULE1_COMMIT: COMMIT } });
@@ -78,6 +81,7 @@ export async function lifecycleEvidenceWorld(change?: Changed) {
   const chain = w.chain.deployment;
   const identity = chain.identity;
   const { hash: policy } = identity;
+  w.world.chain.held.push(...REF_UTXOS, CONFIG_UTXO);
   const keyEntries = Object.fromEntries(use.keys.filter(({ name }) => names.includes(name)).map(({ name, scope }) => [name, {
     scope, public_key_hex: k.publicKeyOf(name), key_hash: k.hashOf(name), address: k.addressOf(name),
   }]));
@@ -87,9 +91,12 @@ export async function lifecycleEvidenceWorld(change?: Changed) {
 
   const store = FactsFile.open(join(w.stateDir, 'facts.json'), { useCase: use.name, network: 'vector-mainnet' });
   const ident = { network: 'vector-mainnet', record: use.name };
-  const state = StateFile.open(join(w.stateDir, `lifecycle.${LABEL}.state.json`), { check: 'lifecycle', ...ident });
+  // The runner writes both lifecycle headers. Do not make an unlabelled fixture journal.
+  if (await w.run(lifecycle, 'status', '--run', LABEL) !== 0) throw new Error(w.screen.errorText);
+  const lifecycleId = { ...ident, check: 'lifecycle', record: `${use.name}:${LABEL}` };
+  const statePath = join(w.stateDir, `lifecycle.${LABEL}.state.json`);
   const journalPath = join(w.stateDir, `lifecycle.${LABEL}.evidence.json`);
-  const journal = EvidenceFile.open(journalPath, { check: 'lifecycle', ...ident });
+  let state = StateFile.open(statePath, lifecycleId);
   const adState = StateFile.open(join(w.stateDir, 'advert.state.json'), { check: 'advert', ...ident });
   const [c1, c2] = spec.controllers;
   const d1 = k.publicKeyOf(c1), d2 = k.publicKeyOf(c2);
@@ -116,9 +123,11 @@ export async function lifecycleEvidenceWorld(change?: Changed) {
   };
   const accountable: Party = { role: 'Accountable', signer: { type: 'KeyHash', hash: k.hashOf(org.accountableKey) }, organisation: utf8Hex(org.domain),
     rights: RIGHT.revoke, notBefore: BASE - 2 * DAY, notAfter: null, removalAfter: null };
+  const responsible: Party = { ...accountable, role: 'Responsible', signer: { type: 'Script', hash: M1 }, organisation: null, rights: RIGHT.suspend };
+  const provider: Party = { ...accountable, role: 'Provider', signer: { type: 'KeyHash', hash: k.hashOf('provider') }, organisation: null, rights: 0 };
   const initial = rootRecord({ controller: k.publicKeyOf('controller'), name: utf8Hex('Record in a test'),
     description: utf8Hex('Private fixture details must not be written to the public file.'), createdAt: BASE - DAY,
-    guardianThreshold: 2, parties: [accountable, ...spec.guardians.map(guardian)], capabilities: [utf8Hex(agent.capability)],
+    guardianThreshold: 2, parties: [accountable, responsible, provider, ...spec.guardians.map(guardian)], capabilities: [utf8Hex(agent.capability)],
     keys: [{ keyType: 'Ed25519', key: k.publicKeyOf(advertSpec.supplierKey), purposes: PURPOSE.transaction, pop: null }] });
   const changed: IdentityDatum = { ...initial, controller: change === 'controller' ? initial.controller : d1, subagentEpoch: 1 };
   const started: IdentityDatum = { ...changed, pendingRecovery: { newController: change === 'recovery-key' ? d1 : d2, effectiveAfter: due - (change === 'recovery-period' ? MINUTE : 0) } };
@@ -137,7 +146,7 @@ export async function lifecycleEvidenceWorld(change?: Changed) {
   const final = record(txs[RECLAIM], owner, named, minimum + (change === 'reclaim-minimum' ? 1n : 0n));
   const datumByStep = { [CHANGE]: changed, [START]: started, [COMPLETE]: completed, [RETIRE]: retired, [SUCCESSOR]: named, [RECLAIM]: named };
   const spends: Record<(typeof actions)[number], IdentitySpend> = {
-    [CHANGE]: { type: 'ChangeController' }, [START]: { type: 'RecoverInit', guardians: [1, 2] }, [COMPLETE]: { type: 'RecoverFinalize' },
+    [CHANGE]: { type: 'ChangeController' }, [START]: { type: 'RecoverInit', guardians: [3, 4] }, [COMPLETE]: { type: 'RecoverFinalize' },
     [RETIRE]: { type: 'Retire' }, [SUCCESSOR]: { type: 'SetSuccessor' }, [RECLAIM]: { type: 'Reclaim' },
   };
   for (const [id, who, out] of [[owner, agent.id, original], [successor, spec.successor, target]] as const) {
@@ -167,6 +176,20 @@ export async function lifecycleEvidenceWorld(change?: Changed) {
   const dataAuthorities = {
     [CHANGE]: ['controller', c1], [START]: [...spec.guardians, c2], [COMPLETE]: [], [RETIRE]: [c2], [SUCCESSOR]: [c2, 'controller'], [RECLAIM]: [c2],
   };
+  const producer = new PackHosted({});
+  const earlyHosted = { async call(name: string, args: Record<string, unknown>) {
+    if (name !== 'vector_build_identity_recovery_complete' || args.did !== didOf(owner) || args.changeAddress !== feeWallet) {
+      throw new Error('The early builder received the wrong tool, record or wallet.');
+    }
+    try {
+      await buildRecoveryComplete(await w.chain.context(feeWallet), { id: owner, changeAddress: feeWallet, nowMs: w.clock.now() });
+    } catch (error) {
+      if (!(error instanceof Error)) throw error;
+      producer.handlers[name] = () => ({ text: `Failed to build recovery completion: ${error.message}`, isError: true });
+      return producer.call(name, args);
+    }
+    throw new Error('The early builder did not refuse.');
+  } };
   let previous = original;
   let beforeDatum = initial;
   for (const action of actions) {
@@ -175,9 +198,10 @@ export async function lifecycleEvidenceWorld(change?: Changed) {
     archive.set(refOf(out), archived(out, action !== RECLAIM));
     const isReclaim = action === RECLAIM;
     const payment = changeOut(tx, 0, feeWallet, (isReclaim ? 0n : feeFunds) + previous.assets.lovelace - out.assets.lovelace - fee);
-    const references = [pointer(chain.refs.identity!), ...(action === SUCCESSOR ? [pointer(target)] : [])];
+    const references = [pointer(chain.refs.identity!), ...(action === SUCCESSOR ? [pointer(target)]
+      : action === RECLAIM ? [] : [pointer(CONFIG_UTXO)])];
     const { put, inputs } = row(tx, at, previous, [payment, out], policy, encodeIdentitySpend(spends[action]), feeWallet, references, [], !isReclaim);
-    if (action === START) put.plutus_contracts[0]!.input.redeemer.datum.value = { constructor: 9, fields: [{ list: [{ int: 1 }, { int: 2 }] }] };
+    if (action === START) put.plutus_contracts[0]!.input.redeemer.datum.value = { constructor: 9, fields: [{ list: [{ int: 3 }, { int: 4 }] }] };
     signers.set(tx, dataAuthorities[action].map((name) => k.hashOf(name)));
     const observed = iso(at + 2_000);
     state.recordStep(action, { tx_hash: tx, confirmed_at: observed, refs: { recordBefore: refOf(previous), recordAfter: refOf(out) }, facts: {
@@ -188,16 +212,36 @@ export async function lifecycleEvidenceWorld(change?: Changed) {
     } });
     state.markVerified(action, iso(at + 3_000));
     store.put('lifecycle', [action], { tx, at: action === START ? iso(due) : action === RETIRE ? iso(retireAt - MINUTE) : observed });
+    if (action === START && producerRefusal) {
+      // Let the real task record the builder refusal while the pending output is live.
+      w.world.chain.held.push(out);
+      w.clock.t = startAt + 5_000;
+      w.writeGo({ tasks: ['lifecycle'], at: iso(w.clock.now()), expiresAt: iso(w.clock.now() + HOUR) });
+      vi.useFakeTimers({ toFake: ['Date'] });
+      try {
+        vi.setSystemTime(w.clock.now());
+        const exit = await runTask(lifecycle, ['run', '--run', LABEL, '--submit'], w.deps({ hosted: earlyHosted }));
+        if (exit !== 4) throw new Error(w.screen.errorText);
+      } finally {
+        vi.useRealTimers();
+        rmSync(w.goPath, { force: true });
+        w.world.chain.held = w.world.chain.held.filter((item) => item !== out);
+      }
+      state = StateFile.open(statePath, lifecycleId);
+    }
     previous = out;
     beforeDatum = datumByStep[action];
   }
-  state.setNote('earlyRecoveryCompletion', { tx: txs[START], effectiveAfter: due });
   state.recordStep(WAIT, { confirmed_at: iso(due + MINUTE), tx_hash: null, refs: { recordBefore: `${txs[START]}#2`, recordAfter: `${txs[START]}#2`, recoveryStart: txs[START] },
     facts: { agent: agent.id, effectiveAfter: due } });
   state.markVerified(WAIT, iso(due + MINUTE + 1_000));
   store.put('lifecycle', [WAIT], { tx: txs[START], at: iso(due) });
   const message = `The build tool refused recovery completion before ${iso(due)}. No transaction was signed.`;
-  journal.add({ step: WAIT, status: 'tool_refused', expected: true, tool: 'vector_build_identity_recovery_complete', message, at: iso(startAt + 5_000) });
+  if (!producerRefusal) {
+    state.setNote('earlyRecoveryCompletion', { tx: txs[START], effectiveAfter: due });
+    EvidenceFile.open(journalPath, lifecycleId).add({ step: WAIT, status: 'tool_refused', expected: true,
+      tool: 'vector_build_identity_recovery_complete', message, at: iso(startAt + 5_000) });
+  }
 
   const advert: Utxo = { txHash: hashOf('evidence lifecycle advert posted'), outputIndex: 1, address: chain.advert.address, assets: { lovelace: advertSpec.depositLovelace },
     datum: encodeIdentityAdvertDatum({ supplier_pkh: k.hashOf(advertSpec.supplierKey), capability_id: agent.capability, model: advertSpec.model,
@@ -313,7 +357,8 @@ export async function lifecycleEvidenceWorld(change?: Changed) {
     return { exit, file, text, doc: text === null ? null : JSON.parse(text) as Record<string, unknown>, result, error: w.screen.errorText };
   }
   return { w, produce, archive, rows, signers, keyEntries, writeKeys, manifestPath, journalPath, state, adState, txs, missing, rowsOf: (action: (typeof actions)[number]) => rows.get(txs[action])!,
-    signsDown, params, report, resolve, due, advert, advertTx, history, claim, burnTx, store, agent, final, target, candidate, reads, statePath: state.path };
+    signsDown, params, report, resolve, due, advert, advertTx, history, claim, burnTx, store, agent, final, target, candidate, reads, statePath,
+    producerCalls: producer.calls };
 }
 
 const HOUR = 60 * MINUTE;

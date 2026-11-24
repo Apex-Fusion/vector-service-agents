@@ -4,6 +4,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { decodeClaimDatum, paymentKeyHashOf, soleTokenName, utxoOfKoiosRow } from '../../../../packages/buyer-core/src/index.ts';
 // The package entries do not export the ledger minimum, recovery rules or indexer transport.
 import { didKeyOf, ledgerMinLovelace } from '../../../../packages/buyer-core/src/vendored/mcp/attestation-build.ts';
+import { findConfigRecord, readRefScript } from '../../../../packages/buyer-core/src/vendored/mcp/identity-deployment.ts';
 import { DAYS_7_MS, MAX_RANGE_MS, PURPOSE, activeKey, eligibleGuardian, tombstone } from '../../../../packages/buyer-core/src/vendored/mcp/identity-rules.ts';
 import { WITHDRAW_CLAIM_REDEEMER } from '../../../../packages/buyer-core/src/vendored/mcp/jury-codec.ts';
 import { blockfrostUrl } from '../../../../packages/buyer-core/src/vendored/mcp/jury-document.ts';
@@ -114,10 +115,12 @@ function publicKeys(s: EvidenceReadSession): (name: string) => PublicKey {
   };
 }
 
-function stateOf(s: EvidenceReadSession, check: 'lifecycle' | 'advert', suffix = ''): CheckState {
+function stateOf(s: EvidenceReadSession, check: 'lifecycle' | 'advert', label?: string): CheckState {
   const why = `${check}.state: the matching verified producer state cannot be read`;
   let state: CheckState | null;
-  try { state = StateFile.peek(join(s.settings.stateDir, `${check}${suffix}.state.json`), { check, network: s.settings.network.name, record: s.use.name }); }
+  const base = label === undefined ? check : `${check}.${label}`;
+  const record = label === undefined ? s.use.name : `${s.use.name}:${label}`;
+  try { state = StateFile.peek(join(s.settings.stateDir, `${base}.state.json`), { check, network: s.settings.network.name, record }); }
   catch { throw new Unproven(why); }
   need(state, why);
   return state;
@@ -186,6 +189,29 @@ function window(row: Obj, systemStart: number): Window {
   const references = refs.map(rowRef);
   need(references.every(outref) && new Set(references).size === references.length, 'reference_inputs: the references are invalid or ambiguous');
   return { ...at, lo, hi, references };
+}
+
+/** Use the deployed script and sealed configuration readers that the record-spend producer uses. */
+function referenceCheck(s: EvidenceReadSession) {
+  const { provider, deployment } = s.chain;
+  let identity: string | undefined;
+  let config: string | undefined;
+  return async (before: IdentityDatum, after: IdentityDatum, actual: readonly string[], successor?: string): Promise<void> => {
+    try {
+      identity ??= refOf(await readRefScript(provider, deployment, 'identity', deployment.identity.hash));
+    } catch { throw new Unproven('reference_inputs: the deployed identity script cannot be authenticated on the node'); }
+    const required = [identity];
+    if (before.parties.some(({ signer }) => signer.type === 'Script') || after.parties.some(({ signer }) => signer.type === 'Script')) {
+      if (config === undefined) {
+        const sealed = await findConfigRecord(provider, deployment).catch(() => null);
+        need(sealed, 'reference_inputs: the sealed Module-1 configuration cannot be authenticated on the node');
+        config = refOf(sealed.utxo);
+      }
+      required.push(config);
+    }
+    if (successor !== undefined) required.push(successor);
+    need(matches(actual, required), 'reference_inputs: the spend does not reference exactly the outputs that this record action needs');
+  };
 }
 
 function witnessMatches(witness: RecordSpendDatum, expected: string): boolean {
@@ -301,8 +327,8 @@ function requireEarlyRefusal(s: EvidenceReadSession, a: Assembly, state: CheckSt
   let journal: unknown;
   try { journal = readJsonFile(join(s.settings.stateDir, `lifecycle.${a.loaded.record.label}.evidence.json`), 'the lifecycle producer evidence'); }
   catch { throw new Unproven(why); }
-  need(isObject(journal) && journal.format === EVIDENCE_FORMAT && journal.check === 'lifecycle' && journal.network === s.settings.network.name
-    && journal.record === s.use.name && Array.isArray(journal.entries), why);
+  need(isObject(journal) && journal.format === EVIDENCE_FORMAT && journal.check === state.check && journal.network === state.network
+    && journal.record === state.record && Array.isArray(journal.entries), why);
   const candidates = journal.entries.filter((entry: unknown) => isObject(entry) && entry.step === WAIT && (entry.status === 'tool_refused' || entry.status === 'refused')) as Obj[];
   const entry = candidates[0];
   need(candidates.length === 1 && entry?.status === 'tool_refused' && entry.expected === true && entry.tool === COMPLETE_TOOL
@@ -530,7 +556,8 @@ async function prepare(s: EvidenceReadSession, a: Assembly): Promise<Readonly<Ob
     need(spec && agent && successorSpec && agent.end.record === 'retired' && agent.end.advert === 'retired' && agent.end.successor === spec.successor
       && spec.waitMs === DAYS_7_MS && matches(a.loaded.record.lifecycle, ACTIONS), 'lifecycle: the run does not name the six exact transaction facts and its retirement target');
     const owner = relatedFact(a.facts.records[agent.id]);
-    const state = stateOf(s, 'lifecycle', `.${a.loaded.record.label}`);
+    const state = stateOf(s, 'lifecycle', a.loaded.record.label);
+    const checkReferences = referenceCheck(s);
     need(state.in_flight === null, 'lifecycle.state: the producer still has a transaction pending');
     const key = publicKeys(s);
     const original = key('controller'), fee = key('fee');
@@ -567,8 +594,6 @@ async function prepare(s: EvidenceReadSession, a: Assembly): Promise<Readonly<Ob
       need(precedes(prior, range), 'block_time: the confirmed steps do not follow the full record chain in ledger order');
       const after = recordOutput(s, owner.id, output);
       const { address, hash: policy } = s.chain.deployment.identity;
-      const script = s.chain.deployment.refs.identity;
-      need(script && range.references.includes(refOf(script)), 'reference_inputs: the spend does not name the deployed identity reference script');
       const newRow = flow.outputs.find((one) => one.ref === after.ref);
       const oldRow = flow.inputs.find((one) => one.ref === before.ref);
       const spend = flow.spends?.[0];
@@ -625,7 +650,7 @@ async function prepare(s: EvidenceReadSession, a: Assembly): Promise<Readonly<Ob
         successorCurrent = recordOutput(s, successor.id, (await currentRecord(s, successor)).utxo);
         const next = successorCurrent.record;
         const enrolled = successorSpec.keys.map(({ key: name }) => key(name).pub);
-        need(range.references.includes(successorCurrent.ref) && confirmations((await s.node.txStatus(txOf(successorCurrent.ref))).confirmations)
+        need(confirmations((await s.node.txStatus(txOf(successorCurrent.ref))).confirmations)
           && next.controller === original.pub && effectiveStatus(next, new Map(), range.lo, range.hi) === 'Active'
           && effectiveStatus(next, new Map(), s.clock.now(), s.clock.now()) === 'Active'
           && matches(next.keys.map(({ key }) => key), enrolled), 'successor: the exact referenced successor is not the configured Active root');
@@ -645,7 +670,11 @@ async function prepare(s: EvidenceReadSession, a: Assembly): Promise<Readonly<Ob
         'lifecycle.fact: the timestamp does not match the confirmed step and datum');
       need(isDeepStrictEqual(expected, after.record) && (step === RECLAIM ? before.amount > after.amount && credit > 0n : before.amount === after.amount),
         'record_ref: the confirmed datum or deposit does not make only the requested change');
-      await Promise.all([requireSigners(s, tx, authorities), requireFeeCollateral(s, row, fee.address)]);
+      await Promise.all([
+        checkReferences(before.record, after.record, range.references, step === SUCCESSOR ? successorCurrent!.ref : undefined),
+        requireSigners(s, tx, authorities),
+        requireFeeCollateral(s, row, fee.address),
+      ]);
       const proved = { before, after, tx, window: range, fee: flow.fee, credit, action: action.type };
       if (step === RETIRE) {
         [adverts, claims] = await Promise.all([advertsClosed(s, a, agent, owner, proved, key, startTime), claimsClosed(s, a, agent, owner, proved, startTime)]);
