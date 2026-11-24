@@ -36,7 +36,8 @@ const taskMembers = (name: string, change: Members = {}): Members => ({
 const taskFile = (name: string, change: Members = {}): string => moduleOf(taskMembers(name, change));
 const useCaseMembers = (name: string, change: Members = {}): Members => ({
   name: JSON.stringify(name), title: "'A test use case'", keys: '[]', organisations: '[]', agents: '[]', subagents: '[]', funding: '[]', attestations: '[]', runs: '[]', evidenceSteps: '[]',
-  moduleManifestPath: "'Module-1/deploy/manifest.json'", runtimeCommit: "'main'", ...change,
+  moduleManifestPath: "'Module-1/deploy/manifest.json'", runtimeCommit: "'main'", records: '[]', compliance: 'null', lifecycle: 'null', tenantSeed: 'null',
+  tenantOrganisations: "{ supplier: 'alfa.example', insurer: 'delta.example' }", notCovered: "{ lead: 'No run covers this item:', items: ['A sentence.'] }", ...change,
 });
 const useCaseFile = (name: string, change: Members = {}): string => moduleOf(useCaseMembers(name, change));
 
@@ -216,7 +217,7 @@ describe('loadUseCase', () => {
     }
   });
   describe('a default export of the wrong shape', () => {
-    const LISTS = ['keys', 'organisations', 'agents', 'subagents', 'funding', 'attestations', 'runs', 'evidenceSteps'];
+    const LISTS = ['keys', 'organisations', 'agents', 'subagents', 'funding', 'attestations', 'runs', 'evidenceSteps', 'records'];
     const WRONG: [string, string][] = [
       ['no default export', 'export const use = {};\n'],
       ['a text', "export default 'inventory-reorder';\n"],
@@ -240,6 +241,65 @@ describe('loadUseCase', () => {
         expect(err.message).toContain('inventory-reorder');
       });
     }
+  });
+  describe('the members that a use case needs besides its lists and its texts', () => {
+    const MARK = 'MARKERVALUE';
+    /** A label and the source text of the value, or null to leave the member out. */
+    type Row = readonly [string, string | null];
+    interface MemberCase { member: string; bad: readonly Row[]; good: readonly Row[] }
+    const objectOrNull = (member: string): MemberCase => ({
+      member,
+      bad: [['missing', null], ['a text', `'${MARK}'`], ['a number', '5'], ['a list', '[]'], ['true', 'true']],
+      good: [['null', 'null'], ['an object', "{ agent: 'x' }"], ['an empty object', '{}']],
+    });
+    const MEMBERS: readonly MemberCase[] = [
+      { member: 'records', bad: [['missing', null], ['an object', '{}'], ['null', 'null'], ['a text', `'${MARK}'`]], good: [['an empty list', '[]'], ['a list with an entry', "[{ id: 'successor' }]"]] },
+      {
+        member: 'notCovered',
+        bad: [
+          ['missing', null], ['null', 'null'], ['a list', '[]'], ['a text', `'${MARK}'`], ['an object with no members', '{}'],
+          ['a lead that is no text', "{ lead: 5, items: ['One.'] }"], ['an empty lead', "{ lead: '', items: ['One.'] }"], ['a lead of 201 characters', `{ lead: '${'a'.repeat(201)}', items: ['One.'] }`],
+          ['no items', "{ lead: 'Lead.' }"], ['items that are no list', `{ lead: 'Lead.', items: '${MARK}' }`], ['an empty list of items', "{ lead: 'Lead.', items: [] }"],
+          ['9 items', `{ lead: 'Lead.', items: [${Array.from({ length: 9 }, (_, index) => `'Item ${index}.'`).join(', ')}] }`],
+          ['an item that is no text', "{ lead: 'Lead.', items: ['One.', 5] }"], ['an empty item', "{ lead: 'Lead.', items: ['One.', ''] }"],
+          ['an item of 201 characters', `{ lead: 'Lead.', items: ['${'a'.repeat(201)}'] }`],
+        ],
+        good: [
+          ['one item', "{ lead: 'Lead.', items: ['One.'] }"], ['8 items', `{ lead: 'Lead.', items: [${Array.from({ length: 8 }, (_, index) => `'Item ${index}.'`).join(', ')}] }`],
+          ['a lead and an item of 200 characters', `{ lead: '${'a'.repeat(200)}', items: ['${'b'.repeat(200)}'] }`],
+        ],
+      },
+      objectOrNull('compliance'), objectOrNull('lifecycle'), objectOrNull('tenantSeed'),
+      { member: 'tenantOrganisations', bad: [['missing', null], ['null', 'null'], ['a list', '[]'], ['a text', `'${MARK}'`], ['a number', '5']], good: [['an object', "{ supplier: 'alfa', insurer: 'delta' }"]] },
+    ];
+    for (const { member, bad, good } of MEMBERS) {
+      for (const [label, source] of bad) {
+        it(`refuses ${member} as ${label}, names the member, and shows no value`, async () => {
+          const err = await refusal(() => loadUseCase('inventory-reorder', baseWith({ 'usecases/inventory-reorder.ts': useCaseFile('inventory-reorder', { [member]: source }) })));
+          expect(err.reason).toBe('shape');
+          expect(err.message).toContain(member);
+          expect(err.message).not.toContain(MARK);
+        });
+      }
+      for (const [label, source] of good) {
+        it(`accepts ${member} as ${label}`, async () => {
+          const use = await loadUseCase('inventory-reorder', baseWith({ 'usecases/inventory-reorder.ts': useCaseFile('inventory-reorder', { [member]: source }) }));
+          expect(use.name).toBe('inventory-reorder');
+        });
+      }
+    }
+    it('accepts the real data of use case 1, and gives each new member in the form that the data holds it', async () => {
+      const use = await loadUseCase('inventory-reorder');
+      expect(use.name).toBe('inventory-reorder');
+      expect([use.records, use.compliance, use.lifecycle, use.tenantSeed]).toEqual([[], null, null, null]);
+      expect(use.tenantOrganisations).toEqual({ supplier: 'alfa.vector.apexfusion.org', insurer: 'delta.vector.apexfusion.org' });
+      expect(use.notCovered).toEqual({
+        lead: 'No run covers these three items:',
+        items: [
+          'The refund of the escrow of a revoked agent.', 'The reclaim of an escrow by its buyer.', 'A relying party that refuses a live token after its authority ended. Tests alone cover this item.',
+        ],
+      });
+    });
   });
   it('refuses a data file whose name is not the name of its file, and accepts the file with the same name', async () => {
     for (const name of ['other-use-case', 'Inventory-Reorder', 'inventory-reorder ', '']) {

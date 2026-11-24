@@ -99,10 +99,12 @@ describe('the claim constants', () => {
 });
 
 describe('the data of use case 1', () => {
-  it('uses the constants for the claim of each agent: the stake, the window and the claim type', () => {
+  it('uses the constants for the claim of each agent: the stake, the window, the claim type and the reserve for a challenge, which only the Reorder Agent keeps', () => {
     expect(data.agents.map((agent) => agent.id)).toEqual(['reorder-agent', 'order-desk']);
     for (const agent of data.agents) {
-      expect(agent.claim, agent.id).toEqual({ stakeLovelace: CLAIM_STAKE_LOVELACE, windowMs: CLAIM_WINDOW_MS, claimType: claimTypeOf(agent.capability) });
+      expect(agent.claim, agent.id).toEqual({
+        stakeLovelace: CLAIM_STAKE_LOVELACE, windowMs: CLAIM_WINDOW_MS, claimType: claimTypeOf(agent.capability), challengeReserveLovelace: agent.kind === 'reorder-agent' ? CHALLENGE_RESERVE_LOVELACE : null,
+      });
     }
   });
 
