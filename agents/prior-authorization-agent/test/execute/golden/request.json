@@ -1,0 +1,16 @@
+{
+  "schema": "vector.usecase.priorauth-request.v1",
+  "request_number": "run1-1",
+  "tenant": "run1",
+  "order_id": "ORD-1001",
+  "patient_ref": "SYN-PT-0001",
+  "ordering_clinician_ref": "SYN-CLN-0001",
+  "service_code": "SYN-MRI-LS",
+  "diagnosis_codes": ["M54.16"],
+  "justification": "The synthetic patient has had low back pain with leg pain for seven weeks. Physical therapy and naproxen gave little relief. A new weakness of the left ankle is recorded.",
+  "guideline_refs": ["C1", "C2"],
+  "record_refs": ["REC-0002", "REC-0004", "REC-0005"],
+  "record_set_sha256": "5555555555555555555555555555555555555555555555555555555555555555",
+  "insurer_did": "did:vector:aeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeae",
+  "advert_ref": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3#0"
+}
