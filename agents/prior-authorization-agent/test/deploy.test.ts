@@ -20,6 +20,8 @@ import { COSIGN_STATUS } from '@vsa/usecase-kit/cosign';
 import { PRIORAUTH_CAPABILITIES, PRIORAUTH_MODELS } from '@vsa/usecase-kit/priorauth';
 import { ERROR_STATUS, FAULT_MODES } from '@vsa/usecase-kit/protocol';
 import { testKey } from '../../../packages/buyer-core/test/fixtures/identity-world.ts';
+import { CLAIM_STAKE_LOVELACE, CLAIM_WINDOW_MS } from '../../../scripts/operator/lib/claim-constants.ts';
+import { USE_CASE_NAMES } from '../../../scripts/operator/usecases/names.ts';
 import { EVIDENCE_FAILURES } from '../src/evidence/index.ts';
 import { NOT_ACCEPTED } from '../src/execute/decision.ts';
 import { EXECUTE_REASONS } from '../src/execute/index.ts';
@@ -1201,10 +1203,19 @@ describe('deploy/server/RUNBOOK-prior-authorization-agent.md', () => {
     expect(file).toMatch(/eight keys, and all eight are different/);
   });
 
-  test('the service key signs the challenges, and it signs the claim of the agent only once a command stakes one, as the page of the agent says', () => {
-    const once = 'It signs the claim of the agent too, once a command stakes one.';
-    expect(readFileSync(join(root, 'specs', 'prior-authorization-agent.md'), 'utf8')).toContain(once);
-    expect(sectionOf(runbookText, 'The env file')).toContain(`\`PRIORAUTH_SERVICE_PRIV_KEY_HEX\` pays the model hires and signs the challenges. ${once}`);
+  test('the operator claim task uses the service key and the CLI does not enable prior authorization', () => {
+    const what = sectionOf(runbookText, 'What it is');
+    for (const part of [
+      '`claim` task of the operator pack supports one Module-1 claim',
+      'before each clean or failure run', 'signs with the service key', 'The service does not stake its own claim.',
+      `${CLAIM_STAKE_LOVELACE / 1_000_000n} units (${CLAIM_STAKE_LOVELACE.toLocaleString('en-US')} lovelace)`,
+      `challenge window is ${CLAIM_WINDOW_MS / 3_600_000} hours`, '`claim cleanup` withdraws the claim if nobody challenged it',
+      'The operator CLI does not enable use case 2 yet.',
+    ]) expect(what).toContain(part);
+    expect(USE_CASE_NAMES).not.toContain('prior-authorization');
+    const env = sectionOf(runbookText, 'The env file');
+    expect(env).toContain('`PRIORAUTH_SERVICE_PRIV_KEY_HEX` pays the model hires and signs the challenges.');
+    expect(env).toContain("The operator pack uses this key to sign the agent's claim.");
   });
 
   test('both images are pulled by the tag of the reviewed commit and pinned by digest', () => {

@@ -18,6 +18,7 @@ const TINI = 'RUN apt-get update && apt-get install -y --no-install-recommends t
 const INSTALL = "RUN pnpm install --frozen-lockfile --filter '@vsa/usecase-kit...'";
 const ENTRYPOINT = 'ENTRYPOINT ["/usr/bin/tini", "--", "node", "--import", "tsx", "scripts/operator/cli.ts"]';
 const ROOT_FILES = ['pnpm-workspace.yaml', 'pnpm-lock.yaml', 'package.json', 'tsconfig.base.json'];
+const BID_PRICE_LISTS = ['alfa', 'bravo', 'charlie'].map((name) => `agents/bid-desk/price-lists/${name}.json`);
 /** The names that can carry a secret. */
 const SECRET_NAME = /KEY|TOKEN|SECRET|PASSWORD|PASSPHRASE|SEED|CREDENTIAL|AUTH/i;
 /** What no copy may bring into the image: a test folder or file, an env file, an npm settings file, a shell script and a key file. */
@@ -84,10 +85,10 @@ function problemsOf(text: string): string[] {
   const [builder, final] = stages;
   const copies = instructions.map((line, at) => ({ line, at })).filter(({ line }) => /^COPY /.test(line) && !/--from=/.test(line));
   const sources = copies.flatMap(({ line }) => sourcesOf(line));
-  // The copies: what exists, nothing that a test, a key or a shell script is, and nothing outside the pack, the checks that it reuses and the packages of the closure.
+  // Copy only the pack, the checks, their dependencies and the published price lists that the offline trial reads.
   for (const source of sources) if (!existsSync(posix.join(root, source))) problems.push(`${source} is copied and is not in the repository`);
   for (const source of sources) if (NEVER_IN_IMAGE.test(source)) problems.push(`a copy takes ${source}: no test, env file, key file or shell script goes into the image`);
-  const expected = [...ROOT_FILES, ...CLOSURE.flatMap((dir) => [`${dir}/package.json`, dir]), 'scripts/checks/lib', 'scripts/checks/tsconfig.json', 'scripts/operator'].sort();
+  const expected = [...ROOT_FILES, ...CLOSURE.flatMap((dir) => [`${dir}/package.json`, dir]), ...BID_PRICE_LISTS, 'scripts/checks/lib', 'scripts/checks/tsconfig.json', 'scripts/operator'].sort();
   if (JSON.stringify([...sources].sort()) !== JSON.stringify(expected)) problems.push(`the copies take: ${[...sources].sort().join(' ')}; they must take: ${expected.join(' ')}`);
   if (JSON.stringify(final.filter((line) => /^(COPY|ADD) /.test(line))) !== JSON.stringify([FINAL_COPY])) problems.push(`the final stage copies only the workspace of the builder: ${FINAL_COPY}`);
   if (instructions.some((line) => /^ADD /.test(line))) problems.push('no ADD: it can fetch a file');
@@ -296,6 +297,7 @@ describe('.dockerignore, for the image of the operator pack', () => {
     const brought = read(DOCKERFILE).split('\n').filter((line) => /^COPY (?!--from=)/.test(line)).flatMap(sourcesOf).flatMap((source) => (statSync(posix.join(root, source)).isFile() ? [source] : filesBelow(source))).filter((file) => inContext(rules, file));
     expect(brought.filter((file) => NEVER_IN_IMAGE.test(file))).toEqual([]);
     for (const file of ['scripts/operator/cli.ts', 'scripts/operator/lib/approval.ts', 'scripts/operator/lib/plan.ts', 'scripts/checks/lib/guards.ts', 'scripts/checks/lib/land.ts']) expect(brought, file).toContain(file);
+    expect(brought.filter((file) => file.startsWith('agents/')).sort()).toEqual(BID_PRICE_LISTS);
     expect(brought.filter((file) => file.startsWith('scripts/') && !/^scripts\/(operator\/|checks\/lib\/|checks\/tsconfig\.json$)/.test(file))).toEqual([]);
   });
 
