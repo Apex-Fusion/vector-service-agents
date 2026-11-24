@@ -2,14 +2,17 @@
 // 403 approval_not_found. The approval check is a dependency, so most of these tests give it a fake that records what it was asked and answers as the test says. The fake is in the test support
 // only: no source of the service builds one. The last tests run the route with the real check. Each refusal has the call that is accepted beside it, and no ranking is written for a refusal.
 import { describe, expect, it } from 'vitest';
+import { proposalDigest } from '@vsa/usecase-kit/protocol';
 import { APPROVAL_CODES } from '../src/errors.ts';
 import { callWithToken, delegateTo, rankingBody, rankingsOf, scenario } from './support/scenario.ts';
 import type { HarnessOptions } from './support/harness.ts';
 import type { Scenario } from './support/scenario.ts';
-import { PUBLIC_BASE } from './support/world.ts';
+import { MTLS_HOST, OPERATOR_TOKEN, PUBLIC_BASE } from './support/world.ts';
 
 const TENANT = 'run1';
 const ROUTE = '/sourcing/rankings';
+const OPERATOR_LOG = `/admin/tenants/${TENANT}/log`;
+const OPERATOR_HEADERS = { authorization: `Bearer ${OPERATOR_TOKEN}` };
 
 const refused = (reply: { status: number; json: Record<string, unknown> | null }, status: number, code: string) => {
   expect([reply.status, reply.json?.error]).toEqual([status, code]);
@@ -21,6 +24,7 @@ const tenantLog = async (s: Scenario): Promise<LogEntry[]> => {
   const body = (await s.harness.call({ path: `/t/${TENANT}/log` })).json as { lines: LogEntry[] }; // the shape of the answer of GET /log
   return body.lines;
 };
+const operatorLog = (s: Scenario) => s.harness.call({ path: OPERATOR_LOG, headers: OPERATOR_HEADERS });
 
 async function setup(options: HarnessOptions = {}) {
   const s = await scenario(TENANT, {}, options);
@@ -66,6 +70,76 @@ describe('a ranking that is right', () => {
     expect([first.status, second.status]).toEqual([201, 201]);
     expect([first.json?.ranking_id, second.json?.ranking_id]).toEqual(['RK-run1-0001', 'RK-run1-0002']);
     expect(await written(s)).toHaveLength(2);
+  });
+});
+
+describe('the private ranking log', () => {
+  it('correlates an approved write and null-approval refusals with the exact salted ranking', async () => {
+    const { s, agent, send, body } = await setup({ realApproval: true });
+    const sent = body();
+    sent.ranking.note = 'test-only ranking text';
+    s.world.approve(agent.agent, sent.ranking, sent.salt);
+    const newSalt = { ...sent, salt: 'a7'.repeat(32), approval: null };
+    const newRanking = { ...sent, ranking: { ...sent.ranking, rfq_id: 'rfq-2' }, approval: null };
+
+    const allowed = await send(sent);
+    expect(allowed.status).toBe(201);
+    for (const denied of [await send(newSalt), await send(newRanking)]) refused(denied, 403, 'approval_not_found');
+    const expected = [sent, newSalt, newRanking].map(({ ranking, salt }) => {
+      const digest = proposalDigest(salt, ranking);
+      if (!digest.ok) throw new Error('the fixture ranking has no canonical digest');
+      return digest.value;
+    });
+    expect(new Set(expected).size).toBe(3);
+
+    const publicRows = await tenantLog(s);
+    expect(publicRows.map(({ decision, code, rule }) => [decision, code, rule])).toStrictEqual([
+      ['allowed', null, null], ['refused', 'approval_not_found', 'approval.missing'], ['refused', 'approval_not_found', 'approval.missing'],
+    ]);
+    const log = await operatorLog(s);
+    expect([log.status, log.headers['cache-control']]).toEqual([200, 'no-store']);
+    expect(log.json).toStrictEqual({ tenant: TENANT, dropped: 0, lines: publicRows.map((line, index) => ({ ...line, proposal_digest: expected[index] })) });
+    const visible = [allowed.json, publicRows, await written(s), s.harness.logged()];
+    expect(JSON.stringify(visible)).not.toContain('proposal_digest');
+    for (const value of ['test-only ranking text', sent.salt, newSalt.salt, OPERATOR_TOKEN]) expect(log.text).not.toContain(value);
+  });
+
+  it('requires the operator header on the token host and reads only the named tenant', async () => {
+    const { s, send, body } = await setup();
+    refused(await send({ ...body(), approval: null }), 403, 'approval_not_found');
+    for (const authorization of [undefined, `Bearer ${OPERATOR_TOKEN.slice(1)}`]) {
+      const reply = await s.harness.call({ path: OPERATOR_LOG, headers: authorization === undefined ? undefined : { authorization } });
+      refused(reply, 401, 'operator_token_invalid');
+      expect(reply.headers['www-authenticate']).toBe('Bearer');
+      expect(reply.json).not.toHaveProperty('lines');
+    }
+    refused(await s.harness.call({ path: OPERATOR_LOG, host: MTLS_HOST, headers: OPERATOR_HEADERS }), 421, 'wrong_host');
+    refused(await s.harness.call({ path: OPERATOR_LOG, headers: { authorization: [OPERATOR_HEADERS.authorization, 'Bearer other'] } }), 400, 'bad_request');
+    const badMethod = await s.harness.call({ path: OPERATOR_LOG, method: 'POST', headers: OPERATOR_HEADERS });
+    refused(badMethod, 405, 'method_not_allowed');
+    expect(badMethod.headers.allow).toBe('GET');
+    const other = { path: '/admin/tenants/run2/log', headers: OPERATOR_HEADERS };
+    refused(await s.harness.call(other), 404, 'tenant_not_found');
+    expect((await s.harness.seed('run2')).status).toBe(201);
+    expect((await s.harness.call(other)).json).toEqual({ tenant: 'run2', dropped: 0, lines: [] });
+    expect((await operatorLog(s)).json?.lines).toMatchObject([{ proposal_digest: expect.stringMatching(/^[0-9a-f]{64}$/) }]);
+  });
+
+  it('leaves no digest for invalid input or a refusal from the approval lookup', async () => {
+    const { s, send, body } = await setup({ realApproval: true });
+    const sent = body();
+    const without = { ...sent, approval: null };
+    refused(await send({ ...without, proposal_digest: 'ab'.repeat(32) }), 400, 'bad_request');
+    refused(await send({ ...without, ranking: { ...sent.ranking, tenant: 'run2' } }), 400, 'bad_request');
+    refused(await send({ ...without, salt: 'not-a-salt' }), 400, 'bad_request');
+    refused(await send({ ...without, ranking: { ...sent.ranking, 'e\u0301': 'noncanonical key' } }), 403, 'approval_not_found');
+    refused(await send(sent), 403, 'approval_not_found');
+    const rows = await tenantLog(s);
+    expect(rows.map(({ rule }) => rule)).toStrictEqual(['body.shape', 'body.shape', 'body.shape', 'approval.missing', 'approval.approval_not_found']);
+    const log = await operatorLog(s);
+    expect(log.status).toBe(200);
+    expect(log.json).toEqual({ tenant: TENANT, dropped: 0, lines: rows });
+    expect(log.text).not.toContain('proposal_digest');
   });
 });
 
@@ -210,6 +284,7 @@ describe('a tenant that is made again while the approval is checked', () => {
     // The refused call is on stdout. It is not in the log of the new tenant, which has taken no call yet.
     expect(s.harness.logged().filter((line) => line.code === 'tenant_changed')).toHaveLength(1);
     expect(await tenantLog(s)).toEqual([]);
+    expect((await operatorLog(s)).json).toEqual({ tenant: TENANT, dropped: 0, lines: [] });
     expect((await send(body())).status).toBe(201);
     expect((await tenantLog(s)).map((line) => line.decision)).toEqual(['allowed']);
   });

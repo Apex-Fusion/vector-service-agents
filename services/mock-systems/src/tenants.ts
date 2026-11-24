@@ -3,6 +3,7 @@
 // `put` replaces a tenant only when the request permits a reset. A reset empties the tenant's writes and log.
 // A write is a typed decision: it is a record, or a refusal that names the rule (a second order for one purchase order number, a second entry for one request number).
 // A record holds who wrote it (`by`): the verified identity of the caller, never a token, a proof or a certificate.
+import type { Digest } from '@vsa/usecase-kit/protocol';
 import { pass, refuse } from './errors.ts';
 import type { ErrorCode, Outcome } from './errors.ts';
 import type { IntakeRequest, PurchaseOrder, RankingRequest, SubmissionRequest, SupplierOrderRequest } from './documents.ts';
@@ -41,6 +42,13 @@ export interface LogLine {
   readonly code: ErrorCode | null;
   readonly rule: string | null;
   readonly token_status: TokenStatusNote | null;
+}
+
+type OperatorLogLine = LogLine & { proposal_digest?: Digest };
+interface LogView<Line extends LogLine = LogLine> {
+  tenant: string;
+  dropped: number;
+  lines: Line[];
 }
 
 export interface PoRecord { record_id: string; po_number: string; document: PurchaseOrder; recorded_at: string; by: Actor }
@@ -100,6 +108,8 @@ export class Tenant {
   readonly #intakeKeys = new Set<string>();
   readonly #rankings: RankingRecord[] = [];
   readonly #lines: LogLine[] = [];
+  // Keep digests out of the public rows. Eviction releases the old row and its digest.
+  #proposalDigests: WeakMap<LogLine, Digest> | undefined;
   #dropped = 0;
 
   constructor(id: string, organisations: Organisations, seed: Seed, seededAt: number) {
@@ -183,16 +193,29 @@ export class Tenant {
   // ── the log ──
 
   /** Adds one line. A tenant keeps the last MAX_LOG_LINES lines, and it counts the lines that it dropped, so that a reader sees a loss. */
-  log(line: LogLine): void {
+  log(line: LogLine, digest?: Digest): void {
     this.#lines.push(line);
+    if (digest !== undefined) (this.#proposalDigests ??= new WeakMap()).set(line, digest);
     if (this.#lines.length > MAX_LOG_LINES) {
       this.#lines.shift();
       this.#dropped += 1;
     }
   }
 
-  logView(): { tenant: string; dropped: number; lines: LogLine[] } {
+  logView(): LogView {
     return { tenant: this.id, dropped: this.#dropped, lines: structuredClone(this.#lines) };
+  }
+
+  /** Adds private ranking digests to a copy of the log. The caller must have the operator token. */
+  operatorLogView(): LogView<OperatorLogLine> {
+    const view: LogView<OperatorLogLine> = this.logView();
+    const digests = this.#proposalDigests;
+    if (digests === undefined) return view;
+    for (let index = 0; index < this.#lines.length; index += 1) {
+      const digest = digests.get(this.#lines[index]!);
+      if (digest !== undefined) view.lines[index]!.proposal_digest = digest;
+    }
+    return view;
   }
 
   /** How many entries of each part of the seed the tenant holds. */
