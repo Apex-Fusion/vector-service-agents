@@ -57,6 +57,13 @@ export interface PublicResultProjection {
   readonly decisionNames: readonly string[];
 }
 
+export interface ReceiptAttribution {
+  readonly record_ref: string;
+  readonly submitted_ref: string;
+  readonly submitted_at_ms: number;
+  readonly revocation: { readonly record_ref: string; readonly invalid_from_ms: number | null; readonly invalidates_submission: boolean } | null;
+}
+
 export interface ApprovalRead {
   readonly entry: ApprovalEntry; readonly hire: string; readonly state: 'active' | 'revoked' | 'expired'; readonly type: number;
   readonly subject: string; readonly digest: string; readonly issued_at: number; readonly valid_until: number;
@@ -117,6 +124,8 @@ export interface Assembly {
   readonly committedApprovals: ReadonlyMap<string, CommittedApproval | null>;
   /** Exact execute steps. An absent key is unproven, not evidence of an explicit null approval. */
   readonly committedExecutes: ReadonlyMap<string, CommittedExecute>;
+  /** Attribution by original hire escrow. A later revocation is separate from the historical signature. */
+  readonly receiptAttributions: ReadonlyMap<string, ReceiptAttribution>;
   /** Only populated for a lifecycle run, and only after the node confirms every named fact. */
   readonly lifecycleTransactions: ReadonlySet<string>;
   /** Tests the payment of this hire against the delegations of the record. This read does not submit a transaction. */

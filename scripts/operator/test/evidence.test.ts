@@ -10,6 +10,7 @@ import { encodePlutusDataHex } from '../../../packages/vector-read/src/vendored/
 import type { PlutusData } from '../../../packages/vector-read/src/vendored/shared/cbor/plutus-data.ts';
 import { plutusAddressToData as vendoredAddressData } from '../../../packages/vector-read/src/vendored/shared/cbor/address.ts';
 import { encodeJuryDatum } from '../../../packages/buyer-core/src/vendored/mcp/jury-codec.ts';
+import { tombstone } from '../../../packages/buyer-core/src/vendored/mcp/identity-rules.ts';
 import { CONFIG_TOKEN_NAME } from '../../../packages/buyer-core/src/vendored/mcp/identity-deployment.ts';
 import { documentHash, documentMetadata } from '../../../packages/buyer-core/src/vendored/mcp/jury-document.ts';
 import { makeProposal } from '../../../packages/usecase-kit/src/protocol/messages.ts';
@@ -35,6 +36,7 @@ import type { EvidenceModule } from '../lib/evidence/types.ts';
 import type { UseCase } from '../lib/contract.ts';
 import data from '../usecases/inventory-reorder.ts';
 import { PackHosted } from './support/pack-hosted.ts';
+import { ReceiptHistoryWorld } from './support/receipt-history-world.ts';
 import { ScriptedNode, hashOf, taskWorld } from './support/task-world.ts';
 import type { MachineLine, TaskWorld } from './support/task-world.ts';
 
@@ -102,6 +104,8 @@ interface Scenario {
   reclaimFlow?: ReclaimFlow;
   receiptDiscovery?: 'missing' | 'wrong_escrow';
   release?: 'missing' | 'false_label' | 'early' | 'failed';
+  receiptRevoked?: boolean;
+  staleReceipt?: string;
   historicalHold?: { badChallenge?: boolean; badCase?: boolean; badRecord?: boolean; badDocument?: boolean };
 }
 
@@ -244,6 +248,8 @@ async function go(s: Scenario, argv: string[] = ['run', '--run', s.label, '--num
   const posted: Row[] = [];
   const historic: Row[] = [];
   const liveEscrows: Utxo[] = [];
+  const receiptHistory = new ReceiptHistoryWorld(rows, historic, S0);
+  const submissions: Array<{ agent: string; step: string; output: Utxo; seconds: number; expiry: number; spent: boolean }> = [];
   const entries: Obj[] = [];
   const metadata = new Map<string, unknown>();
   const row = (hash: string, minute: number, inputs: TxIo[], more: Partial<TxRow> = {}): void => {
@@ -326,11 +332,12 @@ async function go(s: Scenario, argv: string[] = ['run', '--run', s.label, '--num
       row(submit, one.minute + 2, [claimInput], { outputs: [input(`${submit}#0`, ESCROW_CREDENTIAL)],
         plutus_contracts: [spend(ESCROW_CREDENTIAL, claimInput, 1, [{ bytes: redeemerHash }])] });
       const submitted = { ...datum, state: 'Submitted' as const, submitted_at: submitAt, result_receipt_hash: hash };
-      if (one.liveSubmitted === undefined) historic.push(escrow(submit, submitted));
-      else {
+      const output = escrowUtxo(submit, submitted, { address: MAINNET.escrow.address });
+      submissions.push({ agent: AGENTS[agent], step: one.step, output, seconds: submitAt / 1000 - 1, expiry: submitAt,
+        spent: one.liveSubmitted === undefined || one.liveSubmitted === 'spent' });
+      if (one.liveSubmitted !== undefined) {
         const nodeDatum = one.liveSubmitted === 'different' ? { ...submitted, result_receipt_hash: h('another live receipt') } : submitted;
         liveEscrows.push(escrowUtxo(submit, nodeDatum, { address: MAINNET.escrow.address }));
-        historic.push({ ...escrow(submit, submitted), is_spent: one.liveSubmitted === 'spent' });
       }
       confirmed.add(submit);
     }
@@ -422,8 +429,23 @@ async function go(s: Scenario, argv: string[] = ['run', '--run', s.label, '--num
   const held = { status: { type: 'Suspended' as const, holds: [{ by: { type: 'Script' as const, hash: 'ab'.repeat(28) }, reason: JURY_HOLD_REASON, since: holdSince, until: holdSince + 7 * DAY }] } };
   const listed = (agent: 'reorder-agent' | 'order-desk'): string[] => (s.recordsHoldKeys ? [SUPPLIERS[agent].publicKeyHex] : []);
   const heldAgent = s.holdAgent ?? 'order-desk';
-  utxos.push({ ...recordUtxo(AGENTS['order-desk'], liveRecord(s.deskHold === 'held' && heldAgent === 'order-desk' ? held : {}, listed('order-desk'))), txHash: h('order desk record output') });
-  utxos.push({ ...recordUtxo(AGENTS['reorder-agent'], liveRecord(s.deskHold === 'held' && heldAgent === 'reorder-agent' ? held : {}, listed('reorder-agent'))), txHash: h('reorder agent record output') });
+  for (const [agent, id] of Object.entries(AGENTS)) {
+    const name = agent === 'order-desk' ? 'order desk record output' : 'reorder agent record output';
+    const keys = listed(agent === 'order-desk' ? 'order-desk' : 'reorder-agent');
+    const initial = liveRecord({}, keys);
+    const heldNow = s.deskHold === 'held' && heldAgent === agent;
+    const revoked = s.receiptRevoked && agent === 'order-desk';
+    const current = revoked ? tombstone(initial, { type: 'Revoked', by: { type: 'ControllerSet' }, reason: 1,
+      at: CAPTURE_MS + 5 * 3_600_000, invalidFrom: CAPTURE_MS, successor: null }) : heldNow ? liveRecord(held, keys) : initial;
+    const head = { ...recordUtxo(id, current), txHash: h(name) };
+    utxos.push(head);
+    const registered = heldNow || revoked ? { ...recordUtxo(id, initial), txHash: h(`original ${name}`) } : head;
+    const afterSubmits = Math.max(S0 - 300, ...submissions.filter((one) => one.agent === id).map((one) => one.seconds)) + 120;
+    const changedAt = revoked ? S0 + 5 * 3600 : Math.max(afterSubmits, Math.ceil(holdSince / 1000));
+    receiptHistory.record(id, [{ output: registered, seconds: S0 - 7200 },
+      ...(registered === head ? [] : [{ output: head, seconds: changedAt, redeemer: revoked ? 4 : 1 }])]);
+  }
+  for (const s1 of submissions) receiptHistory.submitted(s1.agent, s1.output, s1.seconds, s1.expiry, s1.spent, s.staleReceipt === s1.step);
   confirmed.add(h('order desk record output'));
   confirmed.add(h('reorder agent record output'));
   if (kind(s) === 'failure') {
@@ -530,6 +552,7 @@ async function go(s: Scenario, argv: string[] = ['run', '--run', s.label, '--num
   for (const hash of s.unconfirmed) confirmed.delete(hash);
   // -- the fakes
   const ledger = ledgerWorld(utxos, { txs: rows, utxoInfo: [...posted, ...historic] });
+  Object.assign(ledger.provider, { getNetworkTip: receiptHistory.getNetworkTip });
   const calls: Outcome['calls'] = [];
   const mock = (url: string): Response => {
     if (s.mockStatus !== 200) return new Response('{"error":"internal"}', { status: s.mockStatus });
@@ -559,7 +582,7 @@ async function go(s: Scenario, argv: string[] = ['run', '--run', s.label, '--num
       const query: { _tx_hashes: string[] } = JSON.parse(init.body);
       return Response.json(query._tx_hashes.flatMap((tx_hash) => metadata.has(tx_hash) ? [{ tx_hash, metadata: { '22084': metadata.get(tx_hash) } }] : []));
     }
-    if (new URL(url).origin === KOIOS) return ledger.koios.f(url, init);
+    if (new URL(url).origin === KOIOS) return receiptHistory.answer(url, init) ?? ledger.koios.f(url, init);
     throw new Error('an unexpected request');
   }) as typeof fetch;
   const node = new ScriptedNode(w.world);
@@ -1510,7 +1533,23 @@ describe('check 3: the receipt of a hire is read against the escrow and the key 
   it('refuses a receipt when no key of the record of the agent hashes to the supplier of the escrow', async () => {
     const s = scenario('clean');
     s.recordsHoldKeys = false;
-    await refuses(s, ['hashes to the supplier_pkh of the escrow, so the signature of the receipt cannot be verified']);
+    await refuses(s, ['the referenced record does not list one matching transaction key']);
+  });
+  it('keeps the historical signer after revocation and reports invalidation separately', async () => {
+    const s = scenario('clean');
+    s.receiptRevoked = true;
+    const r = await go(s);
+    expect(r.err).toBe('');
+    expect(r.exit).toBe(0);
+    expect(JSON.parse(r.read(publicFile())!)).toMatchObject({ hires: expect.arrayContaining([
+      expect.objectContaining({ step: 'order-desk', verdict: 'VERIFIED', receipt_attribution: {
+        record_ref: ref('original order desk record output'), submitted_ref: `${txOf('order-desk', 'submit')}#0`,
+        submitted_at_ms: CAPTURE_MS + 33 * 60_000,
+        revocation: { record_ref: ref('order desk record output'), invalid_from_ms: CAPTURE_MS, invalidates_submission: true },
+      } }),
+    ]) });
+    s.staleReceipt = 'order-desk';
+    await refuses(s, ['the Submit did not reference the authentic record in effect at its ledger position']);
   });
   it('refuses a different, correctly signed receipt for the same settled hire before it checks approval use', async () => {
     const s = scenario('clean');
