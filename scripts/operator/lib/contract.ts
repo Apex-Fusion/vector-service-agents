@@ -7,7 +7,7 @@ import type { HostedTools } from '../../checks/lib/hosted.ts';
 import type { NetworkGate } from '../../checks/lib/land.ts';
 import type { Clock, NodeAccess, Output } from '../../checks/lib/ports.ts';
 import type { NetworkSpec } from '../../checks/lib/settings.ts';
-import type { StateFile } from '../../checks/lib/state.ts';
+import type { StateFile, StepRecord } from '../../checks/lib/state.ts';
 import type { TxFacts } from '../../checks/lib/txfacts.ts';
 import type { Exposure, GoFile, IrreversibleTag } from './approval.ts';
 import type { DohLookup } from './dns.ts';
@@ -243,6 +243,17 @@ export interface OfflineTaskInput<Extra> {
 }
 export interface OfflineTaskResult { readonly message: string; readonly result: Readonly<Record<string, unknown>> }
 
+/** Read-only status does not get the registry, transaction session, or a file writer. Its sources open only when it asks for them. */
+export interface StatusTaskInput {
+  readonly run: string;
+  readonly use: UseCase;
+  readonly clock: Clock;
+  readFacts(): Readonly<Facts> | null;
+  readState(): { readonly steps: Readonly<Record<string, StepRecord>>; readonly lines: readonly string[] };
+  readEvidence(): readonly Record<string, unknown>[];
+  readChain(): Promise<Pick<ChainAccess, 'deployment' | 'provider'>>;
+}
+
 export type TaskCommand = ResultCommand;
 export type ResubmitSession<Extra> = Pick<TaskSession<Extra>, 'task' | 'use' | 'extra' | 'settings' | 'go' | 'clock' | 'chain' | 'fetchImpl' | 'registry' | 'facts' | 'out' | 'networkResult'> & {
   readonly node: Pick<NodeAccess, 'resolveInputs' | 'txStatus'>;
@@ -273,6 +284,7 @@ export interface TaskDefinition<Extra = unknown> {
   /** Runs only before a resend. It reads the current flight, but never receives its signed bytes. */
   beforeResubmit?(session: ResubmitSession<Extra>, command: TaskCommand, flight: ResubmitFlight): Promise<void>;
   status?(session: TaskSession<Extra>): Promise<readonly string[]>;
+  inspectStatus?(input: StatusTaskInput): Promise<readonly string[]>;
   /** The public `result` object of the `operator-result:` line. Public values only. */
   result?(session: TaskSession<Extra>): Readonly<Record<string, unknown>>;
 }

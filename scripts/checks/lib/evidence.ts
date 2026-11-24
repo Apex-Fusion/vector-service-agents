@@ -1,7 +1,7 @@
 // scripts/checks/lib/evidence.ts - the evidence file of a check: what each confirmed step shows.
 // One JSON file for each check, with mode 600, that only grows. A step that the ledger refuses holds the evaluation error and the transaction body. A step that a tool refuses
 // holds the message of the tool. A refusal says whether the check expected it. No entry holds a key, a signature or a token: a step writes what it shows, as facts.
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, statSync } from 'node:fs';
 import { writeFileAtomically } from './files.ts';
 import type { WriteIo } from './files.ts';
 import { jsonSafe } from './format.ts';
@@ -53,6 +53,19 @@ function checkEntry(entry: EvidenceEntry): void {
   if (entry.status === 'tool_refused' && entry.message.trim() === '') throw new EvidenceError(`the entry of ${entry.step} has no message: a step that a tool refuses holds the message of the tool`);
 }
 
+function readEvidence(path: string, header: EvidenceHeader, mode: number): EvidenceDocument {
+  if (process.platform !== 'win32' && (mode & 0o077) !== 0) throw new EvidenceError(`${path} has mode ${mode.toString(8)} and other users can read it: set mode 600 on it`);
+  let parsed: unknown;
+  try { parsed = JSON.parse(readFileSync(path, 'utf8')); } catch { throw new EvidenceError(`${path} is not JSON: repair it, or move it away`); }
+  if (!isObject(parsed) || parsed.format !== EVIDENCE_FORMAT || !Array.isArray(parsed.entries) || typeof parsed.started_at !== 'string') {
+    throw new EvidenceError(`${path} is not an evidence file of this format`);
+  }
+  for (const field of ['check', 'network', 'record'] as const) {
+    if (parsed[field] !== header[field]) throw new EvidenceError(`${path} is the evidence of another ${field} (${String(parsed[field])}), and this run is for ${header[field]}`);
+  }
+  return parsed as unknown as EvidenceDocument;
+}
+
 export class EvidenceFile {
   readonly path: string;
   readonly #io: Partial<EvidenceIo>;
@@ -72,17 +85,17 @@ export class EvidenceFile {
       writeFileAtomically(path, `${JSON.stringify(document, null, 2)}\n`, io);
       return new EvidenceFile(path, document, io);
     }
-    const mode = statSync(path).mode & 0o777;
-    if (process.platform !== 'win32' && (mode & 0o077) !== 0) throw new EvidenceError(`${path} has mode ${mode.toString(8)} and other users can read it: set mode 600 on it`);
-    let parsed: unknown;
-    try { parsed = JSON.parse(readFileSync(path, 'utf8')); } catch { throw new EvidenceError(`${path} is not JSON: repair it, or move it away`); }
-    if (!isObject(parsed) || parsed.format !== EVIDENCE_FORMAT || !Array.isArray(parsed.entries) || typeof parsed.started_at !== 'string') {
-      throw new EvidenceError(`${path} is not an evidence file of this format`);
-    }
-    for (const field of ['check', 'network', 'record'] as const) {
-      if (parsed[field] !== header[field]) throw new EvidenceError(`${path} is the evidence of another ${field} (${String(parsed[field])}), and this run is for ${header[field]}`);
-    }
-    return new EvidenceFile(path, parsed as unknown as EvidenceDocument, io);
+    return new EvidenceFile(path, readEvidence(path, header, statSync(path).mode & 0o777), io);
+  }
+
+  /** Reads existing entries without creating the file. An absent file is not an unreadable file. */
+  static peek(path: string, header: EvidenceHeader): readonly Record<string, unknown>[] | null {
+    const found = lstatSync(path, { throwIfNoEntry: false });
+    if (found === undefined) return null;
+    if (!found.isFile()) throw new EvidenceError(`${path} is not a regular evidence file`);
+    const { entries } = readEvidence(path, header, found.mode & 0o777);
+    if (!entries.every(isObject)) throw new EvidenceError(`${path} has an invalid evidence entry`);
+    return entries;
   }
 
   entries(): readonly Record<string, unknown>[] {

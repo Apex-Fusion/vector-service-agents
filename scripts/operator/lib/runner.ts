@@ -17,7 +17,7 @@
 // One run lock file in the state folder keeps two runs from writing the state, the facts and the cap file at the same time.
 // Exit: 0 the step is done, shown or finished; 1 a step failed, or an error came after the run signed a transaction; 2 a flag, a setting, a key, a file, an approval, a guard or a precondition stopped the
 // run before a signature; 3 the hosted tools cannot be used; 4 a wait is open: the output says how long is left. The last line of stdout is the machine line.
-import { closeSync, existsSync, openSync, unlinkSync, writeSync } from 'node:fs';
+import { closeSync, existsSync, openSync, statSync, unlinkSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 import { collateralAdvice, isCollateralOutput } from '../../checks/lib/collateral.ts';
 import { EvidenceError, EvidenceFile } from '../../checks/lib/evidence.ts';
@@ -368,27 +368,31 @@ export function reportError(err: unknown, out: Output, context: { landed?: reado
 
 // ---- status ----
 
-/**
- * The lines of `status`: the task and the use case, the state file, each step with its state, the transaction in flight, the next step, the network guard, and for each key of the registry that
- * the task loaded: the wallet with its outputs and the advice for a wallet that needs a collateral output and has none. Then the lines of the task.
- */
-export async function statusLines<Extra>(def: TaskDefinition<Extra>, session: TaskSession<Extra>): Promise<string[]> {
-  const snapshot = session.state.snapshot();
-  const steps = def.steps(session.use, session.flags);
-  const lines = [`task ${def.name}: ${def.title}`, `use case ${session.use.name}, network ${session.settings.network.name}`, `state file ${session.state.path}`, 'steps:'];
+/** Shows saved steps and a pending transaction without showing its signed bytes. */
+function statusStateLines(path: string, steps: readonly string[], snapshot: CheckState | null, lookup: (step: string) => StepRecord | undefined): string[] {
+  const lines = [`state file ${path}`, 'steps:'];
   for (const step of steps) {
-    const record = recordOf(session.state, step);
+    const record = lookup(step);
     lines.push(`  ${step.padEnd(16)} ${record === undefined ? 'not run' : `confirmed ${record.confirmed_at}${record.tx_hash === null ? '' : `, transaction ${record.tx_hash}`}, ${record.verified_at === null ? 'not verified' : 'verified'}`}`);
   }
-  for (const key of Object.keys(snapshot.notes).filter((note) => note.startsWith('part.') && !steps.includes(note.slice(5)))) {
-    const part = snapshot.notes[key];
+  const notes = snapshot?.notes ?? {};
+  for (const key of Object.keys(notes).filter((note) => note.startsWith('part.') && !steps.includes(note.slice(5)))) {
+    const part = notes[key];
     const hash = part !== null && typeof part === 'object' && 'tx_hash' in part && typeof part.tx_hash === 'string' ? part.tx_hash : '?';
     lines.push(`  ${key.slice(5).padEnd(16)} confirmed (a part of a step), transaction ${hash}`);
   }
-  const flight = snapshot.in_flight;
+  const flight = snapshot?.in_flight ?? null;
   lines.push(flight === null ? 'in flight: nothing' : `in flight: the step ${flight.step}, transaction ${flight.tx_hash}, signed at ${iso(flight.signed_at)}, may land until ${iso(flight.valid_to)}`);
-  const next = steps.find((step) => recordOf(session.state, step) === undefined);
+  const next = steps.find((step) => lookup(step) === undefined);
   lines.push(`next: ${next === undefined ? 'every step is confirmed; run cleanup to take back what can come back' : next}`);
+  return lines;
+}
+
+/** Status of a keyed task also reads its network guard, wallets, and task-specific lines. */
+export async function statusLines<Extra>(def: TaskDefinition<Extra>, session: TaskSession<Extra>): Promise<string[]> {
+  const steps = def.steps(session.use, session.flags);
+  const lines = [`task ${def.name}: ${def.title}`, `use case ${session.use.name}, network ${session.settings.network.name}`,
+    ...statusStateLines(session.state.path, steps, session.state.snapshot(), (step) => recordOf(session.state, step))];
   if (def.needs.chain) {
     const gate = session.networkResult();
     lines.push(gate === null ? 'network guard: not run' : `network guard: ${gate.ok ? 'ok' : 'FAIL'}, ${gate.message}`);
@@ -721,14 +725,41 @@ async function execute<Extra>(def: TaskDefinition<Extra>, argv: readonly string[
   const args = parseArguments(def, argv);
   ctx.command = args.command;
   ctx.mode = args.mode;
-  const settings: OperatorSettings = parseOperatorSettings(deps.env);
-  ctx.lock = takeRunLock(join(settings.stateDir, RUN_LOCK), `${def.name} ${args.command} in ${args.mode} mode, started ${iso(clock.now())}`);
+  const inspect = args.command === 'status' ? def.inspectStatus : undefined;
+  const settings = inspect === undefined ? parseOperatorSettings(deps.env) : parseOperatorSettings(deps.env, {}, { readOnly: true });
+  const initialized = inspect === undefined || statSync(settings.stateDir, { throwIfNoEntry: false }) !== undefined;
+  if (initialized) ctx.lock = takeRunLock(join(settings.stateDir, RUN_LOCK), `${def.name} ${args.command} in ${args.mode} mode, started ${iso(clock.now())}`);
   const use = await (deps.loadUseCase ?? loadUseCase)(args.useCase ?? settings.useCase);
-  const extra = def.parse(deps.env, settings, use, args.flags, args.command);
   const base = join(settings.stateDir, args.run === null ? def.name : `${def.name}.${args.run}`);
   const identity = { check: def.name, network: settings.network.name, record: args.run === null ? use.name : `${use.name}:${args.run}` };
   const factsPath = join(settings.stateDir, 'facts.json');
   const factsIdentity = { useCase: use.name, network: settings.network.name };
+  if (inspect !== undefined) {
+    if (args.run === null) throw new FlagError(`${def.name} needs --run <label>`);
+    const lines = await inspect({
+      run: args.run, use, clock,
+      readFacts: () => initialized ? FactsFile.open(factsPath, factsIdentity).read() : null,
+      readState: () => {
+        const path = `${base}.state.json`;
+        const snapshot = initialized ? StateFile.peek(path, identity) : null;
+        const steps = snapshot?.steps ?? {};
+        return { steps, lines: statusStateLines(path, def.steps(use, args.flags), snapshot, (step) => steps[step]) };
+      },
+      readEvidence: () => initialized ? EvidenceFile.peek(`${base}.evidence.json`, identity) ?? [] : [],
+      async readChain() {
+        const connections = ctx.connections ??= connect(def, settings, deps);
+        const gate = await connections.network.guard();
+        if (!gate.ok) throw new PreconditionError(`the node is not shown to be on the network of the run (${gate.message})`);
+        return connections.chain;
+      },
+    });
+    out.out(`task ${def.name}: ${def.title}`);
+    out.out(`use case ${use.name}, network ${settings.network.name}`);
+    if (!initialized) out.out('the state folder is not initialized; there are no saved observations');
+    for (const line of lines) out.out(line);
+    return { exit: 0, outcome: 'done' };
+  }
+  const extra = def.parse(deps.env, settings, use, args.flags, args.command);
   if (def.offline?.matches(extra)) {
     if (args.command !== 'run' || args.mode !== 'dry') throw new FlagError('the local document writer takes only run without --submit');
     const flight = StateFile.peek(`${base}.state.json`, identity)?.in_flight;
