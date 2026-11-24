@@ -1,0 +1,7 @@
+{
+  "vendors": [
+    { "vendor_id": "V-1001", "organisation": "alfa.example.org", "name": "Supplier Alfa (synthetic)", "on_time_delivery_rate": 0.97, "defect_rate": 0.01, "years_as_vendor": 6, "payment_terms_days": 30, "certifications": ["ISO 9001"], "last_audit": "2026-03-14" },
+    { "vendor_id": "V-1002", "organisation": "bravo.example.org", "name": "Supplier Bravo (synthetic)", "on_time_delivery_rate": 0.92, "defect_rate": 0.03, "years_as_vendor": 4, "payment_terms_days": 45, "certifications": ["ISO 9001"], "last_audit": "2026-01-22" },
+    { "vendor_id": "V-1003", "organisation": "charlie.example.org", "name": "Supplier Charlie (synthetic)", "on_time_delivery_rate": 0.85, "defect_rate": 0.06, "years_as_vendor": 2, "payment_terms_days": 60, "certifications": [], "last_audit": "2025-11-05" }
+  ]
+}
