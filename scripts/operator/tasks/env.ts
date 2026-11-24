@@ -413,15 +413,17 @@ const task: TaskDefinition<Extra> = {
     };
     const dry = session.mode === 'dry';
     const { plans, problems } = planAll(ctx);
-    session.extra.outcome = {
-      files: plans.map((plan) => plan.label), made: plans.filter((plan) => !plan.existed).map((plan) => plan.label), linesSet: plans.reduce((total, plan) => total + plan.set.length, 0),
-    };
     if (problems.length > 0) {
       if (dry) for (const plan of plans) for (const line of describePlan(plan, true)) session.out.out(line);
       stop(session.out, problems, dry);
     }
+    // The machine line tells what the run did, so it holds the files only when the run is whole: a dry run that has no problem, and a run that wrote and checked its files.
+    const outcome: Outcome = {
+      files: plans.map((plan) => plan.label), made: plans.filter((plan) => !plan.existed).map((plan) => plan.label), linesSet: plans.reduce((total, plan) => total + plan.set.length, 0),
+    };
     if (dry) {
       for (const plan of plans) for (const line of describePlan(plan, true)) session.out.out(line);
+      session.extra.outcome = outcome;
       return { kind: 'dry' };
     }
     for (const plan of plans) {
@@ -431,7 +433,7 @@ const task: TaskDefinition<Extra> = {
     const written = verifyWritten(ctx, plans);
     if (written.length > 0) stop(session.out, written, false);
     for (const plan of plans) for (const line of describePlan(plan, false)) session.out.out(line);
-    const outcome = session.extra.outcome;
+    session.extra.outcome = outcome;
     return { kind: 'done', message: `env files: ${outcome.made.length} made, ${outcome.linesSet} line${outcome.linesSet === 1 ? '' : 's'} set. A container reads its env files when it is created: create it again by the restart rule.` };
   },
   async cleanup() {

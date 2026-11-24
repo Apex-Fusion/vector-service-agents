@@ -301,6 +301,8 @@ describe('a file that exists', () => {
       expect(await submit(e)).toBe(2);
       const errors = e.w.screen.errorText;
       expect(errors).toContain(file);
+      expect(e.w.machine()).toMatchObject({ outcome: 'stopped', exit: 2 });
+      expect(e.w.machine().result).toEqual({});
       expect(errors).toContain(name);
       expect(errors).toContain('never overwrites');
       expect(`${errors}\n${e.w.allText()}`).not.toContain(value);
