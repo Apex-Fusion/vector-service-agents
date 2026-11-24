@@ -591,6 +591,13 @@ function scan(path: string, source: string): { forbidden: readonly string[]; def
   const defaults: string[] = [];
   const claimFile = path === CLAIM_FILE;
   const declared = DEFAULTS[path];
+  const program = parseSource(source);
+  // Exempt only the initializer of the exported module-level claim table.
+  const claimTables = claimFile ? astNodes(program.body).flatMap(({ type, declaration }) =>
+    type === 'ExportNamedDeclaration' && isAst(declaration) && declaration.type === 'VariableDeclaration' && declaration.kind === 'const'
+      ? astNodes(declaration.declarations).filter(({ id }) => symbolOf(id) === 'CLAIM_OF_KIND')
+      : []) : [];
+  const claimInitializer = claimTables.length === 1 ? claimTables[0]?.init : undefined;
   function add(node: Ast, word: string): void {
     forbidden.add(`${path}:${source.slice(0, node.start).split('\n').length}: ${word}`);
   }
@@ -613,10 +620,9 @@ function scan(path: string, source: string): { forbidden: readonly string[]; def
     return true;
   }
   function walk(node: Ast, parent: Ast | null, field: string): void {
+    if (node === claimInitializer) return;
     if (namedBindings(node)) return;
     const init = field === 'init' && parent?.type === 'VariableDeclarator' && isAst(parent.id) ? parent.id.name : undefined;
-    // This initializer maps all kit agent kinds to their claim constants. Scan the rest of the file.
-    if (claimFile && init === 'CLAIM_OF_KIND') return;
     if (declared !== undefined && init === declared[0] && node.type === 'Literal' && node.value === declared[1]) {
       defaults.push(`${path}:${declared[0]}=${declared[1]}`);
       return;
@@ -634,7 +640,7 @@ function scan(path: string, source: string): { forbidden: readonly string[]; def
       else if (Array.isArray(child)) for (const member of child) if (isAst(member)) walk(member, node, key);
     }
   }
-  walk(parseSource(source), null, '');
+  walk(program, null, '');
   return { forbidden: [...forbidden], defaults };
 }
 
@@ -675,6 +681,13 @@ it('allows only the six claim imports and the claim table initializer', () => {
   expect(scan(CLAIM_FILE, imports.replace(' }', ', unrelated }')).forbidden).toEqual([`${CLAIM_FILE}:1: unexpected claim import unrelated`]);
   expect(scan(CLAIM_FILE, "import { INTAKE_CLAIM } from './another.ts';").forbidden).toEqual([`${CLAIM_FILE}:1: INTAKE_CLAIM`]);
   expect(scan(CLAIM_FILE, `${imports}\n${table}\nconst misuse = INTAKE_CLAIM;`).forbidden).toEqual([`${CLAIM_FILE}:3: INTAKE_CLAIM`]);
+});
+
+it('scans a nested claim table with the same name as the exported table', () => {
+  const kind = CASES[1]!.agents[1]!.kind;
+  const source = `export const CLAIM_OF_KIND = Object.freeze({ '${kind}': INTAKE_CLAIM });\n`
+    + `function make() { const CLAIM_OF_KIND = { '${kind}': 1 }; return CLAIM_OF_KIND; }`;
+  expect(scan(CLAIM_FILE, source).forbidden).toEqual([`${CLAIM_FILE}:2: ${kind}`]);
 });
 
 it('detects each type of case-only word and permits a word shared between cases', () => {
