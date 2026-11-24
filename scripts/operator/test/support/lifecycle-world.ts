@@ -120,6 +120,7 @@ export async function lifecycleWorld() {
   const supplier = registry.addressOf(SUPPLIER);
   const retirement = archivedSpend(advertTx, posted, supplier, advertFee, w.chain.deployment.advert.hash, 2);
   closeouts.set(advertTx, retirement);
+  const indexedAdverts = new Map<string, Utxo>();
   const values = (rows: typeof retirement.inputs) => rows.map((row) => ({
     ref: formatOutRef(row.tx_hash, row.tx_index), address: row.payment_addr.bech32, lovelace: BigInt(row.value),
   }));
@@ -161,7 +162,14 @@ export async function lifecycleWorld() {
         return [{ ...spentRow(out), is_spent: spent }];
       }));
     }
-    if (route === '/api/v1/credential_utxos') return Response.json([]);
+    if (route === '/api/v1/credential_utxos') {
+      const request = JSON.parse(String(init?.body)) as { _payment_credentials?: string[]; _extended?: boolean };
+      if (request._extended !== true || request._payment_credentials?.length !== 1) throw new Error('Unexpected credential output request.');
+      const [credential] = request._payment_credentials;
+      if (credential === w.chain.deployment.advert.hash) return Response.json([...indexedAdverts.values()].map(spentRow));
+      if (credential === claimScript) return Response.json([]);
+      throw new Error('Unexpected script credential.');
+    }
     if (route === '/api/v1/asset_history') {
       const payload = JSON.parse(String(init?.body));
       if (payload._asset_policy !== claimScript || payload._asset_name !== CLAIM_TOKEN) throw new Error('Unexpected claim token history request.');
@@ -232,5 +240,5 @@ export async function lifecycleWorld() {
   go('first');
   setAdvertReceipt(true);
   return { ...rig, bravo, successor, successorId, successorDid, posted, originalClaim, history, advert, go, run, runBare, state, evidence, override, builds, build,
-    calls: schema.calls, setCredit, replace, closeouts, advertTx, claimTx, setAdvertReceipt, setClaimBurn, closeMovedClaim };
+    calls: schema.calls, setCredit, replace, closeouts, advertTx, indexedAdverts, claimTx, setAdvertReceipt, setClaimBurn, closeMovedClaim };
 }

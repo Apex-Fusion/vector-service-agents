@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { DAYS_7_MS } from '../../../packages/buyer-core/src/vendored/mcp/identity-rules.ts';
 import { claimUtxo, CLAIM_TOKEN } from '../../../packages/buyer-core/test/fixtures/jury-world.ts';
+import { plutusAddressToBech32 } from '../../../packages/vector-read/src/index.ts';
 import { iso } from '../../checks/lib/format.ts';
 import { StateFile } from '../../checks/lib/state.ts';
 import { factsOf } from '../../checks/lib/txfacts.ts';
@@ -317,6 +318,32 @@ describe('retirement and return', () => {
     expectOnly(f, 3, [SECOND, 'fee']);
   });
 
+  it('checks the advert script at other stake addresses and ignores a spent indexer candidate', async () => {
+    const f = await lifecycleWorld();
+    await complete(f);
+    const { address: deployed, hash } = f.w.chain.deployment.advert;
+    const address = plutusAddressToBech32({ paymentCredential: { type: 'Script', hash },
+      stakeCredential: { type: 'Inline', credential: { type: 'VerificationKey', hash: f.accountableHash } } }, 1);
+    expect(address).not.toBe(deployed);
+    const output = { ...f.advert(hashOf('advert at another stake address'), { status: 'Retired' }), address };
+    const ref = refOf(output);
+    f.indexedAdverts.set(ref, output);
+    f.w.world.chain.held.push(output);
+
+    f.w.node.inputReads.length = 0;
+    expect(await f.run('--submit')).toBe(2);
+    expect(f.w.screen.errorText).toContain('still has an unspent advert');
+    expect(f.w.node.inputReads).toContainEqual([ref]);
+    expect(asked(f, TOOLS.retire)).toHaveLength(0);
+    expect(submits(f)).toBe(3);
+
+    f.w.world.chain.held = f.w.world.chain.held.filter((out) => refOf(out) !== ref);
+    f.w.node.inputReads.length = 0;
+    expect(await f.run('--submit'), f.w.screen.errorText).toBe(0);
+    expect(f.w.node.inputReads).toContainEqual([ref]);
+    expect(submits(f)).toBe(4);
+  });
+
   it('requires a verified RetireAdvert receipt and actual supplier credit', async () => {
     const f = await lifecycleWorld();
     await complete(f);
@@ -359,8 +386,30 @@ describe('retirement and return', () => {
     expect(asked(f, TOOLS.retire)).toHaveLength(0);
     expect(submits(f)).toBe(3);
     f.closeMovedClaim();
+    f.store.put('claims', ['clean', TARGET], original, { replace: true });
+    expect(await f.run('--submit')).toBe(2);
+    expect(f.w.screen.errorText).toContain('does not show WithdrawClaim on the matching input');
+    expect(asked(f, TOOLS.retire)).toHaveLength(0);
+    f.store.put('claims', ['clean', TARGET], { ...original, withdrawTx: 'not open' }, { replace: true });
     expect(await f.run('--submit'), f.w.screen.errorText).toBe(0);
     expect(f.w.facts().claims.clean![TARGET]?.withdrawTx).toBe('not open');
+    expect(submits(f)).toBe(4);
+  });
+
+  it('requires the WithdrawClaim action from every returned representation of the matching redeemer', async () => {
+    const f = await lifecycleWorld();
+    await complete(f);
+    const confirmed = f.closeouts.get(f.claimTx)!;
+    const action = confirmed.plutus_contracts[0]!;
+    const { datum } = action.input.redeemer;
+    f.closeouts.set(f.claimTx, { ...confirmed, plutus_contracts: [{ ...action,
+      input: { redeemer: { purpose: 'spend', datum: { ...datum, value: { constructor: 3, fields: [] } } } },
+    }] });
+    expect(await f.run('--submit')).toBe(2);
+    expect(f.w.screen.errorText).toContain('does not show WithdrawClaim on the matching input');
+    expect(asked(f, TOOLS.retire)).toHaveLength(0);
+    f.closeouts.set(f.claimTx, confirmed);
+    expect(await f.run('--submit'), f.w.screen.errorText).toBe(0);
     expect(submits(f)).toBe(4);
   });
 

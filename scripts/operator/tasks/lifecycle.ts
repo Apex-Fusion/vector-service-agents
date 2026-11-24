@@ -6,9 +6,10 @@ import type { Module1Deployment } from '../../../packages/buyer-core/src/index.t
 // The package entry does not export the identity build window, guardian rules or datum encoder.
 import { windowAt } from '../../../packages/buyer-core/src/vendored/mcp/identity-chain.ts';
 import { activeKey, DAYS_7_MS, eligibleGuardian, tombstone } from '../../../packages/buyer-core/src/vendored/mcp/identity-rules.ts';
-import { koiosPostList } from '../../../packages/buyer-core/src/vendored/mcp/marketplace-indexer.ts';
+// The package entry does not export the paged out-reference read or the bounded mint/burn history read.
+import { koiosCredentialUtxos, koiosPostList } from '../../../packages/buyer-core/src/vendored/mcp/marketplace-indexer.ts';
 import { addressDetails } from '../../../packages/vector-read/src/guarded-decode.ts';
-import { decodeIdentityAdvertDatum } from '../../../packages/vector-read/src/index.ts';
+import { decodeIdentityAdvertDatum, decodePlutusDataHex } from '../../../packages/vector-read/src/index.ts';
 import { encodeIdentityDatum, utf8Hex } from '../../../packages/vector-read/src/identity-codec.ts';
 import type { IdentityDatum } from '../../../packages/vector-read/src/identity-codec.ts';
 import type { Module1Provider } from '../../../packages/usecase-kit/src/dispute/index.ts';
@@ -19,6 +20,7 @@ import type { StepRecord } from '../../checks/lib/state.ts';
 import { VerificationError } from '../../checks/lib/verify.ts';
 import { requireGo } from '../lib/approval.ts';
 import { proveAdvertRetirement, readConfirmedSpend, valueSeal } from '../lib/confirmed-spend.ts';
+import type { RecordSpendDatum } from '../lib/confirmed-spend.ts';
 import type { AdvertFact, AgentSpec, ClaimFact, LifecycleSpec, TaskDefinition, TaskSession } from '../lib/contract.ts';
 import { readRunning, requireRuntimesFree, runtimesOf } from '../lib/free.ts';
 import { blake2b256Hex, createModule1Port, effectiveStatus, formatOutRef, keyHashOf, koiosUtxoInfo, module1FromManifest, PURPOSE, readManifest } from '../lib/platform.ts';
@@ -52,6 +54,7 @@ const EARLY_TIMEOUT_MS = 15_000;
 const BUILD_LEAD_MS = 60_000;
 const MANIFEST_BASE = 'https://raw.githubusercontent.com/Apex-Fusion/vector-agent-modules';
 const HISTORY_BYTES = 512 * 1024;
+const ADVERT_CONFIRM_BATCH = 100;
 const HASH = /^[0-9a-f]{64}$/;
 const REF = /^[0-9a-f]{64}#(?:0|[1-9][0-9]{0,9})$/;
 
@@ -233,18 +236,45 @@ async function requireRetiredAdverts(session: Closeout, current: RecordUtxo, adv
         throw new PreconditionError('The confirmed refund does not match the advert retirement receipt.');
       }
     }
-    // A replacement, including a Retired update, still locks a deposit if its output is on the node.
-    for (const output of await session.chain.provider.getUtxos(address)) {
-      if (output.address !== address) throw new Error();
-      if (typeof output.datum !== 'string') continue;
+    const { provider, koiosUrl, fetchImpl } = session.chain;
+    const rejectLive = (output: RecordUtxo['utxo']) => {
+      const credential = addressDetails(output.address).paymentCredential;
+      if (credential?.type !== 'Script' || credential.hash !== hash) throw new Error();
+      if (typeof output.datum !== 'string') return;
       let datum: ReturnType<typeof decodeIdentityAdvertDatum>;
-      try { datum = decodeIdentityAdvertDatum(output.datum); } catch { continue; }
+      try { datum = decodeIdentityAdvertDatum(output.datum); } catch { return; }
       if (datum.agent_id === current.id) throw new PreconditionError('The retiring agent still has an unspent advert on the node.');
+    };
+    // The node lists the deployment address directly. An update can keep the payment script at another address.
+    for (const output of await provider.getUtxos(address)) rejectLive(output);
+    const candidates = await koiosCredentialUtxos(koiosUrl, hash, fetchImpl, { maxPageBytes: HISTORY_BYTES });
+    const refs = candidates.map(({ tx_hash, tx_index }) => formatOutRef(tx_hash, tx_index));
+    if (refs.some((ref) => !REF.test(ref))) throw new Error();
+    for (let offset = 0; offset < refs.length; offset += ADVERT_CONFIRM_BATCH) {
+      const batch = refs.slice(offset, offset + ADVERT_CONFIRM_BATCH);
+      const expected = new Set(batch);
+      // The indexer locates candidates. Only a matching output still on the node can hold the deposit.
+      for (const output of await session.node.resolveInputs(batch)) {
+        if (!expected.delete(formatOutRef(output.txHash, output.outputIndex))) throw new Error();
+        rejectLive(output);
+      }
     }
   } catch (error) {
     if (error instanceof PreconditionError) throw error;
     throw new PreconditionError('The confirmed RetireAdvert spend and its supplier credit could not be verified.');
   }
+}
+
+/** Module-1 encodes WithdrawClaim as constructor 1 with no fields. */
+function isWithdrawClaim({ bytes, value }: RecordSpendDatum): boolean {
+  if (bytes == null && value == null) return false;
+  if (bytes != null) {
+    try {
+      const data = decodePlutusDataHex(bytes);
+      if (data.kind !== 'constr' || data.index !== 1n || data.fields.length !== 0) return false;
+    } catch { return false; }
+  }
+  return value == null || ('fields' in value && value.constructor === 1 && value.fields.length === 0);
 }
 
 async function requireClaimBurn(session: Closeout, script: Module1Deployment['claim'], claim: ClaimFact, original: ReturnType<typeof decodeClaimDatum>, rows: SpentRows): Promise<void> {
@@ -272,20 +302,24 @@ async function requireClaimBurn(session: Closeout, script: Module1Deployment['cl
   if (flow.outputs.some((output) => output.asset_list?.some((asset) => asset.policy_id === script.hash && asset.asset_name === claim.claimToken))) {
     throw new PreconditionError('The named terminal spend still creates an output with the claim token.');
   }
-  const refs = (flow.spends ?? []).filter((spend) => spend.scriptHash === script.hash).map((spend) => spend.inputRef);
-  const missing = refs.filter((ref) => !rows.has(ref));
+  const spends = (flow.spends ?? []).filter((spend) => spend.scriptHash === script.hash);
+  const missing = spends.flatMap(({ inputRef }) => rows.has(inputRef) ? [] : [inputRef]);
   const archive = await spentOutputs(session, missing);
   let matched = 0;
-  for (const ref of refs) {
+  let withdrew = false;
+  for (const { inputRef: ref, redeemer } of spends) {
     const held = utxoOfKoiosRow(rows.get(ref) ?? archive.get(ref));
     if (held === null || flow.inputs.find((input) => input.ref === ref)?.address !== held.address) throw new Error();
     const credential = addressDetails(held.address).paymentCredential;
     if (credential?.type !== 'Script' || credential.hash !== script.hash) throw new Error();
     if (soleTokenName(held, held.address, script.hash) !== claim.claimToken || typeof held.datum !== 'string') continue;
     const terminal = decodeClaimDatum(held.datum);
-    if (isDeepStrictEqual({ ...terminal, state: original.state }, original)) matched += 1;
+    if (!isDeepStrictEqual({ ...terminal, state: original.state }, original)) continue;
+    matched += 1;
+    withdrew = claim.withdrawTx !== 'not open' && terminal.state === 'Open' && isWithdrawClaim(redeemer);
   }
   if (matched !== 1) throw new PreconditionError('The terminal spend does not consume the matching claim and token.');
+  if (claim.withdrawTx !== 'not open' && !withdrew) throw new PreconditionError('The named claim withdrawal does not show WithdrawClaim on the matching input.');
 }
 
 async function requireClosedClaims(session: Closeout, current: RecordUtxo, claims: readonly ClaimFact[], rows: SpentRows): Promise<void> {
