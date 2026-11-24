@@ -1,0 +1,12 @@
+{
+  "code": "SYN-MRI-KN",
+  "title": "Imaging of the knee",
+  "version": "2026.1",
+  "criteria": [
+    { "id": "C1", "text": "Knee pain for at least 6 weeks." },
+    { "id": "C2", "text": "Conservative therapy for at least 6 weeks is tried and documented." },
+    { "id": "C3", "text": "Locking, giving way or a clear loss of motion is documented." },
+    { "id": "C4", "text": "Plain X-rays of the knee are reviewed and listed." }
+  ],
+  "documentation": ["The dates of the conservative therapy.", "The findings of the last examination."]
+}
