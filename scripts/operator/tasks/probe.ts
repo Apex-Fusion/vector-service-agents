@@ -150,7 +150,7 @@ function describeAnswer(answer: TokenAnswer): string {
  */
 function judge(ask: Named, answer: TokenAnswer): Verdict {
   const observed = answer.kind;
-  const no = (reason: string): Verdict => ({ ok: false, observed, reason });
+  const no = (reason: string): Verdict => ({ ok: false, observed: answer.kind === ask.expect ? `${answer.kind} (not the expected answer)` : observed, reason });
   if (ask.expect === 'granted') {
     if (answer.kind !== 'granted') return no(`the probe expected the gateway to grant a token, and the gateway ${describeAnswer(answer)}`);
     if (!grantMatches(answer.authorizationDetails, ask)) return no('the probe expected a token for the delegation, the action and the resource that it named, and the grant of the token is another grant');

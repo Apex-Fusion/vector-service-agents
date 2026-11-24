@@ -9,8 +9,12 @@
 import { collateralAdvice, isCollateralOutput } from '../../checks/lib/collateral.ts';
 import { duration, iso } from '../../checks/lib/format.ts';
 import { HostedError } from '../../checks/lib/hosted.ts';
+import { GuardRefusal } from '../../checks/lib/land.ts';
 import { eventually } from '../../checks/lib/retry.ts';
 import { PreconditionError } from '../../checks/lib/session.ts';
+import type { TxFacts } from '../../checks/lib/txfacts.ts';
+// The entry of vector-read gives no codec of the identity datums: `decodeIdentityDatum` reads the inline datum of a record output, as `findRecord` does.
+import { decodeIdentityDatum } from '../../../packages/vector-read/src/identity-codec.ts';
 import { VERIFY_WINDOW, VerificationError } from '../../checks/lib/verify.ts';
 import type { AgentSpec, OrganisationSpec, TaskDefinition, TaskSession, UseCase } from '../lib/contract.ts';
 import { landHosted } from '../lib/land-hosted.ts';
@@ -24,6 +28,8 @@ const DEFAULT_AGENT = 'order-desk';
 const DEFAULT_DAYS = 1;
 const MAX_DAYS = 30;
 const DAYS = /^[0-9]+$/;
+/** The length of a day: a hold lasts whole days from the start of the validity window. */
+const DAY_MS = 86_400_000;
 
 type Datum = RecordUtxo['record'];
 type Holds = Extract<Datum['status'], { type: 'Suspended' }>['holds'];
@@ -180,6 +186,29 @@ function recordLift(session: TaskSession<HoldExtra>, txHash: string): void {
 const awaitReading = (session: TaskSession<HoldExtra>, id: string, check: (reading: Reading) => boolean): Promise<{ done: boolean; value: Reading }> =>
   eventually(session.clock, VERIFY_WINDOW, async () => { const reading = await readRecord(session, id); return { done: check(reading), value: reading }; });
 
+/**
+ * The hold that the build holds, read from its bytes before any signature. The guards read the signers, the destinations, the mint and the outflow, and none of them reads the datum, so a tool that
+ * built a longer hold than the run asked for, or a hold of another author, would be signed. The record output must be the one output at the identity address that holds the identity token of the
+ * agent. Its last hold must be by the Accountable key of the run, and it must last at most the days that the run asks for. A refusal has the guard `body`.
+ */
+function requireBuiltHold(session: TaskSession<HoldExtra>, target: Target, facts: TxFacts): void {
+  const refuse = (message: string): GuardRefusal => new GuardRefusal(SUSPEND.name, [{ guard: 'body', ok: false, message }]);
+  const unit = `${session.chain.deployment.identity.hash}${target.id}`;
+  const outputs = facts.outputs.filter((candidate) => candidate.address === session.chain.deployment.identity.address && candidate.assets[unit] === 1n);
+  const [output] = outputs;
+  if (output === undefined || outputs.length !== 1) throw refuse(`the transaction has ${outputs.length} output(s) at the identity address that hold the identity token of the agent, and a hold has exactly one`);
+  if (output.inlineDatum === null) throw refuse('the record output of the build has no inline datum, so the hold cannot be read');
+  let datum: Datum;
+  try { datum = decodeIdentityDatum(output.inlineDatum); } catch (err) { throw refuse(`the inline datum of the record output does not decode (${err instanceof Error ? err.message : String(err)})`); }
+  const last = holdsOf(datum).at(-1);
+  if (last === undefined) throw refuse('the record in the build holds no hold: its status is not Suspended');
+  if (last.by.type !== 'KeyHash' || last.by.hash !== target.byHash) throw refuse(`the last hold of the record in the build is not a hold by the key ${target.by}`);
+  const days = session.extra.days;
+  if (last.until <= last.since || last.until > last.since + days * DAY_MS) {
+    throw refuse(`the hold in the build lasts from ${iso(last.since)} until ${iso(last.until)}, and the run asks for a hold of ${days} ${days === 1 ? 'day' : 'days'}`);
+  }
+}
+
 const SUSPEND: StepHandler<HoldExtra> = {
   name: 'suspend',
   async run(session) {
@@ -208,7 +237,10 @@ const SUSPEND: StepHandler<HoldExtra> = {
       step: SUSPEND.name, tool: 'vector_build_identity_suspend',
       args: { changeAddress: target.feeAddress, did: target.did, actor: { role: 'Accountable', signer: target.byHash }, days },
       expectSigners: [target.by, 'fee'],
-      plan: () => planOf(session, { destinations: [identity], mint: {}, explained: [refOf(reading.found.utxo)], outflow: { fee: session.settings.maxFeeLovelace } }),
+      plan: (_build, facts) => {
+        requireBuiltHold(session, target, facts);
+        return planOf(session, { destinations: [identity], mint: {}, explained: [refOf(reading.found.utxo)], outflow: { fee: session.settings.maxFeeLovelace } });
+      },
       facts: () => ({ agent: agent.id, did: target.did, by: target.by, author: target.byHash, days }),
       refs: (_build, facts) => ({ recordBefore: refOf(reading.found.utxo), ...afterRef(facts, identity) }),
       notes: [
@@ -325,6 +357,10 @@ const task: TaskDefinition<HoldExtra> = {
   },
   next: (session) => runSteps(session, [SUSPEND, LIFT]),
   async cleanup(session) {
+    // A suspend that was in flight is recorded as a step by the runner when it confirms, and a stop between the landing and the write of the fact leaves the step without the fact. The cleanup writes the
+    // fact from the step first, so that it lifts that hold too.
+    const made = session.state.step(SUSPEND.name);
+    if (made !== undefined && made.tx_hash !== null) recordHold(session, made.tx_hash);
     const { run } = session.extra;
     const held = session.facts.read().holds[run];
     if (held === undefined || held.suspendTx === null || held.liftTx !== null) return { kind: 'done', message: `no hold of this pack is on for the run ${run}: there is nothing to take back` };

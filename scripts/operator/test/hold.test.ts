@@ -389,10 +389,10 @@ describe('what the signers and the plan refuse', () => {
     await h.suspendAnswer();
     expect(await h.run(...h.args('--submit'))).toBe(0);
   });
-  it('refuses a transaction that spends another record than the one of the agent, because the plan explains the record that it read and no other input; the Suspend of that record lands', async () => {
+  it('refuses a transaction that builds another record than the one of the agent, because the build holds no record output of the agent; the Suspend of the agent lands', async () => {
     const h = await world();
     await h.suspendAnswer({ id: OTHER_ID });
-    await refusedSubmit(h, 'inputs', 'is not explained by the state file');
+    await refusedSubmit(h, 'body', 'has 0 output(s) at the identity address that hold the identity token of the agent');
     await h.suspendAnswer();
     expect(await h.run(...h.args('--submit'))).toBe(0);
   });
@@ -510,6 +510,45 @@ describe('the cleanup', () => {
     expect(h.errors()).toContain('holds the lift already');
     expect(calls(h, 'vector_build_identity_unsuspend')).toHaveLength(1);
     expect(h.w.node.submitted).toHaveLength(2);
+  });
+});
+
+describe('the hold that the build holds', () => {
+  it('refuses a build of a longer hold than the run asks for, in the dry run and with --submit, and signs nothing; the build of the hold that it asks for lands', async () => {
+    const h = await world();
+    await h.suspendAnswer({ days: 30 });
+    expect(await h.run(...h.args())).toBe(2);
+    expect(h.errors()).toContain('is refused by body');
+    expect(h.errors()).toContain(`the hold in the build lasts from ${iso(LO)} until ${iso(LO + 30 * DAY)}, and the run asks for a hold of 1 day`);
+    untouched(h);
+    h.go();
+    expect(await h.run(...h.args('--submit'))).toBe(2);
+    untouched(h);
+    expect(h.w.state('hold', 'r2')).toMatchObject({ steps: {}, in_flight: null });
+    await h.suspendAnswer();
+    expect(await h.run(...h.args('--submit'))).toBe(0);
+    expect(h.record().status).toEqual(suspended(alfaHold(h.alfa)));
+  });
+});
+
+describe('a suspend that was in flight', () => {
+  it('is lifted by the cleanup: the runner records the step when the transaction confirms, and the cleanup writes the fact of the hold from that step first', async () => {
+    const h = await world();
+    h.go();
+    await h.suspendAnswer();
+    h.w.node.neverConfirm = true;
+    expect(await h.run(...h.args('--submit'))).toBe(1);
+    expect(h.w.state('hold', 'r2').in_flight?.step).toBe('suspend');
+    expect(h.facts().holds.r2).toBeUndefined();
+    expect(holdsOf(h.record())).toEqual([alfaHold(h.alfa)]);
+    h.w.node.neverConfirm = false;
+    await h.unsuspendAnswer();
+    expect(await h.run('cleanup', ...h.args('--submit'))).toBe(0);
+    const [suspendTx, liftTx] = h.w.world.chain.applied.map((tx) => h.w.world.hashOf(tx));
+    expect(h.facts().holds.r2).toEqual({ suspendTx, liftTx });
+    expect(h.record().status).toEqual({ type: 'Active' });
+    expect(h.w.state('hold', 'r2').steps.lift).toMatchObject({ verified_at: expect.any(String) });
+    expect(h.w.machine()).toMatchObject({ command: 'cleanup', outcome: 'done', exit: 0, step: 'lift' });
   });
 });
 

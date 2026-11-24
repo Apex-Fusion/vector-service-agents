@@ -298,7 +298,8 @@ describe('a request that does not turn out as expected', () => {
       p.end(made);
       p.gateway.fault('/token', { status, body: JSON.stringify({ error, error_description: `delegation ${made.id} was undelegated` }) });
       expect(await p.run(...p.args(made, { expect: 'refused' }), '--submit'), label).toBe(1);
-      expect(p.entries()[0], label).toMatchObject({ shows: { observation: { kind: 'refused', status, error }, verdict: { expected: 'refused', ok: false } } });
+      expect(p.entries()[0], label).toMatchObject({ shows: { observation: { kind: 'refused', status, error }, verdict: { expected: 'refused', observed: 'refused (not the expected answer)', ok: false } } });
+      expect(p.w.machine().result, label).toMatchObject({ observed: 'refused (not the expected answer)', ok: false, status });
     }
   });
   it('does not take a token for another delegation, another action or another resource than the ones named as the grant that was asked for', async () => {
@@ -316,7 +317,7 @@ describe('a request that does not turn out as expected', () => {
       const body = { access_token: 'a.b.c', token_type: 'DPoP', issued_token_type: 'urn:ietf:params:oauth:token-type:access_token', expires_in: 60, ...(details === null ? {} : { authorization_details: details.map((detail) => ({ ...detail, identifier: detail.identifier === 'ID' ? made.id : detail.identifier })) }) };
       p.gateway.fault('/token', { status: 200, body: JSON.stringify(body), headers: { 'content-type': 'application/json' } });
       expect(await p.run(...p.args(made), '--submit'), label).toBe(1);
-      expect(p.entries()[0], label).toMatchObject({ shows: { verdict: { expected: 'granted', ok: false } } });
+      expect(p.entries()[0], label).toMatchObject({ shows: { verdict: { expected: 'granted', observed: 'granted (not the expected answer)', ok: false } } });
     }
   });
   it('exits 1 for an answer that is neither a token nor a refusal, whatever was expected', async () => {
