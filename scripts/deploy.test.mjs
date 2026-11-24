@@ -8279,8 +8279,8 @@ test('use case 3 files: the ten files of the packs of the Sourcing Agent and of 
 });
 
 // The names that a compose file claims on a host: its project, the name of each container and the name of each volume. Docker refuses a second container with a name that is in use, two projects with one name
-// share their default network, and two volumes with one name share their data. So each name stands once in all the compose files of the two hosts. A volume has the name that its `name` gives, or
-// `<project>_<key>` when it gives none. A service with no `container_name` gets a name from its project, and that is no claim here.
+// share their default network, and two volumes with one name share their data. A volume uses an explicit name, its bare key if external, or `<project>_<key>` otherwise. A service with no `container_name`
+// gets a name from its project, so it makes no separate claim here.
 function composeNameProblems(texts) {
   const problems = [];
   const owners = { project: new Map(), container: new Map(), volume: new Map() };
@@ -8293,7 +8293,11 @@ function composeNameProblems(texts) {
     }
     claim('project', parsed.name, file);
     for (const [service, body] of Object.entries(parsed.services ?? {})) if (typeof body?.container_name === 'string') claim('container', body.container_name, `${file}#${service}`);
-    for (const [key, body] of Object.entries(parsed.volumes ?? {})) claim('volume', typeof body?.name === 'string' ? body.name : `${parsed.name}_${key}`, `${file}#${key}`);
+    for (const [key, body] of Object.entries(parsed.volumes ?? {})) {
+      const explicit = body?.name ?? body?.external?.name;
+      const name = explicit ?? (body?.external === true ? key : `${parsed.name}_${key}`);
+      claim('volume', name, `${file}#${key}`);
+    }
   }
   for (const [kind, names] of Object.entries(owners)) for (const [name, users] of names) if (users.length > 1) problems.push(`the ${kind} name ${name} is used twice: ${users.join(', ')}`);
   return problems;
@@ -8319,6 +8323,8 @@ test('use case 3 names: the project, each container and each volume of the compo
     ['two projects with one name', { [charlie]: srvReplace(texts[charlie], '\nname: bid-desk-charlie\n', '\nname: bid-desk-bravo\n') }, /the project name bid-desk-bravo is used twice: \S+bid-desk-bravo\.yml, \S+bid-desk-charlie\.yml/],
     ['two volumes with one name', { [charlie]: srvReplace(texts[charlie], 'bid-desk-charlie-state', 'bid-desk-bravo-state') }, /the volume name bid-desk-bravo-state is used twice: \S+bid-desk-bravo\.yml#bid-desk-bravo-state, \S+bid-desk-charlie\.yml#bid-desk-bravo-state/],
     ['a volume with no name that has the name of a volume of another file', { ...extra('one', 'name: one\nservices: {}\nvolumes:\n  state: {}\n'), ...extra('two', 'name: two\nservices: {}\nvolumes:\n  data: { name: one_state }\n') }, /the volume name one_state is used twice/],
+    ['an external volume that uses the bare key of the Sourcing Agent volume', extra('external', 'name: external\nservices: {}\nvolumes:\n  sourcing-state: { external: true }\n'), /the volume name sourcing-state is used twice: \S+sourcing-agent\.yml#sourcing-state, \S+external\.yml#sourcing-state/],
+    ['an external volume with a legacy name that another pack uses', extra('legacy', 'name: legacy\nservices: {}\nvolumes:\n  data: { external: { name: sourcing-state } }\n'), /the volume name sourcing-state is used twice: \S+sourcing-agent\.yml#sourcing-state, \S+legacy\.yml#data/],
     ['a compose file with no project name', extra('three', 'services: {}\n'), /docker-compose\.three\.yml has no project name/],
   ];
   for (const [name, changed, expected] of faults) {
@@ -8329,6 +8335,8 @@ test('use case 3 names: the project, each container and each volume of the compo
   assert.deepEqual(composeNameProblems(Object.fromEntries(Object.entries(texts).reverse())), [], 'the files in another order');
   const twins = { ...extra('one', 'name: one\nservices:\n  service:\n    image: example\nvolumes:\n  state: {}\n'), ...extra('two', 'name: two\nservices:\n  service:\n    image: example\nvolumes:\n  state: {}\n') };
   assert.deepEqual(composeNameProblems({ ...texts, ...twins }), [], 'two projects with the same service name and the same volume key');
+  const external = extra('external', 'name: external\nservices: {}\nvolumes:\n  other-state: { external: true }\n  sourcing-state: { external: true, name: other-source }\n');
+  assert.deepEqual(composeNameProblems({ ...texts, ...external }), [], 'an external volume with a distinct key and one with a distinct explicit name');
 });
 
 test('use case 3 ports: the compose files of the Sourcing Agent and of the three Bid Desks publish exactly 8107 to 8110 for the runtimes and 9105 to 9108 for the services, one port for each container, and no host port stands twice in the compose files of the two hosts; the guard refuses each copy that breaks one rule', () => {
@@ -8452,7 +8460,7 @@ function addressProblems(files, textOf) {
   return problems;
 }
 
-test('use case 3 addresses: no file of the packs of use case 1, of use case 2 and of use case 3, and no other file of the two hosts, holds an IPv4 address other than 127.0.0.1, 0.0.0.0 and 1.1.1.1; the guard refuses another address in each kind of file and passes the three addresses of a pack', () => {
+test('use case 3 addresses: the checked Compose files, env examples, Caddy files, runbooks, READMEs and scripts of the two deploy folders contain no IPv4 address other than 127.0.0.1, 0.0.0.0 and 1.1.1.1', () => {
   const files = deployFiles();
   for (const must of [...USE_CASE_1_FILES, ...USE_CASE_2_FILES, ...USE_CASE_3_FILES, 'deploy/server/README.md', 'deploy/server/RUNBOOK.md', 'deploy/host/README.md', 'deploy/host/docker-compose.agent-history.yml']) assert.ok(files.includes(must), `${must} is read`);
   assert.ok(files.length >= 30 && new Set(files).size === files.length, `the walk reaches the files of both hosts, found ${files.length}`);
@@ -8642,10 +8650,8 @@ test('use case 3 RUNBOOK: step 7 directs both packs to the marker block and to t
 });
 
 // ======================================================================================================================================
-// The documents of use case 3 that the kit, the two agents and the mock service read. The mock service is the system on the other side: the sourcing record takes a ranking with its salt and its approval, the vendor
-// master gives the vendors, and the seed of a tenant holds the catalogue and the vendors. One child process loads the real TypeScript of the mock service, of the kit and of the two agents, so that nothing here
-// re-implements a parser. The documents go in on the standard input. The rule of the kit holds one way: every ranking that its parser takes is a ranking that the sourcing record takes. The record reads only the members
-// that it needs, so it takes more than the kit does, and the table says where.
+// The documents of use case 3 that the kit, the two agents and the mock service read. The mock service takes a ranking with its salt and approval. Its tenant seed holds the catalogue and the vendors.
+// Each drift test runs real TypeScript in a child process. It checks the cases in its table, not every possible input.
 // ======================================================================================================================================
 const BIDS_GOLDENS = 'packages/usecase-kit/test/bids/golden';
 const SOURCING_TESTS = 'agents/sourcing-agent/test';
@@ -8672,7 +8678,7 @@ console.log(JSON.stringify({
 }));
 `;
 
-test('use case 3 drift: the ranking is read in the same way by the parser of the kit and by the sourcing record of the mock service: each ranking that the kit builds or takes is a ranking that the record takes, a broken ranking is refused by both, and the body of the record needs its approval member', () => {
+test('use case 3 drift: the ranking table checks the builder, both parsers and the approval member of the record body', () => {
   const golden = jsonOf(RANKING_GOLDENS[0]);
   const rfq = jsonOf(`${BIDS_GOLDENS}/rfq.json`);
   const weights = jsonOf(`${BIDS_GOLDENS}/weights.json`);
@@ -8763,7 +8769,7 @@ test('use case 3 drift: the ranking is read in the same way by the parser of the
     const said = answers.rankings[i];
     assert.equal(said.kit, kit, `${name}: the kit ${kit ? 'must take it' : 'must refuse it'}; found ${JSON.stringify(said)}`);
     assert.equal(said.mock, mock, `${name}: the sourcing record ${mock ? 'must take it' : 'must refuse it'}; found ${JSON.stringify(said)}`);
-    // The rule of the kit: a ranking that its parser takes is a ranking that the record takes.
+    // For the cases in this table, the record accepts every ranking that the kit parser accepts.
     assert.ok(!said.kit || said.mock, `${name}: the kit takes a ranking that the record refuses`);
     // The record picks the supplier of rank 1 and the request that the ranking names.
     if (said.mock) {
@@ -8783,7 +8789,7 @@ test('use case 3 drift: the ranking is read in the same way by the parser of the
 // The identifiers and the domains of the documents of use case 3, through each parser that reads one. An identifier is read as the rule of the mock service says: the request identifier of a ranking (the kit and the sourcing
 // record), the identifier of a vendor (the vendor parser of the Sourcing Agent and the seed of the mock service), and the SKU of an item of a price list (the kit and the catalogue of the seed). A domain is read as the
 // organisation of a record: a lower-case name of at most 64 characters with at least two labels. It stands in a ranking (the kit and the record), in a vendor (the Sourcing Agent and the seed), in the file of a bidder
-// (`domainOf` of the Sourcing Agent) and in the setting of a Bid Desk. Each parser must say the same of each edge.
+// (`domainOf` of the Sourcing Agent) and in the setting of a Bid Desk. The tables give the expected result for each reader.
 const IDENTIFIER_DRIFT_CODE = String.raw`
 import { readFileSync } from 'node:fs';
 import { defaultSeed, parseSeed } from './src/seed.ts';
@@ -8814,13 +8820,11 @@ console.log(JSON.stringify({
 }));
 `;
 
-test('use case 3 drift: an identifier and a domain have the same edges in every parser that reads them: the request identifier of a ranking, the identifier of a vendor, the SKU of a price list and the organisation of a bidder', () => {
+test('use case 3 drift: the tables check the listed request identifiers, vendor identifiers, SKUs and organisation domains against their readers', () => {
   const ranking = jsonOf(RANKING_GOLDENS[0]);
   const priceList = jsonOf(BID_DESK_PRICE_LISTS[0]);
   const fill = (count, char = 'a') => char.repeat(count);
-  // [name, value, whether the mock service and the kit take it, whether the vendor parser of the Sourcing Agent takes it when that differs]. The vendor parser turns the texts of the list into the NFC form before it checks the
-  // identifier, and the kit and the mock service check the text as it is written. So the parser reads the Kelvin sign as the capital K and takes a vendor that the seed of the mock service never gives. The rule that matters
-  // holds: a vendor identifier that the seed takes is one that the parser takes.
+  // [name, value, whether the mock service and the kit take it, whether the vendor parser differs]. The vendor parser uses NFC, so it reads the Kelvin sign as the capital K in this table.
   const ids = [
     ['one character', 'a', true], ['64 characters', `a${fill(63, '0')}`, true], ['65 characters', `a${fill(64, '0')}`, false], ['a dot, a hyphen and an underscore inside', 'a.b-c_d', true], ['a digit first', '1a', true],
     ['a dot first', '.a', false], ['a hyphen first', '-a', false], ['an underscore first', '_a', false], ['a space inside', 'a b', false], ['a space at the end', 'a ', false], ['a slash', 'a/b', false], ['a colon', 'a:b', false],
@@ -8883,70 +8887,106 @@ test('use case 3 drift: the body that the Sourcing Agent sends to the sourcing r
   });
 });
 
-// The price lists of the three Bid Desks against the default catalogue of the mock service: each SKU of a list is a SKU of the catalogue, the three lists together hold each SKU of it, and each unit price is at least
-// 10, so that the fault of a Bid Desk, which lowers the price of the first line by a fifth rounded up, gives a whole number of at least 1. The kit reads each list as a price list, and the manifest of each Bid Desk
-// holds the hash of the bytes of its list, so the three lists have three hashes.
+// The Sourcing Agent reads the manifest and list bytes. Each desk must cover the whole default catalogue. Prices must be at least 10 so that the Bid Desk fault
+// can lower the first unit price by a fifth rounded up. Each desk has its own list hash.
 const CATALOGUE_DRIFT_CODE = String.raw`
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { defaultSeed } from './src/seed.ts';
-import { parsePriceList, priceListSha256 } from '../../packages/usecase-kit/src/bids/index.ts';
-const { texts } = JSON.parse(readFileSync(0, 'utf8'));
-const read = (text) => {
-  const list = JSON.parse(text);
-  const found = parsePriceList(list);
-  return found.ok ? { ok: true, same: JSON.stringify(found.value) === JSON.stringify(list), skus: found.value.items.map((item) => item.sku), prices: found.value.items.flatMap((item) => item.breaks.map((step) => step.unit_price)) } : { ok: false };
+import { readPriceList, startBudget } from '../../agents/sourcing-agent/src/bidders/discover.ts';
+import { BIDDER_FETCH_TIMEOUT_MS, BIDDER_READ_BUDGET_MS } from '../../agents/sourcing-agent/src/bidders/types.ts';
+const { cases, template } = JSON.parse(readFileSync(0, 'utf8'));
+const manifestUri = 'https://bid-desk.example.org/agent.json';
+const listUri = 'https://bid-desk.example.org/price-list.json';
+const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
+const read = async ({ text, wrongHash = false, bounded = false }) => {
+  const list = Buffer.from(text);
+  const expected = wrongHash ? '00'.repeat(32) : sha256(list);
+  const manifest = Buffer.from(template.replace('<PRICE_LIST_URI>', listUri).replace('<PRICE_LIST_SHA256>', expected));
+  const limits = [];
+  const fetchBytes = async (uri, { maxBytes }) => {
+    limits.push(maxBytes);
+    const bytes = uri === manifestUri ? manifest : uri === listUri ? list : undefined;
+    if (bytes === undefined) throw new Error('unexpected bidder file');
+    if (bounded && bytes.length > maxBytes) throw new Error('bidder file exceeds the fetch limit');
+    return { status: 200, bytes };
+  };
+  const budget = startBudget(() => 0, BIDDER_READ_BUDGET_MS, BIDDER_FETCH_TIMEOUT_MS);
+  const result = await readPriceList({ fetchBytes }, budget, { detail_uri: manifestUri, detail_hash: sha256(manifest) });
+  return { ...result, limits };
 };
-console.log(JSON.stringify({
-  catalogue: defaultSeed().catalogue.map((entry) => entry.sku),
-  lists: Object.fromEntries(Object.entries(texts).map(([name, text]) => [name, { ...read(text), sha256: priceListSha256(text) }])),
-}));
+const reads = {};
+for (const [name, probe] of Object.entries(cases)) reads[name] = await read(probe);
+console.log(JSON.stringify({ catalogue: defaultSeed().catalogue.map((entry) => entry.sku), reads }));
 `;
+
 function priceListDriftProblems(lists, catalogue) {
   const problems = [];
-  const held = new Set();
-  for (const [name, list] of Object.entries(lists)) {
-    if (!list.ok || !list.same) {
-      problems.push(`the price list of ${name} is not a price list that the kit reads and gives back as it is`);
+  const wanted = new Set(catalogue);
+  const hashes = new Set();
+  for (const [name, read] of Object.entries(lists)) {
+    if (read.state !== 'valid') {
+      problems.push(`the price list of ${name} is ${read.state}`);
       continue;
     }
-    for (const sku of list.skus) {
-      held.add(sku);
-      if (!catalogue.includes(sku)) problems.push(`the price list of ${name} holds ${sku}, and the catalogue of the mock service does not`);
+    const skus = new Set(read.list.items.map((item) => item.sku));
+    for (const sku of skus) if (!wanted.has(sku)) problems.push(`the price list of ${name} holds ${sku}, and the catalogue does not`);
+    for (const sku of wanted) if (!skus.has(sku)) problems.push(`the price list of ${name} lacks catalogue SKU ${sku}`);
+    for (const item of read.list.items) {
+      for (const { unit_price } of item.breaks) if (unit_price < 10) problems.push(`the price list of ${name} has a unit price of ${unit_price}, and the least unit price is 10`);
     }
-    for (const price of list.prices) if (price < 10) problems.push(`the price list of ${name} has a unit price of ${price}, and the least unit price is 10`);
+    if (hashes.has(read.sha256)) problems.push('two price lists have the same hash');
+    hashes.add(read.sha256);
   }
-  for (const sku of catalogue) if (!held.has(sku)) problems.push(`the catalogue holds ${sku}, and no price list does`);
-  const hashes = Object.values(lists).map((list) => list.sha256);
-  if (new Set(hashes).size !== hashes.length) problems.push('two price lists have the same hash');
   return problems;
 }
 
-test('use case 3 drift: each SKU of the three price lists is a SKU of the default catalogue of the mock service, the three lists together hold each SKU of it, each unit price is at least 10, and the three lists have three hashes; the guard refuses a SKU that the catalogue lacks, a SKU that no list holds, a low price and two lists with one hash', () => {
-  const texts = Object.fromEntries(BID_DESKS.map((name, i) => [name, read(BID_DESK_PRICE_LISTS[i])]));
-  const answer = inMockServiceStdin(CATALOGUE_DRIFT_CODE, { texts });
-  assert.ok(answer.catalogue.length >= 3, `the catalogue has the SKUs of the seed, found ${answer.catalogue.length}`);
-  assert.deepEqual(Object.keys(answer.lists), BID_DESKS, 'one list for each Bid Desk');
-  assert.deepEqual(priceListDriftProblems(answer.lists, answer.catalogue), [], 'the real lists pass');
-  for (const name of BID_DESKS) assert.equal(answer.lists[name].sha256, createHash('sha256').update(texts[name], 'utf8').digest('hex'), `${name}: the hash is the SHA-256 of the bytes of the file`);
-  const copy = () => JSON.parse(JSON.stringify(answer.lists));
-  const faults = [
-    ['a SKU that the catalogue lacks', (lists) => { lists.alfa.skus[0] = 'GLV-NIT-L'; }, /the price list of alfa holds GLV-NIT-L, and the catalogue of the mock service does not/],
-    ['a SKU of the catalogue that no list holds', (lists) => { for (const name of BID_DESKS) lists[name].skus = lists[name].skus.filter((sku) => sku !== answer.catalogue[0]); }, /the catalogue holds \S+, and no price list does/],
-    ['a unit price of 9', (lists) => { lists.bravo.prices[0] = 9; }, /the price list of bravo has a unit price of 9, and the least unit price is 10/],
-    ['a list that the kit does not read', (lists) => { lists.charlie = { ok: false }; }, /the price list of charlie is not a price list that the kit reads/],
-    ['a list that the kit reads and changes', (lists) => { lists.charlie.same = false; }, /the price list of charlie is not a price list that the kit reads and gives back as it is/],
-    ['two lists with one hash', (lists) => { lists.bravo.sha256 = lists.alfa.sha256; }, /two price lists have the same hash/],
-  ];
-  for (const [name, change, expected] of faults) {
-    const lists = copy();
-    change(lists);
-    const problems = priceListDriftProblems(lists, answer.catalogue);
-    assert.ok(problems.some((p) => expected.test(p)), `${name}: found ${JSON.stringify(problems)}`);
+test('use case 3 drift: the Sourcing Agent reads each desk list within the 262,144 byte limit, and each desk covers the default catalogue', () => {
+  const maxBytes = 262_144;
+  const shipped = Object.fromEntries(BID_DESKS.map((name, i) => [name, { text: read(BID_DESK_PRICE_LISTS[i]) }]));
+  const alfa = JSON.parse(shipped.alfa.text);
+  const [first, ...rest] = alfa.items;
+  const withFirst = (changes) => JSON.stringify({ ...alfa, items: [{ ...first, ...changes }, ...rest] });
+  const withPrice = (unit_price) => withFirst({ breaks: [{ ...first.breaks[0], unit_price }, ...first.breaks.slice(1)] });
+  const compact = JSON.stringify(alfa);
+  const atLimit = compact + ' '.repeat(maxBytes - Buffer.byteLength(compact));
+  const aboveLimit = atLimit + ' ';
+  const cases = {
+    ...shipped,
+    unknownSku: { text: withFirst({ sku: 'GLV-NIT-L' }) },
+    missingSku: { text: JSON.stringify({ ...alfa, items: rest }) },
+    lowPrice: { text: withPrice(9) },
+    minimumPrice: { text: withPrice(10) },
+    broken: { text: JSON.stringify({ ...alfa, items: [] }) },
+    wrongHash: { text: shipped.alfa.text, wrongHash: true },
+    atLimit: { text: atLimit },
+    aboveLimit: { text: aboveLimit },
+    boundedPort: { text: aboveLimit, bounded: true },
+  };
+  const { catalogue, reads } = inMockServiceStdin(CATALOGUE_DRIFT_CODE, { cases, template: read('agents/bid-desk/agent.json.template') });
+  assert.ok(catalogue.length >= 3, 'the default seed has the catalogue SKUs');
+  assert.deepEqual(Object.keys(reads), Object.keys(cases), 'one read for each price list case');
+  for (const [name, { limits }] of Object.entries(reads)) assert.deepEqual(limits, [maxBytes, maxBytes], `${name}: the manifest and the list have the same fetch limit`);
+  const lists = Object.fromEntries(BID_DESKS.map((name) => [name, reads[name]]));
+  assert.deepEqual(priceListDriftProblems(lists, catalogue), [], 'the three shipped lists pass');
+  for (const name of BID_DESKS) {
+    const { text } = shipped[name];
+    assert.deepEqual(lists[name].list, JSON.parse(text), `${name}: the reader preserves the list`);
+    assert.equal(lists[name].sha256, createHash('sha256').update(text, 'utf8').digest('hex'), `${name}: the reader returns the SHA-256 of the served bytes`);
   }
-  // The twins: the least price that the guard takes, the catalogue in another order, and a list that holds a SKU of the catalogue and no other.
-  const lists = copy();
-  lists.alfa.prices[0] = 10;
-  assert.deepEqual(priceListDriftProblems(lists, [...answer.catalogue].reverse()), [], 'a price of 10, and the catalogue in another order');
+  assert.equal(reads.atLimit.state, 'valid', 'the reader accepts a valid list at 262,144 bytes');
+  assert.deepEqual(reads.atLimit.list, alfa, 'padding does not change the list');
+  assert.equal(reads.aboveLimit.state, 'invalid', 'the reader rejects the same list at 262,145 bytes when the port returns it');
+  assert.equal(reads.boundedPort.state, 'unreadable', 'the reader reports a fetch error when the port enforces the byte limit');
+  assert.equal(reads.wrongHash.state, 'invalid', 'the reader rejects a valid list with a hash that does not match');
+  assert.equal(reads.broken.state, 'invalid', 'the reader rejects a list with no items');
+
+  const withAlfa = (name, wanted = catalogue) => priceListDriftProblems({ ...lists, alfa: reads[name] }, wanted);
+  assert.deepEqual(withAlfa('unknownSku'), ['the price list of alfa holds GLV-NIT-L, and the catalogue does not', `the price list of alfa lacks catalogue SKU ${first.sku}`]);
+  assert.deepEqual(withAlfa('missingSku'), [`the price list of alfa lacks catalogue SKU ${first.sku}`], 'only alfa omits the SKU');
+  assert.deepEqual(withAlfa('lowPrice'), ['the price list of alfa has a unit price of 9, and the least unit price is 10']);
+  assert.deepEqual(withAlfa('minimumPrice', [...catalogue].reverse()), [], 'a price of 10 and a different catalogue order pass');
+  assert.deepEqual(priceListDriftProblems({ ...lists, bravo: lists.alfa }, catalogue), ['two price lists have the same hash'], 'two desks publish the same list bytes');
 });
 
 // Use the response body of GET /vendors. If the seed refuses an input, test it only as a direct input to the parser.
@@ -9066,17 +9106,14 @@ test('use case 3 drift: the runbook vendor override gives each Bid Desk one matc
   assert.deepEqual(override.matches, desks.map((organisation) => request.seed.vendors.find((vendor) => vendor.organisation === organisation)), 'the scorer finds the documented entry for each desk');
 });
 
-// The routes and the actions. A route that an agent calls with a token has an action, a system and a rule for the act chain of the token: one link for an agent, and two for a subagent. The kit holds the route table of
-// the agents, and the mock service holds the routes that it serves. A route of one is a route of the other, with the same action, the same system and the same callers. The manifest of an agent lists the routes of the
-// mock systems that it relies on: the Sourcing Agent relies on the vendor list and the sourcing record, and the Bid Desk on none.
+// The kit and mock service must agree on the credential for each protected route, the action, system and callers of token routes, and the system used in a JWT audience.
+// The Sourcing Agent manifest lists the vendor list and the sourcing record. The Bid Desk manifest lists no mock route.
 const ROUTES_DRIFT_CODE = String.raw`
-import { ROUTES as mock } from './src/routes.ts';
+import { JWT_AUDIENCE_SYSTEM, ROUTES as mock } from './src/routes.ts';
 import { ROUTES as kit } from '../../packages/usecase-kit/src/access/index.ts';
-console.log(JSON.stringify({ mock: mock.map((route) => ({ id: route.id, method: route.method, segments: route.segments, need: route.need })), kit }));
+console.log(JSON.stringify({ mock: mock.map((route) => ({ id: route.id, method: route.method, segments: route.segments, need: route.need })), kit, jwtAudienceSystem: JWT_AUDIENCE_SYSTEM }));
 `;
-// The faults of the routes: a route of the kit that the mock service lacks, a credential, an action, a system or a rule of callers that differ, a route of the mock service that the kit lacks, and a manifest that lists
-// other routes than the ones that its agent uses.
-function routeProblems({ mock, kit }, manifests) {
+function routeProblems({ mock, kit, jwtAudienceSystem }, manifests) {
   const problems = [];
   const pathOf = (route) => `${route.method} /${route.segments.join('/')}`;
   const specPath = (spec) => `${spec.method} ${spec.template.replace(/\{(\w+)\}/g, ':$1')}`;
@@ -9092,6 +9129,8 @@ function routeProblems({ mock, kit }, manifests) {
       if (route.need.action !== spec.action) problems.push(`${id}: the kit asks for the action ${spec.action}, and the mock service needs ${route.need.action}`);
       if (route.need.system !== spec.system) problems.push(`${id}: the kit names the system ${spec.system}, and the mock service names ${route.need.system}`);
       if (route.need.maxActors !== (spec.callers === 'agent' ? 1 : 2)) problems.push(`${id}: the kit lets ${spec.callers} call, and the mock service takes an act chain of ${route.need.maxActors}`);
+    } else if (spec.credential === 'jwt-svid' && spec.system !== jwtAudienceSystem) {
+      problems.push(`${id}: the kit uses JWT audience system ${spec.system}, and the mock service uses ${jwtAudienceSystem}`);
     }
   }
   for (const route of mock) {
@@ -9105,7 +9144,7 @@ function routeProblems({ mock, kit }, manifests) {
   return problems;
 }
 
-test('use case 3 drift: the route table of the kit and the routes of the mock service name the same routes, actions, systems and callers, and the manifests of the Sourcing Agent and of the Bid Desk list the routes that they use; the guard refuses each difference', () => {
+test('use case 3 drift: the kit and mock service agree on protected routes, token rules and JWT audiences, and both manifests list their mock routes', () => {
   const answer = inMockServiceStdin(ROUTES_DRIFT_CODE, null);
   const manifestOf = (agent) => JSON.parse(read(`agents/${agent}/agent.json.template`)).behaviour.relying_on.mock_systems;
   const manifests = [['Sourcing Agent', manifestOf('sourcing-agent'), ['vendors.list', 'sourcing.rankings']], ['Bid Desk', manifestOf('bid-desk'), []]];
@@ -9118,6 +9157,7 @@ test('use case 3 drift: the route table of the kit and the routes of the mock se
   const faults = [
     ['an action of the vendor list that differs', (data) => { mockRoute(data, 'GET /vendors').need.action = 'vendor.view'; }, /vendors\.list: the kit asks for the action vendor\.read, and the mock service needs vendor\.view/],
     ['a system of the sourcing record that differs', (data) => { mockRoute(data, 'POST /sourcing/rankings').need.system = 'vendors'; }, /sourcing\.rankings: the kit names the system sourcing, and the mock service names vendors/],
+    ['a JWT audience that differs', (data) => { data.kit['insurer.requests'].system = 'records'; }, /insurer\.requests: the kit uses JWT audience system records, and the mock service uses insurer/],
     ['an act chain of the vendor list that is too short for a scorer', (data) => { mockRoute(data, 'GET /vendors').need.maxActors = 1; }, /vendors\.list: the kit lets agent-or-subagent call, and the mock service takes an act chain of 1/],
     ['an act chain of the sourcing record that takes a subagent', (data) => { mockRoute(data, 'POST /sourcing/rankings').need.maxActors = 2; }, /sourcing\.rankings: the kit lets agent call, and the mock service takes an act chain of 2/],
     ['a route of the kit that the mock service lacks', (data) => { data.mock = data.mock.filter((route) => route.id !== 'POST /sourcing/rankings'); }, /the route sourcing\.rankings of the kit is no route of the mock service/],
