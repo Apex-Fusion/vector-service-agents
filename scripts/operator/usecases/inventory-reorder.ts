@@ -3,6 +3,7 @@
 // The file holds public text and amounts in lovelace (bigint). It holds no key, no wallet address, no DID and no hash of a run, and no contact address: the contact is a setting.
 // A test (test/usecase-inventory-reorder.test.ts) holds each name and each number here to the public file of the agents that states it, so a change in one place fails a test in the other.
 import { INVENTORY_CAPABILITIES } from '../../../packages/usecase-kit/src/inventory/index.ts';
+import { CHALLENGE_RESERVE_LOVELACE } from '../lib/claim-constants.ts';
 import type { KeyLine, KeyUse, OrganisationSpec, PartySpec, UseCase } from '../lib/contract.ts';
 
 const REORDER_ENV = '.env.reorder-agent';
@@ -128,7 +129,9 @@ const USE_CASE: UseCase = {
         },
       ],
       cosign: true, faultValues: [], stakeLovelace: 10_000_000n,
-      claim: { stakeLovelace: 50_000_000n, windowMs: 86_400_000, claimType: INVENTORY_CAPABILITIES.reorder },
+      claim: { stakeLovelace: 50_000_000n, windowMs: 86_400_000, claimType: INVENTORY_CAPABILITIES.reorder, challengeReserveLovelace: CHALLENGE_RESERVE_LOVELACE },
+      serviceContainer: 'reorder-service', exampleEnvFile: null, envManaged: { mock: true, module1: true }, publicKeyLines: [],
+      end: { record: 'active', advert: 'listed', subagents: 'live', successor: null },
     },
     {
       id: 'order-desk', kind: 'order-desk', name: 'Order Desk',
@@ -151,7 +154,9 @@ const USE_CASE: UseCase = {
         },
       ],
       cosign: false, faultValues: ['confirm_wrong_lot'], stakeLovelace: 10_000_000n,
-      claim: { stakeLovelace: 50_000_000n, windowMs: 86_400_000, claimType: INVENTORY_CAPABILITIES.order },
+      claim: { stakeLovelace: 50_000_000n, windowMs: 86_400_000, claimType: INVENTORY_CAPABILITIES.order, challengeReserveLovelace: null },
+      serviceContainer: 'orders-service', exampleEnvFile: null, envManaged: { mock: true, module1: true }, publicKeyLines: [],
+      end: { record: 'active', advert: 'listed', subagents: 'live', successor: null },
     },
   ],
   subagents: [
@@ -216,8 +221,8 @@ const USE_CASE: UseCase = {
     { agent: 'order-desk', types: ['provenance', 'software'], format: 50, validDays: 365, envelope: null },
   ],
   runs: [
-    { id: 'clean', sku: 'GLV-NIT-M', tenantPrefix: 'reorder-clean', vaultUnits: 8.3, perTxUnits: 7, totalUnits: 7 },
-    { id: 'failure', sku: 'MSK-N95', tenantPrefix: 'reorder-failure', vaultUnits: 8.3, perTxUnits: 7, totalUnits: 7 },
+    { id: 'clean', subject: 'GLV-NIT-M', tenantPrefix: 'reorder-clean', vaultUnits: 8.3, perTxUnits: 7, totalUnits: 7 },
+    { id: 'failure', subject: 'MSK-N95', tenantPrefix: 'reorder-failure', vaultUnits: 8.3, perTxUnits: 7, totalUnits: 7 },
   ],
   evidenceSteps: [
     { id: 'r1-01', run: 'clean', what: 'The hirer delegates to the Reorder Agent. The agent co-signs. The hirer submits.', primitive: 'Delegation with a co-signature', actor: 'hirer' },
@@ -273,6 +278,20 @@ const USE_CASE: UseCase = {
   ],
   moduleManifestPath: 'Module-1/deploy/identity/mainnet/manifest.json',
   runtimeCommit: 'a05564cae3ca0e72a3591c8b2eb16c7909a60839',
+  records: [],
+  compliance: null,
+  lifecycle: null,
+  tenantSeed: null,
+  tenantOrganisations: { supplier: ALFA.domain, insurer: 'delta.vector.apexfusion.org' },
+  // The section "Not covered" of the results page, as the results task prints it for use case 1.
+  notCovered: {
+    lead: 'No run covers these three items:',
+    items: [
+      'The refund of the escrow of a revoked agent.',
+      'The reclaim of an escrow by its buyer.',
+      'A relying party that refuses a live token after its authority ended. Tests alone cover this item.',
+    ],
+  },
 };
 
 export default USE_CASE;

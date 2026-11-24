@@ -10,6 +10,8 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { parse as parseYaml } from 'yaml';
 import { MAX_CLAIM_TYPE_BYTES } from '../../../packages/usecase-kit/src/dispute/index.ts';
 import { INVENTORY_CAPABILITIES, ORDER_DESK_CLAIM, REORDER_CLAIM } from '../../../packages/usecase-kit/src/inventory/index.ts';
+import { BID_CAPABILITIES, BID_DESK_CLAIM, SOURCING_CLAIM } from '../../../packages/usecase-kit/src/bids/index.ts';
+import { INTAKE_CLAIM, PRIORAUTH_CAPABILITIES, PRIORAUTH_CLAIM } from '../../../packages/usecase-kit/src/priorauth/index.ts';
 import type { AdvertSpec, AgentSpec, KeyLine, KeyUse, PartySpec, UseCase } from '../lib/contract.ts';
 import { loadRegistry, makeMissingKeys } from '../lib/registry.ts';
 import data from '../usecases/inventory-reorder.ts';
@@ -242,6 +244,10 @@ const mapHandle = (files: AgentFiles, path: string | null, change: (handle: Cadd
 const KIT_OF_KIND: Readonly<Record<AgentSpec['kind'], { capability: string; claim: typeof REORDER_CLAIM }>> = {
   'reorder-agent': { capability: INVENTORY_CAPABILITIES.reorder, claim: REORDER_CLAIM },
   'order-desk': { capability: INVENTORY_CAPABILITIES.order, claim: ORDER_DESK_CLAIM },
+  'prior-authorization-agent': { capability: PRIORAUTH_CAPABILITIES.draft, claim: PRIORAUTH_CLAIM },
+  'insurer-intake-agent': { capability: PRIORAUTH_CAPABILITIES.intake, claim: INTAKE_CLAIM },
+  'sourcing-agent': { capability: BID_CAPABILITIES.evaluate, claim: SOURCING_CLAIM },
+  'bid-desk': { capability: BID_CAPABILITIES.quote, claim: BID_DESK_CLAIM },
 };
 
 /** The capability of each agent is the capability that the kit gives to its kind, the template names it, and the claim of the template is the claim that the kit holds for that capability. */
@@ -644,12 +650,12 @@ function lotProblems(use: UseCase): string[] {
   const problems: string[] = [];
   const models = use.agents.find((agent) => agent.id === 'order-desk')?.adverts.map((advert) => advert.model) ?? [];
   for (const run of use.runs) {
-    const item = LOTS.items.find((candidate) => candidate.sku === run.sku);
-    if (item === undefined) problems.push(`run ${run.id}: the SKU ${run.sku} is not in the lots file`);
-    else for (const model of models) if (item.lots[model] === undefined) problems.push(`run ${run.id}: the SKU ${run.sku} has no size for the lot ${model}`);
+    const item = LOTS.items.find((candidate) => candidate.sku === run.subject);
+    if (item === undefined) problems.push(`run ${run.id}: the SKU ${run.subject} is not in the lots file`);
+    else for (const model of models) if (item.lots[model] === undefined) problems.push(`run ${run.id}: the SKU ${run.subject} has no size for the lot ${model}`);
   }
   if (!isDeepStrictEqual(use.runs.map((run) => run.id), ['clean', 'failure'])) problems.push('the runs are not clean and failure, in this order');
-  if (new Set(use.runs.map((run) => run.sku)).size !== use.runs.length) problems.push('two runs have the same SKU');
+  if (new Set(use.runs.map((run) => run.subject)).size !== use.runs.length) problems.push('two runs have the same SKU');
   return problems;
 }
 
@@ -1065,12 +1071,12 @@ describe('the data of use case 1 (inventory reorder)', () => {
   describe('the lots', () => {
     it('hold the SKU of each run, with a size for each lot of the Order Desk', () => {
       expect(lotProblems(data)).toEqual([]);
-      expect(data.runs.map((run) => run.sku)).toEqual(['GLV-NIT-M', 'MSK-N95']);
+      expect(data.runs.map((run) => run.subject)).toEqual(['GLV-NIT-M', 'MSK-N95']);
     });
     it.each<[string, UseCase, string]>([
-      ['a SKU that the lots file does not hold', { ...data, runs: data.runs.map((run) => (run.id === 'failure' ? { ...run, sku: 'MSK-N99' } : run)) }, 'run failure: the SKU MSK-N99 is not in the lots file'],
+      ['a SKU that the lots file does not hold', { ...data, runs: data.runs.map((run) => (run.id === 'failure' ? { ...run, subject: 'MSK-N99' } : run)) }, 'run failure: the SKU MSK-N99 is not in the lots file'],
       ['a lot that the SKU has no size for', mapAdvert(data, 'order-desk', 'lot-large', { model: 'lot-jumbo' }), 'run clean: the SKU GLV-NIT-M has no size for the lot lot-jumbo'],
-      ['two runs with one SKU', { ...data, runs: data.runs.map((run) => ({ ...run, sku: 'GLV-NIT-M' })) }, 'two runs have the same SKU'],
+      ['two runs with one SKU', { ...data, runs: data.runs.map((run) => ({ ...run, subject: 'GLV-NIT-M' })) }, 'two runs have the same SKU'],
     ])('refuse %s', (_name, broken, problem) => {
       expect(lotProblems(broken)).toContain(problem);
     });
