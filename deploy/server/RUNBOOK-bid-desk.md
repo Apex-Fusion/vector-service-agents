@@ -97,7 +97,7 @@ Each answer must be the address of the host and nothing else. The address of a p
 
 ## The folders
 
-Each Bid Desk has a folder of its own: `/srv/agents/bid-desk-alfa`, `/srv/agents/bid-desk-bravo` and `/srv/agents/bid-desk-charlie`. Each one belongs to the service user, `agents`, with mode 750. Make them with `install -d`. Do not use the set-up script of the host: it refuses to run on a host that already runs agents. The first three commands make the folders. Run the last three in the folder that holds the files of `deploy/server` (the folder `agents-server` of RUNBOOK.md, step 2):
+Each Bid Desk has a folder of its own: `/srv/agents/bid-desk-alfa`, `/srv/agents/bid-desk-bravo` and `/srv/agents/bid-desk-charlie`. Each one belongs to the service user, `agents`, with mode 750. Make them with `install -d`. Do not use the set-up script of the host: it refuses to run on a host that already runs agents. The first three commands make the folders, and the fourth checks them. Run the last three in the folder that holds the files of `deploy/server` (the folder `agents-server` of RUNBOOK.md, step 2):
 
 ```sh
 sudo install -d -m 750 -o agents -g agents /srv/agents/bid-desk-alfa
@@ -522,12 +522,12 @@ A Bid Desk is the hired side. A job that fails answers with its HTTP status and 
 | `sender_not_active`, `sender_unaccountable` or `sender_key_mismatch` (403, before the Claim) | The sender is not an active agent, it has no accountable party in force, or its key is not the key that paid. | Nothing on the host. The escrow stays open. The buyer fixes its side. |
 | `delegation_invalid`, `delegation_ended` or `not_vault_paid` (403, before the Claim) | The delegation does not name the sender, the delegation ended, or the escrow was not paid from a vault of the delegation. | Nothing on the host. The escrow stays open. |
 | `duplicate_rfq` (403, before the Claim or after it) | The book of the Bid Desk already holds an answer to this request from this sender. The book never drops an entry. | Nothing on the host: a Bid Desk gives one quote for each request. The buyer sends a new request with a new `rfq_id`. |
-| `check_unavailable` (503) | A check could not read its source in time: the identity gateway, the ledger or the book. The escrow stays open. | Read the line `the hook could not read the <source>` in the log. Check that the host reaches the gateway, the node and the indexer, and that `rfq-book.json` is in the volume. |
+| `check_unavailable` (503) | A check could not read its source in time: the identity gateway, the ledger or the book. The escrow stays open. | Read the line `bid desk: the <source> failed` in the log: it names the source and the kind of the error. Check that the host reaches the gateway, the node and the indexer, and that `rfq-book.json` is in the volume. |
 | `precheck_missing` (500, after the Claim) | The job had no record of its check: the service restarted between the check and the job, or the job came more than 300 seconds after the check. | Never restart during a run. The escrow stays Claimed, and the buyer reclaims it after the deadline. |
 | `credential_failed` (502) | The identity gateway gave no credential for the desk. | Check that the agent record of that Bid Desk exists and is active, and that the host reaches the gateway. |
 | `inference_failed` or `model_output_invalid` (502) | The hire of the model failed, or the model gave no answer that a quote can hold. | Read the log line. Check the wallet of the service key: it needs its collateral and a float. |
 | `store_write_failed` (500) | The service could not write `rfq-book.json` or the record of the model hires. | Check the volume `bid-desk-<name>-state` and the disk. |
-| `deadline` (422) | The job ran out of its 300,000 ms, or the buyer hung up. | Read the log line of the job. |
+| `deadline` (422) | The buyer hung up before the job gave its quote, or less than 30 seconds were left before the runtime stops waiting for the job. Nothing is recorded. | Read the log line of the job. Nothing to fix when it happens once. |
 | `internal` (500) | A fault in the service. | Report it with the log line of the job. |
 
 ## Back out
@@ -557,6 +557,6 @@ To take one Bid Desk out of service. The order matters: the advert goes first, s
 
 ## The operator pack
 
-The claim of each Bid Desk is made with the operator commands of the operator pack, and never by the service. The claim is the three statements in `behaviour.claim` of the manifest. The stake of the claim and its record belong to the service key of that Bid Desk: the operator commands make them, one Bid Desk at a time. The service has no claim code and no dispute code, and it never challenges. The Sourcing Agent files a challenge against a claim when its evidence refutes it.
+The claim of each Bid Desk is made with the operator commands of the operator pack, and never by the service. The claim is the three statements in `behaviour.claim` of the manifest. The stake of the claim and its record belong to the service key of that Bid Desk: the operator commands make them, one Bid Desk at a time. The service has no claim code and no dispute code, and it never challenges. A challenge against the claim of a Bid Desk comes from the Sourcing Agent, and never from this service.
 
 This runbook starts the three services and the three runtimes. It never makes a stake, a claim or a record.
