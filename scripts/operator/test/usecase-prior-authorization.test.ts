@@ -483,12 +483,10 @@ describe('use case 2 (prior authorization)', () => {
       .toContain('fee: the float must cover the items, rounded up to 10 units');
   });
 
-  it('uses the runtime commit of the workflow checkout', () => {
-    const ci = parseYaml(read('.github/workflows/ci.yml')) as { jobs: Record<string, { steps?: { with?: { repository?: string; ref?: string } }[] }> };
-    const refs = Object.values(ci.jobs).flatMap((job) => job.steps ?? [])
-      .filter((step) => step.with?.repository === 'Apex-Fusion/vector-agent-template').map((step) => step.with?.ref);
+  it('uses the runtime revision verified by CI', () => {
+    const ci = parseYaml(read('.github/workflows/ci.yml')) as { env?: { AGENT_RUNTIME_TEMPLATE_COMMIT?: string } };
     expect(data.runtimeCommit).toMatch(/^[0-9a-f]{40}$/);
-    expect(new Set(refs)).toEqual(new Set([data.runtimeCommit]));
+    expect(data.runtimeCommit).toBe(ci.env?.AGENT_RUNTIME_TEMPLATE_COMMIT);
   });
 
   it('defines the registered records, the attestations and the final state', () => {
