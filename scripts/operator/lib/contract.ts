@@ -117,10 +117,18 @@ export interface ClaimFact {
 export interface TenantFact { name: string; createdAt: string; seedKind: 'default' | 'custom' }
 export interface HoldFact { suspendTx: string | null; liftTx: string | null }
 export interface DeployFact { commit: string; images: Readonly<Record<string, string>> }
+export interface ComplianceFact {
+  id: string; tx: string; digest: string; locator: string; validUntil: string; issuedAt: string;
+  revokeTx: string | null; contestTx: string | null; replySha256: string | null; replyUri: string | null;
+}
+export interface RevocationFact { tx: string; reason: number; invalidFrom: string | null; revokedAt: string }
+export interface LifecycleFact { tx: string; at: string }
+export interface SubagentEndFact { tx: string; at: string; epochBefore: number; epochAfter: number }
 export interface Facts {
   records: Record<string, RecordFact>; organisations: Record<string, OrganisationFact>; stakes: Record<string, StakeFact>;
   adverts: Record<string, Record<string, AdvertFact>>; manifests: Record<string, ManifestFact>; attestations: Record<string, Record<string, AttestationFact>>;
   claims: Record<string, Record<string, ClaimFact>>; tenants: Record<string, TenantFact>; holds: Record<string, HoldFact>; deploy: DeployFact | null;
+  compliance: Record<string, ComplianceFact>; revocations: Record<string, RevocationFact>; lifecycle: Record<string, LifecycleFact>; subagentEnds: Record<string, SubagentEndFact>;
 }
 export interface FactsStore {
   read(): Readonly<Facts>;
