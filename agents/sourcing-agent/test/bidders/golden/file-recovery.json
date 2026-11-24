@@ -1,0 +1,31 @@
+{
+  "did": "did:vector:b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+  "advert_ref": "2222222222222222222222222222222222222222222222222222222222222222#1",
+  "status": "active",
+  "status_reason": null,
+  "lineage": {
+    "hold_until": null,
+    "ended_at": null,
+    "invalid_from": null,
+    "successor": null,
+    "recovery_pending": true
+  },
+  "accountable": "2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b",
+  "organisation": "bravo.example.org",
+  "organisation_verified": true,
+  "in_catalog": true,
+  "stake_lovelace": "7500000000",
+  "cases_against": 1,
+  "price_list": "valid",
+  "compliance": {
+    "state": "valid",
+    "attestation": "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1",
+    "attestation_state": "active",
+    "issued_at": "2026-11-20T10:00:00Z",
+    "valid_until": "2027-05-20T10:00:00Z",
+    "revoked_at": null,
+    "revoke_reason": null,
+    "contested": null
+  },
+  "credential": "valid"
+}

@@ -1,0 +1,33 @@
+{
+  "did": "did:vector:c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+  "advert_ref": "3333333333333333333333333333333333333333333333333333333333333333#0",
+  "status": "revoked",
+  "status_reason": null,
+  "lineage": {
+    "hold_until": null,
+    "ended_at": "2027-01-12T10:30:00Z",
+    "invalid_from": "2027-01-11T18:00:00Z",
+    "successor": null,
+    "recovery_pending": false
+  },
+  "accountable": null,
+  "organisation": null,
+  "organisation_verified": false,
+  "in_catalog": false,
+  "stake_lovelace": "1000000",
+  "cases_against": 3,
+  "price_list": "valid",
+  "compliance": {
+    "state": "invalid",
+    "attestation": "c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2",
+    "attestation_state": "revoked",
+    "issued_at": "2026-11-20T10:00:00Z",
+    "valid_until": "2027-05-20T10:00:00Z",
+    "revoked_at": "2027-01-12T10:00:00Z",
+    "revoke_reason": "1",
+    "contested": {
+      "sha256": "d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0"
+    }
+  },
+  "credential": "invalid"
+}
