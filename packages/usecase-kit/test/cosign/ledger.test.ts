@@ -3,7 +3,7 @@
 // the wrong form is `check_unavailable`: the agent never signs on a source that it could not read, and the key is not held after the failure.
 import { CML } from '@lucid-evolution/lucid';
 import type { Provider, UTxO } from '@lucid-evolution/lucid';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { COSIGN_SETTINGS, COSIGN_STATUS, providerLedger } from '@vsa/usecase-kit/cosign';
 import type { CosignLedger, LedgerOutput } from '@vsa/usecase-kit/cosign';
 import {
@@ -347,26 +347,30 @@ describe('a damaged delegation output is a fault of the source and not a free ke
     ['holds its token in the quantity 2', { ...live, assets: { lovelace: 2_000_000n, [unit]: 2n } }],
     ['holds its token in the quantity 0', { ...live, assets: { lovelace: 2_000_000n, [unit]: 0n } }],
   ];
+  // Each case gets its own ledger and signing log. Only the two request bodies are the same.
+  let hex: string;
+  let otherHex: string;
+  beforeAll(async () => {
+    hex = (await build()).hex;
+    otherHex = (await build({ delegateKey: DELEG_B.keyHash })).hex;
+  });
 
   it.each(damaged)('is `check_unavailable` when an output at the delegation script %s', async (_name, utxo) => {
-    const { hex } = await build();
     await expect(providerLedger(world([utxo]), DEPLOYMENT).delegateKeysInUse()).rejects.toThrow();
     const h = harness({ ledger: ledgerOf(world([utxo])), limits: quick });
     expect(await h.route.cosign(requestOf(hex))).toMatchObject({ ok: false, code: 'check_unavailable' });
     expect(h.signed).toEqual([]);
     // The output may name any key, and the agent cannot tell which: a request for the other key is refused too.
     const other = harness({ ledger: ledgerOf(world([utxo])), limits: quick });
-    expect(await other.route.cosign(requestOf((await build({ delegateKey: DELEG_B.keyHash })).hex))).toMatchObject({ ok: false, code: 'check_unavailable' });
+    expect(await other.route.cosign(requestOf(otherHex))).toMatchObject({ ok: false, code: 'check_unavailable' });
   });
 
   it('takes the outputs that are good: a live delegation of another key leaves the key free, a live delegation of the key is `key_in_use`', async () => {
-    const { hex } = await build();
     expect((await harness({ ledger: ledgerOf(world([liveDelegation(DELEG_B.keyHash)])) }).route.cosign(requestOf(hex))).ok).toBe(true);
     expect(await harness({ ledger: ledgerOf(world([live])) }).route.cosign(requestOf(hex))).toMatchObject({ ok: false, code: 'key_in_use' });
   });
 
   it('leaves out an output at the delegation script that has no token of the policy: it is no delegation', async () => {
-    const { hex } = await build();
     const plain: UTxO = { txHash: 'cc'.repeat(32), outputIndex: 0, address: DEPLOYMENT.delegation.address, assets: { lovelace: 2_000_000n } };
     const withDatumHash: UTxO = { ...plain, txHash: 'cd'.repeat(32), datumHash: '11'.repeat(32) };
     const withOtherToken: UTxO = { ...plain, txHash: 'ce'.repeat(32), assets: { lovelace: 2_000_000n, [`${'ab'.repeat(28)}${'77'.repeat(32)}`]: 1n } };
