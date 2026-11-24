@@ -5,6 +5,7 @@
 import { describe, expect, test } from 'vitest';
 import { VECTOR_KOIOS_URL, VECTOR_OGMIOS_URL, VECTOR_SUBMIT_URL } from '@vsa/buyer-core';
 import { REGISTRY_POLICY } from '@vsa/vector-read';
+import { PROPOSE_DEADLINE_MS } from '../../src/propose/index.ts';
 import {
   BUYER_BOND_LOVELACE, GATEWAY_DEFAULT, HOST_DEFAULT, JOB_DEADLINE_MS, MIN_PROCESSING_WINDOW_MS, PORT_DEFAULT, PRICE_DEFAULT_LOVELACE, STATE_DIR_DEFAULT, SUPPLIER_BOND_LOVELACE, agentDidOf,
   complianceIssuerOf, cosignSettingsOf, disputeOf, endpointsFromEnv, faultOf, hostOf, httpsOriginOf, limitsOf, mockBasesOf, modelOf, module1SourceOf, portOf, priceOf, processingWindowOf, quoteLimitsOf,
@@ -41,14 +42,19 @@ function checkRow(row: Row): void {
 }
 
 describe('the numbers of the service agree with each other', () => {
-  test('the window of the advert is 3,600,000 ms: the deadline of a job is 3,420,000 ms, and the timeout of the runtime, 3,480,000 ms, stands between the two', () => {
-    expect(JOB_DEADLINE_MS).toBe(3_420_000);
-    expect(MIN_PROCESSING_WINDOW_MS).toBe(3_600_000);
+  test('the window of the advert is 5,400,000 ms: the deadline of a job is 5,220,000 ms, and the timeout of the runtime, 5,280,000 ms, stands between the two', () => {
+    expect(JOB_DEADLINE_MS).toBe(5_220_000);
+    expect(MIN_PROCESSING_WINDOW_MS).toBe(5_400_000);
     // The runtime waits 60 s longer than the job, and the window holds 120 s more than the runtime.
-    const runtimeTimeoutMs = 3_480_000;
+    const runtimeTimeoutMs = 5_280_000;
     expect(runtimeTimeoutMs).toBe(JOB_DEADLINE_MS + 60_000);
     expect(MIN_PROCESSING_WINDOW_MS).toBe(runtimeTimeoutMs + 120_000);
     expect(MIN_PROCESSING_WINDOW_MS).toBe(JOB_DEADLINE_MS + 180_000);
+  });
+
+  test('the deadline of a job is the deadline of the propose job: one source for the service, its manifest and its pack', () => {
+    expect(JOB_DEADLINE_MS).toBe(PROPOSE_DEADLINE_MS);
+    expect(MIN_PROCESSING_WINDOW_MS).toBe(PROPOSE_DEADLINE_MS + 180_000);
   });
 
   test('the defaults are the port 9105, every address, the folder /data and the price 3 units, and the two bonds are 1 unit each, so the lock of the escrow is 5 units', () => {
@@ -184,9 +190,9 @@ describe('the listener and the state', () => {
 
 describe('the numbers of the advert', () => {
   const ADVERT_ROWS: Row[] = [
-    ...rowsOf('ADVERT_MAX_PROCESSING_MS', processingWindowOf, '3600000', [
-      ['a window of 3,599,999 ms', '3599999'], ['the old window of 1,800,000 ms', '1800000'], ['a window of 0', '0'], ['a window that is no number', 'x'], ['a window with a fraction', '3600000.5'],
-      ['a negative window', '-3600000'], ['a key in the line', SECRET],
+    ...rowsOf('ADVERT_MAX_PROCESSING_MS', processingWindowOf, '5400000', [
+      ['a window of 5,399,999 ms', '5399999'], ['the old window of 3,600,000 ms', '3600000'], ['a window of 0', '0'], ['a window that is no number', 'x'], ['a window with a fraction', '5400000.5'],
+      ['a negative window', '-5400000'], ['a key in the line', SECRET],
     ]),
     ...rowsOf('ADVERT_PRICE_LOVELACE', priceOf, '4000000', [
       ['a price of 0', '0'], ['a negative price', '-1'], ['a price with a fraction', '3.5'], ['a price that is no number', 'x'], ['a key in the line', SECRET],
@@ -194,12 +200,12 @@ describe('the numbers of the advert', () => {
   ];
   test.each(ADVERT_ROWS)('$variable: $what stops the start by its name, and the twin passes', checkRow);
 
-  test('the window is at least 3,600,000 ms with that default, and the price is a whole number of lovelace of more than 0 with the default 3,000,000', () => {
-    expect(processingWindowOf({})).toBe(3_600_000);
-    expect(processingWindowOf({ ADVERT_MAX_PROCESSING_MS: '3600000' })).toBe(3_600_000);
-    expect(processingWindowOf({ ADVERT_MAX_PROCESSING_MS: '4200000' })).toBe(4_200_000);
-    expect(processingWindowOf({ ADVERT_MAX_PROCESSING_MS: '' })).toBe(3_600_000);
-    expect(messageOf(() => processingWindowOf({ ADVERT_MAX_PROCESSING_MS: '3599999' }))).toMatch(/^environment variable ADVERT_MAX_PROCESSING_MS must be at least 3600000/);
+  test('the window is at least 5,400,000 ms with that default, and the price is a whole number of lovelace of more than 0 with the default 3,000,000', () => {
+    expect(processingWindowOf({})).toBe(5_400_000);
+    expect(processingWindowOf({ ADVERT_MAX_PROCESSING_MS: '5400000' })).toBe(5_400_000);
+    expect(processingWindowOf({ ADVERT_MAX_PROCESSING_MS: '6000000' })).toBe(6_000_000);
+    expect(processingWindowOf({ ADVERT_MAX_PROCESSING_MS: '' })).toBe(5_400_000);
+    expect(messageOf(() => processingWindowOf({ ADVERT_MAX_PROCESSING_MS: '5399999' }))).toMatch(/^environment variable ADVERT_MAX_PROCESSING_MS must be at least 5400000/);
     expect(priceOf({})).toBe(3_000_000);
     expect(priceOf({ ADVERT_PRICE_LOVELACE: '4000000' })).toBe(4_000_000);
     expect(priceOf({ ADVERT_PRICE_LOVELACE: '1' })).toBe(1);

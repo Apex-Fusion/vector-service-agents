@@ -272,7 +272,7 @@
     "price_lovelace": 3000000,
     "supplier_bond_lovelace": 1000000,
     "buyer_bond_lovelace": 1000000,
-    "max_processing_ms": 3600000,
+    "max_processing_ms": 5400000,
     "input_limits": {
       "request_bytes": 900000,
       "rfq_items": 20,
@@ -355,7 +355,7 @@
     "Before it pays a bidder, the agent reads the status of the record again and needs a price list that it can check. A bidder that fails either is left out with a reason.",
     "The controller key, the Accountable key and the guardian keys of this deployment are held on one host by one operator, so a party is independent of the controller by key only.",
     "What this does not show: no run covers the refund of the escrow of a revoked agent, the reclaim of an escrow in use case 3, or a relying party that refuses a live token after its authority ends. Tests cover that last case only.",
-    "This service has a fault switch for failure runs with these possible values: invert_scores (one scorer returns its component scores reversed, as 100 minus each); this manifest is the same for every value, so only the field fault_mode of each result shows which value is active."
+    "This service has a fault switch for failure runs with these possible values: invert_scores (one scorer returns its component scores and its score reversed, as 100 minus each); this manifest is the same for every value, so only the field fault_mode of each result shows which value is active."
   ],
   "links": {
     "spec": "https://github.com/Apex-Fusion/vector-service-agents/blob/main/specs/sourcing-agent.md",

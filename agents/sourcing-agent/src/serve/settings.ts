@@ -20,6 +20,7 @@ import type { FaultSwitch } from '@vsa/usecase-kit/fault';
 import { parseDid } from '@vsa/usecase-kit/protocol';
 import type { Did } from '@vsa/usecase-kit/protocol';
 import { blake2b224Hex, manifestDid } from '@vsa/vector-read';
+import { PROPOSE_DEADLINE_MS } from '../propose/index.ts';
 
 export const PORT_DEFAULT = 9105;
 export const HOST_DEFAULT = '0.0.0.0';
@@ -27,10 +28,13 @@ export const HOST_DEFAULT = '0.0.0.0';
 export const STATE_DIR_DEFAULT = '/data';
 export const GATEWAY_DEFAULT = 'https://id.vector.apexfusion.org';
 
-/** The deadline of a job: 3,420,000 ms after its request arrives. The runtime waits 60 s longer (`SERVICE_TIMEOUT_MS` is 3,480,000), and the window of the advert is 3,600,000 ms. */
-export const JOB_DEADLINE_MS = 3_420_000;
-/** The least window of the advert (ADVERT_MAX_PROCESSING_MS) and its default: the deadline of a job and the timeout of the runtime fit inside it. */
-export const MIN_PROCESSING_WINDOW_MS = 3_600_000;
+/**
+ * The deadline of a job: `PROPOSE_DEADLINE_MS` of the propose job, 5,220,000 ms after its request arrives. That job is the one source of the number. The runtime waits 60 s longer (`SERVICE_TIMEOUT_MS` is
+ * 5,280,000), and the window of the advert is 5,400,000 ms.
+ */
+export const JOB_DEADLINE_MS = PROPOSE_DEADLINE_MS;
+/** The least window of the advert (ADVERT_MAX_PROCESSING_MS) and its default: the deadline of a job, the 60 s that the runtime waits longer and 120 s more. It is 5,400,000 ms. */
+export const MIN_PROCESSING_WINDOW_MS = PROPOSE_DEADLINE_MS + 180_000;
 /** The price of the advert unless ADVERT_PRICE_LOVELACE says another: 3 units. */
 export const PRICE_DEFAULT_LOVELACE = 3_000_000;
 /** The two bonds of the advert, in lovelace. The lock of the escrow is the price and both bonds: 5 units for the default price. */

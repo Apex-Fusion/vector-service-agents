@@ -131,7 +131,7 @@ describe('the bytes of the manifest', () => {
     expect(render(manifestEnv({ LLM_MODEL_ALLOWLIST: 'other/model' })).sha256).not.toBe(base);
     expect(render(manifestEnv({ AGENT_DID: `did:vector:${'c3'.repeat(32)}` })).sha256).not.toBe(base);
     expect(render(manifestEnv({ ADVERT_PRICE_LOVELACE: '4000000' })).sha256).not.toBe(base);
-    expect(render(manifestEnv({ ADVERT_MAX_PROCESSING_MS: '4200000' })).sha256).not.toBe(base);
+    expect(render(manifestEnv({ ADVERT_MAX_PROCESSING_MS: '6000000' })).sha256).not.toBe(base);
     expect(render(manifestEnv({ COMPLIANCE_ISSUER_PKH: SUPPLIER.keyHash })).sha256).not.toBe(base);
     const unrelated = { PORT: '9999', HOST: '127.0.0.2', MOCK_PUBLIC_BASE: 'https://other.example', SCORER_1_DID: `did:vector:${'d1'.repeat(32)}`, QUOTE_MAX_PRICE_LOVELACE: '3000000', DISPUTE_READ_TIMEOUT_MS: '30000' };
     expect(render(manifestEnv(unrelated)).sha256).toBe(base);
@@ -250,7 +250,7 @@ describe('the members of the manifest', () => {
     expect(messageOf(() => manifestFromEnv(manifestEnv({ OPERATOR_CONTACT: undefined })))).toMatch(/^environment variable OPERATOR_CONTACT is required/);
     expect(messageOf(() => manifestFromEnv(manifestEnv({ AGENT_DID: `did:vector:${'zz'.repeat(32)}` })))).toMatch(/AGENT_DID/);
     expect(messageOf(() => manifestFromEnv(manifestEnv({ LLM_MODEL_ALLOWLIST: undefined })))).toMatch(/^environment variable LLM_MODEL_ALLOWLIST is required/);
-    expect(messageOf(() => manifestFromEnv(manifestEnv({ ADVERT_MAX_PROCESSING_MS: '1800000' })))).toMatch(/^environment variable ADVERT_MAX_PROCESSING_MS must be at least 3600000/);
+    expect(messageOf(() => manifestFromEnv(manifestEnv({ ADVERT_MAX_PROCESSING_MS: '3600000' })))).toMatch(/^environment variable ADVERT_MAX_PROCESSING_MS must be at least 5400000/);
   });
 
   test('have a request schema with the two operations: propose with the request for quotation and the four weights, and execute with the proposal and the approval', () => {
@@ -375,10 +375,10 @@ describe('the terms', () => {
   const PROMPT = 'dd'.repeat(32);
   const buyer = keyOf(rawKey(KEY_NUMBERS.delegation1));
 
-  test('are the price 3 and both bonds 1, in a window of 3,600,000 ms, and the input limits are the limits of the intake', () => {
+  test('are the price 3 and both bonds 1, in a window of 5,400,000 ms, and the input limits are the limits of the intake', () => {
     expect(SOURCING_MODEL).toBe('sourcing-agent-v1');
     expect(at(parsed(), 'terms')).toStrictEqual({
-      price_lovelace: 3_000_000, supplier_bond_lovelace: 1_000_000, buyer_bond_lovelace: 1_000_000, max_processing_ms: 3_600_000,
+      price_lovelace: 3_000_000, supplier_bond_lovelace: 1_000_000, buyer_bond_lovelace: 1_000_000, max_processing_ms: 5_400_000,
       input_limits: { request_bytes: MAX_REQUEST_BYTES, rfq_items: MAX_RFQ_ITEMS, item_quantity: MAX_ITEM_QUANTITY, tenant_chars: 48 },
     });
     expect(MAX_REQUEST_BYTES).toBe(900_000);
@@ -394,7 +394,7 @@ describe('the terms', () => {
     expect(identity.layout).toBe('identity');
     expect(identity.lockLovelace).toBe(5_000_000n);
     // The window of the advert is the window of the escrow: the Post leaves the supplier all of it before deliver_by.
-    expect(identity.deliverBy - NOW).toBeGreaterThanOrEqual(3_600_000);
+    expect(identity.deliverBy - NOW).toBeGreaterThanOrEqual(5_400_000);
   });
 
   test('follow a price that the operator sets: the lock is that price and both bonds', () => {
