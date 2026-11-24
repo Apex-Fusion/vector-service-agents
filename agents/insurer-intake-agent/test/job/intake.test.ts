@@ -234,6 +234,25 @@ describe('the input of the model', () => {
     await plain.run();
     expect(other.decideCalls[0]?.input).toStrictEqual(plain.decideCalls[0]?.input);
   });
+
+  it('gives the port a list of ids that it cannot change, and checks the choice against the set that the job made before the port ran', async () => {
+    const rig = makeRig();
+    let given: readonly string[] = [];
+    const decide: IntakeDeps['decide'] = async (_input, ids) => {
+      given = ids;
+      // A port that tries to add an id: the list is frozen, so the push throws, and the id is never in the set of the job.
+      try {
+        (ids as string[]).push('R9');
+      } catch {
+        // The list is frozen.
+      }
+      return accepted({ ...decisionOf(), choice: { complete: false, missing: ['R9'] } });
+    };
+    expect(await refusalOf(() => rig.run({ deps: { decide } }))).toMatchObject({ code: 'model_output_invalid', status: 502 });
+    expect(Object.isFrozen(given)).toBe(true);
+    expect(given).toStrictEqual(['R1', 'R2', 'R3', 'R4', 'R5']);
+    expectNothingFiled(rig);
+  });
 });
 
 describe('a failed decision', () => {
@@ -580,6 +599,63 @@ describe('the JWT-SVID', () => {
     };
     expect(await refusalOf(() => rig.run({ deps: { decide } }))).toMatchObject({ code: 'svid_failed', status: 502 });
     expect(rig.events).toStrictEqual([...BEFORE_DECISION, 'decide', 'svid']);
+    expectNothingFiled(rig);
+  });
+
+  it('takes the 60 seconds that the new JWT-SVID needs from the filing: deadline (status 422), and nothing is filed', async () => {
+    // The time is enough for the filing when the new JWT-SVID is asked for. The gateway answers after 60 seconds, and then it is not.
+    const rig = makeRig({ deliverInMs: 380_000 });
+    const decide: IntakeDeps['decide'] = async (input, ids) => {
+      rig.gateway.advance(300_000);
+      return rig.deps.decide(input, ids);
+    };
+    const { client } = rig.deps.svid;
+    let asked = 0;
+    const jwtSvid: typeof client.jwtSvid = async (request) => {
+      asked += 1;
+      const answer = await client.jwtSvid(request);
+      // The first request is the one of the job. The second is the new JWT-SVID, and it takes 60 seconds.
+      if (asked === 2) rig.gateway.advance(60_000);
+      return answer;
+    };
+    const refusal = await refusalOf(() => rig.run({ deps: { decide, svid: { client: { ...client, jwtSvid } } } }));
+    expect(refusal).toMatchObject({ code: 'deadline', status: 422, message: 'The job has too little time left to file the request.' });
+    expect(rig.events).toStrictEqual([...BEFORE_DECISION, 'decide', 'svid']);
+    expect(rig.issued).toHaveLength(2);
+    expectNothingFiled(rig);
+  });
+
+  it.each([
+    ['the gateway is down', true],
+    ['the gateway is up', false],
+  ])('is not asked for when the caller hung up: deadline (status 422), and no second request goes to the gateway when %s', async (_what, gatewayDown) => {
+    const rig = makeRig({ deliverInMs: 900_000 });
+    const controller = new AbortController();
+    const decide: IntakeDeps['decide'] = async (input, ids) => {
+      rig.gateway.advance(300_000);
+      controller.abort();
+      if (gatewayDown) rig.gateway.fault('/spiffe/jwt-svid', { status: 503, body: '{"error":"temporarily_unavailable"}' });
+      return rig.deps.decide(input, ids);
+    };
+    expect(await refusalOf(() => rig.run({ signal: controller.signal, deps: { decide } }))).toMatchObject({ code: 'deadline', status: 422, message: 'The caller hung up, and the job stopped before it went on.' });
+    expect(rig.events).toStrictEqual([...BEFORE_DECISION, 'decide']);
+    expect(rig.gateway.requests.filter((call) => call.path === '/spiffe/jwt-svid')).toHaveLength(1);
+    expectNothingFiled(rig);
+  });
+
+  it.each([
+    ['the gateway is down', true],
+    ['the gateway is up', false],
+  ])('is not asked for when too little time is left for the filing: deadline (status 422), and no second request goes to the gateway when %s', async (_what, gatewayDown) => {
+    const rig = makeRig({ deliverInMs: 340_000 });
+    const decide: IntakeDeps['decide'] = async (input, ids) => {
+      rig.gateway.advance(300_000);
+      if (gatewayDown) rig.gateway.fault('/spiffe/jwt-svid', { status: 503, body: '{"error":"temporarily_unavailable"}' });
+      return rig.deps.decide(input, ids);
+    };
+    expect(await refusalOf(() => rig.run({ deps: { decide } }))).toMatchObject({ code: 'deadline', status: 422, message: 'The job has too little time left to file the request.' });
+    expect(rig.events).toStrictEqual([...BEFORE_DECISION, 'decide']);
+    expect(rig.gateway.requests.filter((call) => call.path === '/spiffe/jwt-svid')).toHaveLength(1);
     expectNothingFiled(rig);
   });
 

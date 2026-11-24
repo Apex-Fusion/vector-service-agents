@@ -28,7 +28,7 @@ const REQUEST_TEXTS = [DOCUMENT.justification, DOCUMENT.patient_ref, DOCUMENT.or
 async function setup(options: RigOptions = {}, over: Partial<FilingInput> = {}): Promise<{ readonly rig: Rig; readonly input: FilingInput }> {
   const rig = makeRig(options);
   const svid = await fetchSvid(rig.deps, DOCUMENT.tenant);
-  const input: FilingInput = { svid, document: DOCUMENT, status: 'complete', missing: [], draft: intakeRecordOf({ intake_id: STAND_IN }), deliverBy: rig.context.deliverByMs, ...over };
+  const input: FilingInput = { svid, document: DOCUMENT, draft: intakeRecordOf({ intake_id: STAND_IN }), deliverBy: rig.context.deliverByMs, ...over };
   return { rig, input };
 }
 
@@ -67,11 +67,15 @@ describe('the filing', () => {
     expect(request).toStrictEqual({ ...DOCUMENT });
   });
 
-  it('files an incomplete request with its status and the ids that the model named', async () => {
-    const { rig, input } = await setup({}, { status: 'incomplete', missing: ['R3', 'R4'], draft: intakeRecordOf({ intake_id: STAND_IN, status: 'incomplete', missing: ['R3', 'R4'], decisions: [{ ...intakeRecordOf().decisions[0]!, choice: { complete: false, missing: ['R3', 'R4'] } }] }) });
+  it('files the status and the missing ids of the draft: an incomplete draft files an incomplete request', async () => {
+    const draft = intakeRecordOf({
+      intake_id: STAND_IN, status: 'incomplete', missing: ['R3', 'R4'], decisions: [{ ...intakeRecordOf().decisions[0]!, choice: { complete: false, missing: ['R3', 'R4'] } }],
+    });
+    const { rig, input } = await setup({}, { draft });
     await file(rig, input);
-    expect(JSON.parse(rig.portal.calls[0]?.body ?? 'null')).toMatchObject({ status: 'incomplete', missing: ['R3', 'R4'] });
-    expect(Object.keys(JSON.parse(rig.portal.calls[0]?.body ?? 'null') as object)).toStrictEqual(['request', 'status', 'missing']);
+    const body = JSON.parse(rig.portal.calls[0]?.body ?? 'null') as Record<string, unknown>;
+    expect(body).toStrictEqual({ request: PRIOR_REQUEST, status: 'incomplete', missing: ['R3', 'R4'] });
+    expect(Object.keys(body)).toStrictEqual(['request', 'status', 'missing']);
   });
 
   it('waits for the answer as long as the bound of a call, and no longer', async () => {
@@ -183,7 +187,14 @@ describe('a refusal or a failure of the portal', () => {
   });
 
   it('never repeats the body or the message of the portal, or the message of an error, in the log or in the refusal', async () => {
-    for (const reply of [json(500, { error: 'internal', message: 'MARKER-OF-THE-PORTAL-MESSAGE' }), { throws: new Error('MARKER-OF-THE-NETWORK-ERROR') }, { status: 502, body: 'MARKER-OF-THE-PORTAL-BODY' }] as Reply[]) {
+    const replies = [
+      json(500, { error: 'internal', message: 'MARKER-OF-THE-PORTAL-MESSAGE' }),
+      json(401, { error: 'svid_invalid', message: 'MARKER-OF-THE-PORTAL-REFUSAL' }),
+      json(403, { error: 'agent_not_active', message: 'MARKER-OF-THE-PORTAL-REFUSAL' }),
+      { throws: new Error('MARKER-OF-THE-NETWORK-ERROR') },
+      { status: 502, body: 'MARKER-OF-THE-PORTAL-BODY' },
+    ] as Reply[];
+    for (const reply of replies) {
       const { rig, input } = await setup();
       rig.portal.filing = reply;
       const refusal = await refusalOf(() => file(rig, input));
@@ -322,7 +333,7 @@ describe('the time left before deliver_by', () => {
   async function withLeft(leftMs: number, timeoutMs = 20_000): Promise<{ readonly rig: Rig; readonly input: FilingInput }> {
     const rig = makeRig({ timeoutMs });
     const svid = await fetchSvid(rig.deps, DOCUMENT.tenant);
-    const input: FilingInput = { svid, document: DOCUMENT, status: 'complete', missing: [], draft: intakeRecordOf({ intake_id: STAND_IN }), deliverBy: rig.deps.clock() + timeoutMs + RUNTIME_MARGIN_MS + leftMs };
+    const input: FilingInput = { svid, document: DOCUMENT, draft: intakeRecordOf({ intake_id: STAND_IN }), deliverBy: rig.deps.clock() + timeoutMs + RUNTIME_MARGIN_MS + leftMs };
     return { rig, input };
   }
 
@@ -407,6 +418,16 @@ describe('the draft of the intake record', () => {
     expect(await file(rig, input)).toBe(INTAKE_ID);
   });
 
+  it('is for the request number of the document: a draft for another number gives internal, and nothing is filed or booked', async () => {
+    const { rig, input } = await setup({}, { draft: intakeRecordOf({ intake_id: STAND_IN, request_number: 'other-7' }) });
+    expect(await refusalOf(() => file(rig, input))).toMatchObject({ code: 'internal', status: 500, kind: 'job', message: INTAKE_REFUSAL_TEXT.internal });
+    expectNothingFiled(rig);
+    expect(rig.logs).toHaveLength(1);
+    // The twin: the draft for the number of the document files the request.
+    const twin = await setup();
+    expect(await file(twin.rig, twin.input)).toBe(INTAKE_ID);
+  });
+
   it('is not changed by the filing, and the id of the portal is not written into it', async () => {
     const { rig, input } = await setup();
     await file(rig, input);
@@ -428,7 +449,7 @@ describe('the JWT-SVID', () => {
   it('that names the insurer system of another tenant is refused before anything is sent', async () => {
     const rig = makeRig();
     const svid = await fetchSvid(rig.deps, 'other');
-    const input: FilingInput = { svid, document: DOCUMENT, status: 'complete', missing: [], draft: intakeRecordOf({ intake_id: STAND_IN }), deliverBy: rig.context.deliverByMs };
+    const input: FilingInput = { svid, document: DOCUMENT, draft: intakeRecordOf({ intake_id: STAND_IN }), deliverBy: rig.context.deliverByMs };
     expect(await refusalOf(() => file(rig, input))).toMatchObject({ code: 'mock_system_failed', status: 502 });
     expect(rig.portal.calls).toHaveLength(0);
     expect(rig.booked).toHaveLength(0);

@@ -11,7 +11,8 @@
 //   6.         The decision `completeness`, one hire of a model (completeness.ts). A failed decision ends the job with its own code. The typed choice is checked again against the requirement ids, and the
 //              status and the missing ids of the record are made from that checked copy: `complete: true` is `complete` with no missing id, and `complete: false` is `incomplete` with the ids.
 //   7. and 8.  The filing and the intake book (filing.ts). A JWT-SVID lasts at most five minutes, and the report and the decision come before the filing, so the job asks for a new JWT-SVID when the one that it
-//              has would end less than one call before the filing could end. The kit refuses a call with a JWT-SVID that has ended, and that refusal after a paid decision would file nothing.
+//              has would end less than one call before the filing could end. The kit refuses a call with a JWT-SVID that has ended, and that refusal after a paid decision would file nothing. No call to the
+//              gateway is made when the filing cannot start: a caller that hung up, or a time that is gone, ends the job with `deadline` before the new JWT-SVID is asked for.
 //   9.         The intake record, checked by the parser of the kit before it goes out.
 //
 // A job files at most one entry, and it files nothing unless the model decided. The signal is read before the decision and before the filing, and it is never passed into a hire or a call: both are
@@ -30,7 +31,7 @@ import type { IntakeRecord, IntakeStatus } from '@vsa/usecase-kit/priorauth';
 import type { Handoff } from '@vsa/usecase-kit/protocol';
 import { attestStep } from './attest.ts';
 import { completenessDecision, completenessInput } from './completeness.ts';
-import { FILING_TEXT, RUNTIME_MARGIN_MS, fileRequest } from './filing.ts';
+import { FILING_TEXT, RUNTIME_MARGIN_MS, checkBeforeFiling, fileRequest } from './filing.ts';
 import type { AttestationReport, CompletenessChoice, IntakeDeps } from './ports.ts';
 import { INTAKE_REFUSAL_TEXT, refuse } from './refusal.ts';
 import type { IntakeRefusal, IntakeRefusalCode } from './refusal.ts';
@@ -128,7 +129,9 @@ export async function runIntake(deps: IntakeDeps, request: Handoff, context: Job
   // 6. The decision. The model reads the request and the requirements, and nothing else: the report, the sender and the checks stay out of the input.
   if (signal?.aborted === true) throw fail('deadline', FILING_TEXT.hung_up, 'the caller hung up, so the job stops before the decision');
   const ids = requirements.requirements.map((requirement) => requirement.id);
-  const decided = await deps.decide(completenessInput(document, requirements), ids);
+  // The closed set of this job is made before the port runs. The decision copies the ids, and the port gets a frozen list, so no port can widen the set that the choice is checked against.
+  const spec = completenessDecision(ids);
+  const decided = await deps.decide(completenessInput(document, requirements), Object.freeze([...ids]));
   if (decided?.ok !== true) {
     const code = decisionCodeOf(decided);
     throw fail(code, DECISION_TEXT[code], describeDecision(decided));
@@ -136,15 +139,17 @@ export async function runIntake(deps: IntakeDeps, request: Handoff, context: Job
   const decision = decided.value;
   if (typeof decision !== 'object' || decision === null) throw fail('internal', INTAKE_REFUSAL_TEXT.internal, 'the decision has no value');
   // The typed choice is checked again against the requirement ids of this job, and the status and the missing ids are made from the checked copy. The parser gives back the value that it was given.
-  const checked = completenessDecision(ids).parse(decision.choice);
+  const checked = spec.parse(decision.choice);
   if (!checked.ok) throw fail('model_output_invalid', DECISION_TEXT.model_output_invalid, 'the choice of the decision is not a choice of the decision completeness');
   const status: IntakeStatus = checked.value.complete ? 'complete' : 'incomplete';
   const parts: Parts = { job, status, missing: [...checked.value.missing], attestations, decision };
 
-  // 7 and 8. The filing and the intake book. The JWT-SVID must outlive the call: the report and the decision came after it was issued. A time that is not known asks for a new JWT-SVID.
+  // 7 and 8. The filing and the intake book. The JWT-SVID must outlive the call: the report and the decision came after it was issued. A time that is not known asks for a new JWT-SVID. A new JWT-SVID is
+  // a call to the gateway, so the filing is checked first: no call is made when the caller hung up or when the time is gone. The filing checks the same two things again, because the call takes time.
   const callMs = deps.calls.timeoutMs === undefined ? DEFAULT_CALL_TIMEOUT_MS : deps.calls.timeoutMs;
+  checkBeforeFiling(steps, { deliverBy: context.deliverByMs, signal });
   const svid = first.expiresAt - deps.clock() >= callMs ? first : await fetchSvid(steps, document.tenant);
-  const intakeId = await fileRequest(steps, { svid, document, status, missing: parts.missing, draft: recordOf(parts, DRAFT_INTAKE_ID), deliverBy: context.deliverByMs, signal });
+  const intakeId = await fileRequest(steps, { svid, document, draft: recordOf(parts, DRAFT_INTAKE_ID), deliverBy: context.deliverByMs, signal });
 
   // 9. The intake record, checked by the parser of the kit.
   const record = parseIntakeRecord(recordOf(parts, intakeId));
