@@ -1,0 +1,13 @@
+{
+  "schema": "vector.usecase.result.v1",
+  "use_case": "bid-evaluation",
+  "proposal_digest": "731ffff8f9ff09ad18afea690ebf32ba71c26b2a403b473cfbf858a1bab933d4",
+  "handoff": null,
+  "writes": [{ "system": "sourcing-record", "route": "POST /sourcing/rankings", "status": 201, "ref": "RK-run1-0001" }],
+  "decisions": [],
+  "fault_mode": "",
+  "outcome": "completed",
+  "reason": null,
+  "challenge": null,
+  "exit_state": "Completed"
+}

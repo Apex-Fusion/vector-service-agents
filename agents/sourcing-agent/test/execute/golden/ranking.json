@@ -1,0 +1,36 @@
+{
+  "tenant": "run1",
+  "excluded": [
+    { "reason": "refused", "code": "duplicate_rfq", "desk_did": "did:vector:d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4" },
+    { "reason": "not_invited", "code": null, "desk_did": "did:vector:9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a" }
+  ],
+  "schema": "vector.usecase.ranking.v1",
+  "ranked": [
+    {
+      "quote": { "total": 12500, "escrow_ref": "e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5#0", "lead_time_days": 14, "receipt_sha256": "8154f0b1be7e1d7418956829699b67e66902bb6644f58125347d7f4b0bcf6c89" },
+      "score": 88.5,
+      "organisation": "alfa.example.org",
+      "desk_did": "did:vector:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "components": { "compliance": 100, "price": 87.5, "reliability": 85, "lead_time": 82.5 },
+      "rank": 1
+    },
+    {
+      "quote": { "total": 11800, "escrow_ref": "f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6#0", "lead_time_days": 21, "receipt_sha256": "2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b" },
+      "score": 80.2,
+      "organisation": "bravo.example.org",
+      "desk_did": "did:vector:b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+      "components": { "reliability": 75, "price": 78, "compliance": 100, "lead_time": 70 },
+      "rank": 2
+    },
+    {
+      "quote": { "total": 9900, "escrow_ref": "1717171717171717171717171717171717171717171717171717171717171717#1", "lead_time_days": 30, "receipt_sha256": "3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c" },
+      "score": 52,
+      "desk_did": "did:vector:c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+      "components": { "lead_time": 90, "price": 60, "compliance": 0, "reliability": 50 },
+      "rank": 3
+    }
+  ],
+  "weights": { "compliance": 0.2, "price": 0.4, "reliability": 0.2, "lead_time": 0.2 },
+  "rfq_sha256": "42ca167e867b2e8df3a82b7dc4a5b1c2a3a96f523e1f56a3863936a5dceadf35",
+  "rfq_id": "run1-rfq-1"
+}
