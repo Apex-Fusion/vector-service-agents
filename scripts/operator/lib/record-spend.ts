@@ -3,9 +3,7 @@ import { join } from 'node:path';
 import { ledgerMinLovelace } from '../../../packages/buyer-core/src/vendored/mcp/attestation-build.ts';
 import { findConfigRecord, readRefScript } from '../../../packages/buyer-core/src/vendored/mcp/identity-deployment.ts';
 import { terminal } from '../../../packages/buyer-core/src/vendored/mcp/identity-rules.ts';
-import { koiosPostList } from '../../../packages/buyer-core/src/vendored/mcp/marketplace-indexer.ts';
-import { itemEnd, readFrame } from '../../../packages/usecase-kit/src/cosign/layout.ts';
-import { MAX_CBOR_DEPTH, assertCborDepth } from '../../../packages/vector-read/src/cbor-depth.ts';
+import { readFrame } from '../../../packages/usecase-kit/src/cosign/layout.ts';
 import { decodeIdentityDatum, decodeIdentitySpend, encodeIdentityDatum } from '../../../packages/vector-read/src/identity-codec.ts';
 import type { IdentitySpend } from '../../../packages/vector-read/src/identity-codec.ts';
 import { isCollateralOutput } from '../../checks/lib/collateral.ts';
@@ -18,6 +16,8 @@ import type { TxFacts } from '../../checks/lib/txfacts.ts';
 import { VerificationError, VERIFY_WINDOW } from '../../checks/lib/verify.ts';
 import type { IrreversibleTag } from './approval.ts';
 import { readLimited } from './build-record.ts';
+import { readConfirmedSpend, valueSeal } from './confirmed-spend.ts';
+import type { RecordSpendValueFlow, RecordSpendValueRow } from './confirmed-spend.ts';
 import type { HostedBuild, LandHost, RecordFact, TaskSession } from './contract.ts';
 import { readRunning, requireRuntimesFree, runtimesOf } from './free.ts';
 import { landHosted } from './land-hosted.ts';
@@ -44,11 +44,6 @@ const OUTPUT_REF = /^[0-9a-f]{64}#(?:0|[1-9][0-9]{0,9})$/;
 const BODY_REQUIRED = [0, 1, 2, 3, 8, 11, 13, 18];
 const BODY_OPTIONAL = [14, 16, 17];
 const PROTOCOL_PARAMETERS = 'queryLedgerState/protocolParameters';
-const TX_INFO_LIMIT_BYTES = 512 * 1024;
-const POLICY_ID = /^[0-9a-f]{56}$/;
-const ASSET_NAME = /^(?:[0-9a-f]{2}){0,32}$/;
-const HEX_BYTES = /^(?:[0-9a-f]{2})*$/i;
-const MAX_DATUM_HEX = 32_768;
 
 type RecordReader = Pick<TaskSession, 'chain'>;
 
@@ -119,7 +114,7 @@ export interface RecordSpendSpec<Extra = unknown> {
   before(record: RecordUtxo, session: TaskSession<Extra>): void | Promise<void>;
   after(record: RecordUtxo, session: TaskSession<Extra>, before: RecordSpendBefore): readonly string[] | Promise<readonly string[]>;
   /** Check the decoded unsigned output. Give a public reason to refuse it, or null. */
-  checkBuild?(before: RecordUtxo, after: RecordUtxo, details: { action: IdentitySpend; validFrom: number; validTo: number }, session: TaskSession<Extra>): string | null;
+  checkBuild?(before: RecordUtxo, after: RecordUtxo, details: { action: IdentitySpend; validFrom: number; validTo: number; referenceInputs: readonly string[] }, session: TaskSession<Extra>): string | null;
   facts?(session: TaskSession<Extra>, landed: VerifiedRecordSpend): void;
   evidence?(session: TaskSession<Extra>, before: RecordSpendBefore, after: RecordUtxo): Record<string, unknown> | Promise<Record<string, unknown>>;
 }
@@ -252,52 +247,6 @@ async function checkReferences(
   }
 }
 
-export type KoiosPlutusData =
-  | { readonly int: number | string }
-  | { readonly bytes: string }
-  | { readonly list: readonly KoiosPlutusData[] }
-  | { readonly map: readonly { readonly k: KoiosPlutusData; readonly v: KoiosPlutusData }[] }
-  | { readonly constructor: number; readonly fields: readonly KoiosPlutusData[] };
-
-export interface RecordSpendDatum {
-  readonly bytes?: string | null;
-  readonly value?: KoiosPlutusData | null;
-  readonly hash?: string | null;
-}
-
-export interface RecordSpendAsset {
-  readonly policy_id: string;
-  readonly asset_name: string;
-  readonly quantity: string;
-}
-
-export interface RecordSpendScript {
-  readonly scriptHash: string;
-  readonly inputRef: string;
-  readonly redeemer: RecordSpendDatum;
-}
-
-export interface RecordSpendValueRow {
-  readonly ref: string;
-  readonly address: string;
-  readonly lovelace: bigint;
-  readonly inline_datum?: RecordSpendDatum | null;
-  readonly asset_list?: readonly RecordSpendAsset[] | null;
-  readonly datum_hash?: string | null;
-}
-export interface RecordSpendValueFlow {
-  readonly fee: bigint;
-  readonly inputs: readonly RecordSpendValueRow[];
-  readonly outputs: readonly RecordSpendValueRow[];
-  readonly spends?: readonly RecordSpendScript[];
-}
-
-/** The transaction fee and normal inputs and outputs. Reference inputs and collateral are not part of the payment. */
-function valueSeal(flow: RecordSpendValueFlow): string {
-  const ordered = (rows: readonly RecordSpendValueRow[]) => rows.map(({ ref, address, lovelace }) => `${ref} ${address} ${lovelace}`).sort();
-  return blake2b256Hex(Buffer.from(JSON.stringify([String(flow.fee), ordered(flow.inputs), ordered(flow.outputs)])));
-}
-
 async function checkValue(
   session: Pick<LandHost, 'node'>, step: string, before: RecordUtxo, after: RecordUtxo, facts: TxFacts, unit: string, feeWallet: string, reclaim: boolean,
 ): Promise<RecordSpendValueFlow> {
@@ -395,166 +344,11 @@ async function reclaimCoefficient({ settings, fetchImpl }: Pick<TaskSession, 'se
   return coefficient;
 }
 
-/** Validate the whole structured datum before a consumer decodes it. Extra members are not Plutus data. */
-function isPlutusData(value: unknown, depth = 0): value is KoiosPlutusData {
-  if (depth > MAX_CBOR_DEPTH || !isObject(value)) return false;
-  const keys = Object.keys(value);
-  if (keys.length === 1) {
-    const key = keys[0]!;
-    const member = value[key];
-    if (key === 'int') return typeof member === 'number' ? Number.isSafeInteger(member) : typeof member === 'string' && /^-?[0-9]{1,80}$/.test(member);
-    if (key === 'bytes') return typeof member === 'string' && member.length <= MAX_DATUM_HEX && HEX_BYTES.test(member);
-    if (key === 'list') return Array.isArray(member) && member.every((item) => isPlutusData(item, depth + 1));
-    if (key === 'map') return Array.isArray(member) && member.every((entry: unknown) => (
-      isObject(entry) && Object.keys(entry).length === 2 && isPlutusData(entry.k, depth + 1) && isPlutusData(entry.v, depth + 1)
-    ));
-  }
-  const tag = value['constructor'];
-  return keys.length === 2 && Object.hasOwn(value, 'constructor') && typeof tag === 'number' && Number.isSafeInteger(tag) && tag >= 0
-    && Array.isArray(value.fields) && value.fields.every((field) => isPlutusData(field, depth + 1));
-}
-
-function archivedDatumHash(hash: unknown): string | null | undefined {
-  if (hash === null || hash === undefined) return hash;
-  if (typeof hash !== 'string' || !IDENTIFIER.test(hash)) throw new VerificationError('The confirmed transaction has an unreadable datum hash.');
-  return hash;
-}
-
-function archivedDatum(datum: unknown): RecordSpendDatum | null | undefined {
-  if (datum === null || datum === undefined) return datum;
-  const bad = () => new VerificationError('The confirmed transaction contains unreadable Plutus data.');
-  if (!isObject(datum)) throw bad();
-  const { bytes, value } = datum;
-  const hash = archivedDatumHash(datum.hash);
-  if (value != null && !isPlutusData(value)) throw bad();
-  if (bytes != null) {
-    if (typeof bytes !== 'string' || bytes === '' || bytes.length > MAX_DATUM_HEX || !HEX_BYTES.test(bytes)) throw bad();
-    const raw = Buffer.from(bytes, 'hex');
-    try { assertCborDepth(raw); } catch { throw bad(); }
-    if (itemEnd(raw, 0) !== raw.length) throw bad();
-  } else if (value == null && hash == null) {
-    throw bad();
-  }
-  return { ...(bytes === undefined ? {} : { bytes }), ...(value === undefined ? {} : { value }), ...(hash === undefined ? {} : { hash }) };
-}
-
-function archivedAssets(value: unknown): readonly RecordSpendAsset[] | null | undefined {
-  if (value === null || value === undefined) return value;
-  if (!Array.isArray(value)) throw new VerificationError('The confirmed transaction has an unreadable asset list.');
-  const seen = new Set<string>();
-  return value.map((entry: unknown) => {
-    if (!isObject(entry)) throw new VerificationError('The confirmed transaction has an unreadable asset.');
-    const policy = entry.policy_id;
-    const name = entry.asset_name ?? '';
-    const quantity = lovelaceOf(entry.quantity);
-    if (typeof policy !== 'string' || !POLICY_ID.test(policy) || typeof name !== 'string' || !ASSET_NAME.test(name) || quantity === null || quantity <= 0n) {
-      throw new VerificationError('The confirmed transaction has an unreadable asset.');
-    }
-    const unit = policy + name;
-    if (seen.has(unit)) throw new VerificationError('The confirmed transaction lists the same asset more than once.');
-    seen.add(unit);
-    return { policy_id: policy, asset_name: name, quantity: String(quantity) };
-  });
-}
-
-function archivedRef(row: Record<string, unknown>): string | null {
-  const { tx_hash: hash, tx_index: index } = row;
-  if (typeof hash !== 'string' || !IDENTIFIER.test(hash) || typeof index !== 'number' || !Number.isSafeInteger(index) || index < 0 || index > 0xffff_ffff) return null;
-  return formatOutRef(hash, index);
-}
-
-function archivedRows(value: unknown, withDetails: boolean, txHash?: string): RecordSpendValueRow[] {
-  if (!Array.isArray(value) || value.length === 0) throw new VerificationError('The confirmed transaction has no complete input and output lists.');
-  const seen = new Set<string>();
-  return value.map((item: unknown) => {
-    if (!isObject(item)) throw new VerificationError('The confirmed transaction has an unreadable output reference.');
-    const ref = archivedRef(item);
-    const payment = item.payment_addr;
-    const amount = lovelaceOf(item.value);
-    const address = isObject(payment) ? payment.bech32 : null;
-    if (ref === null || (txHash !== undefined && item.tx_hash !== txHash) || typeof address !== 'string' || address.length === 0 || amount === null || amount <= 0n) {
-      throw new VerificationError('The confirmed transaction has an unreadable output reference, address or amount.');
-    }
-    if (seen.has(ref)) throw new VerificationError('The confirmed transaction lists the same output reference more than once.');
-    seen.add(ref);
-    return {
-      ref, address, lovelace: amount,
-      ...(withDetails ? {
-        inline_datum: archivedDatum(item.inline_datum), asset_list: archivedAssets(item.asset_list),
-        ...(item.datum_hash === undefined ? {} : { datum_hash: archivedDatumHash(item.datum_hash) }),
-      } : {}),
-    };
-  });
-}
-
-function archivedSpends(scripts: unknown, inputs: readonly RecordSpendValueRow[]): RecordSpendScript[] {
-  // The phase-two check already refused any malformed script list or unsuccessful script.
-  if (!Array.isArray(scripts)) return [];
-  const remaining = new Set(inputs.map(({ ref }) => ref));
-  const spends: RecordSpendScript[] = [];
-  for (const script of scripts as Record<string, unknown>[]) {
-    const input = script.input;
-    const redeemer = isObject(input) ? input.redeemer : undefined;
-    const purpose = isObject(redeemer) ? redeemer.purpose : undefined;
-    const spent = script.spends_input;
-    if (typeof purpose === 'string' && purpose !== 'spend' && spent == null) continue;
-    const inputRef = isObject(spent) ? archivedRef(spent) : null;
-    const hash = script.script_hash;
-    if (!isObject(redeemer) || purpose !== 'spend' || inputRef === null || !remaining.delete(inputRef) || typeof hash !== 'string' || !POLICY_ID.test(hash)) {
-      throw new VerificationError('The confirmed transaction has a script without an unambiguous regular spend input.');
-    }
-    const datum = archivedDatum(redeemer.datum);
-    if (!datum) throw new VerificationError('The confirmed spend script has no redeemer data.');
-    spends.push({ scriptHash: hash, inputRef, redeemer: datum });
-  }
-  return spends;
-}
-
-/** Vector Koios can report phase-two validity only on the individual script rows. */
-function confirmedPhaseTwo(row: Record<string, unknown>): boolean {
-  const { valid_contract: verdict, plutus_contracts: scripts } = row;
-  if (verdict !== undefined && verdict !== true) return false;
-  if (scripts === undefined) return verdict === true;
-  if (!Array.isArray(scripts) || scripts.some((script: unknown) => !isObject(script) || script.valid_contract !== true)) return false;
-  return verdict === true || scripts.length > 0;
-}
-
-/** Read payment values and, when requested, only the datum, assets and spend action evidence. */
-export async function readConfirmedRecordSpend(
-  session: Pick<LandHost, 'chain' | 'node'>, txHash: string, { withDetails = false }: { withDetails?: boolean } = {},
-): Promise<RecordSpendValueFlow> {
-  if (!IDENTIFIER.test(txHash)) throw new VerificationError('The record spend has no usable transaction hash.');
-  const { koiosUrl, fetchImpl } = session.chain;
-  let rows: unknown[];
-  let confirmations: number | null;
-  try {
-    const [answer, status] = await Promise.all([
-      koiosPostList(koiosUrl, 'tx_info', { _tx_hashes: [txHash], _inputs: true, _scripts: true, ...(withDetails ? { _assets: true } : {}) }, fetchImpl, '', TX_INFO_LIMIT_BYTES),
-      session.node.txStatus(txHash),
-    ]);
-    rows = answer;
-    confirmations = status.confirmations;
-  } catch {
-    throw new VerificationError('The confirmed record spend could not be read from the indexer.');
-  }
-  const row = rows[0];
-  if (rows.length !== 1 || !isObject(row) || row.tx_hash !== txHash
-    || confirmations === null || !Number.isSafeInteger(confirmations) || confirmations < 1) {
-    throw new VerificationError('The indexer does not confirm the exact record spend.');
-  }
-  if (!confirmedPhaseTwo(row)) throw new VerificationError('The confirmed record spend has no affirmative phase-two validity evidence.');
-  const fee = lovelaceOf(row.fee);
-  if (fee === null) throw new VerificationError('The confirmed record spend has no actual fee.');
-  const inputs = archivedRows(row.inputs, withDetails);
-  const outputs = archivedRows(row.outputs, withDetails, txHash);
-  return { fee, inputs, outputs, ...(withDetails ? { spends: archivedSpends(row.plutus_contracts, inputs) } : {}) };
-}
-
 /** Reconcile the payment after confirmation. The fee outputs do not need to be unspent. */
 async function reclaimCredit(
   session: Pick<LandHost, 'chain' | 'node' | 'registry'>, txHash: string, recordBefore: string, beforeLovelace: bigint, after: RecordUtxo, seal: string,
 ): Promise<Record<string, unknown>> {
-  const flow = await readConfirmedRecordSpend(session, txHash);
+  const flow = await readConfirmedSpend(session, txHash);
   const { fee } = flow;
   if (valueSeal(flow) !== seal) throw new VerificationError('The confirmed reclaim inputs, outputs or fee differ from the checked transaction.');
   const feeWallet = session.registry.addressOf('fee');
@@ -645,7 +439,7 @@ export function recordSpendStep<Extra>(spec: RecordSpendSpec<Extra>): StepHandle
         plan: async (build, facts) => {
           try {
             const checked = checkOutput(step, before, build, facts, { action, address, unit, fee, minimum, authorities });
-            const problem = spec.checkBuild?.(before, checked.found, checked, session);
+            const problem = spec.checkBuild?.(before, checked.found, { ...checked, referenceInputs: facts.referenceInputs }, session);
             if (problem) refuseSpend(step, problem);
             planned = checked.found;
             await checkReferences(session, step, before, planned, action, facts.referenceInputs);
