@@ -12,4 +12,4 @@ export function evidenceModuleOf(useCaseName: string, modules: Readonly<Record<s
   return module;
 }
 
-export type { Assembly, Challenge, EvidenceModule, Hold, Shown } from './types.ts';
+export type { ApprovalRead, Assembly, Challenge, CommittedApproval, EvidenceModule, EvidenceReadSession, HistoricalHoldCandidate, Hold, HoldSource, Shown, TerminalSpend, VaultPayment } from './types.ts';

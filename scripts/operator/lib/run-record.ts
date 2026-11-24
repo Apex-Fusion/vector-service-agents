@@ -355,6 +355,18 @@ export interface TxInfo {
   readonly minted: readonly { readonly policy: string; readonly name: string; readonly quantity: bigint }[];
 }
 
+export interface ScriptSpend {
+  readonly script: string;
+  readonly input: string | null;
+  readonly valid: boolean;
+  readonly action: number;
+  readonly fields: readonly unknown[];
+}
+export interface ScriptTxInfo extends TxInfo {
+  readonly outputs: readonly { readonly ref: string; readonly credential: string | null }[];
+  readonly spends: readonly ScriptSpend[];
+}
+
 const POLICY_ID = /^[0-9a-f]{56}$/;
 const KOIOS_TIMEOUT_MS = 15_000;
 const MOST_KOIOS_CHARS = 4 * 1024 * 1024;
@@ -370,12 +382,12 @@ export class UnknownTransactionError extends Error {
   constructor() { super('Koios does not know the transaction'); }
 }
 
-/** Read the block time, inputs and mint. An empty result is not the same as a failed read. */
-export async function txInfoOf(fetchImpl: typeof fetch, koiosUrl: string, txHash: string): Promise<TxInfo> {
+async function txRowOf(fetchImpl: typeof fetch, koiosUrl: string, txHash: string, scripts: boolean): Promise<Record<string, unknown>> {
   let response: Response;
   try {
     response = await fetchImpl(`${koiosUrl.replace(/\/+$/, '')}/api/v1/tx_info`, {
-      method: 'POST', headers: { accept: 'application/json', 'content-type': 'application/json' }, body: JSON.stringify({ _tx_hashes: [txHash], _inputs: true, _assets: true }),
+      method: 'POST', headers: { accept: 'application/json', 'content-type': 'application/json' },
+      body: JSON.stringify({ _tx_hashes: [txHash], _inputs: true, _assets: true, ...(scripts ? { _scripts: true } : {}) }),
       redirect: 'error', signal: AbortSignal.timeout(KOIOS_TIMEOUT_MS),
     });
   } catch (err) { throw new Error(`Koios tx_info could not be reached (${networkCode(err)})`); }
@@ -387,6 +399,10 @@ export async function txInfoOf(fetchImpl: typeof fetch, koiosUrl: string, txHash
   if (!isObject(row) || typeof row.tx_hash !== 'string' || row.tx_hash.toLowerCase() !== txHash) {
     throw new Error('Koios tx_info did not return one row of the requested transaction');
   }
+  return row;
+}
+
+function basicTxInfo(row: Record<string, unknown>): TxInfo {
   const stamp = row.tx_timestamp;
   if (typeof stamp !== 'number' || !Number.isSafeInteger(stamp) || stamp <= 0) throw new Error('Koios gives no block time for the transaction');
   if (!Array.isArray(row.inputs)) throw new Error('Koios gives no list of inputs for the transaction');
@@ -414,6 +430,43 @@ export async function txInfoOf(fetchImpl: typeof fetch, koiosUrl: string, txHash
     return { credential: isObject(address) && typeof address.cred === 'string' ? address.cred.toLowerCase() : null };
   });
   return { timeMs: stamp * 1000, inputs, outputs, minted };
+}
+
+/** Read the block time, inputs and mint. An empty result is not the same as a failed read. */
+export async function txInfoOf(fetchImpl: typeof fetch, koiosUrl: string, txHash: string): Promise<TxInfo> {
+  return basicTxInfo(await txRowOf(fetchImpl, koiosUrl, txHash, false));
+}
+
+/** Read the input, redeemer and validation result of each enqueued spend, not a text label from an indexer. */
+export async function scriptTxInfoOf(fetchImpl: typeof fetch, koiosUrl: string, txHash: string): Promise<ScriptTxInfo> {
+  const row = await txRowOf(fetchImpl, koiosUrl, txHash, true);
+  const base = basicTxInfo(row);
+  if (row.valid_contract === false || !Array.isArray(row.plutus_contracts)) throw new Error('Koios does not show successful script validation');
+  const spends: ScriptSpend[] = [];
+  for (const run of row.plutus_contracts) {
+    const redeemer = isObject(run) && isObject(run.input) && isObject(run.input.redeemer) ? run.input.redeemer : null;
+    if (redeemer === null || !isObject(run)) throw new Error('Koios gives a script run without its redeemer');
+    if (redeemer.purpose !== 'spend') continue;
+    const value = isObject(redeemer.datum) ? redeemer.datum.value : null;
+    if (!isObject(value) || !Object.hasOwn(value, 'constructor') || typeof value.constructor !== 'number' || !Number.isSafeInteger(value.constructor)
+         || !Array.isArray(value.fields) || typeof run.script_hash !== 'string' || !POLICY_ID.test(run.script_hash)
+         || typeof run.valid_contract !== 'boolean') throw new Error('Koios gives an incomplete script spend');
+    let input: string | null = null;
+    if (run.spends_input !== null && run.spends_input !== undefined) {
+      const ref = run.spends_input;
+      if (!isObject(ref) || typeof ref.tx_hash !== 'string' || typeof ref.tx_index !== 'number' || !REF.test(`${ref.tx_hash}#${ref.tx_index}`)) {
+        throw new Error('Koios gives a script spend without a valid input reference');
+      }
+      input = `${ref.tx_hash}#${ref.tx_index}`;
+    }
+    spends.push({ script: run.script_hash, input, valid: run.valid_contract, action: value.constructor, fields: value.fields });
+  }
+  const outputs = (row.outputs as unknown[]).map((output, i) => {
+    if (!isObject(output) || typeof output.tx_index !== 'number' || !REF.test(`${txHash}#${output.tx_index}`)
+      || (output.tx_hash !== undefined && output.tx_hash !== txHash)) throw new Error('Koios gives an output without a valid reference');
+    return { ref: `${txHash}#${output.tx_index}`, credential: base.outputs[i]!.credential };
+  });
+  return { ...base, outputs, spends };
 }
 
 /** The block time of a transaction in POSIX milliseconds, read from Koios `tx_info` (the node gives the confirmations only). */

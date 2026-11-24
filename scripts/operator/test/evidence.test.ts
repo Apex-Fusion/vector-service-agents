@@ -2,11 +2,18 @@
 // file byte for byte. The reads are fakes: a node that confirms a list of transactions, Koios `tx_info` and `utxo_info` rows, the fixture ledger of buyer-core (delegations, vaults, attestations,
 // records), the mock service, and the hosted tools. Each of the ten checks has a test that breaks one input and names the member, and an accepted twin. No test uses the network or the real clock.
 import { createHash } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { attestation, attestationUtxo, CAPTURE_MS, DAY, delegation, delegationUtxo, koiosRow, ledgerWorld, liveRecord, MAINNET, recordUtxo, vaultUtxo } from '../../../packages/buyer-core/test/fixtures/ledger-read-world.ts';
+import { encodePlutusDataHex } from '../../../packages/vector-read/src/vendored/shared/cbor/plutus-data.ts';
+import type { PlutusData } from '../../../packages/vector-read/src/vendored/shared/cbor/plutus-data.ts';
+import { plutusAddressToData as vendoredAddressData } from '../../../packages/vector-read/src/vendored/shared/cbor/address.ts';
+import { encodeJuryDatum } from '../../../packages/buyer-core/src/vendored/mcp/jury-codec.ts';
+import { CONFIG_TOKEN_NAME } from '../../../packages/buyer-core/src/vendored/mcp/identity-deployment.ts';
+import { documentHash, documentMetadata } from '../../../packages/buyer-core/src/vendored/mcp/jury-document.ts';
+import { makeProposal } from '../../../packages/usecase-kit/src/protocol/messages.ts';
+import { attestation, attestationUtxo, CAPTURE_MS, DAY, delegation, delegationUtxo, ISSUER_KEY, koiosRow, ledgerWorld, liveRecord, MAINNET, recordUtxo, vaultUtxo } from '../../../packages/buyer-core/test/fixtures/ledger-read-world.ts';
 import type { Contract, Row, TxIo, TxRow } from '../../../packages/buyer-core/test/fixtures/ledger-read-world.ts';
 import type { Utxo } from '../../checks/lib/platform.ts';
 import { escrowUtxo, identityEscrow } from '../../../packages/buyer-core/test/fixtures/escrow-identity.fixture.ts';
@@ -14,7 +21,9 @@ import { RESULT_SCHEMA as KIT_RESULT, PROPOSAL_SCHEMA as KIT_PROPOSAL } from '..
 import { CONFIRMATION_SCHEMA as KIT_CONFIRMATION } from '../../../packages/usecase-kit/src/inventory/confirmation.ts';
 import { RUN_APPROVAL_VALIDITY_MS } from '../lib/claim-constants.ts';
 import { FactsFile } from '../lib/facts.ts';
-import { canonicalize } from '../../../packages/vector-read/src/index.ts';
+import { canonicalize, promptHashForPayload } from '../../../packages/vector-read/src/index.ts';
+import { encodeVaultDatum } from '../../../packages/vector-read/src/identity-codec.ts';
+import { plutusAddressFromBech32, plutusAddressToBech32 } from '../../../packages/vector-read/src/index.ts';
 import { parseKeyText } from '../../checks/lib/keys.ts';
 import { MOCK_PUBLIC_BASE } from '../lib/mock-hosts.ts';
 import { runTask } from '../lib/runner.ts';
@@ -33,6 +42,13 @@ type Obj = Record<string, unknown>;
 const KOIOS = 'https://koios.example';
 const ESCROW_CREDENTIAL = MAINNET.escrow.hash;
 const WALLET_CREDENTIAL = 'aa'.repeat(28);
+const JURY = 'ab'.repeat(28);
+const VERDICT_POLICY = 'da'.repeat(28);
+const APPROVAL_ISSUER = 'cd'.repeat(32);
+const addressOf = (hash: string): string => plutusAddressToBech32({ paymentCredential: { type: 'Script', hash }, stakeCredential: null }, 1);
+const cbor = (index: number, fields: PlutusData[]): PlutusData => ({ kind: 'constr', index: BigInt(index), fields });
+const bytes = (hex: string): PlutusData => ({ kind: 'bytes', hex });
+const int = (value: number): PlutusData => ({ kind: 'int', value: BigInt(value) });
 const S0 = CAPTURE_MS / 1000;
 const GOLDEN = (name: string): string => fileURLToPath(new URL(`./golden/evidence-${name}.json`, import.meta.url));
 
@@ -49,7 +65,8 @@ function setAt(root: unknown, path: readonly (string | number)[], value: unknown
 
 // ---- the scenario: everything that the reads show, as plain data that a test changes before the run ----
 
-interface Hire { step: string; role: 'propose' | 'execute' | 'order-desk'; minute: number; result: Obj; accepted: boolean; reportOver: Obj; receiptOver: Obj; entryOver: Obj; datumOver?: Obj }
+interface Hire { step: string; role: 'propose' | 'execute' | 'order-desk'; minute: number; result: Obj; accepted: boolean; reportOver: Obj; receiptOver: Obj; entryOver: Obj; datumOver?: Obj;
+  request?: { committed: string; saved?: string; mode?: number; link?: boolean } }
 
 interface Scenario {
   kind: 'clean' | 'failure'; label: string; tenant: string; hires: Hire[]; record: Obj;
@@ -63,9 +80,13 @@ interface Scenario {
   extraApprovals?: Obj[];
   holdAgent?: 'reorder-agent' | 'order-desk';
   reclaimToWallet?: boolean;
+  reclaimShort?: boolean;
+  reclaimWrongOwner?: boolean;
+  release?: 'missing' | 'false_label' | 'early' | 'failed';
+  historicalHold?: { badChallenge?: boolean; badCase?: boolean; badRecord?: boolean; badDocument?: boolean };
 }
 
-const txOf = (step: string, what: 'post' | 'claim' | 'submit' | 'accept' | 'reclaim'): string => h(`${what} of ${step}`);
+const txOf = (step: string, what: 'post' | 'claim' | 'submit' | 'accept' | 'reclaim' | 'release'): string => h(`${what} of ${step}`);
 const escrowOf = (step: string): string => `${txOf(step, 'post')}#0`;
 const AGENTS = { 'reorder-agent': hashOf('reorder id'), 'order-desk': hashOf('desk id') };
 const CLAIM_TOKEN = (agent: string): string => h(`claim token ${agent}`);
@@ -109,6 +130,9 @@ const hire = (step: string, role: Hire['role'], minute: number, result: Obj, acc
 const CHALLENGE = { evidence: h('evidence document tx'), challenge: ref('challenge output') };
 /** The token of the challenge: the one token that the challenge transaction mints, with a name that starts with chl_ in hex. */
 const CHALLENGE_TOKEN = `63686c5f${h('challenge token').slice(0, 56)}`;
+const HISTORICAL_SINCE = CAPTURE_MS + 362 * 60_000;
+const HISTORICAL_HOLD = ref('hold application', 2);
+const VERDICT_REF = ref('verdict resolution', 1);
 
 /** The DID of an agent, and the SPIFFE ID that the certificate of an agent carries. */
 const DID = (id: string): string => `did:vector:${id}`;
@@ -178,7 +202,7 @@ function goodFaultEntries(kind: 'clean' | 'failure'): Obj[] {
 
 function caseRow(over: Obj = {}): Obj {
   return {
-    jury: h('jury'), case_token: h('case token'), utxo: ref('case output'), lovelace: 5_000_000, canonical: true, canonical_note: null, claim: CLAIM_TOKEN('order-desk'), challenge: CHALLENGE_TOKEN,
+    jury: JURY, case_token: h('case token'), utxo: ref('case output'), lovelace: 5_000_000, canonical: true, canonical_note: null, claim: CLAIM_TOKEN('order-desk'), challenge: CHALLENGE_TOKEN,
     claim_out: `${h('claim tx order-desk')}#0`, challenge_out: CHALLENGE.challenge, phase: 'settling', state: 'Settling', tally: { claimer: 0, auditor: 3, inconclusive: 0 }, revealed: 3, outcome: 'AuditorWins', ...over,
   };
 }
@@ -193,21 +217,29 @@ async function go(s: Scenario, argv: string[] = ['run', '--run', s.label, '--num
   mkdirSync(w.stateDir, { recursive: true, mode: 0o700 });
   chmodSync(w.stateDir, 0o700);
   const dir = join(w.stateDir, 'runs');
-  mkdirSync(join(dir, s.label), { recursive: true });
+  mkdirSync(join(dir, s.label), { recursive: true, mode: 0o700 });
   // -- the hires: the entries, the report files, the transactions and the escrows
   const confirmed = new Set<string>();
   const rows: TxRow[] = [...s.extraRows];
   const posted: Row[] = [];
   const historic: Row[] = [];
   const entries: Obj[] = [];
+  const metadata = new Map<string, unknown>();
   const row = (hash: string, minute: number, inputs: TxIo[], more: Partial<TxRow> = {}): void => {
     if (!s.skipKoiosTx.has(hash)) rows.push({ tx_hash: hash, tx_timestamp: S0 + minute * 60, inputs, outputs: [], plutus_contracts: [], assets_minted: [], tx_info_note: 'made up', ...more });
   };
   const input = (reference: string, credential: string): TxIo => ({ tx_hash: reference.slice(0, 64), tx_index: Number(reference.slice(65)), value: '1000000', payment_addr: { cred: credential, bech32: 'addr1test' }, inline_datum: null });
+  const spend = (script: string, source: TxIo, constructor: number, fields: unknown[] = [], valid = true): Contract => ({
+    script_hash: script, spends_input: { tx_hash: source.tx_hash, tx_index: source.tx_index }, valid_contract: valid,
+    input: { redeemer: { purpose: 'spend', datum: { hash: h('redeemer'), value: { constructor, fields } } } },
+  });
   // The vault lineages: a vault opens with its output at the open transaction, the Order Desk hires are paid from the first vault, and each payment spends the output that the payment before it made.
   const VAULT_CREDENTIAL = MAINNET.vault.hash;
   const vaultRoot = s.vaults.map((_, i) => `${h(`vault open ${i}`)}#0`);
   const vaultHead = [...vaultRoot];
+  const owner = { type: 'PrincipalKey' as const, hash: 'cc'.repeat(28), organisation: null };
+  const returned = encodeVaultDatum({ type: 'Returned', owner });
+  const refund = { address: plutusAddressFromBech32(MAINNET.vault.address), datum: returned };
   const vaultInput = (reference: string): TxIo => ({
     ...input(reference, VAULT_CREDENTIAL),
     inline_datum: { bytes: null, value: { constructor: 0, fields: [{ constructor: 0, fields: [{ bytes: 'cc'.repeat(28) }, { constructor: 1, fields: [] }] }, { bytes: s.delegations[0]!.id }, { int: 0 }, { int: 0 }] } },
@@ -219,10 +251,19 @@ async function go(s: Scenario, argv: string[] = ['run', '--run', s.label, '--num
     const post = txOf(one.step, 'post');
     const end = one.accepted ? txOf(one.step, 'accept') : null;
     const resultText = JSON.stringify(one.result);
+    const promptHash = one.request === undefined ? h(`prompt ${one.step}`) : promptHashForPayload(one.request.committed);
+    if (one.request !== undefined) {
+      const path = join(dir, s.label, `${one.step}.request.json`);
+      if (one.request.link) {
+        const target = join(w.stateDir, `${one.step}.request-target`);
+        writeFileSync(target, one.request.committed, { mode: 0o600 });
+        symlinkSync(target, path);
+      } else writeFileSync(path, one.request.saved ?? one.request.committed, { mode: one.request.mode ?? 0o600 });
+    }
     entries.push({ step: one.step, agent, advert_ref: advert, escrow_ref: `${post}#0`, post_tx: post, accept_tx: end, reclaim_tx: null, report_file: `${one.step}.report.json`, ...one.entryOver });
     const signer = SUPPLIERS[agent];
     const receipt = {
-      prompt_hash: h(`prompt ${one.step}`), response_hash: createHash('sha256').update(resultText, 'utf8').digest('hex'), model, prompt_tokens: 0, completion_tokens: 0, escrow_ref: `${post}#0`,
+      prompt_hash: promptHash, response_hash: createHash('sha256').update(resultText, 'utf8').digest('hex'), model, prompt_tokens: 0, completion_tokens: 0, escrow_ref: `${post}#0`,
       supplier_pkh: signer.keyHash, wallclock_ms: 900, ...one.receiptOver,
     };
     const report = {
@@ -234,6 +275,8 @@ async function go(s: Scenario, argv: string[] = ['run', '--run', s.label, '--num
     if (one.role === 'order-desk' && !s.payFromWallet) {
       const spent = vaultHead[0]!;
       const out = (index: number, credential: string): TxIo => ({ tx_hash: post, tx_index: index, value: '5200000', payment_addr: { cred: credential, bech32: 'addr1test' }, inline_datum: null });
+      historic.push(koiosRow({ ...vaultUtxo({ type: 'Live', owner, delegation: s.delegations[0]!.id, spent: 0n, periodStart: 0 }, 20_000_000n),
+        txHash: spent.slice(0, 64), outputIndex: Number(spent.slice(65)) }, { is_spent: true }));
       const pay: Contract = {
         script_hash: VAULT_CREDENTIAL, spends_input: { tx_hash: spent.slice(0, 64), tx_index: Number(spent.slice(65)) }, valid_contract: true,
         input: { redeemer: { purpose: 'spend', datum: { hash: h('pay redeemer'), value: { constructor: 0, fields: [] } } } },
@@ -244,21 +287,43 @@ async function go(s: Scenario, argv: string[] = ['run', '--run', s.label, '--num
       const escrowOutput: TxIo = { tx_hash: post, tx_index: 0, value: '5200000', payment_addr: { cred: ESCROW_CREDENTIAL, bech32: 'addr1test' }, inline_datum: null };
       row(post, one.minute, [input(ref('wallet', 1), WALLET_CREDENTIAL)], one.role === 'order-desk' ? { outputs: [escrowOutput] } : {});
     }
+    const datum = identityEscrow(CAPTURE_MS, { advert_ref: { txHash: advert.slice(0, 64), index: 0 }, agent_id: AGENTS[agent], supplier_pkh: signer.keyHash, prompt_hash: promptHash,
+      ...(one.role === 'order-desk' && !s.payFromWallet ? { refund } : {}), ...one.datumOver });
+    const escrow = (hash: string, escrowDatum: typeof datum): Row => koiosRow(escrowUtxo(hash, escrowDatum, { address: MAINNET.escrow.address }), { is_spent: true });
+    const submitAt = CAPTURE_MS + (one.minute + 2) * 60_000;
     if (one.entryOver.report_file !== null) {
-      row(claim, one.minute + 1, [input(`${post}#0`, ESCROW_CREDENTIAL)]);
-      row(submit, one.minute + 2, [input(`${claim}#0`, ESCROW_CREDENTIAL)]);
+      const postInput = input(`${post}#0`, ESCROW_CREDENTIAL);
+      const claimInput = input(`${claim}#0`, ESCROW_CREDENTIAL);
+      row(claim, one.minute + 1, [postInput], { outputs: [claimInput], plutus_contracts: [spend(ESCROW_CREDENTIAL, postInput, 0)] });
+      row(submit, one.minute + 2, [claimInput], { outputs: [input(`${submit}#0`, ESCROW_CREDENTIAL)],
+        plutus_contracts: [spend(ESCROW_CREDENTIAL, claimInput, 1, [{ bytes: h('submit receipt') }])] });
+      historic.push(escrow(submit, { ...datum, state: 'Submitted', submitted_at: submitAt, result_receipt_hash: h('submit receipt') }));
     }
-    if (end !== null) row(end, one.minute + 3, [input(s.spendOverride.get(end) ?? `${submit}#0`, ESCROW_CREDENTIAL)]);
+    if (end !== null) {
+      const source = input(`${submit}#0`, ESCROW_CREDENTIAL);
+      row(end, one.minute + 3, [input(s.spendOverride.get(end) ?? `${submit}#0`, ESCROW_CREDENTIAL)], { plutus_contracts: [spend(ESCROW_CREDENTIAL, source, 2)] });
+    }
+    if (one.step === 'order-desk-c' && end === null && one.entryOver.reclaim_tx === undefined && s.release !== 'missing') {
+      const release = txOf(one.step, 'release');
+      const source = input(`${submit}#0`, ESCROW_CREDENTIAL);
+      row(release, one.minute + (s.release === 'early' ? 3 : 12), [source],
+        { plutus_contracts: [spend(ESCROW_CREDENTIAL, source, s.release === 'false_label' ? 2 : 4, [], s.release !== 'failed')] });
+      confirmed.add(release);
+    }
     for (const hash of [post, end]) if (hash !== null) confirmed.add(hash);
     const reclaim = one.entryOver.reclaim_tx;
     if (typeof reclaim === 'string') {
       const credential = s.reclaimToWallet === true ? WALLET_CREDENTIAL : VAULT_CREDENTIAL;
-      row(reclaim, one.minute + 3, [input(`${post}#0`, ESCROW_CREDENTIAL)], { outputs: [input(`${reclaim}#0`, credential)] });
+      const source = input(`${post}#0`, ESCROW_CREDENTIAL);
+      row(reclaim, one.minute + 8, [source], { outputs: [input(`${reclaim}#0`, credential)], plutus_contracts: [spend(ESCROW_CREDENTIAL, source, 3)] });
+      if (!s.reclaimToWallet) {
+        const payout = vaultUtxo({ type: 'Returned', owner: s.reclaimWrongOwner ? { ...owner, hash: 'bb'.repeat(28) } : owner }, s.reclaimShort ? 4_599_999n : 4_600_000n, { txHash: reclaim, outputIndex: 0 });
+        historic.push(koiosRow(payout));
+      }
       confirmed.add(reclaim);
     }
     for (const decided of (one.result.decisions as Obj[])) confirmed.add(((decided.inference as Obj).sub_job as Obj).escrow_ref!.toString().slice(0, 64));
-    const datum = identityEscrow(CAPTURE_MS, { advert_ref: { txHash: advert.slice(0, 64), index: 0 }, agent_id: AGENTS[agent], supplier_pkh: signer.keyHash, ...one.datumOver });
-    posted.push(koiosRow(escrowUtxo(post, datum, { address: MAINNET.escrow.address }), { is_spent: true }));
+    posted.push(escrow(post, datum));
   }
   // -- the delegations, the sub-delegation and the vaults: the transactions of the record, as the chain shows them
   const movement = (hash: string, name: string, quantity: string): void => row(hash, 0, [input(ref('wallet', 2), WALLET_CREDENTIAL)], { assets_minted: [{ policy_id: MAINNET.delegation.hash, asset_name: name, quantity }] });
@@ -275,6 +340,9 @@ async function go(s: Scenario, argv: string[] = ['run', '--run', s.label, '--num
   const vaults: Obj[] = [];
   s.vaults.forEach((v) => { if (v.utxo !== null) { utxos.push(v.utxo); vaults.push({ ref: `${v.utxo.txHash}#${v.utxo.outputIndex}` }); } });
   if (s.approvalVisible) {
+    if ([s.approval, ...s.extraApprovals ?? []].some((entry) => (entry.datum as Obj | undefined)?.issuerId === APPROVAL_ISSUER)) {
+      utxos.push(recordUtxo(APPROVAL_ISSUER, liveRecord({ controller: ISSUER_KEY.publicKey })));
+    }
     for (const value of [s.approval, ...s.extraApprovals ?? []]) {
       const datum = attestation({ subject: AGENTS['reorder-agent'], attType: 5, digest: s.digest, issuedAt: CAPTURE_MS, validUntil: CAPTURE_MS + RUN_APPROVAL_VALIDITY_MS, ...(value.datum as Obj | undefined) });
       const id = value.attestation as string;
@@ -297,10 +365,61 @@ async function go(s: Scenario, argv: string[] = ['run', '--run', s.label, '--num
   const heldAgent = s.holdAgent ?? 'order-desk';
   utxos.push({ ...recordUtxo(AGENTS['order-desk'], liveRecord(s.deskHold === 'held' && heldAgent === 'order-desk' ? held : {}, listed('order-desk'))), txHash: h('order desk record output') });
   utxos.push({ ...recordUtxo(AGENTS['reorder-agent'], liveRecord(s.deskHold === 'held' && heldAgent === 'reorder-agent' ? held : {}, listed('reorder-agent'))), txHash: h('reorder agent record output') });
+  confirmed.add(h('order desk record output'));
+  confirmed.add(h('reorder agent record output'));
   if (kind(s) === 'failure') {
     const challengeTx = CHALLENGE.challenge.slice(0, 64);
     row(challengeTx, 45, [], { assets_minted: s.challengeMint });
     confirmed.add(CHALLENGE.evidence); confirmed.add(challengeTx);
+  }
+  if (s.historicalHold !== undefined) {
+    const { badCase, badChallenge, badRecord, badDocument } = s.historicalHold;
+    const claim = h('claim tx order-desk');
+    const challenge = CHALLENGE.challenge.slice(0, 64);
+    const challengePolicy = 'ac'.repeat(28);
+    const opened = h('case open tx');
+    const finalized = h('case finalize tx');
+    const resolution = VERDICT_REF.slice(0, 64);
+    const applied = HISTORICAL_HOLD.slice(0, 64);
+    utxos.push({ txHash: h('configuration seal'), outputIndex: 0, address: MAINNET.configHolder.address,
+      assets: { lovelace: 5_000_000n, [`${MAINNET.configSeal.hash}${CONFIG_TOKEN_NAME}`]: 1n }, datum: encodePlutusDataHex(bytes(VERDICT_POLICY)) });
+    const resolutionDocument = Buffer.from(JSON.stringify({
+      type: 'vector-jury-resolution/1', basis: 'jury', challenge_out: CHALLENGE.challenge, challenge: CHALLENGE_TOKEN, claim: CLAIM_TOKEN('order-desk'), verdict: 'AuditorWins',
+      jury: { deployment: JURY, case: badDocument ? h('wrong jury case') : h('case token'), opened_in: opened, finalized_in: finalized },
+    }), 'utf8');
+    metadata.set(resolution, documentMetadata(resolutionDocument, 'resolution'));
+    const depositTo = plutusAddressFromBech32(MAINNET.vault.address);
+    const caseDatum = encodeJuryDatum({ type: 'Case', case: {
+      challenge: badCase ? h('different challenge token') : CHALLENGE_TOKEN, claim: CLAIM_TOKEN('order-desk'),
+      challengeOut: { txHash: challenge, outputIndex: 0 }, claimOut: { txHash: challenge, outputIndex: 1 }, claimer: AGENTS['order-desk'], auditor: AGENTS['reorder-agent'],
+      claimHash: claim, evidenceHash: h('evidence digest'), openedAt: CAPTURE_MS, deadline: CAPTURE_MS + DAY, commitEnd: CAPTURE_MS + 130_000,
+      revealEnd: CAPTURE_MS + 180_000, refundTo: depositTo, fee: 0n, ballots: [], state: { type: 'Open' }, tally: { auditor: 3, claimer: 0, inconclusive: 0 },
+    } });
+    const juryInput = input(`${opened}#0`, JURY);
+    const caseToken = h('case token');
+    const verdictToken = h('verdict token');
+    const verdictDatum = encodePlutusDataHex(cbor(0, [bytes(AGENTS['order-desk']), cbor(0, []), int(DAY),
+      cbor(0, [bytes(badChallenge ? h('wrong challenge') : challenge), int(0)]), vendoredAddressData(depositTo), int(HISTORICAL_SINCE + DAY)]));
+    const assetAt = (hash: string, ix: number, policy: string, name: string, datum?: string): Row => koiosRow({
+      txHash: hash, outputIndex: ix, address: addressOf(policy), assets: { lovelace: 5_000_000n, [`${policy}${name}`]: 1n }, datum,
+    }, { is_spent: true });
+    historic.push(assetAt(opened, 0, JURY, caseToken, caseDatum), assetAt(challenge, 0, challengePolicy, CHALLENGE_TOKEN),
+      assetAt(resolution, 1, VERDICT_POLICY, verdictToken, verdictDatum));
+    const status = { type: 'Suspended' as const, holds: [{ by: { type: 'Script' as const, hash: VERDICT_POLICY },
+      reason: JURY_HOLD_REASON, since: HISTORICAL_SINCE, until: HISTORICAL_SINCE + DAY + (badRecord ? 1 : 0) }] };
+    historic.push(koiosRow({ ...recordUtxo(AGENTS['order-desk'], liveRecord({ status })), txHash: applied, outputIndex: 2 }, { is_spent: true }));
+    const mint = (policy_id: string, asset_name: string, quantity: string) => ({ policy_id, asset_name, quantity });
+    row(opened, 50, [], { outputs: [juryInput], assets_minted: [mint(JURY, caseToken, '1')] });
+    const auditorWins = { constructor: 1, fields: [] };
+    row(finalized, 300, [juryInput], { plutus_contracts: [spend(JURY, juryInput, 1, [{ constructor: 2, fields: [auditorWins] }])] });
+    const challengeInput = input(CHALLENGE.challenge, challengePolicy);
+    row(resolution, 360, [challengeInput], { outputs: [input(VERDICT_REF, VERDICT_POLICY)],
+      assets_minted: [mint(VERDICT_POLICY, verdictToken, '1')], plutus_contracts: [spend(challengePolicy, challengeInput, 2, [auditorWins, { bytes: documentHash(resolutionDocument) }])] });
+    const prior = input(ref('prior identity record'), MAINNET.identity.hash);
+    row(applied, 363, [prior, input(VERDICT_REF, VERDICT_POLICY)], { outputs: [input(HISTORICAL_HOLD, MAINNET.identity.hash)],
+      assets_minted: [mint(VERDICT_POLICY, verdictToken, '-1')], plutus_contracts: [spend(MAINNET.identity.hash, prior, 2, [{ constructor: 1, fields: [{ int: 0 }] }])] });
+    confirmed.add(resolution);
+    confirmed.add(applied);
   }
   // -- the record, the facts, the fault entries
   const record = {
@@ -368,6 +487,14 @@ async function go(s: Scenario, argv: string[] = ['run', '--run', s.label, '--num
     calls.push({ url, headers: Object.fromEntries(Object.entries((init?.headers ?? {}) as Record<string, string>)) });
     if (url.startsWith(MOCK_PUBLIC_BASE)) return mock(url);
     if (url.includes('/jury/cases')) return indexer(url);
+    if (new URL(url).pathname.endsWith('/lineage')) {
+      const escrow = escrowOf('order-desk-c');
+      return Response.json({ original_ref: escrow, terminal: s.release === 'missing' ? null : { type: 'ReleaseEscrow', tx_hash: txOf('order-desk-c', 'release') } });
+    }
+    if (new URL(url).pathname.endsWith('/tx_metadata') && typeof init?.body === 'string') {
+      const query: { _tx_hashes: string[] } = JSON.parse(init.body);
+      return Response.json(query._tx_hashes.flatMap((tx_hash) => metadata.has(tx_hash) ? [{ tx_hash, metadata: { '22084': metadata.get(tx_hash) } }] : []));
+    }
     if (new URL(url).origin === KOIOS) return ledger.koios.f(url, init);
     throw new Error('an unexpected request');
   }) as typeof fetch;
@@ -530,6 +657,12 @@ describe('the golden files', () => {
       expect(old).not.toHaveProperty('use_case');
     }
   });
+
+  it('checks the actual issuance block of the old approval even within the datum clock allowance', async () => {
+    const s = scenario('clean');
+    s.approval.issueMinute = 31;
+    await refuses(s, ['approval.tx: the attestation is issued after the hire']);
+  });
 });
 
 const TEST_USE = 'fixture-evidence';
@@ -540,6 +673,8 @@ const testUse = (evidenceSteps: UseCase['evidenceSteps']): Partial<UseCase> => (
 const testModule: EvidenceModule = {
   ...inventory,
   readLegacy: false,
+  allowApprovalStateOnly: false,
+  approvalCounterparty: undefined,
   reportOptional: [],
   carriedOf: (hires) => lastHire(hires, 'execute')?.entry ?? null,
   challengeOf: () => null,
@@ -553,7 +688,7 @@ const testModule: EvidenceModule = {
   },
   moduleDocument: (a) => ({
     run: `fixture-${a.loaded.record.kind}`,
-    state_at_hire: a.approvalStates.map((entry) => entry === null ? null : { state: entry.state, checked_at: entry.checked_at, hire: entry.hire }),
+    state_at_hire: a.approvalStates.map((entry) => entry === null ? null : { state: entry.state, checked_at: entry.checked_at, hire: entry.hire, link: entry.link }),
   }),
 };
 
@@ -638,21 +773,69 @@ describe('modules of the evidence task', () => {
     const s = closedCase('AuditorWins', 'none');
     s.modern = true;
     s.record = { approvals: [] };
-    const holdRef = ref('case finalize tx', 2);
+    s.historicalHold = {};
+    let giveVerdictRef = true;
     const task = createEvidenceTask({ [TEST_USE]: {
       ...testModule,
       challengeOf: (a) => ({ agent: 'order-desk', claim: a.facts.claims[s.label]!['order-desk']!.claimRef, ...CHALLENGE }),
-      async holdOf(_a, source) {
-        const since = await source.blockTime();
-        if (!source.indexed?.finalized_tx) throw new Error('the case has no finalized transaction');
-        return { reason: JURY_HOLD_REASON, since, until: since + DAY, record_output: `${source.indexed.finalized_tx}#2`, gateway_status: null };
-      },
-      rules: { checked: (a) => a.caseRead?.hold?.record_output === holdRef ? [evidenceRef('hold', holdRef)] : 'no historical hold' },
+      holdOf: () => ({
+        reason: JURY_HOLD_REASON, since: HISTORICAL_SINCE, until: HISTORICAL_SINCE + DAY,
+        record_output: HISTORICAL_HOLD, gateway_status: null, ...(giveVerdictRef ? { verdict_output: VERDICT_REF } : {}),
+      }),
+      rules: { checked: (a) => a.caseRead?.hold?.record_output === HISTORICAL_HOLD ? [evidenceRef('hold', HISTORICAL_HOLD)] : 'no historical hold' },
     } });
     const r = await go(s, undefined, { use: testUse([testStep]), task });
     expect(r.err).toBe('');
     expect(r.exit).toBe(0);
-    expect(JSON.parse(r.read(publicFile())!)).toMatchObject({ case: { hold: { record_output: holdRef } } });
+    expect(JSON.parse(r.read(publicFile())!)).toMatchObject({ case: { hold: { record_output: HISTORICAL_HOLD } } });
+    giveVerdictRef = false;
+    expect((await go(s, undefined, { use: testUse([testStep]), task })).err).toContain('historical hold has no verified link');
+    giveVerdictRef = true;
+    for (const [bad, message] of [
+      [{ badCase: true }, 'case, jury or challenge identity differs'],
+      [{ badChallenge: true }, 'verdict output does not authorize a hold'],
+      [{ badRecord: true }, 'does not show this exact record hold'],
+      [{ badDocument: true }, 'committed resolution document names a different jury, case or challenge'],
+    ] as const) {
+      s.historicalHold = bad;
+      const refused = await go(s, undefined, { use: testUse([testStep]), task });
+      expect(refused.exit).toBe(2);
+      expect(refused.err).toContain(message);
+      expect(refused.read(publicFile())).toBeNull();
+    }
+    s.historicalHold = {};
+    s.unconfirmed.add(HISTORICAL_HOLD.slice(0, 64));
+    expect((await go(s, undefined, { use: testUse([testStep]), task })).err).toContain('hold.read_failed: the transaction has no confirmation');
+  });
+
+  it('does not combine matching verdict text from different case, jury or challenge identities', async () => {
+    for (const [over, message] of [
+      [{ case_token: h('other case') }, 'different case or jury identities'],
+      [{ jury: 'f0'.repeat(28) }, 'different case or jury identities'],
+      [{ challenge: h('different challenge') }, 'different challenge token'],
+    ] as const) {
+      const s = closedCase();
+      s.cases = [caseRow(over)];
+      await refuses(s, [message]);
+    }
+  });
+
+  it('shows only a successful Release of the right escrow after the accept window', async () => {
+    const s = closedCase();
+    const step = (r: Outcome) => {
+      const doc: { steps: Obj[] } = JSON.parse(r.read(publicFile())!);
+      return doc.steps.find((row) => row.id === 'r2-e');
+    };
+    expect(step(await go(s))).toMatchObject({ status: 'shown' });
+    s.release = 'missing';
+    expect(step(await go(s))).toMatchObject({ status: 'not_run', note: 'the terminal release of the Order Desk escrow is unproven', refs: [] });
+    for (const mode of ['false_label', 'early', 'failed'] as const) {
+      s.release = mode;
+      await refuses(s, [mode === 'early' ? 'before the end of the accept window' : 'successful Release']);
+    }
+    delete s.release;
+    s.unconfirmed.add(txOf('order-desk-c', 'release'));
+    await refuses(s, ['transaction has no confirmation']);
   });
 
   it('requires the no-report hire to have a confirmed reclaim to the vault and not a receipt', async () => {
@@ -666,7 +849,8 @@ describe('modules of the evidence task', () => {
       ...testModule, reportOptional: ['order-desk'],
       rules: { checked: (a) => {
         const hire = a.loaded.hires.find((one) => one.entry.step === desk.step);
-        return hire?.report === null && hire.entry.reclaim_tx === reclaim ? [evidenceRef('transaction', reclaim)] : 'no reclaimed hire';
+        const proof = hire === undefined ? undefined : a.terminals.get(hire.entry.escrow_ref);
+        return hire?.report === null && proof?.action === 'Reclaim' && proof.refund_output === `${reclaim}#0` ? [evidenceRef('transaction', reclaim)] : 'no proved refund';
       } },
     } });
     const opts = { use: testUse([testStep]), task };
@@ -678,8 +862,14 @@ describe('modules of the evidence task', () => {
     s.reclaimToWallet = true;
     const refused = await go(s, undefined, opts);
     expect(refused.exit).toBe(2);
-    expect(refused.err).toContain('does not reclaim the unclaimed escrow to the vault');
+    expect(refused.err).toContain('does not return the full escrow value to the correct vault owner');
     expect(refused.read(publicFile())).toBeNull();
+    s.reclaimToWallet = false;
+    s.reclaimShort = true;
+    expect((await go(s, undefined, opts)).err).toContain('does not return the full escrow value');
+    s.reclaimShort = false;
+    s.reclaimWrongOwner = true;
+    expect((await go(s, undefined, opts)).err).toContain('does not return the full escrow value');
   });
 
   it('judges two approvals at the blocks of their own hires and fails closed on a false revoke or expiry', async () => {
@@ -691,6 +881,15 @@ describe('modules of the evidence task', () => {
     const other = { attestation: h('other approval'), tx: h('other approval tx'),
       supersedes: s.approval.attestation, datum: { validUntil: CAPTURE_MS + 20 * 60_000, links: [{ rel: 0, target: s.approval.attestation }] } };
     s.extraApprovals = [other];
+    const proposal = makeProposal({ marker: 'private fixture text' }, h('approval source salt'));
+    if (!proposal.ok) throw new Error('invalid fixture proposal');
+    s.digest = proposal.value.proposal_digest;
+    for (const [step, entry] of [['execute-a', s.approval], ['execute-c', other]] as const) {
+      const one = s.hires.find((hire) => hire.step === step)!;
+      one.request = { committed: ` ${JSON.stringify({ op: 'execute', authority: { principal_did: DID(APPROVAL_ISSUER), delegation: s.delegations[0]!.id },
+        tenant: s.tenant, proposal: proposal.value, approval: { attestation: entry.attestation, issuer_did: DID(APPROVAL_ISSUER) } })}\n` };
+      entry.datum = { ...entry.datum as Obj, issuerId: APPROVAL_ISSUER };
+    }
     const module: EvidenceModule = {
       ...testModule, hireOfApproval: (_a, i) => i === 0 ? 'execute-a' : 'execute-c',
       approvalExpectations: () => ({}), rules: { checked: (a) => a.approvalStates.every((one) => one !== null) ? [evidenceRef('transaction', a.approvalStates[0]!.entry.tx)] : 'unchecked approval' },
@@ -700,9 +899,23 @@ describe('modules of the evidence task', () => {
     expect(r.err).toBe('');
     expect(r.exit).toBe(0);
     expect(JSON.parse(r.read(publicFile())!)).toMatchObject({ state_at_hire: [
-      { state: 'revoked', checked_at: CAPTURE_MS + 5 * 60_000, hire: 'execute-a' },
-      { state: 'expired', checked_at: CAPTURE_MS + 40 * 60_000, hire: 'execute-c' },
+      { state: 'revoked', checked_at: CAPTURE_MS + 5 * 60_000, hire: 'execute-a', link: 'request' },
+      { state: 'expired', checked_at: CAPTURE_MS + 40 * 60_000, hire: 'execute-c', link: 'request' },
     ] });
+    expect(r.read(publicFile())).not.toContain('private fixture text');
+    const first = s.hires.find((hire) => hire.step === 'execute-a')!;
+    const exact = first.request!;
+    first.request = { ...exact, saved: exact.committed.trim() };
+    expect((await go(s, undefined, opts)).err).toContain('request text does not match the escrow prompt hash');
+    first.request = { ...exact, mode: 0o644 };
+    expect((await go(s, undefined, opts)).err).toContain('bounded private file');
+    first.request = { ...exact, link: true };
+    expect((await go(s, undefined, opts)).err).toContain('exact request file cannot be opened');
+    delete first.request;
+    expect((await go(s, undefined, opts)).err).toContain('approval use is unproven');
+    first.request = s.hires.find((hire) => hire.step === 'execute-c')!.request;
+    expect((await go(s, undefined, opts)).err).toContain('the committed request names no approval or a different approval');
+    first.request = exact;
     s.unconfirmed.add(revoked);
     const unread = await go(s, undefined, opts);
     expect(unread.exit).toBe(2);
@@ -761,15 +974,17 @@ describe('modules of the evidence task', () => {
   });
 
   it('confirms only the named lifecycle facts and names the file for the lifecycle subject', async () => {
-    const step = { ...testStep, run: 'lifecycle' } as const;
-    const name = 'controller-change';
-    const tx = h('lifecycle tx');
+    const step = { ...testStep, id: 'wait', run: 'lifecycle' } as const;
+    const names = ['recovery-start', 'recovery-complete'];
+    const txs = names.map((name) => h(`lifecycle ${name}`));
     const use: Partial<UseCase> = {
       ...testUse([step]), runs: [{ ...data.runs[0]!, id: 'lifecycle' }],
       lifecycle: { agent: 'order-desk', successor: 'successor', controllers: ['first', 'second'], guardians: ['first', 'second'], waitMs: DAY },
     };
+    let recordRefs: string[] = [];
     const task = createEvidenceTask({ [TEST_USE]: {
       ...testModule, runKinds: ['lifecycle'],
+      lifecycleFacts: { wait: names },
       carriedOf() { throw new Error('a lifecycle run does not read hires'); },
       challengeOf() { throw new Error('a lifecycle run does not read a challenge'); },
       hireOfApproval() { throw new Error('a lifecycle run does not read an approval'); },
@@ -779,28 +994,44 @@ describe('modules of the evidence task', () => {
         expect(a.faults).toEqual([]);
         expect(a.reads.delegations).toEqual([]);
         expect(a.reads.vaults).toEqual([]);
-        return { checked: a.facts.lifecycle[name]?.tx };
+        expect(a.facts.lifecycle.other).toBeUndefined();
+        return { checked: names.flatMap((name) => a.facts.lifecycle[name] === undefined ? [] : [a.facts.lifecycle[name]!.tx]) };
       },
-      rules: { checked: (a) => typeof a.extra.checked === 'string' ? [evidenceRef('transaction', a.extra.checked)] : 'no confirmed step' },
+      rules: { wait: (a) => [
+        ...(a.extra.checked as string[]).map((tx) => evidenceRef('transaction', tx)),
+        ...recordRefs.map((ref) => evidenceRef('record', ref)),
+      ] },
     } });
     const world = await taskWorld({ use, env: { OPERATOR_USE_CASE: data.name } });
     mkdirSync(join(world.stateDir, 'runs'), { recursive: true, mode: 0o700 });
-    writeFileSync(join(world.stateDir, 'runs', 'l1.json'), JSON.stringify({
+    const input = (lifecycle: readonly string[]) => JSON.stringify({
       format: 1, label: 'l1', use_case: TEST_USE, kind: 'lifecycle', date: '2026-12-01', tenant: null, challenged: null, rfq_ids: [],
-      lifecycle: [name], hires: [], approvals: [], delegations: [], vaults: [], sub_delegations: [], refusals: [],
-    }));
+      lifecycle, hires: [], approvals: [], delegations: [], vaults: [], sub_delegations: [], refusals: [],
+    });
+    const record = join(world.stateDir, 'runs', 'l1.json');
     const facts = FactsFile.open(join(world.stateDir, 'facts.json'), { useCase: TEST_USE, network: 'vector-mainnet' });
-    facts.put('lifecycle', [name], { tx, at: stamp(S0) });
+    for (const [i, name] of names.entries()) facts.put('lifecycle', [name], { tx: txs[i], at: stamp(S0) });
     facts.put('lifecycle', ['other'], { tx: h('unrelated transaction'), at: stamp(S0) });
     const seen: string[] = [];
-    Object.defineProperty(world.node, 'txStatus', { value: async (hash: string) => { seen.push(hash); return { confirmations: hash === tx ? 3 : null }; } });
+    Object.defineProperty(world.node, 'txStatus', { value: async (hash: string) => { seen.push(hash); return { confirmations: txs.includes(hash) ? 3 : null }; } });
+    // A completion in the run folder does not make it evidence unless the run names it.
+    writeFileSync(record, input(names.slice(0, 1)));
+    expect(await world.run(task, 'run', '--run', 'l1', '--number', '1')).toBe(2);
+    expect(world.screen.errorText).toContain('does not name every required lifecycle fact');
+    expect(seen.splice(0)).toEqual(txs.slice(0, 1));
+    writeFileSync(record, input(names));
+    recordRefs = [ref('unrelated transaction')];
+    expect(await world.run(task, 'run', '--run', 'l1', '--number', '1')).toBe(2);
+    expect(world.screen.errorText).toContain('do not show the named, confirmed lifecycle transactions');
+    expect(seen.splice(0)).toEqual(txs);
+    recordRefs = [];
     const exit = await world.run(task, 'run', '--run', 'l1', '--number', '1');
     expect(exit, world.screen.errorText).toBe(0);
-    expect(seen).toEqual([tx]);
+    expect(seen).toEqual(txs);
     const file = join(world.stateDir, publicFile('2026-12-01-order-desk-run-1.json'));
     const doc = JSON.parse(readFileSync(file, 'utf8')) as Obj;
     for (const field of ['hires', 'approval', 'vault', 'mock', 'fault_mode', 'case', 'challenge', 'claims', 'escrow_ref']) expect(doc).not.toHaveProperty(field);
-    expect(doc.steps).toEqual([{ id: 'checked', status: 'shown', refs: [evidenceRef('transaction', tx)], note: '' }]);
+    expect(doc.steps).toEqual([{ id: 'wait', status: 'shown', refs: txs.map((tx) => evidenceRef('transaction', tx)), note: '' }]);
   });
 });
 
