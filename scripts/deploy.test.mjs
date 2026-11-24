@@ -422,6 +422,9 @@ test('no individual name, and no personal address, on any public surface: the ma
     // Use case 1: the two Dockerfiles, the two manifest templates, the two READMEs, the nine files of the packs and the sources of the two agents.
     'agents/reorder-agent/Dockerfile', 'agents/order-desk/Dockerfile', 'agents/reorder-agent/agent.json.template', 'agents/order-desk/agent.json.template', 'agents/reorder-agent/README.md', 'agents/order-desk/README.md',
     ...USE_CASE_1_FILES, ...sourceFiles('agents/reorder-agent/src'), ...sourceFiles('agents/order-desk/src'),
+    // Use case 2: the two Dockerfiles, the two manifest templates, the two READMEs, the eight files of the packs and the sources of the two agents.
+    'agents/prior-authorization-agent/Dockerfile', 'agents/insurer-intake-agent/Dockerfile', 'agents/prior-authorization-agent/agent.json.template', 'agents/insurer-intake-agent/agent.json.template', 'agents/prior-authorization-agent/README.md', 'agents/insurer-intake-agent/README.md',
+    ...USE_CASE_2_FILES, ...sourceFiles('agents/prior-authorization-agent/src'), ...sourceFiles('agents/insurer-intake-agent/src'),
     ...readdirSync(join(root, 'specs')).map((f) => `specs/${f}`),
     DESIGN_SPEC,
   ];
@@ -430,6 +433,8 @@ test('no individual name, and no personal address, on any public surface: the ma
     'agents/agent-history/agent.json.template', 'agents/agent-history/src/server.ts', 'specs/agent-history.md', 'specs/document-pipeline.md', 'docs/HIRE.md', 'docs/E2E.md', 'README.md', 'agents/agent-history/README.md', DESIGN_SPEC,
     'agents/reorder-agent/Dockerfile', 'agents/order-desk/Dockerfile', 'agents/reorder-agent/agent.json.template', 'agents/order-desk/agent.json.template', 'agents/reorder-agent/README.md', 'agents/order-desk/README.md',
     'agents/reorder-agent/src/serve/start.ts', 'agents/order-desk/src/serve/start.ts', 'deploy/server/.env.reorder-agent.example', 'deploy/server/.env.order-desk-runtime.example', 'deploy/server/RUNBOOK-reorder-agent.md', 'deploy/server/RUNBOOK-order-desk.md',
+    'agents/prior-authorization-agent/Dockerfile', 'agents/insurer-intake-agent/Dockerfile', 'agents/prior-authorization-agent/agent.json.template', 'agents/insurer-intake-agent/agent.json.template', 'agents/prior-authorization-agent/README.md', 'agents/insurer-intake-agent/README.md',
+    'agents/prior-authorization-agent/src/serve/start.ts', 'agents/insurer-intake-agent/src/serve/start.ts', ...USE_CASE_2_FILES,
   ]) assert.ok(files.includes(must), `${must} is scanned`);
   for (const rel of files) assert.doesNotMatch(read(rel), NAMES, `${rel}: roles, not people`);
   // A path into someone's home folder names its owner too, and a reviewer's handle is a name.
@@ -6015,10 +6020,10 @@ test('agents host: the proof script fills the real snippet and the real main Cad
 test('agents host: the README gives the counts, the memory and the plan of the ports, and the snippet shape of the README is the one that the proof validates', () => {
   const readme = srvRead('README.md');
   for (const part of ['The plan for the host is 19 containers: 8 services, 10 runtimes and 1 mock service.', '| Memory | 8 GiB |', '| Agent host names | 10 | A, DNS only |', '| Mock host names | 2 | A, DNS only |', '| Organisation checks | 9 | TXT |']) assert.ok(readme.includes(part), part);
-  // The plan of the ports: the counts in the rows are the sizes of the ranges, and together they are the 19 containers. The rows of the two packs of use case 1 are the ports of their compose files,
+  // The plan of the ports: the counts in the rows are the sizes of the ranges, and together they are the 19 containers. The rows of the two packs of use case 1 and of the two packs of use case 2 are the ports of their compose files,
   // and the rows of the later agents keep the ports that come after them.
   const rows = [...section(readme, 'Folders and ports').matchAll(/^\| ([A-Za-z][^|]*?) \((\d+)\) \| (\d+)(?: to (\d+))? \|$/gm)].map((m) => ({ label: m[1], count: Number(m[2]), from: Number(m[3]), to: Number(m[4] ?? m[3]) }));
-  assert.deepEqual(rows.map((row) => row.label), ['Reorder Agent runtime', 'Order Desk runtimes', 'Runtimes of later agents', 'Reorder Agent service', 'Order Desk service', 'Services of later agents', 'Mock service']);
+  assert.deepEqual(rows.map((row) => row.label), ['Reorder Agent runtime', 'Order Desk runtimes', 'Prior Authorization Agent runtime', 'Insurer Intake Agent runtime', 'Runtimes of later agents', 'Reorder Agent service', 'Order Desk service', 'Prior Authorization Agent service', 'Insurer Intake Agent service', 'Services of later agents', 'Mock service']);
   const plan = Object.fromEntries(rows.map((row) => [row.label, row]));
   for (const row of rows) assert.equal(row.to - row.from + 1, row.count, `${row.label}: the range has as many ports as the count`);
   const runtimeRows = rows.filter((row) => /runtime/i.test(row.label));
@@ -6026,9 +6031,9 @@ test('agents host: the README gives the counts, the memory and the plan of the p
   assert.equal(runtimeRows.reduce((sum, row) => sum + row.count, 0), 10, 'ten runtimes');
   assert.equal(serviceRows.reduce((sum, row) => sum + row.count, 0), 8, 'eight services');
   assert.equal(rows.reduce((sum, row) => sum + row.count, 0), 19);
-  // The opening and the memory text say the same of the 19 containers: the memory holds the mock service and the six of use case 1, and the later agents have the other 12.
-  assert.equal(plan['Runtimes of later agents'].count + plan['Services of later agents'].count, 19 - 1 - 6, 'the later agents have the 12 containers that are not the mock service and the six of use case 1');
-  assert.ok(readme.includes(`The memory of the host holds the mock service and the six containers of use case 1 at the planning sizes. The other ${19 - 1 - 6} containers wait for a new count (section "The host").`), 'the opening says how many containers the memory holds');
+  // The opening and the memory text say the same of the 19 containers: the memory holds the mock service and the six of use case 1, the four of use case 2 do not all pass the gate, and the later agents have the other 8.
+  assert.equal(plan['Runtimes of later agents'].count + plan['Services of later agents'].count, 19 - 1 - 6 - 4, 'the later agents have the 8 containers that are not the mock service, the six of use case 1 and the four of use case 2');
+  assert.ok(readme.includes(`The memory of the host holds the mock service and the six containers of use case 1 at the planning sizes. The four containers of use case 2 do not all pass the gate at the planning sizes. The other ${19 - 1 - 6 - 4} containers wait for a new count (section "The host").`), 'the opening says how many containers the memory holds');
   for (const group of [runtimeRows, serviceRows]) group.slice(1).forEach((row, i) => assert.equal(row.from, group[i].to + 1, `${row.label} follows ${group[i].label} with no gap`));
   const [runtimeFrom, runtimeTo, serviceFrom, serviceTo] = [runtimeRows[0].from, runtimeRows.at(-1).to, serviceRows[0].from, serviceRows.at(-1).to];
   assert.ok(runtimeTo < serviceFrom && serviceTo < plan['Mock service'].from, 'the ranges do not overlap');
@@ -6039,8 +6044,12 @@ test('agents host: the README gives the counts, the memory and the plan of the p
   assert.deepEqual([plan['Reorder Agent runtime'].from, plan['Reorder Agent runtime'].to], [reorderPorts.runtime[0], reorderPorts.runtime[0]], 'the runtime of the Reorder Agent');
   assert.deepEqual([plan['Order Desk runtimes'].from, plan['Order Desk runtimes'].to], [Math.min(...orderRuntimes), Math.max(...orderRuntimes)], 'the three runtimes of the Order Desk');
   assert.deepEqual([plan['Reorder Agent service'].from, plan['Order Desk service'].from], [reorderPorts.service[0], orderPorts.service[0]], 'the two services');
-  assert.deepEqual([plan['Runtimes of later agents'].from, plan['Runtimes of later agents'].to], [8105, 8110], 'the later runtimes keep 8105 to 8110');
-  assert.deepEqual([plan['Services of later agents'].from, plan['Services of later agents'].to], [9103, 9108], 'the later services keep 9103 to 9108');
+  const priorPorts = PACK_PORTS[serverCompose('prior-authorization-agent')];
+  const intakePorts = PACK_PORTS[serverCompose('insurer-intake-agent')];
+  assert.deepEqual([plan['Prior Authorization Agent runtime'].from, plan['Prior Authorization Agent runtime'].to, plan['Insurer Intake Agent runtime'].from, plan['Insurer Intake Agent runtime'].to], [priorPorts.runtime[0], priorPorts.runtime[0], intakePorts.runtime[0], intakePorts.runtime[0]], 'the two runtimes of use case 2');
+  assert.deepEqual([plan['Prior Authorization Agent service'].from, plan['Insurer Intake Agent service'].from], [priorPorts.service[0], intakePorts.service[0]], 'the two services of use case 2');
+  assert.deepEqual([plan['Runtimes of later agents'].from, plan['Runtimes of later agents'].to], [8107, 8110], 'the later runtimes keep 8107 to 8110');
+  assert.deepEqual([plan['Services of later agents'].from, plan['Services of later agents'].to], [9105, 9108], 'the later services keep 9105 to 9108');
   const runbook = srvRead('RUNBOOK.md');
   assert.ok(runbook.includes(`seq ${runtimeFrom} ${runtimeTo}`), 'the runbook checks each runtime port of the plan');
   assert.ok(runbook.includes(`range ${runtimeFrom} to ${runtimeTo}`) && runbook.includes(`range ${serviceFrom} to ${serviceTo}`));
@@ -7169,6 +7178,8 @@ function publishedPorts(text) {
 const PACK_PORTS = {
   [serverCompose('reorder-agent')]: { runtime: [8101], service: [9101] },
   [serverCompose('order-desk')]: { 'runtime-small': [8102], 'runtime-medium': [8103], 'runtime-large': [8104], service: [9102] },
+  [serverCompose('prior-authorization-agent')]: { runtime: [8105], service: [9103] },
+  [serverCompose('insurer-intake-agent')]: { runtime: [8106], service: [9104] },
   [serverCompose('bid-desk-alfa')]: { runtime: [8108], service: [9106] },
   [serverCompose('bid-desk-bravo')]: { runtime: [8109], service: [9107] },
   [serverCompose('bid-desk-charlie')]: { runtime: [8110], service: [9108] },
@@ -7197,10 +7208,10 @@ function portProblems(texts, packPorts, readme) {
   return problems;
 }
 
-test('agents host ports: the compose files of the two packs of use case 1 and of the three Bid Desks publish exactly 8101 to 8104, 8108 to 8110, 9101, 9102 and 9106 to 9108, no host port stands twice in the compose files of the two hosts, and the plan in the README of the agents host holds each port of the agents host; the guard refuses each copy that breaks one rule', () => {
+test('agents host ports: the compose files of the two packs of use case 1, of the two packs of use case 2 and of the three Bid Desks publish exactly 8101 to 8106, 8108 to 8110, 9101 to 9104 and 9106 to 9108, no host port stands twice in the compose files of the two hosts, and the plan in the README of the agents host holds each port of the agents host; the guard refuses each copy that breaks one rule', () => {
   const texts = composeTextsOf(['deploy/host', 'deploy/server']);
   const readme = srvRead('README.md');
-  assert.deepEqual(Object.values(PACK_PORTS).flatMap((ports) => Object.values(ports).flat()).sort(), [8101, 8102, 8103, 8104, 8108, 8109, 8110, 9101, 9102, 9106, 9107, 9108], 'the runtimes on 8101 to 8104 and 8108 to 8110, and the services on 9101, 9102 and 9106 to 9108');
+  assert.deepEqual(Object.values(PACK_PORTS).flatMap((ports) => Object.values(ports).flat()).sort(), [8101, 8102, 8103, 8104, 8105, 8106, 8108, 8109, 8110, 9101, 9102, 9103, 9104, 9106, 9107, 9108], 'the runtimes on 8101 to 8106 and 8108 to 8110, and the services on 9101 to 9104 and 9106 to 9108');
   assert.deepEqual(portProblems(texts, PACK_PORTS, readme), [], 'the real files pass');
   const reorder = serverCompose('reorder-agent');
   const orders = serverCompose('order-desk');
@@ -7508,7 +7519,7 @@ test('use case 1 README: the memory arithmetic of the six containers adds up, an
   const text = section(srvRead('README.md'), 'The host');
   const number = (value) => Number(value.replaceAll(',', ''));
   const sizes = Object.fromEntries([...text.matchAll(/^\| ([A-Za-z][^|]*?) \| ([\d,]+) \|$/gm)].map((m) => [m[1], number(m[2])]));
-  assert.deepEqual(Object.keys(sizes), ['Reorder Agent runtime', 'Reorder Agent service', 'Order Desk runtimes (3)', 'Order Desk service', 'The six containers']);
+  assert.deepEqual(Object.keys(sizes), ['Reorder Agent runtime', 'Reorder Agent service', 'Order Desk runtimes (3)', 'Order Desk service', 'The six containers', 'Prior Authorization Agent runtime', 'Prior Authorization Agent service', 'Insurer Intake Agent runtime', 'Insurer Intake Agent service', 'The four containers']);
   assert.equal(sizes['Order Desk runtimes (3)'], 3 * sizes['Reorder Agent runtime'], 'three runtimes of one size');
   assert.equal(sizes['Reorder Agent service'], sizes['Order Desk service'], 'the two services have the planning size of a new service');
   const total = sizes['Reorder Agent runtime'] + sizes['Reorder Agent service'] + sizes['Order Desk runtimes (3)'] + sizes['Order Desk service'];
@@ -7524,12 +7535,12 @@ test('use case 1 README: the memory arithmetic of the six containers adds up, an
   for (const part of [`${fmt(typicalAfter - 800)} MiB in the typical case and ${fmt(lowestAfter - 800)} MiB in the lowest case`, `${fmt(typicalAfter - 1200)} MiB and ${fmt(lowestAfter - 1200)} MiB`, 'about 800 MiB', 'up to 4 calls', 'about 100 MiB for each call']) assert.ok(text.includes(part), part);
   const later = 2 * sizes['Reorder Agent runtime'] + 2 * sizes['Reorder Agent service'];
   assert.ok(typicalAfter - later < 1024 && lowestAfter - later < 1024, 'four more containers at the planning sizes do not pass the gate, in either case');
-  assert.ok(text.includes('four more containers (two runtimes and two services) do not pass the gate'), 'and the README says so');
+  assert.ok(text.includes('At the planning sizes, the fourth start fails the gate in the typical case'), 'and the README says so');
   for (const part of ['169 MiB in `docker stats`', '`MemAvailable` fell by 462 MiB', '4,074 MiB to 3,612 MiB', 'The gate is 1,024 MiB', 'The host builds none of the images of use case 1', 'The agents of `deploy/host` build their runtime on the host', '`mem_limit`', 'The gate is for a start, not for a peak']) assert.ok(text.includes(part), part);
   // The figures come from a host that also runs the agents of deploy/host, so a new host needs its own measurement, and the text does not deny the build of those agents.
   assert.ok(text.includes('The figures in this section were measured on a host that also runs the agents of `deploy/host`. A new host needs its own measurement.'), 'where the figures come from');
   assert.doesNotMatch(text, /no build counts here/, 'the text does not deny every build');
-  assert.ok(text.includes(`So the other ${19 - 1 - 6} containers need more memory, or a real size below the planning size, before they start.`), 'the memory text says what the opening says of the other containers');
+  assert.ok(text.includes(`So the other ${19 - 1 - 6 - 4} containers need more memory, or a real size below the planning size, before they start.`), 'the memory text says what the opening says of the other containers');
   assert.doesNotMatch(text, /3\.3 GiB/, 'the old total of the 19 containers is gone');
 });
 
@@ -7639,4 +7650,408 @@ test('dockerignore: no image holds a test folder, and the first comment line nam
   // The first comment line names the Dockerfiles of the repo root context.
   for (const row of rows) assert.ok(lines[0].includes(row.file), `${row.file} is named in the first comment line`);
   assert.equal(lines[0].includes(RT.dockerfile), false, 'the runtime Dockerfile has another context');
+});
+
+// ======================================================================================================================================
+// Use case 2 (prior authorization): the Prior Authorization Agent and the Insurer Intake Agent. The tests of each pack hold its files on their own (agents/*/test/deploy.test.ts). These tests read
+// more than one place: the tracked files of the repository, the compose files of both hosts, the README of the agents host, the README of each agent, and the parsers that the kit, the two agents and
+// the mock service use for the documents that they pass to each other. The drift tests run the real TypeScript of the kit and of the mock service in one child process, as the tests of use case 1 do.
+// Each guard has an accepted twin and refused copies.
+// ======================================================================================================================================
+const PRIORAUTH_PACK = ['deploy/server/docker-compose.prior-authorization-agent.yml', 'deploy/server/.env.prior-authorization-agent.example', 'deploy/server/Caddyfile.prior-authorization-agent.snippet', 'deploy/server/RUNBOOK-prior-authorization-agent.md'];
+const INTAKE_PACK = ['deploy/server/docker-compose.insurer-intake-agent.yml', 'deploy/server/.env.insurer-intake-agent.example', 'deploy/server/Caddyfile.insurer-intake-agent.snippet', 'deploy/server/RUNBOOK-insurer-intake-agent.md'];
+const USE_CASE_2_FILES = [...PRIORAUTH_PACK, ...INTAKE_PACK];
+
+test('use case 2 files: the eight files of the two deploy packs are tracked by git, and none names the host, the stack of its reverse proxy, a login or a key file; the guard refuses a file that is not tracked and a file that names the host', { skip: TRACKED ? false : 'needs a git checkout' }, () => {
+  assert.equal(USE_CASE_2_FILES.length, 8, 'four files for each of the two agents');
+  assert.equal(new Set([...USE_CASE_1_FILES, ...USE_CASE_2_FILES]).size, 17, 'none of the eight is a file of use case 1');
+  for (const file of USE_CASE_2_FILES) assert.ok(existsSync(join(root, file)), `${file} is there`);
+  assert.deepEqual(trackedFileProblems(USE_CASE_2_FILES, TRACKED, read), [], 'the real files pass');
+  for (const pack of [PRIORAUTH_PACK, INTAKE_PACK]) {
+    const [compose, , , runbook] = pack;
+    assert.deepEqual(trackedFileProblems(pack, TRACKED.filter((file) => file !== runbook), read), [`${runbook} is not tracked by git`], 'a file that is not tracked');
+    for (const part of ['the apex' + '-web box', 'uma' + 'mi_default', 'root' + '@host', 'id_' + 'ed25519']) {
+      const text = (file) => (file === compose ? `${read(file)}# ${part}\n` : read(file));
+      assert.deepEqual(trackedFileProblems(pack, TRACKED, text), [`${compose} names the host, the stack of its reverse proxy, a login or a key file`], part);
+    }
+    // The twin: the names that a pack holds on purpose: the public host name of the agent, the folder of the pack and the word host.
+    const origin = /^ +PUBLIC_ORIGIN: https:\/\/(\S+)$/m.exec(read(compose))?.[1];
+    assert.ok(origin, `${compose} gives the public origin of the runtime`);
+    const twin = (file) => (file === compose ? `${read(file)}# ${origin} in deploy/server on the agents host\n` : read(file));
+    assert.deepEqual(trackedFileProblems(pack, TRACKED, twin), [], 'the names of the pack');
+  }
+});
+
+// The rows of the plan of the ports in the README of the agents host, with their labels: a label, a count in brackets and a port or a range.
+const labelledRows = (readme) => [...section(readme, 'Folders and ports').matchAll(/^\| ([A-Za-z][^|]*?) \((\d+)\) \| (\d+)(?: to (\d+))? \|$/gm)].map((m) => ({ label: m[1], count: Number(m[2]), from: Number(m[3]), to: Number(m[4] ?? m[3]) }));
+
+test('use case 2 ports: the compose files of the two packs publish exactly 8105, 8106, 9103 and 9104, no host port stands twice in the compose files of the two hosts, and the plan in the README of the agents host has a row for each of the four ports; the guard refuses each copy that breaks one rule', () => {
+  const texts = composeTextsOf(['deploy/host', 'deploy/server']);
+  const readme = srvRead('README.md');
+  const prior = serverCompose('prior-authorization-agent');
+  const intake = serverCompose('insurer-intake-agent');
+  const rows = Object.fromEntries(labelledRows(readme).map((row) => [row.label, row]));
+  for (const [name, file, runtimePort, servicePort] of [['Prior Authorization Agent', prior, 8105, 9103], ['Insurer Intake Agent', intake, 8106, 9104]]) {
+    assert.deepEqual(PACK_PORTS[file], { runtime: [runtimePort], service: [servicePort] }, `${name}: the ports that the guard expects of the compose file`);
+    for (const [kind, port] of [['runtime', runtimePort], ['service', servicePort]]) {
+      assert.deepEqual(rows[`${name} ${kind}`], { label: `${name} ${kind}`, count: 1, from: port, to: port }, `${name} ${kind}: the row of the plan in the README`);
+    }
+  }
+  assert.deepEqual(portProblems(texts, PACK_PORTS, readme), [], 'the real files pass');
+  const rowLine = (label) => readme.split('\n').find((line) => line.startsWith(`| ${label} (`));
+  const faults = [
+    ['the runtime of the Prior Authorization Agent on another port', { [prior]: srvReplace(texts[prior], '127.0.0.1:8105:8080', '127.0.0.1:8111:8080') }, readme, /prior-authorization-agent\.yml must publish/],
+    ['the service of the Prior Authorization Agent on the port of the other service', { [prior]: srvReplace(texts[prior], '127.0.0.1:9103:9103', '127.0.0.1:9104:9103') }, readme, /the port 9104 is published twice/],
+    ['the runtime of the Insurer Intake Agent on the port of the other runtime', { [intake]: srvReplace(texts[intake], '127.0.0.1:8106:8080', '127.0.0.1:8105:8080') }, readme, /the port 8105 is published twice/],
+    ['the service of the Insurer Intake Agent on a port that the plan does not hold', { [intake]: srvReplace(texts[intake], '127.0.0.1:9104:9104', '127.0.0.1:9109:9104') }, readme, /insurer-intake-agent\.yml#service publishes 9109, and no row of the plan/],
+    ['a second port on the service of the Insurer Intake Agent', { [intake]: srvReplace(texts[intake], '["127.0.0.1:9104:9104"]', '["127.0.0.1:9104:9104", "127.0.0.1:9108:9108"]') }, readme, /insurer-intake-agent\.yml must publish/],
+    ['the runtime of the Prior Authorization Agent on a port of use case 1', { [prior]: srvReplace(texts[prior], '127.0.0.1:8105:8080', '127.0.0.1:8101:8080') }, readme, /the port 8101 is published twice/],
+    ['a README plan that leaves out the row of the Insurer Intake Agent runtime', {}, srvReplace(readme, `${rowLine('Insurer Intake Agent runtime')}\n`, ''), /insurer-intake-agent\.yml#runtime publishes 8106, and no row of the plan/],
+    ['a row of the README plan with a wrong count', {}, srvReplace(readme, rowLine('Prior Authorization Agent service'), rowLine('Prior Authorization Agent service').replace(/\((\d+)\)/, '(99)')), /a row of the plan in the README gives 99 ports/],
+    ['two rows of the README plan that overlap', {}, srvReplace(readme, `${rowLine('Prior Authorization Agent runtime')}\n`, `${rowLine('Prior Authorization Agent runtime')}\n| Overlap (1) | 8105 |\n`), /two rows of the plan in the README overlap/],
+  ];
+  for (const [name, changed, text, expected] of faults) {
+    const problems = portProblems({ ...texts, ...changed }, PACK_PORTS, text);
+    assert.ok(problems.some((p) => expected.test(p)), `${name}: found ${JSON.stringify(problems)}`);
+  }
+  // The twins: the long form of a port, with the same numbers, and the compose files of the two hosts in another order.
+  const long = srvReplace(texts[prior], '["127.0.0.1:8105:8080"]', '[{ target: 8080, published: 8105, host_ip: 127.0.0.1 }]');
+  assert.deepEqual(portProblems({ ...texts, [prior]: long }, PACK_PORTS, readme), [], 'the long form');
+  assert.deepEqual(portProblems(Object.fromEntries(Object.entries(texts).reverse()), PACK_PORTS, readme), [], 'the files in another order');
+});
+
+// What the README of an agent says about its deploy pack, held to the pack. The Deploy section names the compose file, the env example and the runbook, in this order, and each is there. The README gives
+// the port of the service twice, in the Image section and in the table of settings, and the compose file publishes that port on the host and in the container, and gives it to the service as PORT.
+function readmePackProblems(readme, pack, composeText, exists) {
+  const problems = [];
+  const named = [...section(readme, 'Deploy').matchAll(/`(deploy\/server\/[^`]+)`/g)].map((m) => m[1]);
+  const expected = pack.filter((file) => !file.includes('Caddyfile'));
+  if (!isDeepStrictEqual(named, expected)) problems.push(`the Deploy section must name ${expected.join(', ')}, in this order; it names ${named.join(', ') || 'no file'}`);
+  for (const file of named) if (!exists(file)) problems.push(`the Deploy section names ${file}, and no such file is there`);
+  const service = parseYaml(composeText)?.services?.service;
+  const mapping = service?.ports?.length === 1 ? service.ports[0] : null;
+  const published = publishedPorts(composeText).filter((port) => port.service === 'service').map((port) => port.host);
+  const inside = typeof mapping === 'string' ? Number(mapping.split(':').at(-1)) : mapping?.target;
+  const given = Number(service?.environment?.PORT);
+  const stated = [['the Image section', /listens on (\d+) and answers/.exec(readme)?.[1]], ['the table of settings', /^\| `PORT`, `HOST` \| .* \| `(\d+)`, `0\.0\.0\.0` \|$/m.exec(readme)?.[1]]];
+  for (const [where, value] of stated) {
+    if (value === undefined) problems.push(`the README does not give the port of the service in ${where}`);
+    else if (!isDeepStrictEqual([published, inside, given], [[Number(value)], Number(value), Number(value)])) problems.push(`${where} of the README says that the service listens on ${value}, and the compose file publishes ${published.join(', ')}, maps it to ${inside} and sets PORT ${given}`);
+  }
+  return problems;
+}
+
+test('use case 2 README of each agent: the Deploy section names the three files of its pack, each file is there, and the port that the README gives for the service is the port that the compose file publishes; the guard refuses each copy that breaks one rule', () => {
+  for (const [agent, pack, port] of [['prior-authorization-agent', PRIORAUTH_PACK, 9103], ['insurer-intake-agent', INTAKE_PACK, 9104]]) {
+    const readme = read(`agents/${agent}/README.md`);
+    const composeText = read(pack[0]);
+    const there = (file) => existsSync(join(root, file));
+    assert.deepEqual(readmePackProblems(readme, pack, composeText, there), [], `${agent}: the real files pass`);
+    const faults = [
+      ['the Image section gives another port', srvReplace(readme, `listens on ${port} and answers`, `listens on ${port + 6} and answers`), composeText, there, /the Image section of the README says that the service listens on/],
+      ['the table of settings gives another port', srvReplace(readme, `\`${port}\`, \`0.0.0.0\``, `\`${port + 6}\`, \`0.0.0.0\``), composeText, there, /the table of settings of the README says that the service listens on/],
+      ['the compose file publishes another port', readme, srvReplace(composeText, `127.0.0.1:${port}:${port}`, `127.0.0.1:${port + 6}:${port}`), there, /the Image section of the README says that the service listens on/],
+      ['the compose file gives another PORT to the service', readme, srvReplace(composeText, `PORT: "${port}"`, `PORT: "${port + 6}"`), there, /sets PORT/],
+      ['the runbook that the Deploy section names is not there', readme, composeText, (file) => !file.includes('RUNBOOK-') && there(file), /no such file is there/],
+      ['the Deploy section names the example under another name', srvReplace(readme, `.env.${agent}.example`, '.env.example'), composeText, there, /the Deploy section must name/],
+    ];
+    for (const [name, readmeText, composeFile, exists, expected] of faults) {
+      const problems = readmePackProblems(readmeText, pack, composeFile, exists);
+      assert.ok(problems.some((p) => expected.test(p)), `${agent}, ${name}: found ${JSON.stringify(problems)}`);
+    }
+    // The twin: the long form of the port, with the same numbers.
+    const long = srvReplace(composeText, `["127.0.0.1:${port}:${port}"]`, `[{ target: ${port}, published: ${port}, host_ip: 127.0.0.1 }]`);
+    assert.deepEqual(readmePackProblems(readme, pack, long, there), [], `${agent}: the long form`);
+  }
+});
+
+// The documents of use case 2 that the kit, the two agents and the mock service read. The mock service is the system on the other side: the insurer portal files a request, the records system takes a
+// submission, and the seed of a tenant holds the record sets, the guidelines and the requirement sets. One child process loads the real TypeScript of the mock service and of the kit, so that nothing
+// here re-implements a parser. The documents go in on the standard input: a long list does not fit in one argument of a command.
+const jsonOf = (file) => JSON.parse(read(file));
+const inMockServiceStdin = (code, arg) => JSON.parse(execFileSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', code], { cwd: join(root, 'services/mock-systems'), encoding: 'utf8', input: JSON.stringify(arg), maxBuffer: 64 * 1024 ** 2 }));
+const KIT_GOLDENS = 'packages/usecase-kit/test/priorauth/golden';
+const PRIOR_TESTS = 'agents/prior-authorization-agent/test';
+const REQUEST_GOLDENS = [`${KIT_GOLDENS}/request.json`, `${PRIOR_TESTS}/model/golden/request.json`, `${PRIOR_TESTS}/propose/golden/request.json`, `${PRIOR_TESTS}/execute/golden/request.json`];
+
+// The request, as the kit reads it and as the mock service reads the members that it takes. The portal reads the schema, the tenant, the request number and the service code, and it keeps the rest of the
+// request as it came. The tenant is the one of the URL, and the router takes a name of the form TENANT only. The records system reads the order of a record set and its records, and the guideline store
+// reads the criteria of a guideline: the request copies the identifiers of the order, its diagnosis codes, the references of the records and the references of the criteria.
+const REQUEST_DRIFT_CODE = String.raw`
+import { readFileSync } from 'node:fs';
+import { parseIntake } from './src/documents.ts';
+import { parseSeed } from './src/seed.ts';
+import { TENANT } from './src/validate.ts';
+import { parsePriorAuthRequest } from '../../packages/usecase-kit/src/priorauth/index.ts';
+const accepted = (run) => { try { run(); return true; } catch (error) { if (error?.name !== 'Invalid') throw error; return false; } };
+const ORDER = { order_id: 'ORD-1', patient_ref: 'SYN-PT-1', service_code: 'SYN-MRI-LS', service_description: 'Imaging', diagnosis_codes: ['M54.16'], ordering_clinician_ref: 'SYN-CL-1', ordered_at: '2026-10-22' };
+const RECORD = { record_id: 'REC-1', type: 'note', recorded_at: '2026-10-22', summary: 'A note.' };
+const GUIDELINE = { code: 'SYN-MRI-LS', title: 'Imaging', version: '1', criteria: [], documentation: [] };
+const many = (count, make) => Array.from({ length: count }, (_, i) => make(i + 1));
+const mock = {
+  intake: (request) => typeof request?.tenant === 'string' && TENANT.test(request.tenant) && accepted(() => parseIntake({ request, status: 'complete', missing: [] }, request.tenant)),
+  order: (_, member, value) => accepted(() => parseSeed('seed', { records: [{ order: { ...ORDER, [member]: value }, records: [RECORD] }] })),
+  records: (_, count) => accepted(() => parseSeed('seed', { records: [{ order: ORDER, records: many(count, (n) => ({ ...RECORD, record_id: 'REC-' + n })) }] })),
+  criteria: (_, count) => accepted(() => parseSeed('seed', { guidelines: [{ ...GUIDELINE, criteria: many(count, (n) => ({ id: 'C' + n, text: 'A criterion.' })) }] })),
+};
+console.log(JSON.stringify(JSON.parse(readFileSync(0, 'utf8')).map(([request, [reader, ...args]]) => ({ kit: parsePriorAuthRequest(request).ok, mock: mock[reader](request, ...args) }))));
+`;
+
+test('use case 2 drift: the authorization request is read in the same way by the parser of the kit and by the insurer portal and the records system of the mock service, for each golden request and for each edge of each member that the two read', () => {
+  const golden = jsonOf(REQUEST_GOLDENS[0]);
+  const edit = (changes) => ({ ...golden, ...changes });
+  const fill = (count, char = 'a') => char.repeat(count);
+  const codes = (count) => Array.from({ length: count }, (_, i) => `M${i}`);
+  const refs = (count, prefix) => Array.from({ length: count }, (_, i) => `${prefix}${i + 1}`);
+  const portal = ['intake'];
+  // [name, request, how the mock service reads the member, whether the kit takes it, whether the mock service takes it]
+  const viaOrder = (name, member, value, both) => [name, edit({ [member]: value }), ['order', member, value], both, both];
+  const cases = [
+    ...REQUEST_GOLDENS.map((file) => [file, jsonOf(file), portal, true, true]),
+    ['a request number of 64 characters', edit({ request_number: `a${fill(63, '0')}` }), portal, true, true],
+    ['a request number of 65 characters', edit({ request_number: `a${fill(64, '0')}` }), portal, false, false],
+    ['a request number with a dot, a hyphen and an underscore', edit({ request_number: 'run1.a-b_c' }), portal, true, true],
+    ['a request number with a space', edit({ request_number: 'run1 1' }), portal, false, false],
+    ['a request number that starts with a dot', edit({ request_number: '.run1' }), portal, false, false],
+    ['a request number with a letter that is not ASCII', edit({ request_number: 'run\u00e91' }), portal, false, false],
+    ['a request number that is a number', edit({ request_number: 1 }), portal, false, false],
+    ['a service code of 64 characters', edit({ service_code: `A${fill(63, '0')}` }), portal, true, true],
+    ['a service code of 65 characters', edit({ service_code: `A${fill(64, '0')}` }), portal, false, false],
+    ['a service code with the Kelvin sign, which NFC turns into K', edit({ service_code: '\u212A-1' }), portal, false, false],
+    ['a tenant of 48 characters', edit({ tenant: `a${fill(47, '0')}` }), portal, true, true],
+    ['a tenant of 49 characters', edit({ tenant: `a${fill(48, '0')}` }), portal, false, false],
+    ['a tenant in upper case', edit({ tenant: 'RUN1' }), portal, false, false],
+    ['a tenant with an underscore', edit({ tenant: 'run_1' }), portal, false, false],
+    ['another schema', edit({ schema: 'vector.usecase.priorauth-request.v2' }), portal, false, false],
+    viaOrder('an order id of 64 characters', 'order_id', `A${fill(63, '0')}`, true),
+    viaOrder('an order id of 65 characters', 'order_id', `A${fill(64, '0')}`, false),
+    viaOrder('an order id that starts with a dot', 'order_id', '.ORD-1', false),
+    viaOrder('a patient reference of 64 characters', 'patient_ref', `A${fill(63, '0')}`, true),
+    viaOrder('a patient reference of 65 characters', 'patient_ref', `A${fill(64, '0')}`, false),
+    viaOrder('a clinician reference of 64 characters', 'ordering_clinician_ref', `A${fill(63, '0')}`, true),
+    viaOrder('a clinician reference of 65 characters', 'ordering_clinician_ref', `A${fill(64, '0')}`, false),
+    viaOrder('8 diagnosis codes', 'diagnosis_codes', codes(8), true),
+    viaOrder('9 diagnosis codes', 'diagnosis_codes', codes(9), false),
+    viaOrder('no diagnosis code', 'diagnosis_codes', [], false),
+    viaOrder('a diagnosis code of 16 characters', 'diagnosis_codes', [fill(16)], true),
+    viaOrder('a diagnosis code of 17 characters', 'diagnosis_codes', [fill(17)], false),
+    viaOrder('an empty diagnosis code', 'diagnosis_codes', [''], false),
+    ['50 references to records', edit({ record_refs: refs(50, 'REC-') }), ['records', 50], true, true],
+    ['51 references to records', edit({ record_refs: refs(51, 'REC-') }), ['records', 51], false, false],
+    ['20 references to criteria', edit({ guideline_refs: refs(20, 'C') }), ['criteria', 20], true, true],
+    ['21 references to criteria', edit({ guideline_refs: refs(21, 'C') }), ['criteria', 21], false, false],
+  ];
+  const answers = inMockServiceStdin(REQUEST_DRIFT_CODE, cases.map(([, request, probe]) => [request, probe]));
+  assert.equal(answers.length, cases.length);
+  cases.forEach(([name, , , kit, mock], i) => {
+    assert.equal(answers[i].kit, kit, `${name}: the kit ${kit ? 'must read it' : 'must refuse it'}; found ${JSON.stringify(answers[i])}`);
+    assert.equal(answers[i].mock, mock, `${name}: the mock service ${mock ? 'must read it' : 'must refuse it'}; found ${JSON.stringify(answers[i])}`);
+  });
+  assert.ok(cases.filter(([, , , kit]) => kit).length >= 15 && cases.filter(([, , , kit]) => !kit).length >= 15, 'the table has the accepted twins and the refused copies');
+});
+
+// The intake record and what follows from it: the portal files the request with the status and the missing requirements of the record, and the Prior Authorization Agent writes the number of the request,
+// the id of the intake and the status to the records system. The words of a status are the words that the readers name when they refuse one, so a word that one side adds is seen.
+const INTAKE_DRIFT_CODE = String.raw`
+import { readFileSync } from 'node:fs';
+import { parseIntake, parseSubmission } from './src/documents.ts';
+import { INTAKE_STATUSES, parseIntakeRecord } from '../../packages/usecase-kit/src/priorauth/index.ts';
+const { request, records, submissions, ids: edges } = JSON.parse(readFileSync(0, 'utf8'));
+const refusal = (run) => { try { run(); return null; } catch (error) { if (error?.name !== 'Invalid') throw error; return String(error.message); } };
+const words = (message) => /^body\.status must be one of (.+)$/.exec(message ?? '')?.[1].split(', ') ?? null;
+const missing = (count) => Array.from({ length: count }, (_, i) => 'R' + (i + 1));
+const incomplete = (count) => ({ ...records[0], status: 'incomplete', missing: missing(count), decisions: [{ ...records[0].decisions[0], choice: { complete: false, missing: missing(count) } }] });
+const largest = (accepts) => { let count = 0; while (count < 40 && accepts(count + 1)) count += 1; return count; };
+const portal = (status, list) => refusal(() => parseIntake({ request, status, missing: list }, request.tenant)) === null;
+const submit = (body) => refusal(() => parseSubmission(body)) === null;
+console.log(JSON.stringify({
+  words: { kit: [...INTAKE_STATUSES], portal: words(refusal(() => parseIntake({ request, status: 'x', missing: [] }, request.tenant))), records: words(refusal(() => parseSubmission({ request_number: 'r1', intake_id: 'i1', status: 'x' }))) },
+  most: { kit: largest((count) => parseIntakeRecord(incomplete(count)).ok), portal: largest((count) => portal('incomplete', missing(count))) },
+  records: records.map((record) => ({ kit: parseIntakeRecord(record).ok, portal: portal(record.status, record.missing), submission: submit({ request_number: record.request_number, intake_id: record.intake_id, status: record.status }) })),
+  submissions: submissions.map((body) => submit(body)),
+  ids: edges.map(([member, value]) => ({ kit: parseIntakeRecord({ ...records[0], [member]: value }).ok, submission: submit({ request_number: records[0].request_number, intake_id: records[0].intake_id, status: records[0].status, [member]: value }) })),
+}));
+`;
+
+test('use case 2 drift: the intake record of the kit and the insurer portal and the records system of the mock service say the same of the status and of the list of missing requirements, and the submission of the Prior Authorization Agent is a submission that the records system takes', () => {
+  const request = jsonOf(REQUEST_GOLDENS[0]);
+  const records = [`${KIT_GOLDENS}/intake-record.json`, 'agents/insurer-intake-agent/test/job/golden/intake-record-complete.json', 'agents/insurer-intake-agent/test/job/golden/intake-record-incomplete.json'].map(jsonOf);
+  const submissions = [jsonOf(`${PRIOR_TESTS}/execute/golden/submission-body.json`)];
+  const fill = (count) => 'a'.repeat(count);
+  // [name, member of the record and of the body, value, whether both read it]
+  const edges = [
+    ['a request number of 64 characters', 'request_number', fill(64), true], ['a request number of 65 characters', 'request_number', fill(65), false], ['a request number with a dot, a hyphen and an underscore', 'request_number', 'run1.a-b_c', true],
+    ['a request number that starts with a dot', 'request_number', '.run1', false], ['a request number with a space', 'request_number', 'run 1', false], ['an empty request number', 'request_number', '', false],
+    ['an intake id of 64 characters', 'intake_id', fill(64), true], ['an intake id of 65 characters', 'intake_id', fill(65), false], ['an intake id with a dot, a hyphen and an underscore', 'intake_id', 'INT-run1_0001.a', true],
+    ['an intake id that starts with a hyphen', 'intake_id', '-INT', false], ['an intake id with a space', 'intake_id', 'INT 1', false], ['an empty intake id', 'intake_id', '', false],
+  ];
+  const answer = inMockServiceStdin(INTAKE_DRIFT_CODE, { request, records, submissions, ids: edges.map(([, member, value]) => [member, value]) });
+  assert.ok(answer.words.kit.length >= 2, `the kit has the words of the status; found ${JSON.stringify(answer.words)}`);
+  assert.deepEqual(answer.words.kit, answer.words.portal, 'the status words of the kit are the words of the insurer portal, in the same order');
+  assert.deepEqual(answer.words.kit, answer.words.records, 'and the words of the submission to the records system');
+  assert.deepEqual([answer.most.kit, answer.most.portal], [20, 20], 'the record and the portal take the same number of missing requirements: at most 20');
+  records.forEach((record, i) => assert.deepEqual(answer.records[i], { kit: true, portal: true, submission: true }, `golden record ${i}: the kit reads it, the portal files its status and its missing list, and the records system takes its submission`));
+  assert.deepEqual(answer.submissions, [true], 'the golden body that the Prior Authorization Agent sends to the records system');
+  assert.deepEqual(submissions[0], { request_number: records[0].request_number, intake_id: records[0].intake_id, status: records[0].status }, 'the body is the request number, the intake id and the status of the record');
+  edges.forEach(([name, , , both], i) => {
+    assert.equal(answer.ids[i].kit, both, `${name}: the record of the kit ${both ? 'must read it' : 'must refuse it'}`);
+    assert.equal(answer.ids[i].submission, both, `${name}: the records system ${both ? 'must take it' : 'must refuse it'}`);
+  });
+});
+
+// The record set, the guideline and the requirement set, as the kit reads them and as the seed of a tenant reads them. A tenant can be seeded with every document that the kit reads, and the kit reads
+// every document of the default seed. The kit refuses a text that NFC makes longer than its limit, which the seed takes: no case below has such a text.
+const RECORDS_DRIFT_CODE = String.raw`
+import { readFileSync } from 'node:fs';
+import { isDeepStrictEqual } from 'node:util';
+import { defaultSeed, parseSeed } from './src/seed.ts';
+import { parseGuideline, parseRecordSet, parseRequirementSet } from '../../packages/usecase-kit/src/priorauth/index.ts';
+const KIT = { records: parseRecordSet, guidelines: parseGuideline, requirements: parseRequirementSet };
+const accepted = (part, document) => { try { parseSeed('seed', { [part]: [document] }); return true; } catch (error) { if (error?.name !== 'Invalid') throw error; return false; } };
+const seed = defaultSeed();
+console.log(JSON.stringify({
+  seed: Object.fromEntries(Object.keys(KIT).map((part) => [part, seed[part].map((document) => { const read = KIT[part](document); return read.ok && isDeepStrictEqual(read.value, document); })])),
+  cases: JSON.parse(readFileSync(0, 'utf8')).map(([part, document]) => ({ kit: KIT[part](document).ok, mock: accepted(part, document) })),
+}));
+`;
+
+test('use case 2 drift: the record set, the guideline and the requirement set are read in the same way by the parsers of the kit and by the seed of the mock service: every document of the default seed is a document of the kit, and every golden of the kit and of the Prior Authorization Agent can seed a tenant', () => {
+  const goldens = [
+    ['records', `${KIT_GOLDENS}/record-set.json`], ['guidelines', `${KIT_GOLDENS}/guideline.json`], ['requirements', `${KIT_GOLDENS}/requirements.json`],
+    ['records', `${PRIOR_TESTS}/evidence/golden/record-set.json`], ['records', `${PRIOR_TESTS}/evidence/golden/record-set-knee.json`], ['guidelines', `${PRIOR_TESTS}/evidence/golden/guideline.json`], ['guidelines', `${PRIOR_TESTS}/evidence/golden/guideline-knee.json`],
+    ['records', `${PRIOR_TESTS}/propose/golden/record-set.json`], ['guidelines', `${PRIOR_TESTS}/propose/golden/guideline.json`], ['records', `${PRIOR_TESTS}/model/golden/record-set.json`], ['guidelines', `${PRIOR_TESTS}/model/golden/guideline.json`],
+  ];
+  const [set, guideline, requirements] = goldens.slice(0, 3).map(([, file]) => jsonOf(file));
+  const text = (count) => 'x'.repeat(count);
+  const items = (count, prefix, sample) => Array.from({ length: count }, (_, i) => ({ id: `${prefix}${i + 1}`, text: sample }));
+  const withOrder = (changes) => ({ ...set, order: { ...set.order, ...changes } });
+  const withRecord = (changes) => ({ ...set, records: [{ ...set.records[0], ...changes }, ...set.records.slice(1)] });
+  const withRecords = (count) => ({ ...set, records: Array.from({ length: count }, (_, i) => ({ ...set.records[0], record_id: `REC-${i + 1}` })) });
+  const withCriteria = (count) => ({ ...guideline, criteria: items(count, 'C', guideline.criteria[0].text) });
+  const withRequirements = (count) => ({ ...requirements, requirements: items(count, 'R', requirements.requirements[0].text) });
+  // [part, name, document, whether both read it]
+  const cases = [
+    ...goldens.map(([part, file]) => [part, file, jsonOf(file), true]),
+    ['records', 'a summary of 2,000 characters', withRecord({ summary: text(2000) }), true], ['records', 'a summary of 2,001 characters', withRecord({ summary: text(2001) }), false],
+    ['records', 'a type of 32 characters', withRecord({ type: text(32) }), true], ['records', 'a type of 33 characters', withRecord({ type: text(33) }), false],
+    ['records', 'a description of 200 characters', withOrder({ service_description: text(200) }), true], ['records', 'a description of 201 characters', withOrder({ service_description: text(201) }), false],
+    ['records', '8 diagnosis codes', withOrder({ diagnosis_codes: Array.from({ length: 8 }, (_, i) => `M${i}`) }), true], ['records', '9 diagnosis codes', withOrder({ diagnosis_codes: Array.from({ length: 9 }, (_, i) => `M${i}`) }), false],
+    ['records', 'a diagnosis code of 16 characters', withOrder({ diagnosis_codes: [text(16)] }), true], ['records', 'a diagnosis code of 17 characters', withOrder({ diagnosis_codes: [text(17)] }), false],
+    ['records', 'no diagnosis code', withOrder({ diagnosis_codes: [] }), false], ['records', 'a date that does not exist', withOrder({ ordered_at: '2026-02-30' }), false],
+    ['records', 'a member of the order that is not listed', withOrder({ carrier: 'x' }), false], ['records', 'a member of the order that is missing', withOrder({ patient_ref: undefined }), false],
+    ['records', '50 records', withRecords(50), true], ['records', '51 records', withRecords(51), false], ['records', 'no record', withRecords(0), false],
+    ['records', 'a record id two times', { ...set, records: [set.records[0], set.records[0]] }, false],
+    ['guidelines', '20 criteria', withCriteria(20), true], ['guidelines', '21 criteria', withCriteria(21), false], ['guidelines', 'no criterion', withCriteria(0), false],
+    ['guidelines', 'a criterion of 500 characters', { ...guideline, criteria: items(1, 'C', text(500)) }, true], ['guidelines', 'a criterion of 501 characters', { ...guideline, criteria: items(1, 'C', text(501)) }, false],
+    ['guidelines', 'a title of 200 characters', { ...guideline, title: text(200) }, true], ['guidelines', 'a title of 201 characters', { ...guideline, title: text(201) }, false],
+    ['guidelines', 'a version of 32 characters', { ...guideline, version: text(32) }, true], ['guidelines', 'a version of 33 characters', { ...guideline, version: text(33) }, false],
+    ['guidelines', '20 lines of documentation', { ...guideline, documentation: Array.from({ length: 20 }, () => text(500)) }, true], ['guidelines', '21 lines of documentation', { ...guideline, documentation: Array.from({ length: 21 }, () => 'x') }, false],
+    ['guidelines', 'no documentation', { ...guideline, documentation: [] }, true], ['guidelines', 'a criterion id two times', { ...guideline, criteria: [guideline.criteria[0], guideline.criteria[0]] }, false],
+    ['requirements', '20 requirements', withRequirements(20), true], ['requirements', '21 requirements', withRequirements(21), false], ['requirements', 'no requirement', withRequirements(0), false],
+    ['requirements', 'a requirement of 500 characters', { ...requirements, requirements: items(1, 'R', text(500)) }, true], ['requirements', 'a requirement of 501 characters', { ...requirements, requirements: items(1, 'R', text(501)) }, false],
+    ['requirements', 'a title of 200 characters', { ...requirements, title: text(200) }, true], ['requirements', 'a title of 201 characters', { ...requirements, title: text(201) }, false],
+    ['requirements', 'a requirement id two times', { ...requirements, requirements: [requirements.requirements[0], requirements.requirements[0]] }, false],
+  ];
+  const answer = inMockServiceStdin(RECORDS_DRIFT_CODE, cases.map(([part, , document]) => [part, document]));
+  for (const part of ['records', 'guidelines', 'requirements']) {
+    assert.ok(answer.seed[part].length >= 2 && answer.seed[part].every(Boolean), `${part}: each document of the default seed is a document that the kit reads, and the kit gives it back as it is; found ${JSON.stringify(answer.seed[part])}`);
+  }
+  assert.equal(answer.cases.length, cases.length);
+  cases.forEach(([, name, , both], i) => {
+    assert.equal(answer.cases[i].kit, both, `${name}: the kit ${both ? 'must read it' : 'must refuse it'}; found ${JSON.stringify(answer.cases[i])}`);
+    assert.equal(answer.cases[i].mock, both, `${name}: the seed of the mock service ${both ? 'must read it' : 'must refuse it'}; found ${JSON.stringify(answer.cases[i])}`);
+  });
+  assert.ok(cases.filter(([, , , both]) => both).length >= 20 && cases.filter(([, , , both]) => !both).length >= 20, 'the table has the accepted twins and the refused copies');
+});
+
+// ---- The README and the RUNBOOK of the agents host, for the packs of use case 2 ----
+test('use case 2 README: the table of the files has a row for each of the eight files of the two packs, and each file is there', () => {
+  const readme = srvRead('README.md');
+  for (const file of USE_CASE_2_FILES) {
+    const name = file.slice(`${SRV}/`.length);
+    assert.ok(readme.includes(`| \`${name}\` | `), `${name} has a row`);
+    assert.ok(existsSync(join(root, file)), `${name} is there`);
+  }
+  assert.equal(section(readme, 'The files').split('\n').filter((line) => /^\| `[^`]*(?:prior-authorization-agent|insurer-intake-agent)[^`]*` \|/.test(line)).length, 8, 'eight rows for the two packs');
+});
+
+test('use case 2 README: the memory arithmetic of the four containers adds up: the sizes, the memory before and after each start, the gate, and the largest service that the fourth start takes', () => {
+  const text = section(srvRead('README.md'), 'The host');
+  const number = (value) => Number(value.replaceAll(',', ''));
+  const fmt = (value) => value.toLocaleString('en-US');
+  const sizes = Object.fromEntries([...text.matchAll(/^\| ([A-Za-z][^|]*?) \| ([\d,]+) \|$/gm)].map((m) => [m[1], number(m[2])]));
+  const order = ['Prior Authorization Agent service', 'Prior Authorization Agent runtime', 'Insurer Intake Agent service', 'Insurer Intake Agent runtime'];
+  const [service, runtime] = [sizes['Reorder Agent service'], sizes['Reorder Agent runtime']];
+  for (const name of order) assert.equal(sizes[name], name.endsWith('service') ? service : runtime, `${name}: the planning size of ${name.endsWith('service') ? 'a new service' : 'a runtime'}`);
+  assert.equal(sizes['The four containers'], order.reduce((sum, name) => sum + sizes[name], 0), 'the four containers are the sum of the rows');
+  // The memory before the first start is the memory after the six containers of use case 1 run.
+  const six = /^\| The six containers run \| ([\d,]+) \| ([\d,]+) \|/m.exec(text);
+  assert.ok(six, 'the table of use case 1 gives the memory after the six containers run');
+  const [typical, lowest] = [number(six[1]), number(six[2])];
+  const GATE = 1024;
+  assert.ok(text.includes(`A start needs ${fmt(GATE)} MiB of \`MemAvailable\` before it.`), 'the gate');
+  assert.ok(text.includes(`\`MemAvailable\` is about ${fmt(typical)} MiB in the typical case and ${fmt(lowest)} MiB in the lowest case.`), 'the memory before the first start');
+  assert.ok(text.includes('They are estimates until the first start of a service is measured.'), 'the sizes are estimates');
+  // The table of the starts: each column is built from the sizes. The memory before a start is the memory after the start before it, and a start that the gate refuses ends the column.
+  const cells = (line) => line.split('|').slice(1, -1).map((cell) => cell.trim());
+  const rows = text.split('\n').filter((line) => line.startsWith('| ') && cells(line).length === 5 && order.includes(cells(line)[0])).map(cells);
+  assert.deepEqual(rows.map((row) => row[0]), order, 'the table has the four starts in their order: the service first, then the runtime, for each agent');
+  const stops = [[1, typical], [3, lowest]].map(([column, start]) => {
+    let memory = start;
+    let stop = null;
+    order.forEach((name, i) => {
+      const [before, after] = [rows[i][column], rows[i][column + 1]];
+      if (stop !== null) assert.deepEqual([before, after], ['', ''], `${name}: nothing after a start that fails the gate`);
+      else if (memory < GATE) {
+        assert.deepEqual([before, after], [`${fmt(memory)}, fails the gate`, ''], `${name}: fails the gate`);
+        stop = [i, memory];
+      } else {
+        assert.deepEqual([before, after], [fmt(memory), fmt(memory - sizes[name])], `${name}: the memory before and after the start`);
+        memory -= sizes[name];
+      }
+    });
+    return stop;
+  });
+  assert.ok(stops.every((stop) => stop !== null), 'a start fails the gate in each case');
+  const [[typicalAt, typicalBefore], [lowestAt, lowestBefore]] = stops;
+  assert.deepEqual([typicalAt, lowestAt], [3, 1], 'the fourth start fails the gate in the typical case, and the second start in the lowest case');
+  const ordinal = ['first', 'second', 'third', 'fourth'];
+  assert.ok(text.includes(`At the planning sizes, the ${ordinal[typicalAt]} start fails the gate in the typical case (${fmt(typicalBefore)} MiB before it), and the ${ordinal[lowestAt]} start fails it in the lowest case (${fmt(lowestBefore)} MiB before it).`), 'the sentence about the two starts that fail');
+  // S is the size of one service, with the runtimes at their planning size. The fourth start has the memory of the case, less the first three starts (two services and one runtime), and it needs the gate.
+  const room = (start) => start - GATE;
+  const most = (start) => Math.floor((room(start) - runtime) / 2);
+  assert.deepEqual([most(typical), most(lowest)], [357, 32], 'the most that one service may take');
+  for (const part of [
+    `In the typical case, the fourth start passes only when \`2S + ${runtime} <= ${room(typical)}\` (${fmt(typical)} less ${fmt(GATE)}), so S is at most ${most(typical)} MiB.`,
+    `In the lowest case, it needs \`2S + ${runtime} <= ${room(lowest)}\` (${fmt(lowest)} less ${fmt(GATE)}), so S is at most ${most(lowest)} MiB: no real service size passes.`,
+  ]) assert.ok(text.includes(part), part);
+  assert.ok(text.split('\n').some((line) => line.endsWith('A start that would fail the gate stops, and the owner of the host decides.')), 'the paragraph ends with the sentence that a start that would fail the gate stops');
+});
+
+test('use case 2 README: the section of a host whose proxy runs in a container names the two packs of use case 2 and their runbooks; the markers, the join of the network and the container names in the upstreams are those of the two packs', () => {
+  const text = section(srvRead('README.md'), 'A host whose proxy runs in a container');
+  assert.ok(text.length > 0, 'the section is there');
+  for (const [snippetFile, composeFile, runbookFile] of [['Caddyfile.prior-authorization-agent.snippet', 'docker-compose.prior-authorization-agent.yml', 'RUNBOOK-prior-authorization-agent.md'], ['Caddyfile.insurer-intake-agent.snippet', 'docker-compose.insurer-intake-agent.yml', 'RUNBOOK-insurer-intake-agent.md']]) {
+    const snippet = srvRead(snippetFile);
+    const agent = /^# (\S+) vhosts \(BEGIN\)$/m.exec(snippet)?.[1];
+    assert.ok(agent, `${snippetFile} has its BEGIN marker`);
+    assert.ok(snippet.includes(`\n# ${agent} vhosts (END)\n`), `${snippetFile} has its END marker`);
+    assert.equal(parseYaml(srvRead(composeFile)).name, agent, `the project of ${composeFile} is the name in the markers`);
+    assert.ok(snippet.includes(`docker network connect ${agent}_default <caddy container>`), `${snippetFile} gives the join`);
+    const upstreams = snippet.split('\n').filter((line) => /^\s*reverse_proxy /.test(line));
+    assert.ok(upstreams.length > 0 && upstreams.every((line) => !/127\.0\.0\.1|localhost/.test(line)), `${snippetFile}: the upstreams are container names`);
+    assert.ok(text.includes(`\`${runbookFile}\``) && existsSync(join(root, SRV, runbookFile)), `${runbookFile} is named and is there`);
+  }
+  for (const part of ['The packs of use case 2 (the Prior Authorization Agent and the Insurer Intake Agent) are written for such a host in the same way.', 'The runbooks of the two packs of use case 2 give them in the same way']) assert.ok(text.includes(part), part);
+});
+
+test('use case 2 RUNBOOK: step 7 points to the runbooks of the two packs of use case 2, and says that they fit the marker block only, as the packs of use case 1 do', () => {
+  const step = section(srvRead('RUNBOOK.md'), '7. Add an agent');
+  for (const file of ['RUNBOOK-prior-authorization-agent.md', 'RUNBOOK-insurer-intake-agent.md']) assert.ok(step.includes(`\`${file}\``) && existsSync(join(root, SRV, file)), file);
+  const [paragraph, ways] = step.split('\n1. ');
+  assert.ok(paragraph.includes('The packs of use case 2 (prior authorization) are the Prior Authorization Agent, with `RUNBOOK-prior-authorization-agent.md`, and the Insurer Intake Agent, with `RUNBOOK-insurer-intake-agent.md`.'), 'the paragraph names the two packs');
+  assert.ok(paragraph.indexOf('The packs of use case 2') < paragraph.indexOf('They fit the marker block only:'), 'the sentence about the marker block follows the lists of all four packs');
+  const [snippetFolder, markerBlock] = ways.split('   - Marker block.');
+  assert.ok(snippetFolder.includes('The packs of use case 2 do not fit this way either.'), 'the snippet folder is not for the packs of use case 2');
+  assert.ok(markerBlock.includes('The packs of use case 2 use this way only.'), 'the marker block is for the packs of use case 2');
 });

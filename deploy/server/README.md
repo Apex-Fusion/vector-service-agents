@@ -4,7 +4,7 @@ This folder has the files of the agents and the mock systems that `deploy/host` 
 In both ways, the agents of this folder share no container, no folder and no port with the agents of `deploy/host`.
 The snippet of the mock service is for Caddy on the host: its upstream is `127.0.0.1:9120`. On a host whose proxy runs in a container, the block of the mock service uses `mock-systems:9120` (section "A host whose proxy runs in a container").
 
-The plan for the host is 19 containers: 8 services, 10 runtimes and 1 mock service. One agent has three runtimes in front of one service, so there are 10 runtimes. The memory of the host holds the mock service and the six containers of use case 1 at the planning sizes. The other 12 containers wait for a new count (section "The host").
+The plan for the host is 19 containers: 8 services, 10 runtimes and 1 mock service. One agent has three runtimes in front of one service, so there are 10 runtimes. The memory of the host holds the mock service and the six containers of use case 1 at the planning sizes. The four containers of use case 2 do not all pass the gate at the planning sizes. The other 8 containers wait for a new count (section "The host").
 The agents of this folder build no image on the host. CI builds each image. A compose file names the image by its digest.
 
 The operator's steps are in [RUNBOOK.md](RUNBOOK.md). This note gives the facts.
@@ -29,6 +29,14 @@ The operator's steps are in [RUNBOOK.md](RUNBOOK.md). This note gives the facts.
 | `.env.reorder-agent.example` | The settings of the Reorder Agent: its service and its runtime read the same file. Names and placeholders only. |
 | `Caddyfile.reorder-agent.snippet` | The host block of the Reorder Agent: `/agent.json` and the co-sign route go to the service, the rest to the runtime. |
 | `RUNBOOK-reorder-agent.md` | The operator's steps for the Reorder Agent, its checks and its failure table. |
+| `docker-compose.prior-authorization-agent.yml` | The compose file of the Prior Authorization Agent: one runtime in front of one service, each image by digest, each port on `127.0.0.1`. The runtime gets none of the seven keys of the service. |
+| `.env.prior-authorization-agent.example` | The settings of the Prior Authorization Agent: its service and its runtime read the same file. Names, placeholders and published values only. |
+| `Caddyfile.prior-authorization-agent.snippet` | The host block of the Prior Authorization Agent: `/agent.json` and the co-sign route go to the service, the rest to the runtime. |
+| `RUNBOOK-prior-authorization-agent.md` | The operator's steps for the Prior Authorization Agent, its checks and its failure table. |
+| `docker-compose.insurer-intake-agent.yml` | The compose file of the Insurer Intake Agent: one runtime in front of one service, each image by digest, each port on `127.0.0.1`. The runtime does not get the key of the service. |
+| `.env.insurer-intake-agent.example` | The settings of the Insurer Intake Agent: its service and its runtime read the same file. Names, placeholders and published values only. |
+| `Caddyfile.insurer-intake-agent.snippet` | The host block of the Insurer Intake Agent: `/agent.json` goes to the service, the rest to the runtime. |
+| `RUNBOOK-insurer-intake-agent.md` | The operator's steps for the Insurer Intake Agent, its checks and its failure table. |
 
 Each agent adds one snippet file, one compose file and one env example later. They go in this folder, with the deploy pack of the agent.
 
@@ -66,7 +74,29 @@ With the mock service running, `MemAvailable` was 3,612 MiB in the typical case,
 The host builds none of the images of use case 1, so no build of theirs counts here. The agents of `deploy/host` build their runtime on the host: that build takes memory too, and the figures here do not count it. The compose files give each runtime 768 MiB and each service 1,024 MiB (`mem_limit`), so that a fault stops one container only.
 A job adds memory while it runs, in the service and in the runtime that holds its escrow: about 100 to 200 MiB in each. One job runs at a time in each service, so the two services add about 800 MiB. The co-sign route of the Reorder Agent runs outside the job slot: up to 4 calls at one time, about 100 MiB for each call. These figures are not measured.
 With one job in each service, the six containers leave 1,128 MiB in the typical case and 479 MiB in the lowest case. With 4 calls of the co-sign route as well, they leave 728 MiB and 79 MiB. The gate is for a start, not for a peak. Measure a job and a co-sign call in the first run, and count again.
-The containers of later agents come after these six. Add them to the table, and check the gate again. At the planning sizes, four more containers (two runtimes and two services) do not pass the gate. So the other 12 containers need more memory, or a real size below the planning size, before they start. Measure the real size of each container at its first start.
+
+The four containers of use case 2 (prior authorization) have these planning sizes. They are estimates until the first start of a service is measured.
+
+| Container | MiB |
+|---|---|
+| Prior Authorization Agent runtime | 190 |
+| Prior Authorization Agent service | 462 |
+| Insurer Intake Agent runtime | 190 |
+| Insurer Intake Agent service | 462 |
+| The four containers | 1,304 |
+
+A start needs 1,024 MiB of `MemAvailable` before it. With the six containers of use case 1 running, `MemAvailable` is about 1,928 MiB in the typical case and 1,279 MiB in the lowest case. This table gives the memory before and after each start, in the order of the starts. The service starts first, then the runtime, for each agent:
+
+| Start | Typical before | Typical after | Lowest before | Lowest after |
+|---|---|---|---|---|
+| Prior Authorization Agent service | 1,928 | 1,466 | 1,279 | 817 |
+| Prior Authorization Agent runtime | 1,466 | 1,276 | 817, fails the gate | |
+| Insurer Intake Agent service | 1,276 | 814 | | |
+| Insurer Intake Agent runtime | 814, fails the gate | | | |
+
+At the planning sizes, the fourth start fails the gate in the typical case (814 MiB before it), and the second start fails it in the lowest case (817 MiB before it). Let S be the size of one service in MiB, with the runtimes at 190 MiB. In the typical case, the fourth start passes only when `2S + 190 <= 904` (1,928 less 1,024), so S is at most 357 MiB. In the lowest case, it needs `2S + 190 <= 255` (1,279 less 1,024), so S is at most 32 MiB: no real service size passes. A start that would fail the gate stops, and the owner of the host decides.
+
+The containers of later agents come after these ten. Add them to the table, and check the gate again. So the other 8 containers need more memory, or a real size below the planning size, before they start. Measure the real size of each container at its first start.
 
 ## The runtime image
 
@@ -133,10 +163,14 @@ Caddy runs on the host (the set-up of this folder), or in a container (section "
 |---|---|
 | Reorder Agent runtime (1) | 8101 |
 | Order Desk runtimes (3) | 8102 to 8104 |
-| Runtimes of later agents (6) | 8105 to 8110 |
+| Prior Authorization Agent runtime (1) | 8105 |
+| Insurer Intake Agent runtime (1) | 8106 |
+| Runtimes of later agents (4) | 8107 to 8110 |
 | Reorder Agent service (1) | 9101 |
 | Order Desk service (1) | 9102 |
-| Services of later agents (6) | 9103 to 9108 |
+| Prior Authorization Agent service (1) | 9103 |
+| Insurer Intake Agent service (1) | 9104 |
+| Services of later agents (4) | 9105 to 9108 |
 | Mock service (1) | 9120 |
 
 Caddy on the host reaches a container by its port on `127.0.0.1`. Caddy in a container reaches it by its container name and its container port, on the network of the compose project. The port on `127.0.0.1` then serves the checks of the operator.
@@ -166,6 +200,7 @@ This shape is for Caddy on the host. A host whose proxy runs in a container uses
 ## A host whose proxy runs in a container
 
 On some hosts the proxy is a Caddy container, and no Caddy package is installed on the host. The packs of use case 1 (the Reorder Agent and the Order Desk) are written for such a host, and they fit no other: their upstreams are container names, and Caddy on the host cannot resolve them. The script, the main `Caddyfile` of this folder and the folder `/etc/caddy/agents` are not used there.
+The packs of use case 2 (the Prior Authorization Agent and the Insurer Intake Agent) are written for such a host in the same way.
 In this section, `<caddy container>` is the name of the Caddy container. `<caddyfile>` is the one file on the host that the container mounts as `/etc/caddy/Caddyfile`.
 
 | Item | Rule |
@@ -198,6 +233,7 @@ The shape of the block:
 
 Keep a copy of the Caddyfile before each change. Write it back, in place, when `caddy validate` fails. A new Caddy container reads the file when it starts, and it does not start with a file that fails.
 The runbooks of the two packs give the commands with the names of their projects and their markers: `RUNBOOK-reorder-agent.md` and `RUNBOOK-order-desk.md`, in the section "The Caddy block".
+The runbooks of the two packs of use case 2 give them in the same way: `RUNBOOK-prior-authorization-agent.md` and `RUNBOOK-insurer-intake-agent.md`.
 
 ## DNS
 
