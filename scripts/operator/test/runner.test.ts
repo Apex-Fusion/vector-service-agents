@@ -660,6 +660,9 @@ describe('a transaction in flight', () => {
     expect(w.machine()).toMatchObject({ outcome: 'done', result: { use: w.use.name } });
     expect(await runTask(render, ['--submit'], noKeys)).toBe(2);
     expect(await runTask(render, ['cleanup'], noKeys)).toBe(2);
+    const refused = toyTask([], { offline: { matches: () => true, run: () => { throw new PreconditionError('missing document facts'); } } });
+    expect(await runTask(refused, [], noKeys)).toBe(2);
+    expect(existsSync(join(w.stateDir, 'toy.state.json'))).toBe(false);
     expect(w.node.networkReads).toBe(0);
     expect(w.node.submitted).toEqual([]);
 
