@@ -16,7 +16,7 @@ import { RUN_APPROVAL_VALIDITY_MS } from '../lib/claim-constants.ts';
 import { FactsFile } from '../lib/facts.ts';
 import { MOCK_PUBLIC_BASE } from '../lib/mock-hosts.ts';
 import { runTask } from '../lib/runner.ts';
-import evidence, { CASE_DURATION_MS, CONFIRMATION_SCHEMA, EXPLORER_TX, JURY_HOLD_REASON, PROPOSAL_SCHEMA, RESULT_SCHEMA, RULE_STEP_IDS, secretMarkIn } from '../tasks/evidence.ts';
+import evidence, { CASE_DURATION_MS, CONFIRMATION_SCHEMA, EXPLORER_TX, JURY_HOLD_REASON, MARKETPLACE_INDEXER, PROPOSAL_SCHEMA, RESULT_SCHEMA, RULE_STEP_IDS, secretMarkIn } from '../tasks/evidence.ts';
 import data from '../usecases/inventory-reorder.ts';
 import { PackHosted } from './support/pack-hosted.ts';
 import { ScriptedNode, hashOf, taskWorld } from './support/task-world.ts';
@@ -56,7 +56,7 @@ interface Scenario {
   digest: string; approval: Obj; approvalVisible: boolean; delegations: Array<{ id: string; live: boolean }>; vaults: Array<{ utxo: Utxo | null }>;
   log: Obj[]; dropped: number; poOrders: number; supplierOrders: number; mockStatus: number;
   faultEntries: Obj[] | null; cases: Obj[]; deskHold: 'held' | 'none'; juryFailed: boolean; unconfirmed: Set<string>; extraRows: TxRow[]; skipKoiosTx: Set<string>; eventualDeskFault: string;
-  challengeKnown: boolean; spendOverride: Map<string, string>;
+  challengeKnown: boolean; spendOverride: Map<string, string>; indexed: Obj[]; indexerStatus: number; indexerBody: unknown; holdSince?: number;
 }
 
 const txOf = (step: string, what: 'post' | 'claim' | 'submit' | 'accept' | 'reclaim'): string => h(`${what} of ${step}`);
@@ -137,7 +137,7 @@ function scenario(kind: 'clean' | 'failure'): Scenario {
     vaults: kind === 'clean' ? [{ utxo: null }] : [{ utxo: live }, { utxo: null }],
     log: [logLine('GET /erp/stock/{sku}', 'token', ['did:vector:one', 'did:vector:two']), logLine('POST /supplier/orders', 'x509-svid', []), logLine('POST /po', 'token', ['did:vector:one'])],
     dropped: 0, poOrders: 1, supplierOrders: 1, mockStatus: 200, faultEntries: null, cases: [], deskHold: 'none', juryFailed: false, unconfirmed: new Set(), extraRows: [], skipKoiosTx: new Set(),
-    eventualDeskFault: '', challengeKnown: true, spendOverride: new Map(),
+    eventualDeskFault: '', challengeKnown: true, spendOverride: new Map(), indexed: [], indexerStatus: 200, indexerBody: undefined,
   };
 }
 
@@ -167,8 +167,8 @@ function caseRow(over: Obj = {}): Obj {
 
 interface Outcome { exit: number; out: string; err: string; machine: MachineLine; stateDir: string; world: TaskWorld; read(name: string): string | null; calls: Array<{ url: string; headers: Record<string, string> }> }
 
-async function go(s: Scenario, argv: string[] = ['run', '--run', s.label, '--number', '1'], over: { cases?: Obj[]; clockMs?: number; world?: TaskWorld; runs?: typeof data.runs } = {}): Promise<Outcome> {
-  const w = over.world ?? await taskWorld({ keys: ['run', 'fee'], use: { title: data.title, runs: over.runs ?? data.runs, evidenceSteps: data.evidenceSteps, agents: data.agents }, env: { VECTOR_KOIOS_URL: KOIOS } });
+async function go(s: Scenario, argv: string[] = ['run', '--run', s.label, '--number', '1'], over: { cases?: Obj[]; clockMs?: number; world?: TaskWorld; runs?: typeof data.runs; env?: Record<string, string> } = {}): Promise<Outcome> {
+  const w = over.world ?? await taskWorld({ keys: ['run', 'fee'], use: { title: data.title, runs: over.runs ?? data.runs, evidenceSteps: data.evidenceSteps, agents: data.agents }, env: { VECTOR_KOIOS_URL: KOIOS, ...over.env } });
   mkdirSync(w.stateDir, { recursive: true, mode: 0o700 });
   chmodSync(w.stateDir, 0o700);
   const dir = join(w.stateDir, 'runs');
@@ -213,7 +213,8 @@ async function go(s: Scenario, argv: string[] = ['run', '--run', s.label, '--num
     const datum = attestation({ subject: AGENTS['reorder-agent'], attType: 5, digest: s.digest, issuedAt: CAPTURE_MS, validUntil: CAPTURE_MS + RUN_APPROVAL_VALIDITY_MS, ...(s.approval.datum as Obj | undefined) });
     utxos.push(attestationUtxo(s.approval.attestation as string, datum, { txHash: h('approval output') }));
   }
-  const held = { status: { type: 'Suspended' as const, holds: [{ by: { type: 'Script' as const, hash: 'ab'.repeat(28) }, reason: JURY_HOLD_REASON, since: CAPTURE_MS + 3600_000, until: CAPTURE_MS + 3600_000 + 7 * DAY }] } };
+  const holdSince = s.holdSince ?? CAPTURE_MS + 3600_000;
+  const held = { status: { type: 'Suspended' as const, holds: [{ by: { type: 'Script' as const, hash: 'ab'.repeat(28) }, reason: JURY_HOLD_REASON, since: holdSince, until: holdSince + 7 * DAY }] } };
   utxos.push({ ...recordUtxo(AGENTS['order-desk'], liveRecord(s.deskHold === 'held' ? held : {})), txHash: h('order desk record output') });
   if (kind(s) === 'failure') {
     const challengeTx = CHALLENGE.challenge.slice(0, 64);
@@ -256,6 +257,7 @@ async function go(s: Scenario, argv: string[] = ['run', '--run', s.label, '--num
     const entriesOfFile = s.faultEntries ?? goodFaultEntries(s.kind);
     writeFileSync(join(w.stateDir, `fault.${s.label}.evidence.json`), JSON.stringify({ format: 1, check: 'fault', network: 'vector-mainnet', record: `inventory-reorder:${s.label}`, started_at: stamp(S0), entries: entriesOfFile }), { mode: 0o600 });
   }
+  for (const row of s.indexed) for (const point of [row.opened, row.finalized, row.closed] as Array<Obj | null>) if (point !== null) confirmed.add(point.tx as string);
   for (const hash of s.unconfirmed) confirmed.delete(hash);
   // -- the fakes
   const ledger = ledgerWorld(utxos, { txs: rows, utxoInfo: posted });
@@ -265,9 +267,15 @@ async function go(s: Scenario, argv: string[] = ['run', '--run', s.label, '--num
     if (url.endsWith('/log')) return new Response(JSON.stringify({ tenant: s.tenant, dropped: s.dropped, lines: s.log }), { status: 200 });
     return new Response(JSON.stringify({ tenant: s.tenant, po_store: { orders: Array.from({ length: s.poOrders }, (_, i) => ({ record_id: `r${i}` })) }, supplier: { catalogue: [], orders: Array.from({ length: s.supplierOrders }, (_, i) => ({ order_id: `o${i}` })) } }), { status: 200 });
   };
+  const indexer = (): Response => {
+    if (s.indexerStatus !== 200) return new Response('{"error":"internal"}', { status: s.indexerStatus });
+    const body = s.indexerBody ?? { chain_time: stamp(S0 + 3 * 3600), cases: s.indexed };
+    return new Response(typeof body === 'string' ? body : JSON.stringify(body), { status: 200 });
+  };
   const fetchImpl = (async (url: string, init?: RequestInit) => {
     calls.push({ url, headers: Object.fromEntries(Object.entries((init?.headers ?? {}) as Record<string, string>)) });
     if (url.startsWith(MOCK_PUBLIC_BASE)) return mock(url);
+    if (url.endsWith('/jury/cases')) return indexer();
     if (url.startsWith(KOIOS)) return ledger.koios.f(url, init);
     throw new Error('an unexpected request');
   }) as typeof fetch;
@@ -299,6 +307,29 @@ function decided(over: Obj = {}, hold: 'held' | 'none' = 'held'): Scenario {
   return s;
 }
 
+const TALLIES: Record<string, Obj> = {
+  ClaimerWins: { ClaimerWins: 3, AuditorWins: 0, Inconclusive: 0 }, AuditorWins: { ClaimerWins: 0, AuditorWins: 3, Inconclusive: 0 }, Inconclusive: { ClaimerWins: 1, AuditorWins: 1, Inconclusive: 1 },
+};
+
+/** A row of the list of the marketplace indexer for the case of the challenge: a case that the relay opened with no fee, so its Finalize burned the token (the closing transaction is the Finalize). */
+function indexedRow(result = 'AuditorWins', over: Obj = {}): Obj {
+  const final = { slot: 200, height: 20, time: stamp(S0 + 5 * 3600) };
+  return {
+    deployment: 'jury', script_hash: 'ab'.repeat(28), case: h('case token'), canonical: true, challenge: h('challenge token'), claim: CLAIM_TOKEN('order-desk'),
+    challenge_out: CHALLENGE.challenge, claim_out: `${CHALLENGE.challenge.slice(0, 64)}#1`, genuine_challenge: true, window: 'ended', state: 'closed', fee_lovelace: '0', share_lovelace: null,
+    tally: TALLIES[result], revealed: 3, result, opened: { tx: h('case open tx'), slot: 100, height: 10, time: stamp(S0 + 50 * 60) },
+    finalized: { tx: h('case finalize tx'), ...final, result }, closed: { tx: h('case finalize tx'), ...final }, ref: null, ...over,
+  };
+}
+
+/** A failure run whose case the relay opened with no fee: the hosted tool lists no case, the indexer shows the closed case, and the node shows the hold of the Order Desk (when `hold` says so). */
+function closedCase(result = 'AuditorWins', hold: 'held' | 'none' = 'held', over: Obj = {}): Scenario {
+  const s = scenario('failure');
+  s.indexed = [indexedRow(result, over)];
+  s.deskHold = hold;
+  return s;
+}
+
 describe('the golden files', () => {
   it('writes the evidence of a complete clean run, equal to its golden file, with mode 600 in a folder with mode 700', async () => {
     const s = scenario('clean');
@@ -319,7 +350,7 @@ describe('the golden files', () => {
   });
 
   it('writes the evidence of a complete failure run, equal to its golden file', async () => {
-    const r = await go(decided());
+    const r = await go(closedCase());
     expect(r.err).toBe('');
     expect(r.exit).toBe(0);
     const text = r.read(publicFile());
@@ -329,6 +360,9 @@ describe('the golden files', () => {
     expect(doc.run).toBe('use-case-1-failure');
     expect((doc.case as Obj).verdict).toBe('AuditorWins');
     expect(((doc.case as Obj).hold as Obj).reason).toBe(JURY_HOLD_REASON);
+    expect(((doc.case as Obj).indexed as Obj).finalized_tx).toBe(h('case finalize tx'));
+    expect((doc.case as Obj).live).toBeNull();
+    expect((doc.steps as Array<{ id: string; refs: Array<{ kind: string }> }>).find((step) => step.id === 'r2-d')!.refs.map((one) => one.kind)).toEqual(['case', 'transaction', 'hold']);
     expect(doc.exit_state).toBe('Cancelled');
     expect((doc.fault_mode as Obj).order_desk).toBe('confirm_wrong_lot');
   });
@@ -726,7 +760,8 @@ describe('check 7: the claims, the challenge and the case', () => {
     expect(r.exit).toBe(0);
     const doc = JSON.parse(r.read(publicFile())!) as { case: Obj; steps: Array<{ id: string; status: string; refs: Array<{ kind: string }> }> };
     expect(doc.case.verdict).toBe('AuditorWins');
-    expect(doc.case.case_token).toBeUndefined();
+    expect(doc.case.live).toBeNull();
+    expect(doc.case.indexed).toBeNull();
     expect((doc.case.hold as Obj).reason).toBe(64);
     expect((doc.case.hold as Obj).gateway_status).toBe('Suspended');
     expect(doc.steps.find((step) => step.id === 'r2-d')!.refs.map((one) => one.kind)).toEqual(['hold']);
@@ -741,6 +776,124 @@ describe('check 7: the claims, the challenge and the case', () => {
     const step = doc.steps.find((one) => one.id === 'r2-d')!;
     expect(step).toMatchObject({ status: 'not_run', refs: [] });
     expect(step.note).toContain('a new claim and a new challenge');
+  });
+  it('lists a live case although its claim_out is the Challenged claim output, which is not the claim output that the challenge spent', async () => {
+    const s = decided({ claim_out: `${CHALLENGE.challenge.slice(0, 64)}#1`, phase: 'reveal', state: 'Open', outcome: 'Inconclusive', tally: { claimer: 0, auditor: 0, inconclusive: 0 }, revealed: 0 }, 'none');
+    const r = await go(s, ['status', '--run', 'f1']);
+    expect(r.exit).toBe(1);
+    expect(r.out).toContain(`case ${h('case token')}: phase reveal, state Open`);
+    expect(r.out).not.toContain('lists no live case');
+  });
+  for (const result of ['ClaimerWins', 'Inconclusive']) {
+    it(`takes the result ${result} of a closed case from the indexer, where the hosted tool lists no case, and says that the run needs a new claim and a new challenge`, async () => {
+      const r = await go(closedCase(result, 'none'));
+      expect(r.exit).toBe(0);
+      const doc = JSON.parse(r.read(publicFile())!) as { case: Obj; steps: Array<{ id: string; status: string; refs: unknown[]; note: string }> };
+      expect(doc.case).toMatchObject({ verdict: result, live: null, hold: null });
+      expect(doc.case.indexed).toMatchObject({ case_token: h('case token'), state: 'closed', result, finalized_tx: h('case finalize tx'), closed_tx: h('case finalize tx') });
+      expect(doc.steps.find((one) => one.id === 'r2-d')).toMatchObject({ status: 'not_run', refs: [] });
+      const status = await go(closedCase(result, 'none'), ['status', '--run', 'f1']);
+      expect(status.exit).toBe(0);
+      expect(status.out).toContain(`indexer: case ${h('case token')} is closed (window ended)`);
+      expect(status.out).toContain(`verdict: ${result}`);
+      expect(status.out).toContain('the run needs a new claim and a new challenge');
+    });
+  }
+  it('takes the verdict AuditorWins of a closed case from the indexer, and waits for the hold when the node shows none', async () => {
+    const r = await go(closedCase('AuditorWins', 'none'));
+    expect(r.exit).toBe(4);
+    expect(r.out).toContain('the jury decided AuditorWins, and the hold is not yet on the record');
+    expect(r.read(publicFile())).toBeNull();
+    const status = await go(closedCase('AuditorWins', 'none'), ['status', '--run', 'f1']);
+    expect(status.exit).toBe(1);
+    expect(status.out).toContain('result AuditorWins');
+  });
+  it('takes no verdict from a hold that began before the challenge, and takes it when it began at the block time of the challenge', async () => {
+    const challengeMs = (S0 + 45 * 60) * 1000;
+    const open = scenario('failure');
+    open.cases = [caseRow({ phase: 'commit', state: 'Open', outcome: 'Inconclusive', tally: { claimer: 0, auditor: 0, inconclusive: 0 }, revealed: 0 })];
+    open.deskHold = 'held';
+    open.holdSince = CAPTURE_MS - 2 * DAY;
+    const stale = await go(open);
+    expect(stale.exit).toBe(4);
+    expect(stale.read(publicFile())).toBeNull();
+    const bare = scenario('failure');
+    bare.deskHold = 'held';
+    bare.holdSince = CAPTURE_MS - 2 * DAY;
+    const alone = await go(bare);
+    expect(alone.exit).toBe(4);
+    expect(alone.read(publicFile())).toBeNull();
+    const before = scenario('failure');
+    before.deskHold = 'held';
+    before.holdSince = challengeMs - 1;
+    expect((await go(before)).exit).toBe(4);
+    const at = scenario('failure');
+    at.deskHold = 'held';
+    at.holdSince = challengeMs;
+    expect((await go(at)).exit).toBe(0);
+  });
+  it('stops with the member when a hold is on the record and the block time of the challenge cannot be read', async () => {
+    const s = scenario('failure');
+    s.deskHold = 'held';
+    s.skipKoiosTx.add(CHALLENGE.challenge.slice(0, 64));
+    await refuses(s, ['case', 'the block time of the challenge cannot be read']);
+  });
+  it('skips a live case that is not the canonical case of its dispute', async () => {
+    const s = decided({ canonical: false, outcome: 'ClaimerWins', tally: { claimer: 3, auditor: 0, inconclusive: 0 } }, 'none');
+    const r = await go(s);
+    expect(r.exit).toBe(4);
+    expect(r.read(publicFile())).toBeNull();
+  });
+  it('ignores a case of the indexer that is not canonical, a case of another claim and a case of another challenge output', async () => {
+    for (const over of [{ canonical: false }, { claim: h('another claim token') }, { challenge_out: ref('another challenge') }]) {
+      const r = await go(closedCase('AuditorWins', 'none', over));
+      expect(r.exit, JSON.stringify(over)).toBe(4);
+      expect(r.read(publicFile())).toBeNull();
+    }
+  });
+  it('waits when the case of the indexer is not final yet: the window ended and no Finalize is on the chain', async () => {
+    const r = await go(closedCase('AuditorWins', 'none', { state: 'open', finalized: null, closed: null, ref: ref('case output') }));
+    expect(r.exit).toBe(4);
+    expect(r.read(publicFile())).toBeNull();
+  });
+  it('ends with exit 3 when the indexer answers HTTP 503, a body with no list of cases, a body that is no JSON, or a case of a wrong form, and writes no file', async () => {
+    const down = closedCase();
+    down.indexerStatus = 503;
+    expect((await go(down)).exit).toBe(3);
+    const bodies: unknown[] = [{ chain_time: 'now' }, [], 'not json {', { cases: [indexedRow('AuditorWins', { tally: null })] }, { cases: [indexedRow('AuditorWins', { state: 'burned' })] }];
+    for (const body of bodies) {
+      const s = closedCase();
+      s.indexerBody = body;
+      const r = await go(s);
+      expect(r.exit, JSON.stringify(body)).toBe(3);
+      expect(r.read(publicFile())).toBeNull();
+    }
+  });
+  it('refuses a case of the indexer whose result is not the result of its Finalize, and a tool and an indexer that show two results', async () => {
+    await refuses(closedCase('AuditorWins', 'none', { result: 'ClaimerWins' }), ['case', 'not the result of the Finalize']);
+    const both = decided({ outcome: 'ClaimerWins', tally: { claimer: 3, auditor: 0, inconclusive: 0 } }, 'none');
+    both.indexed = [indexedRow('AuditorWins')];
+    await refuses(both, ['case', 'ClaimerWins', 'AuditorWins']);
+  });
+  it('confirms each transaction that the indexer names for the case', async () => {
+    const finalize = closedCase();
+    finalize.unconfirmed.add(h('case finalize tx'));
+    await refuses(finalize, ['case.finalized_tx']);
+    const opening = closedCase();
+    opening.unconfirmed.add(h('case open tx'));
+    await refuses(opening, ['case.opened_tx']);
+  });
+  it('reads the list of the indexer at the URL of VECTOR_MARKETPLACE_INDEXER_URL with no credential, and refuses a URL that is not https', async () => {
+    const named = await go(closedCase(), undefined, { env: { VECTOR_MARKETPLACE_INDEXER_URL: 'https://indexer.example/' } });
+    expect(named.exit).toBe(0);
+    const called = named.calls.filter((call) => call.url.endsWith('/jury/cases'));
+    expect(called.map((call) => call.url)).toEqual(['https://indexer.example/jury/cases']);
+    expect(Object.keys(called[0]!.headers).map((name) => name.toLowerCase())).toEqual(['accept']);
+    const plain = await go(closedCase());
+    expect(plain.calls.filter((call) => call.url.endsWith('/jury/cases')).map((call) => call.url)).toEqual([`${MARKETPLACE_INDEXER}/jury/cases`]);
+    const bad = await go(closedCase(), undefined, { env: { VECTOR_MARKETPLACE_INDEXER_URL: 'http://indexer.example' } });
+    expect(bad.exit).toBe(2);
+    expect(bad.err).toContain('VECTOR_MARKETPLACE_INDEXER_URL must be an https URL');
   });
   it('refuses a challenge against another claim than the claim of the Order Desk in the facts', async () => {
     const s = decided();

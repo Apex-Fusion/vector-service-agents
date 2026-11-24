@@ -498,22 +498,25 @@
     "challenge": "dbd67a8dbcb8ea316387e807fd5c3b30e021f425ec4df0bb9657192f2edc6100#0"
   },
   "case": {
-    "jury": "340fcc6fdda56522a255afbc55789db2cf3641c8176af6faade6a6f4acddc484",
-    "case_token": "72c4d2c951f4d8b35383a7fd98185e12e9659e1400c939f2a3bde60940d2c5e2",
-    "case_output": "59e3bd5b6602d35a20e7b0d01b52142ac6b10a0a84577352d01e8390612d8c80#0",
-    "claim_out": "a224b707614ee7b3eb2577f555ba65545bafd1fc1c4b93dc371e4ea321b0bb60#0",
-    "challenge_out": "dbd67a8dbcb8ea316387e807fd5c3b30e021f425ec4df0bb9657192f2edc6100#0",
-    "canonical": true,
-    "phase": "settling",
-    "state": "Settling",
-    "tally": {
-      "claimer": 0,
-      "auditor": 3,
-      "inconclusive": 0
-    },
-    "revealed": 3,
-    "outcome": "AuditorWins",
     "verdict": "AuditorWins",
+    "live": null,
+    "indexed": {
+      "jury": "abababababababababababababababababababababababababababab",
+      "case_token": "72c4d2c951f4d8b35383a7fd98185e12e9659e1400c939f2a3bde60940d2c5e2",
+      "state": "closed",
+      "window": "ended",
+      "tally": {
+        "claimer": 0,
+        "auditor": 3,
+        "inconclusive": 0
+      },
+      "revealed": 3,
+      "result": "AuditorWins",
+      "opened_tx": "49c1aa81b3098b690cbcc818316fd22c8551151fc6a6beda19817d2215a31f7c",
+      "finalized_tx": "6cf8c67d303c509449a3736af288b0d5a6e74c1872513041369b2dc9799755c7",
+      "finalized_result": "AuditorWins",
+      "closed_tx": "6cf8c67d303c509449a3736af288b0d5a6e74c1872513041369b2dc9799755c7"
+    },
     "hold": {
       "reason": 64,
       "since": 1795006274000,
@@ -592,6 +595,10 @@
         {
           "kind": "case",
           "value": "72c4d2c951f4d8b35383a7fd98185e12e9659e1400c939f2a3bde60940d2c5e2"
+        },
+        {
+          "kind": "transaction",
+          "value": "6cf8c67d303c509449a3736af288b0d5a6e74c1872513041369b2dc9799755c7"
         },
         {
           "kind": "hold",

@@ -5,7 +5,7 @@
 //   status --run <label>                shows the claims, the challenge, the case of the jury and the hold of the Order Desk
 //
 // The input is the run record `<state>/runs/<label>.json` and the report file of each hire in `<state>/runs/<label>/`. The task reads every reference in them back from the node, Koios, the hosted
-// tools and the mock service, and it writes the file only when each read agrees (exit 2 names each member that does not). A run of the failure kind needs the verdict of its jury case: with none
+// tools, the marketplace indexer and the mock service, and it writes the file only when each read agrees (exit 2 names each member that does not). A run of the failure kind needs the verdict of its jury case: with none
 // the task writes nothing and ends with exit 4. The task signs nothing, sends nothing, reads no key and no token, and needs no approval. The final text is scanned for the marks of a secret.
 // The runner ends `status` with exit 0 for any task, so a status with no verdict prints its lines and then ends with exit 1, as the status of end-state does: it never looks done.
 import { createHash } from 'node:crypto';
@@ -15,8 +15,9 @@ import { writeFileAtomically } from '../../checks/lib/files.ts';
 import { duration, iso } from '../../checks/lib/format.ts';
 import { HostedError } from '../../checks/lib/hosted.ts';
 import { PreconditionError } from '../../checks/lib/session.ts';
+import { EnvReader } from '../../checks/lib/settings.ts';
 import { RUN_APPROVAL_VALIDITY_MS } from '../lib/claim-constants.ts';
-import type { AgentSpec, Facts, StepOutcome, TaskDefinition, TaskSession, UseCase } from '../lib/contract.ts';
+import type { AgentSpec, ClaimFact, Facts, StepOutcome, TaskDefinition, TaskSession, UseCase } from '../lib/contract.ts';
 import { MOCK_PUBLIC_BASE } from '../lib/mock-hosts.ts';
 import { checkAttestation, findRecord, isFaultSetting, readDelegation, readVaults, resolveEscrowLineage } from '../lib/platform.ts';
 import type { LedgerEnv } from '../lib/platform.ts';
@@ -37,6 +38,10 @@ const APPROVAL_TYPE = 5;
 export const JURY_HOLD_REASON = 64;
 /** The relay opens a case about 30 minutes after the challenge, the jurors commit for 2 hours and reveal for 2 hours, and then the relay finalises and resolves: about 4 h 44 min to the hold. */
 export const CASE_DURATION_MS = (4 * 60 + 44) * 60_000;
+/** The public marketplace indexer: it follows the cases of the jury. The setting VECTOR_MARKETPLACE_INDEXER_URL names another one. */
+export const MARKETPLACE_INDEXER = 'https://mp-indexer.vector.apexfusion.org';
+const INDEXER_TIMEOUT_MS = 30_000;
+const MOST_INDEXER_CHARS = 16 * 1024 * 1024;
 const VERDICTS: readonly string[] = ['ClaimerWins', 'AuditorWins', 'Inconclusive'];
 const DEPTH_OF_SPEND_CHAIN = 4;
 const NUMBER = /^[1-9][0-9]?$/;
@@ -56,7 +61,7 @@ const isObject = (value: unknown): value is Obj => typeof value === 'object' && 
 export interface Ref { readonly kind: string; readonly value: string }
 const ref = (kind: string, value: string): Ref => ({ kind, value });
 
-interface Extra { readonly label: string; readonly priv: boolean; result: Readonly<Record<string, unknown>> | null }
+interface Extra { readonly label: string; readonly priv: boolean; readonly indexer: string; result: Readonly<Record<string, unknown>> | null }
 
 // ---- the problems of a run: each names a member, and the run lists all of them ----
 
@@ -445,11 +450,23 @@ function handoffRef(loaded: Loaded): string | null {
 // ---- 7. the case of the jury and the hold ----
 
 interface HoldView { readonly reason: number; readonly since: number; readonly until: number; readonly record_output: string; readonly gateway_status: string | null }
+/** A live case as the hosted tool shows it: the output of the case is on the node. */
 interface CaseView {
   readonly jury: string; readonly case_token: string; readonly case_output: string; readonly claim_out: string; readonly challenge_out: string; readonly canonical: boolean | null;
   readonly phase: string; readonly state: string; readonly tally: { readonly claimer: number; readonly auditor: number; readonly inconclusive: number }; readonly revealed: number; readonly outcome: string;
 }
-interface CaseRead { readonly listed: CaseView | null; readonly hold: HoldView | null; readonly verdict: string | null; readonly waiting: string | null }
+/**
+ * The canonical case of the challenge as the marketplace indexer shows it. The indexer is the one source of a case that is closed: the relay opens its cases with no fee, so the Finalize of a case burns its token,
+ * and the hosted tool lists live cases only. `finalized_result` is the result that the Finalize transaction carries, and `result` is the result of the tally once the reveal window has ended.
+ */
+interface IndexedCase {
+  readonly jury: string; readonly case_token: string; readonly state: 'open' | 'settling' | 'closed'; readonly window: string;
+  readonly tally: { readonly claimer: number; readonly auditor: number; readonly inconclusive: number }; readonly revealed: number; readonly result: string | null;
+  readonly opened_tx: string; readonly finalized_tx: string | null; readonly finalized_result: string | null; readonly closed_tx: string | null;
+}
+/** A row of the list of the indexer: the case, and whether the indexer calls it the canonical case of its dispute. */
+interface IndexedRow { readonly canonical: boolean; readonly view: IndexedCase }
+interface CaseRead { readonly listed: CaseView | null; readonly indexed: IndexedCase | null; readonly hold: HoldView | null; readonly verdict: string | null; readonly waiting: string | null }
 
 /** The last fenced json block of the text of a tool, as it is: the cases of the jury are a list, and the `json` of a tool answer holds an object only. */
 function lastJsonBlock(text: string): unknown {
@@ -474,16 +491,89 @@ function caseViewOf(row: Obj): CaseView | null {
   };
 }
 
-/** The hold that Module-1 put on the Order Desk after a verdict: the hold with the reason 64 whose signer is a script, read from the record on the node. */
-async function readHold(session: TaskSession<Extra>, facts: Readonly<Facts>): Promise<HoldView | null> {
+const hashOrNull = (value: unknown): string | null => (typeof value === 'string' && HASH.test(value) ? value : null);
+const verdictOrNull = (value: unknown): string | null => (typeof value === 'string' && VERDICTS.includes(value) ? value : null);
+
+/** The row of a case in the list of the marketplace indexer, or null when a member that this task reads has not its form. The tally of the indexer is named by the votes. */
+function indexedCaseOf(row: Obj): IndexedRow | null {
+  const { tally, opened, finalized, closed } = row;
+  if (!isObject(tally) || !isObject(opened) || typeof row.canonical !== 'boolean') return null;
+  const claimer = count(tally.ClaimerWins); const auditor = count(tally.AuditorWins); const inconclusive = count(tally.Inconclusive); const revealed = count(row.revealed);
+  const jury = text(row.script_hash); const window = text(row.window); const token = hashOrNull(row.case); const openedTx = hashOrNull(opened.tx);
+  const state = row.state === 'open' || row.state === 'settling' || row.state === 'closed' ? row.state : null;
+  const result = row.result === null ? null : verdictOrNull(row.result);
+  const final = finalized === null ? null : isObject(finalized) && hashOrNull(finalized.tx) !== null && verdictOrNull(finalized.result) !== null ? finalized : undefined;
+  const burned = closed === null ? null : isObject(closed) && hashOrNull(closed.tx) !== null ? closed : undefined;
+  if (claimer === null || auditor === null || inconclusive === null || revealed === null || jury === null || window === null || token === null || openedTx === null || state === null
+    || (row.result !== null && result === null) || final === undefined || burned === undefined) return null;
+  return {
+    canonical: row.canonical,
+    view: {
+      jury, case_token: token, state, window, tally: { claimer, auditor, inconclusive }, revealed, result, opened_tx: openedTx,
+      finalized_tx: final === null ? null : hashOrNull(final.tx), finalized_result: final === null ? null : verdictOrNull(final.result), closed_tx: burned === null ? null : hashOrNull(burned.tx),
+    },
+  };
+}
+
+/** The list of the cases that the marketplace indexer follows (GET /jury/cases). The read sends no header but the accept header, and the list holds no secret. */
+async function indexerCases(session: TaskSession<Extra>): Promise<readonly unknown[]> {
+  let body: string;
+  try {
+    const response = await session.fetchImpl(`${session.extra.indexer}/jury/cases`, { method: 'GET', headers: { accept: 'application/json' }, redirect: 'error', signal: AbortSignal.timeout(INDEXER_TIMEOUT_MS) });
+    if (response.status !== 200) throw new HostedError('unreachable', `the marketplace indexer answered HTTP ${response.status}`);
+    body = await response.text();
+  } catch (err) {
+    if (err instanceof HostedError) throw err;
+    throw new HostedError('unreachable', `the call to the marketplace indexer failed (${shown(err)})`);
+  }
+  if (body.length > MOST_INDEXER_CHARS) throw new HostedError('protocol', `the marketplace indexer answered with more than ${MOST_INDEXER_CHARS} characters`);
+  let parsed: unknown;
+  try { parsed = JSON.parse(body) as unknown; } catch { throw new HostedError('protocol', 'the marketplace indexer answered with a body that is no JSON'); }
+  if (!isObject(parsed) || !Array.isArray(parsed.cases)) throw new HostedError('protocol', 'the answer of the marketplace indexer holds no list cases');
+  return parsed.cases as unknown[];
+}
+
+/**
+ * The canonical case of the challenge in the list of the indexer, or null. It names the claim token that the facts hold and the challenge output that the result holds: the file of a run holds no token of the
+ * challenge. A case that is not canonical is not the case of the dispute, because the relay resolves the dispute with its canonical case only.
+ */
+async function readIndexed(session: TaskSession<Extra>, claim: ClaimFact, challenge: { readonly challenge: string }): Promise<IndexedCase | null> {
+  const rows = (await indexerCases(session)).filter((row): row is Obj => isObject(row) && row.claim === claim.claimToken && row.challenge_out === challenge.challenge);
+  const parsed = rows.map(indexedCaseOf);
+  if (parsed.includes(null)) throw new HostedError('protocol', 'a case in the answer of the marketplace indexer has not the form that the indexer documents');
+  const canonical = (parsed as IndexedRow[]).filter((one) => one.canonical);
+  if (canonical.length > 1) throw new HostedError('protocol', 'the marketplace indexer lists more than one canonical case of the challenge');
+  const view = canonical[0]?.view ?? null;
+  if (view !== null && view.result !== null && view.finalized_result !== null && view.result !== view.finalized_result) {
+    throw new PreconditionError('the marketplace indexer shows a result of the tally that is not the result of the Finalize transaction');
+  }
+  return view;
+}
+
+/** The transactions that the indexer names for the case, each with the member that names it: they are confirmed on the node like every other transaction of the file. */
+function caseTransactions(indexed: IndexedCase): Map<string, string> {
+  const txs = new Map<string, string>();
+  for (const [member, hash] of [['case.opened_tx', indexed.opened_tx], ['case.finalized_tx', indexed.finalized_tx], ['case.closed_tx', indexed.closed_tx]] as const) {
+    if (hash !== null && !txs.has(hash)) txs.set(hash, member);
+  }
+  return txs;
+}
+
+/**
+ * The hold that Module-1 put on the Order Desk after a verdict: the hold with the reason 64 whose signer is a script, read from the record on the node. Only a hold that began at or after the block time of the
+ * challenge is the hold of this verdict: an older hold belongs to an earlier dispute. The block time is read only when the record holds such a hold.
+ */
+async function readHold(session: TaskSession<Extra>, facts: Readonly<Facts>, challengeAt: () => Promise<number>): Promise<HoldView | null> {
   const desk = agentOf(session.use, 'order-desk');
   const fact = facts.records[desk.id];
   if (fact === undefined) throw new PreconditionError(`the facts hold no record of the agent ${desk.id}`);
   const found = await findRecord(session.chain.provider, session.chain.deployment, fact.id);
   if (found === null) throw new PreconditionError(`the record ${fact.did} is not in the identity registry`);
   const status = found.record.status;
-  const holds = status.type === 'Suspended' ? status.holds.filter((hold) => hold.reason === JURY_HOLD_REASON && hold.by.type === 'Script') : [];
-  const hold = [...holds].sort((a, b) => b.until - a.until)[0];
+  const scripted = status.type === 'Suspended' ? status.holds.filter((one) => one.reason === JURY_HOLD_REASON && one.by.type === 'Script') : [];
+  if (scripted.length === 0) return null;
+  const since = await challengeAt();
+  const hold = scripted.filter((one) => one.since >= since).sort((a, b) => b.until - a.until)[0];
   if (hold === undefined) return null;
   const answer = await session.hosted.call('vector_resolve_did', { did: fact.did });
   const vector = isObject(answer.json?.didDocumentMetadata) ? answer.json.didDocumentMetadata.vectorStatus : undefined;
@@ -501,25 +591,38 @@ async function readCase(session: TaskSession<Extra>, loaded: Loaded, facts: Read
   if (answer.failed) throw new HostedError('unreachable', `the hosted tool vector_get_jury_cases failed: ${shown(answer.message)}`);
   const rows = lastJsonBlock(answer.text);
   if (!Array.isArray(rows)) throw new HostedError('protocol', 'the answer of vector_get_jury_cases holds no list of cases');
-  const mine = rows.filter((row: unknown): row is Obj => isObject(row) && row.claim_out === challenge.claim && row.challenge_out === challenge.challenge);
-  const views = mine.map(caseViewOf);
+  // The tool filters by the claim token. The claim_out of a case is the Challenged claim output that the opening read, and the challenge spent the Open one: the two never match. The challenge output names the case.
+  const views = rows.filter((row: unknown): row is Obj => isObject(row) && row.challenge_out === challenge.challenge).map(caseViewOf);
   if (views.includes(null)) throw new HostedError('protocol', 'a case in the answer of vector_get_jury_cases has not the form that the tool documents');
-  const canonical = (views as CaseView[]).filter((view) => view.canonical === true);
-  const listed = views.length === 1 ? views[0]! : canonical.length === 1 ? canonical[0]! : null;
-  if (views.length > 1 && listed === null) throw new HostedError('protocol', 'the answer of vector_get_jury_cases lists more than one case of the challenge, and none is the canonical case');
-  const hold = await readHold(session, facts);
-  const verdict = listed !== null && listed.state === 'Settling' ? listed.outcome : hold !== null ? 'AuditorWins' : null;
+  // A case that is not the canonical case of its dispute is no case of this run: the relay resolves the dispute with its canonical case only.
+  const eligible = (views as CaseView[]).filter((view) => view.canonical !== false);
+  const canonical = eligible.filter((view) => view.canonical === true);
+  const listed = eligible.length === 1 ? eligible[0]! : canonical.length === 1 ? canonical[0]! : null;
+  if (eligible.length > 1 && listed === null) throw new HostedError('protocol', 'the answer of vector_get_jury_cases lists more than one case of the challenge, and none is the canonical case');
+  const indexed = await readIndexed(session, claim, challenge);
+  let known: Promise<number> | undefined;
+  const blockTime = async (): Promise<number> => {
+    try { return await (known ??= txTimeOf(session.fetchImpl, session.settings.urls.koios, txOf(challenge.challenge))); } catch (err) {
+      throw new PreconditionError(`challenge.challenge: the block time of the challenge cannot be read (${shown(err)})`);
+    }
+  };
+  const hold = await readHold(session, facts, blockTime);
+  // The result of a case that is final: the Finalize transaction of the indexer, or a live case that is Settling (the Finalize left it so). The two are one datum of the chain and must agree.
+  const fromTool = listed !== null && listed.state === 'Settling' ? listed.outcome : null;
+  const fromIndexer = indexed === null ? null : indexed.finalized_result;
+  if (fromTool !== null && fromIndexer !== null && fromTool !== fromIndexer) throw new PreconditionError(`the hosted tool shows the result ${fromTool} and the marketplace indexer shows the result ${fromIndexer} for the case of the challenge`);
+  const verdict = fromIndexer ?? fromTool ?? (hold !== null ? 'AuditorWins' : null);
   let waiting: string | null = null;
   if (verdict === null || (verdict === 'AuditorWins' && hold === null)) {
     let expected = 'about 4 h 44 min after the challenge';
     try {
-      const at = (await txTimeOf(session.fetchImpl, session.settings.urls.koios, txOf(challenge.challenge))) + CASE_DURATION_MS;
+      const at = (await blockTime()) + CASE_DURATION_MS;
       expected = at > nowMs ? `expected at ${iso(at)}, in ${duration(at - nowMs)}` : `expected at ${iso(at)}, and that time has passed`;
     } catch { /* the block time of the challenge is not known: the text says the length */ }
     const lead = verdict === null ? 'the case of the challenge has no verdict' : 'the jury decided AuditorWins, and the hold is not yet on the record of the Order Desk';
     waiting = `${lead}. The relay opens a case about 30 minutes after the challenge, the jurors commit for 2 hours and reveal for 2 hours, and then the relay finalises and resolves it: the hold comes ${expected}`;
   }
-  return { listed, hold, verdict: waiting === null ? verdict : null, waiting };
+  return { listed, indexed, hold, verdict: waiting === null ? verdict : null, waiting };
 }
 
 // ---- 10. the steps ----
@@ -602,7 +705,10 @@ const RULES: Readonly<Record<string, (a: Assembly) => Shown>> = {
     const c = a.caseRead;
     if (c === null || c.verdict === null) return 'the case has no verdict';
     if (c.verdict !== 'AuditorWins') return `the jury decided ${c.verdict}, and the Order Desk got no hold: the run needs a new claim and a new challenge`;
-    return c.hold === null ? 'the node shows no hold with the reason 64 on the Order Desk' : [...(c.listed === null ? [] : [ref('case', c.listed.case_token)]), ref('hold', c.hold.record_output)];
+    if (c.hold === null) return 'the node shows no hold with the reason 64 on the Order Desk';
+    const token = c.indexed?.case_token ?? c.listed?.case_token ?? null;
+    const finalized = c.indexed?.finalized_tx ?? null;
+    return [...(token === null ? [] : [ref('case', token)]), ...(finalized === null ? [] : [ref('transaction', finalized)]), ref('hold', c.hold.record_output)];
   },
   'r2-e': (a) => {
     const d = deskOf(a);
@@ -683,7 +789,7 @@ function documentOf(session: TaskSession<Extra>, a: Assembly, steps: readonly St
     decisions: hires.filter((hire) => hire.decisions.length > 0).map((hire) => ({ step: hire.entry.step, decisions: hire.decisions })),
     claims: { reorder_agent: claimsOf(reorder), order_desk: claimsOf(agentOf(session.use, 'order-desk')) },
     challenge,
-    case: caseRead === null || caseRead.verdict === null ? null : { ...caseRead.listed, verdict: caseRead.verdict, hold: caseRead.hold },
+    case: caseRead === null || caseRead.verdict === null ? null : { verdict: caseRead.verdict, live: caseRead.listed, indexed: caseRead.indexed, hold: caseRead.hold },
     fault_mode: { reorder_agent: modes('reorder-agent'), order_desk: modes('order-desk') },
     exit_state: [...hires].reverse().find((hire) => hire.role === 'execute')!.result.exit_state,
     steps, refusals: record.refusals,
@@ -724,6 +830,7 @@ async function assemble(session: TaskSession<Extra>): Promise<{ kind: 'wait'; me
       if (err instanceof PreconditionError) problems.add('case', err.message); else throw err;
     }
   }
+  if (caseRead !== null && caseRead.verdict !== null && caseRead.indexed !== null) await confirmAll(session, caseTransactions(caseRead.indexed), problems);
   const last = [...loaded.hires].reverse().find((hire) => hire.role === 'execute');
   if (last === undefined || typeof last.result.exit_state !== 'string' || !EXIT_STATES.includes(last.result.exit_state)) problems.add('exit_state', `the result of the last hire of execute has no exit_state of ${EXIT_STATES.join(', ')}`);
   const assembly: Assembly = { use: session.use, loaded, facts, reads, mock, lineages, caseRead };
@@ -790,6 +897,8 @@ async function showStatus(session: TaskSession<Extra>): Promise<void> {
   const found = await readCase(session, loaded, facts, session.clock.now());
   const c = found.listed;
   out(c === null ? 'case: the hosted tool lists no live case of the challenge' : `case ${c.case_token}: phase ${c.phase}, state ${c.state}, tally ClaimerWins ${c.tally.claimer}, AuditorWins ${c.tally.auditor}, Inconclusive ${c.tally.inconclusive}, outcome ${c.outcome}`);
+  const x = found.indexed;
+  out(x === null ? 'indexer: the marketplace indexer lists no canonical case of the challenge' : `indexer: case ${x.case_token} is ${x.state} (window ${x.window}), tally ClaimerWins ${x.tally.claimer}, AuditorWins ${x.tally.auditor}, Inconclusive ${x.tally.inconclusive}, result ${x.finalized_result ?? 'not final yet'}`);
   const h = found.hold;
   out(h === null ? 'hold of the Order Desk: none with the reason 64' : `hold of the Order Desk: reason ${h.reason} from ${iso(h.since)} until ${iso(h.until)}, on the record output ${h.record_output}`);
   if (found.verdict === null) {
@@ -807,10 +916,14 @@ const task: TaskDefinition<Extra> = {
   valued: ['number'],
   needs: { keys: () => [], chain: true, hosted: ['vector_get_jury_cases', 'vector_resolve_did'], approval: 'never' },
   steps: () => ['run'],
-  parse(_env, _settings, _use, flags) {
+  parse(env, _settings, _use, flags) {
     const label = flags.value('run');
     if (label === undefined) throw new FlagError('--run <label> is required: the evidence is the evidence of a run');
-    return { label, priv: flags.has('private'), result: null };
+    // The marketplace indexer is the public one unless the setting names another: an https URL with no user name and no password, as the URL of each other service.
+    const reader = new EnvReader(env);
+    const indexer = reader.url('VECTOR_MARKETPLACE_INDEXER_URL', MARKETPLACE_INDEXER);
+    reader.done();
+    return { label, priv: flags.has('private'), indexer, result: null };
   },
   next: produce,
   async cleanup() {
