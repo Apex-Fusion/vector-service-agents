@@ -1,0 +1,69 @@
+{
+  "schema": "vector.usecase.ranking.v1",
+  "rfq_id": "rfq-2026-11",
+  "rfq_sha256": "3ae0b5134f33c971b830d5145c56df5c1cdda163e4b98be3b5b7442f67b213b8",
+  "tenant": "run1",
+  "weights": {
+    "price": 0.4,
+    "lead_time": 0.2,
+    "reliability": 0.2,
+    "compliance": 0.2
+  },
+  "ranked": [
+    {
+      "rank": 1,
+      "desk_did": "did:vector:b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1",
+      "organisation": "alfa.example",
+      "score": 90,
+      "components": {
+        "price": 90,
+        "lead_time": 90,
+        "reliability": 90,
+        "compliance": 90
+      },
+      "quote": {
+        "escrow_ref": "5151515151515151515151515151515151515151515151515151515151515151#0",
+        "receipt_sha256": "b01a858491e85ca8a2217b13f040453f90d26192119fb93f09fb216791a2cdae",
+        "total": 58000,
+        "lead_time_days": 7
+      }
+    },
+    {
+      "rank": 2,
+      "desk_did": "did:vector:b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3",
+      "organisation": "charlie.example",
+      "score": 80,
+      "components": {
+        "price": 80,
+        "lead_time": 80,
+        "reliability": 80,
+        "compliance": 80
+      },
+      "quote": {
+        "escrow_ref": "5353535353535353535353535353535353535353535353535353535353535353#0",
+        "receipt_sha256": "ae04035dea8d74892694fec330209d5005c655995a2033a3d7f6e54f455fac02",
+        "total": 60100,
+        "lead_time_days": 6
+      }
+    },
+    {
+      "rank": 3,
+      "desk_did": "did:vector:b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+      "organisation": "bravo.example",
+      "score": 70,
+      "components": {
+        "price": 70,
+        "lead_time": 70,
+        "reliability": 70,
+        "compliance": 70
+      },
+      "quote": {
+        "escrow_ref": "5252525252525252525252525252525252525252525252525252525252525252#0",
+        "receipt_sha256": "3118722f0c6b7b34050e9ce175992c333173116ade8042e60482c2ad797e6e6d",
+        "total": 55900,
+        "lead_time_days": 10
+      }
+    }
+  ],
+  "excluded": []
+}
