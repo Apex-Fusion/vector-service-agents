@@ -112,9 +112,9 @@
         "path": "/erp/stock/{sku}",
         "host": "token",
         "credential": "token",
-        "sub": "did:vector:5b3ca166c5b2034e7a1c5f0e54951963fbbef31489c2c91c6b7a858bfbfc1657",
+        "sub": "did:vector:6cd3e7a888e51d30b66c3c2cd48174a6ec28862a4d3f629d705e98350bed2ba0",
         "act": [
-          "did:vector:one",
+          "did:vector:5b3ca166c5b2034e7a1c5f0e54951963fbbef31489c2c91c6b7a858bfbfc1657",
           "did:vector:two"
         ],
         "delegation": "0fda06706b9fb8e3b6c20b66b466cb4257da337907a6dbc6416d62abd1e5f546",
@@ -132,7 +132,7 @@
         "path": "/supplier/orders",
         "host": "mtls",
         "credential": "x509-svid",
-        "sub": "did:vector:5b3ca166c5b2034e7a1c5f0e54951963fbbef31489c2c91c6b7a858bfbfc1657",
+        "sub": "spiffe://delta.example/agent/15d1b0a4d07108b11c5c61b0f4971756ebc56bbcbc50ed9d78b0bf7b26317a5c",
         "act": [],
         "delegation": null,
         "decision": "allowed",
@@ -149,9 +149,9 @@
         "path": "/po",
         "host": "token",
         "credential": "token",
-        "sub": "did:vector:5b3ca166c5b2034e7a1c5f0e54951963fbbef31489c2c91c6b7a858bfbfc1657",
+        "sub": "did:vector:6cd3e7a888e51d30b66c3c2cd48174a6ec28862a4d3f629d705e98350bed2ba0",
         "act": [
-          "did:vector:one"
+          "did:vector:5b3ca166c5b2034e7a1c5f0e54951963fbbef31489c2c91c6b7a858bfbfc1657"
         ],
         "delegation": "0fda06706b9fb8e3b6c20b66b466cb4257da337907a6dbc6416d62abd1e5f546",
         "decision": "allowed",

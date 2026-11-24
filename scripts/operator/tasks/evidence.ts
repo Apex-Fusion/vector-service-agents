@@ -468,6 +468,14 @@ async function mockGet(session: TaskSession<Extra>, tenant: string, what: 'log' 
 
 const countOf = (section: unknown): number | null => (isObject(section) && Array.isArray(section.orders) ? section.orders.length : null);
 
+/** True when a line of the log names an agent of the run: an actor of its act chain is the DID of one, or its sub is the SPIFFE ID of one (spiffe://<trust domain>/agent/<identifier>). */
+function namesAgentOfRun(line: Obj, ids: ReadonlySet<string>): boolean {
+  const act = Array.isArray(line.act) ? line.act : [];
+  if (act.some((one: unknown) => typeof one === 'string' && one.startsWith('did:vector:') && ids.has(one.slice('did:vector:'.length)))) return true;
+  const spiffe = typeof line.sub === 'string' ? /^spiffe:\/\/[^/]+\/agent\/([0-9a-f]{64})$/.exec(line.sub) : null;
+  return spiffe !== null && ids.has(spiffe[1]!);
+}
+
 async function readMock(session: TaskSession<Extra>, loaded: Loaded, facts: Readonly<Facts>, problems: Problems): Promise<MockRead | null> {
   const { tenant, label } = loaded.record;
   if (facts.tenants[label]?.name !== tenant) problems.add('tenant', `is not the tenant that the facts hold for the run ${label}`);
@@ -478,8 +486,9 @@ async function readMock(session: TaskSession<Extra>, loaded: Loaded, facts: Read
     if (log.dropped > 0) problems.add('mock.log', `the mock service dropped ${log.dropped} line(s) of the log: the log is not whole`);
     const lines = log.lines;
     if (!lines.every(isObject)) { problems.add('mock.log', 'holds a line that is no object'); return null; }
-    // A line with no verified identity is the call of a caller that proved nothing, and its path is a text that the caller chose: the file counts such lines and never copies them.
-    const attributed = lines.filter((line: Obj) => typeof line.sub === 'string');
+    // A line is copied when it names an agent of the run. The log also holds the calls of callers that proved nothing and of callers with a valid token of their own, and the path of such a call is a text that the caller chose: the file counts such lines and never copies them.
+    const ids = new Set(Object.values(facts.records).map((record) => record.id));
+    const attributed = lines.filter((line: Obj) => namesAgentOfRun(line, ids));
     const purchaseOrders = isObject(state) ? countOf(state.po_store) : null;
     const supplierOrders = isObject(state) ? countOf(state.supplier) : null;
     if (purchaseOrders === null || supplierOrders === null) { problems.add('mock.state', 'is not the state of the tenant that the mock service documents'); return null; }

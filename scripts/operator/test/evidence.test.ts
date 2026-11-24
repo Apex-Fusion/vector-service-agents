@@ -107,9 +107,14 @@ const CHALLENGE = { evidence: h('evidence document tx'), challenge: ref('challen
 /** The token of the challenge: the one token that the challenge transaction mints, with a name that starts with chl_ in hex. */
 const CHALLENGE_TOKEN = `63686c5f${h('challenge token').slice(0, 56)}`;
 
+/** The DID of an agent, and the SPIFFE ID that the certificate of an agent carries. */
+const DID = (id: string): string => `did:vector:${id}`;
+const SPIFFE = (id: string): string => `spiffe://delta.example/agent/${id}`;
+// A token names the agents that act in its act chain (its first link is the Reorder Agent here), and an SVID names the Order Desk by its SPIFFE ID, as the mock service logs them.
 const logLine = (route: string, credential: string, act: string[]): Obj => ({
   at: stamp(S0 + 600), tenant: 'tenant-1', route, method: route.split(' ')[0], path: route.split(' ')[1], host: credential === 'x509-svid' ? 'mtls' : 'token', credential,
-  sub: `did:vector:${AGENTS['reorder-agent']}`, act, delegation: credential === 'x509-svid' ? null : hashOf('delegation'), decision: 'allowed', status: 200, code: null, rule: null, token_status: null,
+  sub: credential === 'x509-svid' ? SPIFFE(AGENTS['order-desk']) : DID(h('hirer')), act: credential === 'x509-svid' ? act : act.map((one, i) => (i === 0 ? DID(AGENTS['reorder-agent']) : one)),
+  delegation: credential === 'x509-svid' ? null : hashOf('delegation'), decision: 'allowed', status: 200, code: null, rule: null, token_status: null,
 });
 
 function scenario(kind: 'clean' | 'failure'): Scenario {
@@ -849,6 +854,23 @@ describe('check 5: the mock service', () => {
     expect(blocked.exit).toBe(0);
     const second = JSON.parse(blocked.read(publicFile())!) as { mock: Obj };
     expect(second.mock.unattributed_lines).toBe(1);
+  });
+  it('copies no line of a caller whose valid credential names no agent of the run, and a mark of a secret in its path does not block the file', async () => {
+    const other = h('another agent');
+    const holder = (over: Obj): Obj => ({ ...logLine('GET /erp/stock/{sku}', 'token', []), path: '/t/tenant-1/erp/stock/authorization', decision: 'refused', status: 403, code: 'delegation_invalid', rule: 'delegation.denied', ...over });
+    const s = scenario('clean');
+    s.log.push(holder({ sub: DID(h('another hirer')), act: [DID(other)] }), holder({ sub: SPIFFE(other), act: [] }), holder({ sub: DID(AGENTS['reorder-agent']), act: [] }));
+    const r = await go(s);
+    expect(r.exit).toBe(0);
+    const doc = JSON.parse(r.read(publicFile())!) as { mock: Obj };
+    expect(doc.mock.log).toEqual(scenario('clean').log);
+    expect(doc.mock.unattributed_lines).toBe(3);
+    const named = scenario('clean');
+    named.log.push(holder({ sub: DID(h('another hirer')), act: [DID(other), DID(AGENTS['order-desk'])] }), holder({ sub: SPIFFE(AGENTS['reorder-agent']), act: [] }));
+    const kept = await go(named);
+    expect(kept.exit).toBe(2);
+    expect(kept.err).toContain('mark of a secret');
+    expect(kept.read(publicFile())).toBeNull();
   });
   it('refuses a log that dropped lines, a tenant that is not the tenant of the facts, and a mock service that fails', async () => {
     const s = scenario('clean');
