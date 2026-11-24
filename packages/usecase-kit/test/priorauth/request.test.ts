@@ -188,13 +188,26 @@ describe('the lists', () => {
       expectRefused(parsePriorAuthRequest(withValue(['diagnosis_codes'], ['zq9 marker\u0001'])), `${REQUEST}.diagnosis_codes[0]`);
     });
 
-    it('refuses a code with a control, format or separator character, although the record set takes it, and the twin without it passes', () => {
-      // The records system takes the tab, the line feed, the carriage return, the format characters and the separators in a code, so the record set keeps its rule. A request does not take them.
-      for (const code of ['M54\t16', 'M54.16\n', 'M54\r', 'M54\u0085', 'M54\u200b', 'M54\u202e', '\ufeffM54', 'M54\u2028', 'M54\u2029', 'M54\u{e0041}']) {
+    it('refuses a code with a control, format, separator, surrogate or default ignorable character, although the record set takes it, and the twin without it passes', () => {
+      // The records system takes the tab, the line feed, the carriage return, the format characters, the separators and the invisible characters in a code, so the record set keeps its rule. A request does not take them.
+      const hidden = [
+        'M54\t16', 'M54.16\n', 'M54\r', 'M54\u0085', 'M54\u200b', 'M54\u202e', '\ufeffM54', 'M54\u2028', 'M54\u2029', 'M54\u{e0041}',
+        // The default ignorable characters that are not format characters, and a code point of that class that has no character yet.
+        'M54\u180b', 'M54\u180c', 'M54\u180d', 'M54\u180f', 'M54\u034f', 'M54\u115f', 'M54\u1160', 'M54\u3164', 'M54\uffa0', 'M54\u17b4', 'M54\u17b5', 'M54\ufe0f', 'M54\u{e0100}', 'M54\u2065', 'M54\u{e0000}',
+        // A surrogate that stands alone, at the start, in the middle and at the end of a code.
+        'M54\ud800', 'M54\udc00', '\ud83dM54', 'M5\ude004',
+      ];
+      for (const code of hidden) {
         expectRefused(parsePriorAuthRequest(withValue(['diagnosis_codes'], ['M54.16', code])), `${REQUEST}.diagnosis_codes[1]`);
         expect(parseRecordSet(change(golden('record-set'), ['order', 'diagnosis_codes', 0], code)).ok, JSON.stringify(code)).toBe(true);
       }
       expect(parsePriorAuthRequest(withValue(['diagnosis_codes'], ['M54.16', 'M54 16', 'M54\u00a0'])).ok).toBe(true);
+    });
+
+    it('takes a code with a letter or a mark that is next to a default ignorable character, and with a pair of surrogates', () => {
+      for (const code of ['M54\u034e', 'M54\u0350', 'M54\u1161', '\u3163\u3165', 'M54\uffa1', 'M54\u17b3', 'M54\u17b6', 'M54\u180a', 'M54\u1810', 'M54\u2070', 'M54\ufe10', 'M54\u{1F600}', 'M54\ud83d\ude00', 'e\u0301']) {
+        expect(parsePriorAuthRequest(withValue(['diagnosis_codes'], ['M54.16', code])).ok, JSON.stringify(code)).toBe(true);
+      }
     });
 
     it('gives the NFC form of a code', () => {
@@ -323,6 +336,12 @@ describe('the justification', () => {
     { label: 'the byte order mark (Cf)', characters: ['\ufeff'] },
     { label: 'the variation selectors', characters: ['\ufe00', '\ufe0e', '\ufe0f', '\u{e0100}', '\u{e01ef}'] },
     { label: 'the tag characters (Cf)', characters: ['\u{e0001}', '\u{e0020}', '\u{e0041}', '\u{e007f}'] },
+    { label: 'the Mongolian free variation selectors and the vowel separator (default ignorable)', characters: ['\u180b', '\u180c', '\u180d', '\u180e', '\u180f'] },
+    { label: 'the combining grapheme joiner (default ignorable)', characters: ['\u034f'] },
+    { label: 'the Hangul fillers (default ignorable)', characters: ['\u115f', '\u1160', '\u3164', '\uffa0'] },
+    { label: 'the Khmer inherent vowels (default ignorable)', characters: ['\u17b4', '\u17b5'] },
+    { label: 'the default ignorable code points that have no character yet', characters: ['\u2065', '\ufff0', '\ufff8', '\u{e0000}', '\u{e0002}', '\u{e0fff}'] },
+    { label: 'a surrogate that stands alone (Cs)', characters: ['\ud800', '\udbff', '\udc00', '\udfff'] },
   ];
 
   it.each(HIDDEN)('refuses $label, in any place of the text, and never repeats the text', ({ characters }) => {
@@ -338,6 +357,16 @@ describe('the justification', () => {
   it('takes letters of other scripts, symbols, emoji, a no-break space, a combining mark, and the character after the variation selectors', () => {
     expect(justification('Kriterium C1 ist erf\u00fcllt: \u8179\u75db \u2022 \u{1F600} \u00a0 ok').ok).toBe(true);
     expect(justification('Flags \u{1F1E9}\u{1F1EA} and a mark e\u0301 and \ufe10 and a heart \u2764').ok).toBe(true);
+  });
+
+  it('takes the letters and the marks that sit next to the default ignorable characters, and a pair of surrogates written as one code point or as two code units', () => {
+    expect(justification('Hangul \u1161 \u3163 \u3165 \uffa1 and \ud55c\uad6d\uc5b4, Khmer \u17b3 \u17b6 \u1780, Mongolian \u180a \u1810 \u1820, marks \u034e \u0350 and a power \u2070').ok).toBe(true);
+    expect(justification('A pair of surrogates written as one code point \u{1F600} and as two code units \ud83d\ude00').ok).toBe(true);
+  });
+
+  it('refuses a high surrogate with no low surrogate after it, a low surrogate with no high surrogate before it, and a pair in the wrong order', () => {
+    for (const text of ['Criterion C1 \ud83d is met.', 'Criterion C1 \ude00 is met.', 'Criterion C1 \ude00\ud83d is met.', 'Criterion C1 is met.\ud83d', '\ude00Criterion C1 is met.']) expectRefused(justification(text), WHERE);
+    expect(justification('Criterion C1 \ud83d\ude00 is met.').ok).toBe(true);
   });
 
   it('gives the NFC copy of an NFD text, and the same digest as the NFC document', () => {
