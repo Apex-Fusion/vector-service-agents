@@ -9,7 +9,6 @@
 // nothing: the claims are read through the read methods of a chain port whose signature throws.
 import { readFileSync, readdirSync } from 'node:fs';
 import { basename, join } from 'node:path';
-import { koiosPostList } from '../../../packages/buyer-core/src/vendored/mcp/marketplace-indexer.ts';
 // The identity advert codec is at the entry of vector-read, as in the task advert.
 import { advertTextFieldsRoundTrip, decodeIdentityAdvertDatum, decodePlutusDataHex, encodePlutusDataHex } from '../../../packages/vector-read/src/index.ts';
 import type { IdentityAdvertDatum, PlutusData } from '../../../packages/vector-read/src/index.ts';
@@ -17,6 +16,8 @@ import { decodeAttestationDatum, decodeIdentityDatum, encodeAttestationDatum, en
 import { collateralAdvice, isCollateralOutput } from '../../checks/lib/collateral.ts';
 import { duration, iso, units } from '../../checks/lib/format.ts';
 import { StateFile } from '../../checks/lib/state.ts';
+import { proveAdvertRetirement, readConfirmedSpend } from '../lib/confirmed-spend.ts';
+import type { RecordSpendScript, RecordSpendValueFlow, RecordSpendValueRow } from '../lib/confirmed-spend.ts';
 import type { AdvertFact, AdvertSpec, AgentSpec, AttestationFact, Facts, LifecycleSpec, StepOutcome, SubagentSpec, TaskDefinition, TaskSession } from '../lib/contract.ts';
 import { readRunning, readRuntimeStatus, runtimesOf } from '../lib/free.ts';
 import {
@@ -789,88 +790,9 @@ async function attestations(ctx: Context): Promise<Check> {
   return passed(name, lines.length === 0 ? 'the facts hold no attestation' : lines.join('; '));
 }
 
-interface RecordSpendValueRow {
-  readonly ref: string;
-  readonly address: string;
-  readonly lovelace: bigint;
-  readonly inline_datum?: unknown;
-  readonly datum_hash?: unknown;
-  readonly asset_list?: unknown;
-}
-
-interface RecordSpendScript { readonly scriptHash: string; readonly inputRef: string; readonly redeemer: { hash?: unknown; bytes?: unknown; value?: unknown } }
-interface RecordSpendValueFlow {
-  readonly fee: bigint;
-  readonly inputs: readonly RecordSpendValueRow[];
-  readonly outputs: readonly RecordSpendValueRow[];
-  readonly spends?: readonly RecordSpendScript[];
-}
-
 function lovelaceOf(value: unknown): bigint | null {
   if (typeof value === 'string' && /^[0-9]{1,20}$/.test(value)) return BigInt(value);
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? BigInt(value) : null;
-}
-
-function archivedRows(value: unknown, withDetails: boolean, txHash?: string): RecordSpendValueRow[] {
-  if (!Array.isArray(value) || value.length === 0) throw new Error('the confirmed transaction has no complete input and output lists');
-  const seen = new Set<string>();
-  return value.map((item: unknown) => {
-    if (!isObject(item)) throw new Error('the confirmed transaction has an unreadable output reference');
-    const { tx_hash: origin, tx_index: index, payment_addr: payment } = item;
-    const amount = lovelaceOf(item.value);
-    const address = isObject(payment) ? payment.bech32 : null;
-    if (typeof origin !== 'string' || !ID.test(origin) || (txHash !== undefined && origin !== txHash)
-        || typeof index !== 'number' || !Number.isSafeInteger(index) || index < 0 || index > 0xffff_ffff || typeof address !== 'string' || address.length === 0 || amount === null || amount <= 0n) {
-      throw new Error('the confirmed transaction has an unreadable output reference, address or amount');
-    }
-    const ref = formatOutRef(origin, index);
-    if (seen.has(ref)) throw new Error('the confirmed transaction lists the same output reference more than once');
-    seen.add(ref);
-    return { ref, address, lovelace: amount, ...(withDetails ? { inline_datum: item.inline_datum, datum_hash: item.datum_hash, asset_list: item.asset_list } : {}) };
-  });
-}
-
-/** Read the actual fee and regular value flow of an applied transaction. Callers match the output to the node's current state. */
-async function readConfirmedRecordSpend(
-  session: Pick<TaskSession, 'chain' | 'node'>, txHash: string, { withDetails = false }: { withDetails?: boolean } = {},
-): Promise<RecordSpendValueFlow> {
-  if (!ID.test(txHash)) throw new Error('the record spend has no usable transaction hash');
-  const { koiosUrl, fetchImpl } = session.chain;
-  const [rows, status] = await Promise.all([
-    koiosPostList(koiosUrl, 'tx_info', { _tx_hashes: [txHash], _inputs: true, _scripts: true, ...(withDetails ? { _assets: true } : {}) }, fetchImpl, '', 512 * 1024),
-    session.node.txStatus(txHash),
-  ]).catch(() => { throw new Error('the confirmed record spend could not be read'); });
-  const { confirmations } = status;
-  const row = rows[0];
-  if (rows.length !== 1 || !isObject(row) || row.tx_hash !== txHash || (row.valid_contract !== undefined && row.valid_contract !== true)
-      || confirmations === null || !Number.isSafeInteger(confirmations) || confirmations < 1) {
-    throw new Error('the indexer does not confirm the exact record spend as applied');
-  }
-  const scripts: unknown[] | null = Array.isArray(row.plutus_contracts) ? row.plutus_contracts : null;
-  if ((row.plutus_contracts !== undefined && (scripts === null || scripts.some((script) => !isObject(script) || script.valid_contract !== true)))
-      || (row.valid_contract !== true && (scripts === null || scripts.length === 0))) {
-    throw new Error('the transaction history does not confirm valid script execution');
-  }
-  const fee = lovelaceOf(row.fee);
-  if (fee === null) throw new Error('the confirmed record spend has no actual fee');
-  const inputs = archivedRows(row.inputs, withDetails);
-  const spends: RecordSpendScript[] = [];
-  if (withDetails && scripts !== null) for (const script of scripts) {
-    if (!isObject(script)) continue;
-    const redeemer = isObject(script.input) ? script.input.redeemer : null;
-    if (!isObject(redeemer) || redeemer.purpose !== 'spend') continue;
-    const { script_hash: hash, spends_input: input } = script;
-    if (typeof hash !== 'string' || !KEY_HASH.test(hash) || !isObject(input) || typeof input.tx_hash !== 'string' || !ID.test(input.tx_hash)
-        || typeof input.tx_index !== 'number' || !Number.isSafeInteger(input.tx_index) || input.tx_index < 0 || !isObject(redeemer.datum)) {
-      throw new Error('the transaction history gives no usable spend redeemer');
-    }
-    const inputRef = formatOutRef(input.tx_hash, input.tx_index);
-    if (!inputs.some(({ ref }) => ref === inputRef) || spends.some((entry) => entry.inputRef === inputRef)) {
-      throw new Error('the transaction history redeemer does not name a unique regular input');
-    }
-    spends.push({ scriptHash: hash, inputRef, redeemer: redeemer.datum });
-  }
-  return { fee, inputs, outputs: archivedRows(row.outputs, withDetails, txHash), spends };
 }
 
 /** Convert the bounded JSON representation without rounding integers or guessing which variant the object denotes. */
@@ -923,9 +845,10 @@ function historyDatum(inline: unknown, hash: unknown, equivalent?: string): stri
 }
 
 async function archivedDatum(ctx: Context, row: RecordSpendValueRow, equivalent?: string): Promise<string | null> {
-  const found = historyDatum(row.inline_datum, row.datum_hash, equivalent);
+  const declaredHash = row.datum_hash ?? row.inline_datum?.hash;
+  const found = historyDatum(row.inline_datum, declaredHash, equivalent);
   if (typeof found === 'string') return found;
-  const hash = found?.hash ?? row.datum_hash;
+  const hash = found?.hash ?? declaredHash;
   const { koiosUrl, fetchImpl } = ctx.session.chain;
   const [output, ...extra] = await koiosUtxoInfo(koiosUrl, [row.ref], fetchImpl, 512 * 1024);
   if (output === undefined || extra.length !== 0 || formatOutRef(output.tx_hash, output.tx_index) !== row.ref
@@ -944,11 +867,11 @@ function tokenOutput(outputs: readonly RecordSpendValueRow[], script: { address:
   let found: RecordSpendValueRow | null = null;
   for (const row of outputs) {
     if (row.address !== script.address) continue;
-    if (!Array.isArray(row.asset_list)) return null;
-    const assets: unknown[] = row.asset_list;
-    const matching = assets.find((asset) => isObject(asset) && asset.policy_id === script.hash && asset.asset_name === id);
+    const assets = row.asset_list;
+    if (assets == null) return null;
+    const matching = assets.find((asset) => asset.policy_id === script.hash && asset.asset_name === id);
     if (matching === undefined) continue;
-    if (found !== null || assets.length !== 1 || !isObject(matching) || (matching.quantity !== '1' && matching.quantity !== 1)) return null;
+    if (found !== null || assets.length !== 1 || matching.quantity !== '1') return null;
     found = row;
   }
   return found;
@@ -958,42 +881,36 @@ function witnessMatches(witness: RecordSpendScript, expected: string): boolean {
   return historyDatum(witness.redeemer, witness.redeemer.hash, expected) === expected;
 }
 
-// These two tags are the empty constructors of the identity advert validator.
+// The identity advert validator uses this empty constructor for UpdateAdvert.
 const ADVERT_UPDATE = 'd87a80';
-const ADVERT_RETIRE = 'd87b80';
 
 /** Follow recorded updates back to the declared advert. Only a confirmed Retire with actual supplier credit ends this lineage. */
 async function verifyAdvertRetire(
   ctx: Context, want: ExpectedAdvert, original: string, final: string, txHash: string, wallet: string, live: ReadonlySet<string>,
 ): Promise<string | null> {
   const script = ctx.session.chain.deployment.advert;
-  const spend = await readConfirmedRecordSpend(ctx.session, txHash, { withDetails: true });
-  const actions = spend.spends?.filter(({ scriptHash }) => scriptHash === script.hash) ?? [];
+  const spend = await readConfirmedSpend(ctx.session, txHash, { withDetails: true });
   let input = spend.inputs.find(({ ref }) => ref === final);
-  if (input === undefined || actions.length !== 1 || actions[0]!.inputRef !== final || !witnessMatches(actions[0]!, ADVERT_RETIRE)) {
-    return 'the transaction did not spend the advert with the Retire redeemer';
-  }
-  const supplierInputs = spend.inputs.filter(({ ref }) => ref !== final);
-  if (spend.outputs.length === 0 || [...supplierInputs, ...spend.outputs].some(({ address }) => address !== wallet)) {
-    return 'the retirement did not keep all other inputs and outputs at the supplier wallet';
-  }
-  if (walletCredit(wallet, spend) !== input.lovelace - spend.fee || input.lovelace <= spend.fee) return 'the supplier wallet did not receive the deposit less the transaction fee';
+  if (input === undefined) return 'the transaction did not spend the recorded advert input';
+  proveAdvertRetirement(spend, {
+    advertRef: final, advertAddress: script.address, advertScriptHash: script.hash, supplierAddress: wallet, depositLovelace: input.lovelace,
+  });
   for (let depth = 0; depth < 16; depth += 1) {
     if (live.has(input.ref)) return `the node still holds the traced advert output ${input.ref}`;
     const bytes = await archivedDatum(ctx, input);
     const datum = advertDatum(bytes);
-    if (input.address !== script.address || !Array.isArray(input.asset_list) || input.asset_list.length !== 0
+    if (input.address !== script.address || input.asset_list?.length !== 0
         || datum === null || datum.agent_id !== want.didId || datum.supplier_pkh !== want.supplier) return 'an advert in the lineage does not match the expected record and supplier';
     if (input.ref === original) {
       return input.lovelace === want.spec.depositLovelace && advertTextFieldsRoundTrip(bytes!) && matchesAdvert(datum, want)
         ? null : 'the original advert does not match its recorded terms or deposit';
     }
-    const update = await readConfirmedRecordSpend(ctx.session, parseOutRef(input.ref).txHash, { withDetails: true });
+    const update = await readConfirmedSpend(ctx.session, parseOutRef(input.ref).txHash, { withDetails: true });
     const previous = update.spends?.filter(({ scriptHash }) => scriptHash === script.hash) ?? [];
     const inputRef = input.ref;
     const made = update.outputs.find(({ ref }) => ref === inputRef);
     if (previous.length !== 1 || !witnessMatches(previous[0]!, ADVERT_UPDATE) || made === undefined || made.address !== input.address
-        || made.lovelace !== input.lovelace || !Array.isArray(made.asset_list) || made.asset_list.length !== 0
+        || made.lovelace !== input.lovelace || made.asset_list?.length !== 0
         || (await archivedDatum(ctx, made, bytes!)) !== bytes) {
       return 'the retirement cannot be traced back through the advert updates';
     }
@@ -1020,7 +937,7 @@ function walletCredit(address: string, { inputs, outputs }: RecordSpendValueFlow
 async function complianceLineage(ctx: Context, fact: Facts['compliance'][string], view: AttestationView, revokeTx: string, contestTx: string): Promise<boolean> {
   const script = ctx.session.chain.deployment.attestation;
   const [revoke, contest] = await Promise.all([
-    readConfirmedRecordSpend(ctx.session, revokeTx, { withDetails: true }), readConfirmedRecordSpend(ctx.session, contestTx, { withDetails: true }),
+    readConfirmedSpend(ctx.session, revokeTx, { withDetails: true }), readConfirmedSpend(ctx.session, contestTx, { withDetails: true }),
   ]);
   const issued = tokenOutput(revoke.inputs, script, view.id);
   const revoked = tokenOutput(revoke.outputs, script, view.id);
@@ -1137,7 +1054,7 @@ async function subagents(ctx: Context, agent: AgentSpec, children: readonly Suba
         || !Number.isSafeInteger(fact.epochAfter) || fact.epochAfter !== fact.epochBefore + 1 || parentEpoch < fact.epochAfter) {
       return failed(name, `the epoch of ${agent.id} on the node does not support the end of its subagents in the facts`);
     }
-    const bump = await readConfirmedRecordSpend(ctx.session, fact.tx, { withDetails: true });
+    const bump = await readConfirmedSpend(ctx.session, fact.tx, { withDetails: true });
     const { id, utxo } = parent.read.output;
     const identity = ctx.session.chain.deployment.identity;
     const before = tokenOutput(bump.inputs, identity, id);
@@ -1215,7 +1132,7 @@ async function lifecycle(ctx: Context, spec: LifecycleSpec): Promise<Check> {
   if (output.utxo.txHash !== reclaimTx) return failed(name, 'the tombstone output does not match the reclaim transaction in the facts');
   const feeWallet = keys.get('fee')?.address;
   if (feeWallet == null) return failed(name, 'the public key file lists no fee wallet');
-  const reclaim = await readConfirmedRecordSpend(ctx.session, reclaimTx, { withDetails: true });
+  const reclaim = await readConfirmedSpend(ctx.session, reclaimTx, { withDetails: true });
   const identity = ctx.session.chain.deployment.identity;
   const before = tokenOutput(reclaim.inputs, identity, output.id);
   const after = tokenOutput(reclaim.outputs, identity, output.id);
@@ -1223,6 +1140,10 @@ async function lifecycle(ctx: Context, spec: LifecycleSpec): Promise<Check> {
   if (before === null || after === null || !bytes || parseOutRef(before.ref).txHash !== facts['set-successor']!.tx
       || after.ref !== formatOutRef(reclaimTx, output.utxo.outputIndex) || after.lovelace !== output.utxo.assets.lovelace) {
     return failed(name, 'the reclaim transaction does not spend the recorded predecessor and leave the tombstone that the node holds');
+  }
+  const action = reclaim.spends?.find(({ scriptHash, inputRef }) => scriptHash === identity.hash && inputRef === before.ref);
+  if (action === undefined || !witnessMatches(action, encodeIdentitySpend({ type: 'Reclaim' }))) {
+    return failed(name, 'the recorded reclaim transaction did not spend the predecessor with Reclaim');
   }
   const canonical = encodePlutusDataHex(decodePlutusDataHex(bytes));
   const [beforeDatum, afterDatum] = await Promise.all([archivedDatum(ctx, before, bytes), archivedDatum(ctx, after, bytes)]);
