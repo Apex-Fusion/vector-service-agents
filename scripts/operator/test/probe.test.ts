@@ -737,6 +737,80 @@ describe('status and cleanup', () => {
     expect(readFileSync(w.lockPath, 'utf8')).toBe('writer owns the lock');
   });
 
+  it('shows a zero count for an existing empty probe journal', async () => {
+    const w = await taskWorld({ keys: [], env: { OPERATOR_KEYS_DIR: undefined } });
+    mkdirSync(w.stateDir, { mode: 0o700 });
+    const path = join(w.stateDir, 'probe.r1.evidence.json');
+    EvidenceFile.open(path, { check: 'probe', network: 'vector-mainnet', record: `${w.use.name}:r1` });
+    const saved = readFileSync(path, 'utf8');
+    expect(await w.run(probe, 'status', '--run', 'r1')).toBe(0);
+    expect(w.screen.lines).toContain('requests that the evidence holds: 0');
+    expect(readFileSync(path, 'utf8')).toBe(saved);
+  });
+
+  it('reads the historic and current same-kind failures without copying their text', async () => {
+    const w = await taskWorld({ keys: [], env: { OPERATOR_KEYS_DIR: undefined } });
+    mkdirSync(w.stateDir, { mode: 0o700 });
+    const evidence = EvidenceFile.open(join(w.stateDir, 'probe.r1.evidence.json'), { check: 'probe', network: 'vector-mainnet', record: `${w.use.name}:r1` });
+    const marker = 'opaque-private-probe-data';
+    for (const current of [false, true]) {
+      for (const kind of ['granted', 'refused'] as const) {
+        evidence.add({ step: 'run', status: 'info', at: iso(NOW), shows: {
+          summary: marker, probe: { resource: marker },
+          observation: kind === 'granted'
+            ? { kind, tokenType: 'DPoP', expiresAt: iso(NOW + 60_000), authorizationDetails: current ? null : [{ purpose: marker }], ...(current ? { status: 200 } : {}) }
+            : { kind, status: 400, error: 'invalid_request', text: marker },
+          verdict: { expected: kind, observed: current ? `${kind} (not the expected answer)` : kind, ok: false, reason: marker },
+        } });
+      }
+    }
+    expect(await w.run(probe, 'status', '--run', 'r1')).toBe(0);
+    expect(w.screen.lines).toEqual(expect.arrayContaining([
+      'requests that the evidence holds: 4',
+      `request 1 at ${iso(NOW)}: expected granted, observed granted (not the expected answer): NOT as expected`,
+      `request 2 at ${iso(NOW)}: expected refused, observed refused (not the expected answer) (status 400): NOT as expected`,
+      `request 3 at ${iso(NOW)}: expected granted, observed granted (not the expected answer) (status 200): NOT as expected`,
+      `request 4 at ${iso(NOW)}: expected refused, observed refused (not the expected answer) (status 400): NOT as expected`,
+    ]));
+    expect(w.screen.lines.join('\n')).not.toContain(marker);
+  });
+
+  it.each([
+    'empty object', 'unknown step', 'unknown status', 'invalid time', 'empty info', 'runner note',
+    'missing status', 'incomplete grant', 'missing verdict', 'wrong verdict', 'failure suffix on success',
+  ] as const)('refuses a damaged probe journal with %s', async (fault) => {
+    const w = await taskWorld({ keys: [], env: { OPERATOR_KEYS_DIR: undefined } });
+    mkdirSync(w.stateDir, { mode: 0o700 });
+    const marker = 'opaque-private-probe-data';
+    const observation = { kind: 'refused', status: 400, error: 'invalid_authorization_details', text: marker };
+    const verdict = { expected: 'refused', observed: 'refused', ok: true, reason: marker };
+    const saved = { step: 'run', status: 'info', at: iso(NOW), shows: { observation, verdict } };
+    const bad: Record<typeof fault, Record<string, unknown>> = {
+      'empty object': {},
+      'unknown step': { ...saved, step: marker },
+      'unknown status': { ...saved, status: marker },
+      'invalid time': { ...saved, at: marker },
+      'empty info': { ...saved, shows: {} },
+      'runner note': { ...saved, shows: { note: 'the operator lets the transaction go, and says that the chain was checked', transaction: hashOf(marker), session: null } },
+      'missing status': { ...saved, shows: { observation: { kind: 'refused' }, verdict } },
+      'incomplete grant': { ...saved, shows: { observation: { kind: 'granted', tokenType: 'DPoP' }, verdict: { expected: 'granted', observed: 'granted', ok: true } } },
+      'missing verdict': { ...saved, shows: { observation } },
+      'wrong verdict': { ...saved, shows: { observation, verdict: { ...verdict, observed: marker, ok: false } } },
+      'failure suffix on success': { ...saved, shows: { observation, verdict: { ...verdict, observed: 'refused (not the expected answer)' } } },
+    };
+    const path = join(w.stateDir, 'probe.r1.evidence.json');
+    // A corrupt entry must stop the whole status even after a valid stored observation.
+    const entries = fault === 'wrong verdict' ? [saved, bad[fault]] : [bad[fault]];
+    const bytes = JSON.stringify({ format: 1, check: 'probe', network: 'vector-mainnet', record: `${w.use.name}:r1`, started_at: iso(NOW), entries });
+    writeFileSync(path, bytes, { mode: 0o600 });
+    expect(await w.run(probe, 'status', '--run', 'r1')).toBe(2);
+    expect(w.machine()).toMatchObject({ task: 'probe', command: 'status', outcome: 'stopped', exit: 2, step: null, result: {} });
+    expect(w.screen.errors.join('\n')).toContain('the saved probe');
+    expect(w.screen.lines.join('\n')).not.toContain('requests that the evidence holds:');
+    expect([...w.screen.lines, ...w.screen.errors].join('\n')).not.toContain(marker);
+    expect(readFileSync(path, 'utf8')).toBe(bytes);
+  });
+
   it('shows the requests that the evidence holds, each with what was expected and what was observed', async () => {
     const p = await world();
     const made = p.delegate();

@@ -346,26 +346,49 @@ const REQUEST: StepHandler<ProbeExtra> = {
 const entryObject = (value: unknown): Record<string, unknown> | undefined =>
   typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 
-/** Render the stored observation, not free text or the arguments of the request. */
-function summaryOf(entry: Record<string, unknown>): string | null {
-  if (entry.step !== REQUEST.name || entry.status !== 'info') return null;
+const savedTime = (value: unknown): value is string => {
+  if (typeof value !== 'string') return false;
+  const time = Date.parse(value);
+  return Number.isFinite(time) && iso(time) === value;
+};
+
+function savedObservation(value: unknown): { kind: TokenAnswer['kind']; status: number | null } {
+  const observation = entryObject(value);
+  const kind = observation?.kind;
+  const status = observation?.status;
+  if (kind === 'granted') {
+    // The delegated writer had no status field. The subagent writer can also record 200.
+    if ((status === undefined || status === 200) && observation?.tokenType === 'DPoP' && savedTime(observation.expiresAt)) {
+      return { kind, status: status ?? null };
+    }
+  } else if (kind === 'unreachable') {
+    if (status === undefined) return { kind, status: null };
+  } else if (kind === 'refused' || kind === 'unavailable' || kind === 'unreadable') {
+    if (typeof status === 'number' && Number.isInteger(status) && status >= 100 && status <= 599) return { kind, status };
+  }
+  throw new EvidenceError('the saved probe entry has no valid observation');
+}
+
+/** The probe never lands a transaction, so its journal has no runner transaction events. */
+function summaryOf(entry: Record<string, unknown>): string {
+  if (entry.step !== REQUEST.name || entry.status !== 'info' || !savedTime(entry.at)) {
+    throw new EvidenceError('the saved probe journal has an unrecognized entry or invalid time');
+  }
   const shows = entryObject(entry.shows);
+  const { kind, status } = savedObservation(shows?.observation);
   const verdict = entryObject(shows?.verdict);
-  const observation = entryObject(shows?.observation);
-  if (verdict === undefined && observation === undefined && shows !== undefined && !Object.hasOwn(shows, 'summary')) return null;
   const expected = verdict?.expected;
   const ok = verdict?.ok;
-  const kind = observation?.kind;
-  const status = observation?.status ?? null;
-  if ((expected !== 'granted' && expected !== 'refused') || typeof ok !== 'boolean' || (ok && kind !== expected)
-    || (kind !== 'granted' && kind !== 'refused' && kind !== 'unavailable' && kind !== 'unreadable' && kind !== 'unreachable')
-    || (status !== null && !(typeof status === 'number' && Number.isInteger(status) && status >= 100 && status <= 599))) {
-    throw new EvidenceError('the saved probe entry has no valid observation and verdict');
+  if ((expected !== 'granted' && expected !== 'refused') || typeof ok !== 'boolean' || (ok && kind !== expected)) {
+    throw new EvidenceError('the saved probe entry has no valid verdict');
   }
-  const observed = !ok && kind === expected ? `${kind} (not the expected answer)` : kind;
-  if (verdict?.observed !== observed) throw new EvidenceError('the saved probe verdict does not match its observation');
-  const at = typeof entry.at === 'string' ? Date.parse(entry.at) : NaN;
-  return `${Number.isFinite(at) ? iso(at) : 'an unknown time'}: ${requestSummary(expected, observed, ok, status)}`;
+  const sameKindFailure = !ok && kind === expected;
+  const observed = sameKindFailure ? `${kind} (not the expected answer)` : kind;
+  // Earlier journals used the bare observation kind for this same failure.
+  if (verdict?.observed !== observed && !(sameKindFailure && verdict?.observed === kind)) {
+    throw new EvidenceError('the saved probe verdict does not match its observation');
+  }
+  return `${entry.at}: ${requestSummary(expected, observed, ok, status)}`;
 }
 
 const task: TaskDefinition<ProbeExtra> = {
@@ -407,7 +430,7 @@ const task: TaskDefinition<ProbeExtra> = {
   next: (session) => runSteps(session, [REQUEST]),
   cleanup: async () => ({ kind: 'done', message: 'the probe makes no transaction and holds nothing: there is nothing to take back' }),
   async inspectStatus(input) {
-    const lines = input.readEvidence().flatMap((entry) => summaryOf(entry) ?? []);
+    const lines = input.readEvidence().map(summaryOf);
     return [`requests that the evidence holds: ${lines.length}`, ...lines.map((line, index) => `request ${index + 1} at ${line}`)];
   },
   result: (session) => session.extra.seen ?? {},
