@@ -1,5 +1,5 @@
 // The state file of a check: one JSON file, mode 600, a step recorded only when it is confirmed, and never a confirmed step again.
-import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
@@ -142,6 +142,27 @@ describe('a file that is not the state of this check', () => {
       expect(err.reason, what).toBe('invalid');
       expect(readFileSync(path, 'utf8'), what).toBe(text);
     }
+  });
+  it('is refused when it is a link, a link to a state file or a link to nothing, and the link and what it names are left as they are', () => {
+    const real = join(dir, 'real.json');
+    StateFile.open(real, ID);
+    const before = readFileSync(real, 'utf8');
+    const nothing = join(dir, 'nothing.json');
+    expect(StateFile.peek(nothing)).toBeNull();
+    expect(StateFile.peek(real)?.check).toBe(ID.check);
+    for (const [name, goal] of [['to-file.json', real], ['to-nothing.json', nothing]] as const) {
+      const link = join(dir, name);
+      symlinkSync(goal, link);
+      for (const call of [() => StateFile.open(link, ID), () => StateFile.peek(link)]) {
+        const err = refusal(call);
+        expect(err.reason, name).toBe('invalid');
+        expect(err.message, name).toContain('is a link');
+      }
+      expect(lstatSync(link).isSymbolicLink()).toBe(true);
+      expect(readlinkSync(link)).toBe(goal);
+    }
+    expect(existsSync(nothing)).toBe(false);
+    expect(readFileSync(real, 'utf8')).toBe(before);
   });
 });
 

@@ -2,7 +2,7 @@
 // One JSON file for each check, with mode 600. A step is recorded when it is confirmed, with its transaction hash and the references that the next step needs, and a confirmed step
 // is never recorded again. A transaction that was signed and is not yet seen confirmed is kept apart, as `in_flight`, with its signed bytes: a new run asks the chain about it first,
 // so that no step is built twice. The file is written whole through a temporary file, and a failed write leaves the old file as it was.
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { lstatSync, readFileSync } from 'node:fs';
 import { writeFileAtomically } from './files.ts';
 import type { WriteIo } from './files.ts';
 
@@ -96,9 +96,11 @@ function stateOf(value: unknown, path: string): CheckState {
 
 export interface StateIdentity { check: string; network: string; record: string }
 
-/** Reads a state file that is there: its mode, its JSON and its shape are checked. */
+/** Reads a state file that is there: it must be a file and no link, and its mode, its JSON and its shape are checked. */
 function readState(path: string): CheckState {
-  const mode = statSync(path).mode & 0o777;
+  const found = lstatSync(path);
+  if (found.isSymbolicLink()) throw new StateError('invalid', `${path} is a link, and a state file is a file: use the file itself, or move the link away to start the check again`);
+  const mode = found.mode & 0o777;
   if (process.platform !== 'win32' && (mode & 0o077) !== 0) throw new StateError('mode', `${path} has mode ${mode.toString(8)} and other users can read it: set mode 600 on it`);
   let parsed: unknown;
   try { parsed = JSON.parse(readFileSync(path, 'utf8')); } catch (err) {
@@ -119,11 +121,11 @@ export class StateFile {
   }
 
   /**
-   * Opens the state file of a check, or makes it. A file that belongs to another check, another network or another record is refused, so is one that other users can read and
-   * one that is not a state file. A refused file is left as it is.
+   * Opens the state file of a check, or makes it. A file that belongs to another check, another network or another record is refused, so is one that other users can read, one that is not a
+   * state file and a link (the look at the path does not follow a link, so a link to a file that is not there is refused too, and the write never replaces it). A refused file is left as it is.
    */
   static open(path: string, identity: StateIdentity, io: Partial<WriteIo> = {}): StateFile {
-    if (!existsSync(path)) {
+    if (lstatSync(path, { throwIfNoEntry: false }) === undefined) {
       const state: CheckState = { format: STATE_FORMAT, ...identity, created_at: new Date().toISOString(), steps: {}, in_flight: null, notes: {} };
       writeFileAtomically(path, `${JSON.stringify(state, null, 2)}\n`, io);
       return new StateFile(path, state, io);
@@ -137,7 +139,7 @@ export class StateFile {
 
   /** Reads the state file of a check, for another check that needs a fact of it. It makes nothing: a file that is not there gives null. */
   static peek(path: string): CheckState | null {
-    return existsSync(path) ? readState(path) : null;
+    return lstatSync(path, { throwIfNoEntry: false }) === undefined ? null : readState(path);
   }
 
   snapshot(): CheckState {
