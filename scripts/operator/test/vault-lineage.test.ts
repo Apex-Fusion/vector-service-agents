@@ -85,10 +85,10 @@ function world(sameAuthority = false, includeTarget = true) {
     archive(continued, label !== 'run' || includeTarget);
     add(opening.txHash, [io(coin(`${label} open funds`, 30_000_000n + fee))], [io(opening)], [], { fee: String(fee) });
     const reference = io(terms.output);
-    add(continued.txHash, [io(opening), io(coin(`${label} pay fees`, fee))], [io({ ...coin(`${label} pay`, amount, MAINNET.escrow.address), txHash: continued.txHash }), io(continued)],
+    const pay = add(continued.txHash, [io(opening), io(coin(`${label} pay fees`, fee))], [io({ ...coin(`${label} pay`, amount, MAINNET.escrow.address), txHash: continued.txHash }), io(continued)],
       [receipt(opening, MAINNET.vault.hash, 0)], { reference_inputs: [reference], absolute_slot: slot, invalid_before: slot - 10, invalid_after: slot + 10,
         tx_timestamp: CAPTURE_MS / 1000, fee: String(fee) });
-    return { opening, continued, reference };
+    return { opening, continued, reference, pay };
   };
   const target = branch('run', runLink);
   const foreign = branch('foreign', foreignLink);
@@ -105,7 +105,7 @@ function world(sameAuthority = false, includeTarget = true) {
   const txStatus = async (txHash: string) => ({ confirmations: txs.some((row) => row.tx_hash === txHash) ? 1 : null });
   const reader = vaultLineageReader(ledger.env, { txStatus }, [{ id: runLink.id, tx: runLink.output.txHash, ended_tx: null }]);
   return { reader, target, foreign, runLink, foreignLink, close, closeInputs, closeRuns,
-    hashesRead: () => ledger.koios.calls.filter(({ route }) => route === 'tx_info').map(({ body }) => (body?._tx_hashes as string[])[0]) };
+    hashesRead: () => ledger.koios.calls.filter(({ route }) => route === 'tx_info').flatMap(({ body }) => body?._tx_hashes as string[]) };
 }
 
 describe('vault delegation projection', () => {
@@ -140,16 +140,23 @@ describe('exact vault branch in a batch Close', () => {
     const root = await w.reader.read(ref(w.target.opening));
     const result = await w.reader.close(w.close.tx_hash, root);
     expect(result).toEqual({ ...root, ref: ref(w.target.continued), path: [ref(w.target.opening), ref(w.target.continued)] });
-    if (!sameAuthority) {
-      expect(w.hashesRead()).not.toContain(w.foreignLink.output.txHash);
-      expect(w.hashesRead()).not.toContain(w.foreign.opening.txHash);
-    }
+    const read = w.hashesRead();
+    expect(read).not.toContain(w.foreign.opening.txHash);
+    if (!sameAuthority) expect(read).not.toContain(w.foreignLink.output.txHash);
   });
 
   it('does not match a different opening with the identical owner and delegation', async () => {
     const w = world(true, false);
     const root = await w.reader.read(ref(w.target.opening));
     await expect(w.reader.close(w.close.tx_hash, root)).rejects.toThrow('no exact Live input descends from it');
+  });
+
+  it('refuses competing Close inputs that claim the same exact predecessor', async () => {
+    const w = world(true);
+    w.foreign.pay.inputs[0] = io(w.target.opening);
+    w.foreign.pay.plutus_contracts[0] = receipt(w.target.opening, MAINNET.vault.hash, 0);
+    const root = await w.reader.read(ref(w.target.opening));
+    await expect(w.reader.close(w.close.tx_hash, root)).rejects.toThrow('the vault lineage is ambiguous');
   });
 
   it.each([

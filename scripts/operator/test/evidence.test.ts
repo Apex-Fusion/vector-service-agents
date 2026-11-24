@@ -102,7 +102,7 @@ interface Scenario {
   reclaimWrongOwner?: boolean;
   reclaimParts?: RefundPart[];
   reclaimFlow?: ReclaimFlow;
-  vaultWalk?: { additionalPayments: number; invalid?: 'cycle' | 'width' | 'budget' | 'reopened' | 'wrong_transition' };
+  vaultWalk?: { additionalPayments: number; invalid?: 'cycle' | 'width' | 'reopened' | 'wrong_transition'; siblings?: 'first' | 'last' };
   receiptDiscovery?: 'missing' | 'wrong_escrow';
   release?: 'missing' | 'false_label' | 'early' | 'failed';
   receiptRevoked?: boolean;
@@ -480,14 +480,14 @@ async function go(s: Scenario, argv: string[] = ['run', '--run', s.label, '--num
       other.push(a);
     } else if (more?.invalid === 'width') {
       for (let j = 0; j < 8; j++) other.push(ref(`other vault input ${j}`));
-    } else if (more?.invalid === 'budget') {
+    } else if (more?.siblings !== undefined) {
       for (let j = 0; j < 6; j++) {
         const open = ref(`other vault open ${j}`);
         openVault(open, s.delegations[0]!.id, 8_300_000n + 8n * payment);
         other.push(extend(open, 8, `other vault ${j} payment`));
       }
     }
-    const refs = [...other, head];
+    const refs = more?.invalid === 'cycle' ? other : more?.siblings === 'last' ? [head, ...other] : [...other, head];
     const inputs = refs.map(vaultInput);
     for (const ref of refs) { const held = archive.get(ref); if (held !== undefined) held.spent = true; }
     const close = h(`vault close ${i}`);
@@ -1638,13 +1638,21 @@ describe('check 4: each ended or closed entry is tied to its id by a read of its
     s.record = { vaults: [{ ref: ref('extra vault payment 31'), open_tx: h('vault open 0'), close_tx: h('vault close 0') }] };
     await refuses(s, ['vaults[0].open_tx', 'exceeds its depth limit']);
   });
-  it.each([['cycle', 'contains a cycle'], ['width', 'more than eight vault inputs'], ['budget', 'exceeds its read limit']] as const)(
+  it.each([['cycle', 'contains a cycle'], ['width', 'more than eight vault inputs']] as const)(
     'refuses a vault ancestry that exceeds the %s bound', async (invalid, detail) => {
       const s = scenario('clean');
       s.vaultWalk = { additionalPayments: 0, invalid };
       await refuses(s, ['vaults[0].close_tx', detail]);
     },
   );
+  it.each(['first', 'last'] as const)('proves the boundary path with large, partly unavailable sibling branches listed %s', async (siblings) => {
+    const s = scenario('clean');
+    // 30 Pays, plus the opening and Close, are within the 32-transaction depth limit.
+    s.vaultWalk = { additionalPayments: 29, siblings };
+    s.skipKoiosTx.add(h('other vault open 0'));
+    const result = await go(s);
+    expect(result.exit, result.err).toBe(0);
+  });
   it('refuses a payment of the Order Desk given as the close of the vault: a close leaves no vault output, and the node holds the vault Live at the next output', async () => {
     const s = scenario('clean');
     s.record = { vaults: [{ ref: `${h('vault open 0')}#0`, open_tx: h('vault open 0'), close_tx: txOf('order-desk', 'post') }] };
