@@ -5,20 +5,22 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { iso } from '../../checks/lib/format.ts';
+import type { UseCase } from '../lib/contract.ts';
 import { FactsFile } from '../lib/facts.ts';
 import { loadTask } from '../lib/load.ts';
-import { MOCK_INSURER_DOMAIN, MOCK_PUBLIC_BASE } from '../lib/mock-hosts.ts';
+import { MOCK_PUBLIC_BASE } from '../lib/mock-hosts.ts';
 import task from '../tasks/tenant.ts';
+import BIDS from '../usecases/bid-evaluation.ts';
 import USE from '../usecases/inventory-reorder.ts';
-import { NOW, USE_CASE, hashOf, taskWorld } from './support/task-world.ts';
+import PRIORAUTH from '../usecases/prior-authorization.ts';
+import { NOW, hashOf, taskWorld } from './support/task-world.ts';
 import type { TaskWorld } from './support/task-world.ts';
 
-const NAMES = USE.keys.map((key) => key.name);
-const SHARED = USE.keys.filter((key) => key.scope === 'shared').map((key) => key.name);
 const TOKEN = hashOf('operator token').slice(0, 48);
 const CLEAN_NAME = 'reorder-clean-20261115';
 const FAILURE_NAME = 'reorder-failure-20261115';
 const SUPPLIER = 'alfa.vector.apexfusion.org';
+const INSURER = 'delta.vector.apexfusion.org';
 
 const roots: string[] = [];
 afterAll(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -50,10 +52,10 @@ class FakeMock {
     const headers = new Headers(call.init.headers);
     if (call.init.method === 'POST' && url.pathname === '/admin/tenants') {
       if (headers.get('authorization') !== `Bearer ${TOKEN}`) return answer(401, { error: 'operator_token_invalid', message: 'the operator token is missing or wrong' });
-      const body: { tenant: string; organisations: unknown } = JSON.parse(String(call.init.body));
+      const body: { tenant: string; organisations: unknown; seed?: { vendors: unknown[] } } = JSON.parse(String(call.init.body));
       const created = !this.tenants.has(body.tenant);
       this.tenants.add(body.tenant);
-      return answer(created ? 201 : 200, { tenant: body.tenant, created, organisations: body.organisations, base: `${MOCK_PUBLIC_BASE}/t/${body.tenant}`, counts: { erp: 3 } });
+      return answer(created ? 201 : 200, { tenant: body.tenant, created, organisations: body.organisations, base: `${MOCK_PUBLIC_BASE}/t/${body.tenant}`, counts: { erp: 3, vendors: body.seed?.vendors.length ?? 3 } });
     }
     const read = /^\/t\/([a-z0-9-]+)\/(state|log)$/.exec(url.pathname);
     if (call.init.method === 'GET' && read !== null && this.tenants.has(read[1]!)) {
@@ -67,7 +69,7 @@ class FakeMock {
 
 interface TenantWorld { readonly w: TaskWorld; readonly mock: FakeMock; readonly envFile: string }
 
-interface WorldOptions { readonly mock?: FakeMock; readonly env?: Record<string, string | undefined>; readonly file?: string | null }
+interface WorldOptions { readonly mock?: FakeMock; readonly env?: Record<string, string | undefined>; readonly file?: string | null; readonly use?: UseCase }
 
 /** A world with the fake mock and an env file of the mock (`file` is its text, null for no file). */
 async function tenantWorld(options: WorldOptions = {}): Promise<TenantWorld> {
@@ -76,12 +78,13 @@ async function tenantWorld(options: WorldOptions = {}): Promise<TenantWorld> {
   roots.push(dir);
   const envFile = join(dir, '.env.mock-systems');
   if (options.file !== null) writeFileSync(envFile, options.file ?? `MOCK_PUBLIC_BASE=${MOCK_PUBLIC_BASE}\nMOCK_OPERATOR_TOKEN=${TOKEN}\nPORT=9120\n`, { mode: 0o600 });
-  const w = await taskWorld({ keys: NAMES, shared: SHARED, use: USE, fetchImpl: mock.fetch, env: { OPERATOR_MOCK_ENV_FILE: envFile, ...options.env } });
+  const use = options.use ?? USE;
+  const w = await taskWorld({ use, fetchImpl: mock.fetch, env: { OPERATOR_USE_CASE: USE.name, OPERATOR_MOCK_ENV_FILE: envFile, ...options.env } });
   return { w, mock, envFile };
 }
 
 const submit = (t: TenantWorld, ...argv: string[]): Promise<number> => t.w.run(task, '--submit', ...argv);
-const facts = (w: TaskWorld) => FactsFile.open(join(w.stateDir, 'facts.json'), { useCase: USE_CASE, network: 'vector-mainnet' }).read();
+const facts = (w: TaskWorld) => FactsFile.open(join(w.stateDir, 'facts.json'), { useCase: w.use.name, network: 'vector-mainnet' }).read();
 const body = (call: Call): Record<string, unknown> => JSON.parse(String(call.init.body));
 
 /** Everything that the fake recorded, as text, without the one header that carries the token. */
@@ -101,7 +104,7 @@ describe('the call that makes a tenant', () => {
     const headers = new Headers(call.init.headers);
     expect(headers.get('authorization')).toBe(`Bearer ${TOKEN}`);
     expect(headers.get('content-type')).toBe('application/json');
-    expect(body(call)).toEqual({ tenant: CLEAN_NAME, organisations: { supplier: SUPPLIER, insurer: MOCK_INSURER_DOMAIN } });
+    expect(body(call)).toEqual({ tenant: CLEAN_NAME, organisations: { supplier: SUPPLIER, insurer: INSURER } });
     expect(Object.keys(body(call))).not.toContain('seed');
     expect(t.w.screen.lines).toContain(`the tenant ${CLEAN_NAME} is new: the mock service made it from the default seed (the run reads GLV-NIT-M)`);
     expect(facts(t.w).tenants).toEqual({ r1: { name: CLEAN_NAME, createdAt: iso(NOW), seedKind: 'default' } });
@@ -191,6 +194,93 @@ describe('the call that makes a tenant', () => {
   });
 });
 
+describe('the tenant data for the additional agents', () => {
+  const run = ['--run', 'r1', '--name', 'test-tenant'];
+  const domains = ['alfa.vector.apexfusion.org', 'bravo.vector.apexfusion.org', 'charlie.vector.apexfusion.org'];
+
+  it('posts the insurer domain from the data and leaves out the seed for prior authorization', async () => {
+    const first = await tenantWorld({ use: PRIORAUTH });
+    expect(await submit(first, ...run)).toBe(0);
+    expect(body(first.mock.calls[0]!)).toEqual({ tenant: 'test-tenant', organisations: { supplier: SUPPLIER, insurer: INSURER } });
+    expect(facts(first.w).tenants.r1?.seedKind).toBe('default');
+    const insurer = 'intake.example.org';
+    const changed = await tenantWorld({ use: { ...PRIORAUTH, tenantOrganisations: { ...PRIORAUTH.tenantOrganisations, insurer } } });
+    expect(await submit(changed, ...run)).toBe(0);
+    expect(body(changed.mock.calls[0]!)).toMatchObject({ organisations: { insurer } });
+  });
+
+  it('keeps all three vendor rows in one tenant and replaces their organisation ids with domains', async () => {
+    const t = await tenantWorld({ use: BIDS });
+    expect(await submit(t, ...run)).toBe(0);
+    expect(t.mock.calls).toHaveLength(1);
+    const call = t.mock.calls[0]!;
+    expect(body(call)).toEqual({
+      tenant: 'test-tenant', organisations: { supplier: SUPPLIER, insurer: INSURER },
+      seed: { vendors: BIDS.tenantSeed!.vendors.map((vendor, index) => ({ ...vendor, organisation: domains[index] })) },
+    });
+    expect(new Headers(call.init.headers).get('authorization')).toBe(`Bearer ${TOKEN}`);
+    expect(recorded(t.mock)).not.toContain(TOKEN);
+    expect(t.w.allText()).not.toContain(TOKEN);
+    expect(t.w.allText()).not.toContain('Supplier Alfa');
+    expect(t.w.machine().result).toEqual({ tenant: 'test-tenant', created: true });
+    expect(facts(t.w).tenants.r1).toEqual({ name: 'test-tenant', createdAt: iso(NOW), seedKind: 'custom' });
+  });
+
+  it('lists the vendor ids and domains without printing the seed or reading the token in a dry run', async () => {
+    const t = await tenantWorld({ use: BIDS, file: null });
+    expect(await t.w.run(task, ...run)).toBe(0);
+    expect(t.mock.calls).toEqual([]);
+    const screen = t.w.screen.lines.join('\n');
+    BIDS.tenantSeed!.vendors.forEach((vendor, index) => {
+      expect(screen).toContain(`${vendor.vendor_id}: ${domains[index]}`);
+      expect(screen).not.toContain(vendor.name);
+      expect(screen).not.toContain(vendor.last_audit);
+    });
+    expect(screen).not.toContain(TOKEN);
+    expect(facts(t.w).tenants).toEqual({});
+  });
+
+  it('refuses an unknown vendor organisation before calling the mock service', async () => {
+    const vendors = BIDS.tenantSeed!.vendors.map((vendor, index) => index === 2 ? { ...vendor, organisation: 'not-in-the-data' } : vendor);
+    const t = await tenantWorld({ use: { ...BIDS, tenantSeed: { vendors } } });
+    expect(await submit(t, ...run)).toBe(2);
+    expect(t.w.screen.errorText).toContain('V-1003');
+    expect(t.w.screen.errorText).toContain('not-in-the-data');
+    expect(t.mock.calls).toEqual([]);
+    expect(facts(t.w).tenants).toEqual({});
+  });
+
+  it.each([2, '3', null, undefined])('records no custom seed when the vendor count is %s', async (vendors) => {
+    const t = await tenantWorld({ use: BIDS });
+    t.mock.override = () => answer(201, { tenant: 'test-tenant', created: true, counts: { vendors }, echo: TOKEN });
+    expect(await submit(t, ...run)).toBe(1);
+    expect(t.w.screen.errorText).toContain('vendor count');
+    expect(t.w.allText()).not.toContain(TOKEN);
+    expect(facts(t.w).tenants).toEqual({});
+  });
+
+  it('does not make a tenant for the lifecycle run kind', async () => {
+    const t = await tenantWorld({ use: BIDS });
+    expect(await submit(t, ...run, '--kind', 'lifecycle')).toBe(2);
+    expect(t.mock.calls).toEqual([]);
+  });
+
+  it.each([PRIORAUTH, BIDS])('reports state sections and the log for $title without counting purchase orders', async (use) => {
+    const t = await tenantWorld({ use });
+    expect(await submit(t, ...run)).toBe(0);
+    t.mock.override = (call) => call.url.endsWith('/state')
+      ? answer(200, { tenant: 'test-tenant', organisations: use.tenantOrganisations, insurer: { requests: [] }, sourcing: { rankings: [TOKEN] }, vendors: [] })
+      : answer(200, { dropped: 3, lines: [TOKEN, TOKEN] });
+    expect(await t.w.run(task, 'status', '--run', 'r1')).toBe(0);
+    expect(t.w.screen.lines).toContain('  state sections: insurer, sourcing, vendors');
+    expect(t.w.screen.lines).toContain('  lines in the log: 2, dropped: 3');
+    expect(t.w.screen.lines.join('\n')).toContain(`from the ${use.tenantSeed === null ? 'default' : 'custom'} seed`);
+    expect(t.w.screen.lines.join('\n')).not.toContain('orders in the PO store');
+    expect(t.w.allText()).not.toContain(TOKEN);
+    for (const call of t.mock.calls.filter(({ init }) => init.method === 'GET')) expect(new Headers(call.init.headers).has('authorization')).toBe(false);
+  });
+});
+
 describe('the operator token', () => {
   it('stands in the header of the one call and nowhere else: not in the url, the body, another header, a line of output, a fact, the state or the evidence', async () => {
     const t = await tenantWorld();
@@ -229,6 +319,15 @@ describe('the operator token', () => {
       expect(failedLine.exit, label).toBe(exit);
       expect(failedLine.outcome, label).toBe(exit === 2 ? 'stopped' : 'failed');
     }
+  });
+
+  it('does not show a token when the error field looks like a refusal code', async () => {
+    const token = 't'.repeat(32);
+    const t = await tenantWorld({ file: `MOCK_OPERATOR_TOKEN=${token}\n` });
+    t.mock.override = () => answer(401, { error: token });
+    expect(await submit(t, '--run', 'r1', '--kind', 'clean')).toBe(2);
+    expect(t.w.screen.errorText).toContain('HTTP 401');
+    expect(t.w.allText()).not.toContain(token);
   });
 
   it('refuses an answer that does not say that the tenant is made or reset, and writes no fact', async () => {
@@ -278,7 +377,7 @@ describe('a dry run', () => {
     expect(t.w.machine()).toMatchObject({ mode: 'dry', outcome: 'dry', exit: 0, result: { tenant: CLEAN_NAME } });
     const lines = t.w.screen.lines;
     expect(lines).toContain(`  POST ${MOCK_PUBLIC_BASE}/admin/tenants`);
-    expect(lines).toContain(`  body ${JSON.stringify({ tenant: CLEAN_NAME, organisations: { supplier: SUPPLIER, insurer: MOCK_INSURER_DOMAIN } })}`);
+    expect(lines).toContain(`  body ${JSON.stringify({ tenant: CLEAN_NAME, organisations: { supplier: SUPPLIER, insurer: INSURER } })}`);
     expect(lines.some((line) => line.startsWith('  header authorization: the operator token'))).toBe(true);
     expect(t.w.allText()).not.toContain('Bearer');
     expect(facts(t.w).tenants).toEqual({});
