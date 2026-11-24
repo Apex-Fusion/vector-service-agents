@@ -418,3 +418,83 @@ A refusal is `{ "error": "<code>", "message": "<words>" }` with the status in th
 | 500, the service | `precheck_missing` (the job has no record of passed checks for its body), `store_write_failed` (the rfq book or the record of the model hire cannot be written), `internal` (a fault of the service: a plain 500 with no message when nothing names it, and the fixed message when the job names it) |
 | 502, a third party | `credential_failed` (the identity gateway gave no credential that a quote can hold), `inference_failed` (the model hire failed, or it did not start because less than 60 s were left for it), `model_output_invalid` (the answer of the model cannot be used: it breaks the shape of the decision, or a line is not an item of the request, or there is no line) |
 | 503, the service cannot answer now | `check_unavailable` (the hook could not read a source), `shutting_down` (the service is stopping) |
+
+## What the receipt commits to
+
+The service signs no receipt. The runtime builds and signs the receipt, and submits its hash in the Submit transaction.
+
+| Receipt field | Value for this agent |
+|---|---|
+| `escrow_ref` | the escrow UTxO, `<txid>#<index>` |
+| `supplier_pkh` | the key hash of the supplier key of the runtime of the Bid Desk that took the job |
+| `prompt_hash` | sha256 of the UTF-8 bytes of the wire payload, as the buyer committed it in the escrow datum |
+| `response_hash` | sha256 of the UTF-8 bytes of the quote exactly as the service returned them |
+| `model` | `bid-desk-v1` |
+| `prompt_tokens`, `completion_tokens` | 0 and 0, the runtime counts none. The token counts of the model hire are in the sub-receipt under `decisions[0].inference.sub_job` |
+| `wallclock_ms` | how long the service call took |
+
+The signed receipt of the job is the signed quote, and the quote is the committed output. So the receipt commits every line with its unit price and its lead time, the hash of the request that the Bid Desk received, the hash of the price list that it priced from, its credential, who sent the request, the 7 checks, and the pricing decision with its reasoning and the sub-receipt of the model supplier. It does not hold the Bid Desk to the quote: a quote is not a binding offer (see Known gaps).
+
+The sha256 of the quote text is what a challenge uses. The evidence of a challenge on S1 names that hash as `quote_sha256`, with the hash of the price list (`price_list_sha256`), the SKU and the quantity of the line, the unit price that the quote gives and the unit price that the list gives.
+
+The signature is Ed25519 over the canonical JSON of the receipt. The sha256 of the canonical JSON of `{ receipt, signature }` is the `result_receipt_hash` in the Submitted escrow datum.
+
+## Claim statements
+
+The service stakes no claim: no code of the service calls the staking. Before a run, an operator command stakes a Module-1 claim for each Bid Desk with its service key: 50 units, which is 50000000 lovelace, with a challenge window of 24 hours. After the window, the same command withdraws the claim when nobody challenged it. The claim has three statements, and the three Bid Desks have the same three. The manifest of each holds the same three texts in `behaviour.claim`, with no reference to a claim. A challenge names the text of a statement.
+
+| Id | Statement |
+|---|---|
+| S1 | The unit price of every line in a quote is the price its published price list gives for that SKU and quantity. |
+| S2 | A quote names the hash of the request for quotation it answers. |
+| S3 | This agent gives one quote per request for quotation and sender. |
+
+S1 is the statement that the fault `quote_off_price_list` breaks. A buyer's agent that finds a unit price that differs from the published list declines the quote and challenges the claim of the Bid Desk on S1. The Sourcing Agent does this. S2 is held by the member `rfq_sha256` of the quote, and S3 by the book of the Bid Desk (see What it checks before the Claim).
+
+## Fault switch
+
+`FAULT_MODE=quote_off_price_list`: the unit price of the first line that the price list prices is lowered by a fifth of the listed price, rounded up, and every check of the hook still passes. The new price is `listed - ceil(listed / 5)`, where `listed` is the price of the list for the SKU and the quantity of that line. The totals follow the changed line. The new price is below the listed price and at least 1, because no price of the three files is below 10. For the request of the example under Request and the price list of Bid Desk Alfa, the quote of a fault run has the unit price 100 on its first line (the listed price is 125), the line total 10000 and the total 19400, and its `fault_mode` is `quote_off_price_list`. The decision on record stays what the model said.
+
+When no line can take the new price, the job ends with `internal` (500): a run never says that a fault was on when it changed nothing. The failure run sets the switch on one Bid Desk only, Bid Desk Charlie, to show that the Sourcing Agent catches a quote that is below the published price list. The switch of one Bid Desk never changes another: each Bid Desk reads an env file of its own.
+
+The switch is empty in a clean run. Any other value stops the start of the service. The switch changes what the job writes and never a check: the hook does not know that it exists. It is declared in the manifest, in `behaviour.fault_modes`, and the manifest is the same for every value. Each quote returns the active value as `fault_mode`, its last member.
+
+## Operator and data handling
+
+Operator: Apex Fusion Foundation. The contact is `operator.contact` in the manifest of each Bid Desk.
+
+The request for quotation and the price list are synthetic data, and they are held in memory while a job runs. The service writes to its state directory the bookkeeping of the escrows that it posts for its model call and the book of the requests that it answered (the sender, the request identifier and the hash of the quote of each). The log carries job outcomes, counts and codes, never a request, a quote, a credential or a key. The Bid Desk calls no mock system and no dispute service. What leaves to third parties:
+
+| Party | What it receives |
+|---|---|
+| the identity gateway (the resolution of the DID of the sender, and the request for the credential of this agent) | the DID of the sender, in the hook. The DID of this agent, in the job, for its credential |
+| the ledger, read only (the delegation and the escrow paid from a vault) | the reads of the hook: the identifiers of the delegation and of the escrow |
+| a model supplier on the Vector marketplace, hired through a bonded escrow, and the model provider behind it (the prompt of the decision: the request for quotation and the price list) | one job: the instruction of the decision, the date of today, the items and the date of the request, the entries of the price list for the SKUs of the items, and the reference of the escrow |
+
+The service keeps these files and folders in its state directory (`BID_DESK_STATE_DIR`, which is `/data` in the image):
+
+| Path | What it holds |
+|---|---|
+| `rfq-book.json` | the rfq book: the sender, the request identifier and the hash of the quote of each request that the service answered. It holds at most 10000 entries and never drops one |
+| `keys/<key hash>/stranded.json` | the bookkeeping of the escrows that a model hire posted: references, times and transaction hashes, never a request or a quote |
+
+What the decision receives:
+
+| Decision | Data block | Left out |
+|---|---|---|
+| `quote` | `today`, `request` (`items` and `needed_by`) and `price_list` (the entries for the SKUs of the items, each with `sku`, `lead_time_days` and `breaks`) | the identifier of the request (`rfq_id`), the sender, the delegation and every other member of the message, and the entries of the price list for other SKUs |
+
+The text of the request and of the price list reaches the model only inside the marked data block, and never inside an instruction. To post and settle its escrows for the model hire, the service reads the ledger through the node (Ogmios) and the Koios indexer, submits its transactions through the submit API, and finds the model suppliers on the marketplace indexer. At start the service makes no call to a third party.
+
+## Known gaps
+
+The manifest states these eight, in this order, word for word. A test keeps them equal to `GAPS` in `agents/bid-desk/src/serve/gaps.ts`. The first five are the gaps of the agent. The sixth says whose keys the parties are. The seventh starts with a run-in lead and names three things that no run of use case 3 (supplier bid evaluation) covers. The eighth is the sentence of the kit about the fault switch.
+
+- A quote is the result of a paid job. It is not a binding offer.
+- The model prices the request. Nothing in this agent checks its lines against the price list: the buyer's agent can, because the price list and its hash are public.
+- The three Bid Desks are one code base under three records, run by one foundation. They do not compete.
+- The compliance attestation is issued by a demonstration registry with no record of its own.
+- The numbers of the price list are synthetic.
+- The controller key of this deployment, the Accountable key and the guardian keys are on one host of one operator, so a party is independent of the controller by key only.
+- What this does not show: no run covers the refund of the escrow of a revoked agent, the reclaim of an escrow in use case 3, or a relying party that refuses a live token after its authority ends. Tests cover that last case only.
+- This service has a fault switch for failure runs with these possible values: quote_off_price_list (one quote line has a unit price that is not the published price for that item and quantity); this manifest is the same for every value, so only the field fault_mode of each result shows which value is active.
