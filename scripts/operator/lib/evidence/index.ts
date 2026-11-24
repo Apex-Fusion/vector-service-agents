@@ -1,9 +1,11 @@
 import { PreconditionError } from '../../../checks/lib/session.ts';
+import { bidEvaluation } from './bid-evaluation.ts';
 import { inventory } from './inventory.ts';
 import type { EvidenceModule } from './types.ts';
 
 export const EVIDENCE_MODULES: Readonly<Record<string, EvidenceModule>> = {
   'inventory-reorder': inventory,
+  'bid-evaluation': bidEvaluation,
 };
 
 export function evidenceModuleOf(useCaseName: string, modules: Readonly<Record<string, EvidenceModule>> = EVIDENCE_MODULES): EvidenceModule {
