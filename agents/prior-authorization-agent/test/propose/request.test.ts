@@ -1,12 +1,13 @@
-// agents/prior-authorization-agent/test/propose/request.test.ts: the last step of `propose`: the number, the document and the proposal. The number comes from the counter, once, after every check passed, and a number
-// that a failed job took is never given again. The document is accepted by `parsePriorAuthRequest`, and a document that the kit refuses is `bad_document`. A failure after the decision keeps the decision in the
-// result. Each failure has an accepted twin.
+// agents/prior-authorization-agent/test/propose/request.test.ts: the last step of `propose`: the number, the document and the proposal. Before the decision the job makes a trial of the request, with stand-ins for the
+// number, the justification and the references, so a record that the kit refuses costs no hire and no number. The number comes from the counter, once, after the decision and its checks, and a number that a failed
+// job took is never given again. The document is accepted by `parsePriorAuthRequest`, and a document that the kit refuses is `bad_document`. A failure after the decision keeps the decision in the result. Each
+// failure has an accepted twin.
 import { describe, expect, it } from 'vitest';
 import { recordSetSha256 } from '@vsa/usecase-kit/priorauth';
 import { accepted } from '@vsa/usecase-kit/protocol';
 import { PROPOSE_FAILURES } from '../../src/propose/index.ts';
 import type { JustifyAnswer } from '../../src/propose/index.ts';
-import { CHOICE, DECISION, INSURER_DID, PORTS, SUB_JOB, TENANT, answerFor, calledPorts, changed, expectFailed, golden, proposed, world } from './support.ts';
+import { CHOICE, DECISION, INSURER_DID, PORTS, SUB_JOB, TENANT, answerFor, calledPorts, changed, expectFailed, expectNotDecided, golden, proposed, world } from './support.ts';
 
 /** The choice of the golden run as a plain object, with the members of the request that a test changes. */
 const choiceWith = (over: Record<string, unknown>): JustifyAnswer => answerFor({ justification: CHOICE.justification, guideline_refs: [...CHOICE.guideline_refs], record_refs: [...CHOICE.record_refs], ...over });
@@ -135,29 +136,42 @@ describe('the request that the kit refuses', () => {
     }
   });
 
-  it('is a failed proposal with bad_document for a diagnosis code with a format character, which the record set takes and the request does not, and the decision is kept', async () => {
+  const HIDDEN: [string, string][] = [
+    ['a tab', 'M54\t16'],
+    ['a carriage return', 'M54\r16'],
+    ['a line feed', 'M54\n16'],
+    ['a control character of the second block', 'M54\u008516'],
+    ['a zero width character', 'M51\u200b.16'],
+    ['a line separator', 'M54\u202816'],
+    ['a paragraph separator', 'M54\u202916'],
+  ];
+  it.each(HIDDEN)('is a failed proposal with bad_document, before the decision, for a diagnosis code with %s, which the record set takes and the request does not: no hire and no number', async (_name, code) => {
     const w = world();
-    const set = changed(golden('record-set'), ['order', 'diagnosis_codes'], ['M54.16', 'M51\u200b.16']);
+    const set = changed(golden('record-set'), ['order', 'diagnosis_codes'], ['M54.16', code]);
     w.script.evidence = async () => ({ ok: true, record_set: set as never, guideline: golden('guideline') as never });
     const result = await w.run();
     expectFailed(result, 'bad_document');
-    expect(result.decisions).toStrictEqual([DECISION]);
-    expect(w.numbers.get(TENANT)).toBe(1);
+    expect(result.decisions).toStrictEqual([]);
+    expect(result.sub_jobs).toStrictEqual([]);
+    expect(calledPorts(w)).toStrictEqual(PORTS.slice(0, 4));
+    expectNotDecided(w);
+    expect(w.logs).toStrictEqual(['propose stopped at evidence: bad_document']);
   });
 
-  it('is a failed proposal with bad_document when the advert of the insurer is not a reference of an output, and the decision is kept', async () => {
+  it('takes a diagnosis code with a space, a dot, a hyphen and an accented letter, which the request takes: the twin', async () => {
+    const codes = ['M54 16', 'M51.16', 'Z-99', '\u00c9x'];
     const w = world();
-    w.script.readInsurer = async () => accepted({ advert_ref: 'one' });
-    const result = await w.run();
-    expectFailed(result, 'bad_document');
-    expect(result.decisions).toStrictEqual([DECISION]);
+    w.script.evidence = async () => ({ ok: true, record_set: changed(golden('record-set'), ['order', 'diagnosis_codes'], codes) as never, guideline: golden('guideline') as never });
+    expect(proposed(await w.run()).document.diagnosis_codes).toStrictEqual(codes);
   });
 
-  it('is a failed proposal with bad_document when the insurer of the request is no DID, and the decision is kept', async () => {
+  it('is a failed proposal with bad_document, before the decision, when the insurer of the request is no DID: no hire and no number', async () => {
     const w = world();
     const result = await w.run({ request: { insurer_did: 'did:vector:abc' } });
     expectFailed(result, 'bad_document');
-    expect(result.decisions).toStrictEqual([DECISION]);
+    expect(result.decisions).toStrictEqual([]);
+    expect(calledPorts(w)).toStrictEqual(PORTS.slice(0, 4));
+    expectNotDecided(w);
   });
 });
 

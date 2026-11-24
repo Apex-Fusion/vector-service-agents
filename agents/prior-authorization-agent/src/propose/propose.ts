@@ -8,11 +8,13 @@
 //      show goes on, because the ledger decides when the request is paid. A ledger that cannot be read is `failed` `ledger_unavailable`.
 //   2. The paying key: the delegate key of the delegation, found among the delegation keys of this agent. The evidence cannot make a sub-delegation without it, and nothing is sent: `ledger_unavailable` for a
 //      ledger that cannot be read, `delegation_not_found` for a delegation that the ledger does not show, `delegation_key_unknown` for a key that this agent does not hold.
-//   3. The insurer. It is read before anything is sent to the chain, so an insurer that is not listed costs nothing. A failure is `failed` with the code of the reader.
+//   3. The insurer. It is read before anything is sent to the chain, so an insurer that is not listed costs nothing. A failure is `failed` with the code of the reader. The reference of the advert that the
+//      reader gives must be a reference of an output that the protocol takes: else `failed` `internal`, and nothing is read, hired or counted for it.
 //   4. The evidence: the record set of the order and the guideline of its service. It gets a deadline that leaves the decision its time (`DECISION_RESERVE_MS`). A failure is `failed` with its code. The job then
 //      checks the two documents itself with the parsers of the kit, and it checks that the record set is the set of the order that the request names (`record_set_mismatch`) and that the guideline is the
 //      guideline of the service of that order (`guideline_mismatch`). It keeps its own copies of the two documents: the values of the request and the hash of the record set come from the copies, which it
-//      reads before the decision starts.
+//      reads before the decision starts. Last, it makes a trial of the request with a stand-in number, a stand-in justification and no references. A record that the kit refuses in a request (a diagnosis code
+//      with a tab or a format character is one) is `failed` `bad_document` here, before the model is hired and before a number is taken.
 //   5. The decision `justification`, once, with the record set and the guideline that the job checked. A failure gives `failed` with its code and no decision. The request is built from the choice only when it
 //      EQUALS the choice that the decision records: no code changes what the model chose, and a difference is `failed` `decision_mismatch`. The decision is kept in the result when a later step fails.
 //   6. The request. The number comes from the counter, which stores it before this step uses it. The document must be accepted by `parsePriorAuthRequest`.
@@ -26,7 +28,7 @@ import { within } from '@vsa/usecase-kit/access';
 import { checkAuthority, failedProposalResult, proposedResult } from '@vsa/usecase-kit/buyer';
 import type { ProposalPieces } from '@vsa/usecase-kit/buyer';
 import { PRIORAUTH_REQUEST_SCHEMA, parseGuideline, parsePriorAuthRequest, parseRecordSet, recordSetSha256, requestNumberOf } from '@vsa/usecase-kit/priorauth';
-import { ERROR_STATUS, canonicalJson, isPlainObject } from '@vsa/usecase-kit/protocol';
+import { ERROR_STATUS, canonicalJson, isPlainObject, parseOutputRef } from '@vsa/usecase-kit/protocol';
 import type { Decision, JsonValue, ProposalResult } from '@vsa/usecase-kit/protocol';
 import type { DelegationKey, ProposeDeps, ProposeRequest } from './ports.ts';
 
@@ -47,6 +49,9 @@ export const PROPOSE_FAILURES: readonly string[] = Object.freeze([
 ]);
 
 const TENANT_RULE = 'request.tenant must be 1 to 48 characters: lower-case letters, digits and hyphens, and it starts with a letter or a digit';
+
+/** The justification of the trial of the request before the decision. The real justification is the choice of the model, and the trial checks the members that the model does not write. */
+const STAND_IN_JUSTIFICATION = 'A stand-in text for the trial of the request. The decision writes the real justification.';
 
 /**
  * A request that the job refuses before it does anything: a delegation that names another agent (`delegation_not_mine`), and a request that cannot be served (`bad_shape`). The status is the status of the
@@ -106,11 +111,11 @@ function isDecision(value: unknown): value is Decision {
   return typeof subJob === 'object' && subJob !== null;
 }
 
-/** The reference of the advert that the reader of the insurer gave, or `null` when the answer is not an object with a text for it. Its form is checked with the whole request. */
+/** The reference of the advert that the reader of the insurer gave, as a reference of an output that the protocol takes, or `null` when the answer is not an object with such a reference. */
 function advertRefOf(value: unknown): string | null {
   if (typeof value !== 'object' || value === null) return null;
-  const reference: unknown = Reflect.get(value, 'advert_ref');
-  return typeof reference === 'string' ? reference : null;
+  const reference = parseOutputRef(Reflect.get(value, 'advert_ref'), 'advert_ref');
+  return reference.ok ? reference.value : null;
 }
 
 /** Writes one line to the log of the deps. A log that throws changes no result: the line is lost, and the job goes on. */
@@ -132,8 +137,9 @@ export async function runPropose(deps: ProposeDeps, request: ProposeRequest, arr
   const orderId = request.order_id;
   const insurerDid = request.insurer_did;
   const delegation = request.authority.delegation;
+  let standInNumber: string;
   try {
-    requestNumberOf(tenant, 0);
+    standInNumber = requestNumberOf(tenant, 0);
   } catch {
     note(deps, 'propose refused at intake: bad_shape');
     throw new ProposeRefusal('bad_shape', TENANT_RULE);
@@ -220,6 +226,29 @@ export async function runPropose(deps: ProposeDeps, request: ProposeRequest, arr
   } catch {
     return failed('evidence', 'bad_document');
   }
+  /**
+   * The request for a number, a justification and the two lists of references. The trial before the decision and the last request come from this one function, so they never differ in a member that the
+   * decision does not write.
+   */
+  const requestWith = (requestNumber: string, justification: unknown, guidelineRefs: unknown, recordRefs: unknown): unknown => ({
+    schema: PRIORAUTH_REQUEST_SCHEMA,
+    request_number: requestNumber,
+    tenant,
+    order_id: orderId,
+    patient_ref: patientRef,
+    ordering_clinician_ref: clinicianRef,
+    service_code: serviceCode,
+    diagnosis_codes: diagnosisCodes,
+    justification,
+    guideline_refs: guidelineRefs,
+    record_refs: recordRefs,
+    record_set_sha256: setSha256,
+    insurer_did: insurerDid,
+    advert_ref: advertRef,
+  });
+  // The members that the decision does not write must make a request that the kit takes. The job checks them now, with a stand-in for the number, the justification and the references, because a record that
+  // the kit refuses in a request (a diagnosis code with a tab or a format character is one) would be found after the model was hired and a number was taken.
+  if (!parsePriorAuthRequest(requestWith(standInNumber, STAND_IN_JUSTIFICATION, [], [])).ok) return failed('evidence', 'bad_document');
 
   // 5. The decision.
   const beforeDecision = stopped('decision');
@@ -257,22 +286,7 @@ export async function runPropose(deps: ProposeDeps, request: ProposeRequest, arr
   } catch {
     return failed('request', 'internal');
   }
-  const parsed = parsePriorAuthRequest({
-    schema: PRIORAUTH_REQUEST_SCHEMA,
-    request_number: requestNumber,
-    tenant,
-    order_id: orderId,
-    patient_ref: patientRef,
-    ordering_clinician_ref: clinicianRef,
-    service_code: serviceCode,
-    diagnosis_codes: diagnosisCodes,
-    justification: chosen.justification,
-    guideline_refs: chosen.guideline_refs,
-    record_refs: chosen.record_refs,
-    record_set_sha256: setSha256,
-    insurer_did: insurerDid,
-    advert_ref: advertRef,
-  });
+  const parsed = parsePriorAuthRequest(requestWith(requestNumber, chosen.justification, chosen.guideline_refs, chosen.record_refs));
   if (!parsed.ok) return failed('request', 'bad_document');
   const result = proposedResult(parsed.value, piecesOf(decisions));
   if (result.outcome !== 'proposed') note(deps, `propose stopped at request: ${result.reason}`);

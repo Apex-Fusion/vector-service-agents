@@ -220,6 +220,14 @@ describe('the insurer', () => {
     ['no reference of an advert', {}],
     ['a reference that is a number', { advert_ref: 5 }],
     ['a reference that is a list', { advert_ref: [ADVERT_REF] }],
+    ['a text that is no reference of an output', { advert_ref: 'one' }],
+    ['a hash with no index', { advert_ref: 'c3'.repeat(32) }],
+    ['an index that is no number', { advert_ref: `${'c3'.repeat(32)}#x` }],
+    ['a hash of 63 characters', { advert_ref: `${'c3'.repeat(31)}c#1` }],
+    ['a hash with a capital letter', { advert_ref: `${'C3'.repeat(32)}#1` }],
+    ['an index of 11 digits', { advert_ref: `${'c3'.repeat(32)}#12345678901` }],
+    ['an index with a leading zero', { advert_ref: `${'c3'.repeat(32)}#01` }],
+    ['a reference with a space after it', { advert_ref: `${'c3'.repeat(32)}#1 ` }],
   ];
   it.each(WRONG)('fails with internal when the reader gives %s as a success, before the evidence: nothing is read for an insurer that has no advert', async (_name, value) => {
     const w = world();
@@ -237,10 +245,11 @@ describe('the insurer', () => {
     expectNothingPaid(w);
   });
 
-  it('puts the advert of the reader into the request: the twin of every failure above', async () => {
+  it.each(['0', '7', '9999999999'])('puts the advert of the reader into the request, for the index %s: the twin of every failure above', async (index) => {
     const w = world();
-    w.script.readInsurer = async () => accepted({ advert_ref: `${'9d'.repeat(32)}#7` });
-    expect(proposed(await w.run()).document).toMatchObject({ insurer_did: INSURER_DID, advert_ref: `${'9d'.repeat(32)}#7` });
+    const advertRef = `${'9d'.repeat(32)}#${index}`;
+    w.script.readInsurer = async () => accepted({ advert_ref: advertRef });
+    expect(proposed(await w.run()).document).toMatchObject({ insurer_did: INSURER_DID, advert_ref: advertRef });
   });
 });
 
