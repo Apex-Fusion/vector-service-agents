@@ -7,6 +7,8 @@
 // it: a reason of a failed hire that is no code of the hire kit, of the hire flow or of the protocol is `inconsistent_outcome`, and a code of a challenge that the challenge of a quote cannot give is
 // `port_error`. The code of a decision that failed is the one exception: the decision port gives it, and the kit lists the codes of a decision. It passes on when it has the form of a code, and it is
 // `invalid_code` when it has not.
+import { ACCEPT_WINDOW_MS, BUILD_TIMEOUT_MS, DELIVER_BY_BUFFER_MS, READ_BUDGET_MS } from '@vsa/buyer-core';
+import { DECISION_WINDOW_MS } from '@vsa/hire-kit';
 import type { AgentDeps, HireFailure, PayingKey } from '@vsa/hire-kit';
 import type { PriceList, Quote, RfqDocument } from '@vsa/usecase-kit/bids';
 import { EARLIER_PAY_MAY_LAND, COUNTERPARTY_REFUSED, INCONSISTENT_OUTCOME, INTERRUPTION_REASONS, PAY_UNCONFIRMED } from '@vsa/usecase-kit/buyer';
@@ -16,11 +18,26 @@ import { COUNTERPARTY_REFUSALS, ERROR_STATUS } from '@vsa/usecase-kit/protocol';
 import type { ChallengeRecord, DelegationId, Decision, Did, Digest, JsonObject, OutputRef, ReceiptVerification, SubJob } from '@vsa/usecase-kit/protocol';
 
 /**
- * The time that a hire of a quote can take, from the Pay to the end. A Bid Desk may answer as late as `deliver_by`: its advert allows 480,000 ms of work, and `deliver_by` adds a buffer of 180,000 ms, so the
- * answer comes 660,000 ms after the Pay at the latest. The hire kit then runs the decision of the model and the Accept, and both end at most 600,000 ms after the answer. A hire starts only when the deadline of
- * the job leaves this time and the time that the caller keeps for the scoring.
+ * The bounded reads that one challenge makes in the dispute folder of the kit, on the path of a challenge that is filed. The journal is read two times and written three times (the start, the evidence that
+ * landed, and the end). The claims, the challenges of the claimer, the claim document of the claim, the transaction of the claim, the escrow of the job and the claim again are read one time each. A claimer
+ * with more than one open claim costs one more read of a claim document for each.
  */
-export const QUOTE_HIRE_RESERVE_MS = 660_000 + 600_000;
+const CHALLENGE_READS = 11;
+
+/**
+ * The time that the challenge of a quote can take after the decision of the model: two transactions (the evidence and the challenge), each with the build and the confirmation that the Module-1 port bounds
+ * (`BUILD_TIMEOUT_MS`, and `DELIVER_BY_BUFFER_MS` for the confirmation), and the bounded reads above. The dispute folder bounds each read with a setting of the service (`read_timeout_ms`). This sum takes the
+ * read budget of the buyer code, `READ_BUDGET_MS`, for that setting: a service that sets a longer bound must raise the reserve.
+ */
+export const CHALLENGE_NEED_MS = 2 * (BUILD_TIMEOUT_MS + DELIVER_BY_BUFFER_MS) + CHALLENGE_READS * READ_BUDGET_MS;
+
+/**
+ * The time that a hire of a quote can take, from the Pay to the end. A Bid Desk may answer as late as `deliver_by`: its advert allows 480,000 ms of work, and `deliver_by` adds a buffer of
+ * `DELIVER_BY_BUFFER_MS` (180,000 ms), so the answer comes 660,000 ms after the Pay at the latest. After the answer the hire has two ends, and the reserve takes the longer one. An Accept ends at most
+ * `ACCEPT_WINDOW_MS` (600,000 ms) after the answer. A quote that the model does not accept ends after the decision, which has `DECISION_WINDOW_MS` (360,000 ms), and the challenge, which needs
+ * `CHALLENGE_NEED_MS`. A hire starts only when the deadline of the job leaves this time and the time that the caller keeps for the scoring.
+ */
+export const QUOTE_HIRE_RESERVE_MS = 480_000 + DELIVER_BY_BUFFER_MS + Math.max(ACCEPT_WINDOW_MS, DECISION_WINDOW_MS + CHALLENGE_NEED_MS);
 
 /** A bidder that the model invited, with what the job needs to hire it. The list is in the order of the invitation. */
 export interface BidderToHire {

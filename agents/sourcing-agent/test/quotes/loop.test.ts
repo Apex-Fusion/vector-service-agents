@@ -3,6 +3,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { BID_CAPABILITIES } from '@vsa/usecase-kit/bids';
 import { QUOTE_HIRE_RESERVE_MS } from '../../src/quotes/index.ts';
+import { CHALLENGE_NEED_MS } from '../../src/quotes/ports.ts';
 import type { BidderStatus, QuotesDeps, QuotesInput } from '../../src/quotes/index.ts';
 import { ALFA, BRAVO, CHARLIE, DESKS, LIST, bidderOf, priced, quoteDocument, quoteText, rightAnswer } from './support.ts';
 import { NOTHING, T0, cleanWorlds, footprint, words, world } from './world.ts';
@@ -175,8 +176,12 @@ describe('the deadline', () => {
     expect(footprint(w)).toStrictEqual(NOTHING);
   });
 
-  it('keeps a reserve that covers the whole window of the advert and what follows the last possible answer: the work, the buffer of deliver_by, and the decision and the Accept, which end 600,000 ms after the answer', () => {
-    expect(QUOTE_HIRE_RESERVE_MS).toBe(480_000 + 180_000 + 600_000);
+  it('keeps a reserve that covers the whole window of the advert and the longer tail after the last possible answer: the Accept, or the decision and the challenge of a quote that the model does not accept', () => {
+    // The challenge: two transactions, each with its build (60,000 ms) and its confirmation (180,000 ms), and 11 bounded reads of 30,000 ms.
+    expect(CHALLENGE_NEED_MS).toBe(2 * (60_000 + 180_000) + 11 * 30_000);
+    // The window of the advert (480,000 ms of work and a buffer of 180,000 ms), then the longer tail: the Accept (600,000 ms), or the decision (360,000 ms) and the challenge.
+    expect(QUOTE_HIRE_RESERVE_MS).toBe(660_000 + Math.max(600_000, 360_000 + CHALLENGE_NEED_MS));
+    expect(QUOTE_HIRE_RESERVE_MS).toBe(1_830_000);
   });
 
   it('reads the deadline again right before the Pay: a read of the status that takes 60 s must not lead to a Pay with less than the reserve left', async () => {

@@ -17,8 +17,11 @@ interface Import {
 /** The imports and the re-exports of a source: whether each is type-only, and the module that it names. */
 const importsOf = (text: string): Import[] => [...text.matchAll(/^(?:import|export)( type)?\b[^;]*?\bfrom '([^']+)';/gm)].map((match) => ({ typeOnly: match[1] !== undefined, module: match[2]! }));
 
-/** The module that only a type may come from: the hire kit. No code of it runs here. */
-const TYPE_ONLY = ['@vsa/hire-kit'];
+/** The values that these modules give to this folder: constants of time. Any other import of these modules is a type. */
+const VALUES_FROM: Readonly<Record<string, readonly string[]>> = {
+  '@vsa/hire-kit': ['DECISION_WINDOW_MS'],
+  '@vsa/buyer-core': ['ACCEPT_WINDOW_MS', 'BUILD_TIMEOUT_MS', 'DELIVER_BY_BUFFER_MS', 'READ_BUDGET_MS'],
+};
 
 describe('the quotes folder', () => {
   test('exports these values, and no other', () => {
@@ -31,7 +34,7 @@ describe('the quotes folder', () => {
 
   test('imports the kit, the text helper of the service kit, the codec of vector-read and its own files, and nothing else', () => {
     const allowed = [
-      '@vsa/hire-kit', '@vsa/usecase-kit/bids', '@vsa/usecase-kit/buyer', '@vsa/usecase-kit/dispute', '@vsa/usecase-kit/protocol', '@vsa/service-kit/text', '@vsa/vector-read',
+      '@vsa/hire-kit', '@vsa/buyer-core', '@vsa/usecase-kit/bids', '@vsa/usecase-kit/buyer', '@vsa/usecase-kit/dispute', '@vsa/usecase-kit/protocol', '@vsa/service-kit/text', '@vsa/vector-read',
       './decide.ts', './evidence.ts', './ports.ts', './quotes.ts',
     ];
     for (const name of files) {
@@ -43,10 +46,14 @@ describe('the quotes folder', () => {
     expect(importsOf(textOf('index.ts')).length).toBeGreaterThan(0);
   });
 
-  test('takes the hire kit as types only, so that no code of it runs here', () => {
+  test('takes the constants of time from the hire kit and the buyer code, and types otherwise, so that no other code of them runs here', () => {
     for (const name of files) {
-      for (const { typeOnly, module } of importsOf(textOf(name))) {
-        if (TYPE_ONLY.includes(module)) expect(typeOnly, `${name} imports ${module} as a value`).toBe(true);
+      for (const line of textOf(name).split('\n')) {
+        for (const [module, allowed] of Object.entries(VALUES_FROM)) {
+          if (!line.startsWith('import {') || !line.endsWith(`from '${module}';`)) continue;
+          const imported = line.slice('import {'.length, line.indexOf('}')).split(',').map((word) => word.trim()).filter((word) => word !== '');
+          for (const word of imported) expect(allowed.includes(word), `${name} imports the value ${word} of ${module}`).toBe(true);
+        }
       }
     }
   });
