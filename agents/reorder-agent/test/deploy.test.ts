@@ -1069,6 +1069,38 @@ describe('deploy/server/RUNBOOK-reorder-agent.md', () => {
     expect(file).toMatch(/six keys, and all six are different/);
   });
 
+  // The operator pack makes the keys, the records, the stakes, the env files and the advert. The runbook names the task of each result, in the order of the work, and says who does the work.
+  test('the first section says that the operator pack makes the keys, the records, the stakes, the env files and the advert, with one row for each of the six tasks in the order of the work', () => {
+    const what = sectionOf(runbookText, 'What it is');
+    expect(what).toContain('The operator pack (`scripts/operator`) makes the keys, the agent records, the stakes, the env files and the advert. It is not part of this deploy pack.');
+    expect(what).not.toContain('outside this pack');
+    expect([...what.matchAll(/^\| `([a-z]+)` \|/gm)].map((hit) => hit[1])).toStrictEqual(['keys', 'fund', 'register', 'stake', 'env', 'advert']);
+    expect(what).toContain('The commands of this runbook that make the env file by hand stay as the manual way, and the task `env` does the same work.');
+    expect(what.split('\n').find((line) => line.startsWith('| `advert` |'))).toContain('After the service runs and serves its manifest, and before the runtime starts.');
+  });
+
+  test('the env file section says that the task env does the same work, and the contact is the address that the live agents publish: the operator types it, and no file of the repository holds it', () => {
+    const file = sectionOf(runbookText, 'The env file');
+    expect(file).toContain('The task `env` of the operator pack makes this file and fills the same lines. The commands of this section are the manual way.');
+    expect(file).toContain('`OPERATOR_CONTACT` (the contact address that the live agents publish; the operator types it, and no file of the repository holds it)');
+    expect(runbookText).not.toMatch(/role address|never a person/);
+  });
+
+  test('the advert is posted with the task advert of the operator pack, and the manual way is the hosted tools', () => {
+    const start = sectionOf(runbookText, 'The start order');
+    expect(start).toContain('Post the advert with the task `advert` of the operator pack.');
+    expect(start).not.toContain('This pack does not post it');
+  });
+
+  test('the example asks for the contact in angle brackets, and says that the live agents publish it, that the operator types it, and that no file of the repository holds it', () => {
+    const lines = exampleText.split('\n');
+    const at = lines.findIndex((line) => line.startsWith('OPERATOR_CONTACT='));
+    expect(at).toBeGreaterThan(0);
+    expect(lines[at]).toMatch(/^OPERATOR_CONTACT=<[^>@]+>$/);
+    expect(lines.slice(0, at).filter((line) => line.startsWith('#')).join('\n')).toContain('OPERATOR_CONTACT is required and is published. It is the contact address that the live agents of the operator publish. The operator types it, and no file of the repository holds it.');
+    expect(exampleText).not.toMatch(/role address|never the address of a person/);
+  });
+
   test('both images are pulled by the tag of the reviewed commit and pinned by digest', () => {
     const images = sectionOf(runbookText, 'The images');
     for (const part of [SERVICE_IMAGE, RUNTIME_IMAGE, '<full git commit sha>', 'sha256', 'denied', 'read:packages', FILES.compose, '<digest>']) expect(images, part).toContain(part);

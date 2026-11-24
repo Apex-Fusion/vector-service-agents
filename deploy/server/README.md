@@ -125,6 +125,21 @@ The pin is one full commit of 40 hex digits. BuildKit does not resolve a short c
 
 The compose files of `deploy/host` build the runtime on their own host from the same commit. They do not use this image. A test in `scripts/deploy.test.mjs` compares the four files with the workflow. The test fails when one place names another commit.
 
+## The operator image
+
+The operator pack (`scripts/operator`) makes the keys, the agent records, the stakes, the env files and the adverts of the agents of this folder. `scripts/operator/README.md` says what each task does. CI builds the pack as one image, and the agents host runs it with `docker run --rm`. No compose file names it.
+
+| Item | Value |
+|---|---|
+| Image | `ghcr.io/apex-fusion/vector-service-agents/operator` |
+| In a command | `ghcr.io/apex-fusion/vector-service-agents/operator@sha256:<digest>`. The agents host runs the image by its digest, never by a tag. |
+| Tags | `:latest` and `:<full git commit sha>`, as for every image of this repository. |
+| Memory limit | 768 MiB. |
+| Gate | The agents host starts a run only while `MemAvailable` is at least 1,792 MiB: the gate of 1,024 MiB plus the 768 MiB of the image. |
+| Mounts | `/keys`: the keys folder, read-only, and read-write for the task `keys` only. `/state`: the state folder, read-write. `/agents/<agent>`: the folder of one agent, for the tasks `env`, `allowlist` and `fault` only. `/mock-env/.env.mock-systems`: one file, read-only, for the task `tenant` only. |
+
+The agents host never mounts `/srv/agents` as a whole: that would give a task write access to the keys folder and to the file of the mock operator token. The container has no docker socket. No task prints a key or a token: the screen, the evidence and the machine line hold names, hashes and addresses only.
+
 ## What the script does
 
 1. It stops at once, and changes nothing, when the host already runs the agents of the present host.
