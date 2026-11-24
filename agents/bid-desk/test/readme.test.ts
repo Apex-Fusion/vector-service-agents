@@ -131,7 +131,7 @@ describe('agents/bid-desk/README.md: what it is', () => {
     // The claim is in the manifest. This service files no claim and no challenge, takes no approval and calls no mock system: it has no code for any of them.
     const manifest = served(config.manifest.text);
     expect(manifest.behaviour.claim.statements.map((statement) => statement.text)).toStrictEqual(BID_DESK_CLAIM.statements.map((statement) => statement.text));
-    expect(intro).toContain('The claim of the desk is the three statements in `behaviour.claim` of its manifest. An operator command stakes that claim, and this service never does.');
+    expect(intro).toContain('The claim of the desk is the three statements in `behaviour.claim` of its manifest. No command in this repository stakes that claim yet.');
     expect(intro).toContain('It files no claim and no challenge: it has no dispute code and no dispute setting.');
     expect(SETTINGS.filter((name) => /^DISPUTE_|MODULE1/.test(name))).toStrictEqual([]);
     expect(sources.filter(({ text }) => /usecase-kit\/(?:dispute|cosign)/.test(text)).map(({ file }) => file)).toStrictEqual([]);
@@ -585,7 +585,8 @@ describe('agents/bid-desk/README.md: the errors', () => {
   const documented = new Map<string, number[]>();
   for (const line of table) {
     const status = Number(/^\| (\d{3}), /.exec(line)?.[1]);
-    for (const code of ticks(cells(line)[1]).filter((text) => /^[a-z_]+$/.test(text))) documented.set(code, [...(documented.get(code) ?? []), status]);
+    // A word in the explanation of a code, in brackets, is no code.
+    for (const code of ticks(cells(line)[1].replace(/\([^)]*\)/g, '')).filter((text) => /^[a-z_]+$/.test(text))) documented.set(code, [...(documented.get(code) ?? []), status]);
   }
 
   test('the Errors table gives each code its status, and its codes are the codes that the hook, the job and the server write, no more and no less', () => {
@@ -647,7 +648,7 @@ describe('agents/bid-desk/README.md: the errors', () => {
     }
     expect(errors).toContain('The messages of `duplicate_rfq` and `deadline` are fixed texts that hold no value of the request.');
     expect(QUOTE_TEXT.duplicate_rfq).not.toContain('run1-rfq-1');
-    // The twin of the deadline rule: with 30 s left before the runtime stops waiting the job gives the quote, with one millisecond less it ends deadline and records nothing.
+    // The twin of the deadline rule: with 30 s left before deliver_by the job gives the quote, with one millisecond less it ends deadline and records nothing.
     expect((await makeRig({ deliverInMs: 30_000 }).run()).outcome).toBe('done');
     const late = makeRig({ deliverInMs: 29_999 });
     expect((await refusalOf(late.run())).code).toBe('deadline');
@@ -718,9 +719,9 @@ describe('agents/bid-desk/README.md: the times, the state and the stop', () => {
     expect(JOB_DEADLINE_MS + 60_000 + 120_000).toBe(MIN_PROCESSING_WINDOW_MS);
     expect(section('Times')).toContain(`A pass that is still in flight at a stop is abandoned after ${JANITOR_STOP_WAIT_MS / 1000} s`);
     expect(JANITOR_STOP_WAIT_MS).toBe(30_000);
-    // The model hire has the deadline of the job, or the time that the rest of the job needs before the runtime stops waiting for it, and the call for the credential has its own timeout.
+    // The model hire has the deadline of 300000 ms after the arrival of the job, or the time that the rest of the job needs before deliver_by, and the call for the credential has its own timeout.
     expect(textOf('../src/serve/wiring.ts')).toContain('deadlineMs: Math.min(arrivedAt + JOB_DEADLINE_MS, context.deliverByMs - RUNTIME_MARGIN_MS - CALL_TIMEOUT_MS)');
-    expect(section('Times')).toContain(`The model hire ends by then, or earlier: ${(RUNTIME_MARGIN_MS + CALL_TIMEOUT_MS) / 1000} s before the runtime stops waiting for the job`);
+    expect(section('Times')).toContain(`the hire ends ${JOB_DEADLINE_MS} ms after the request arrives, or ${(RUNTIME_MARGIN_MS + CALL_TIMEOUT_MS) / 1000} s before \`deliver_by\` when that is earlier`);
     expect(section('Times')).toContain(`A hire does not start with less than ${HIRE_MIN_MS / 1000} s left for it`);
     expect(textOf('../src/serve/wiring.ts')).toContain('timeoutMs: CALL_TIMEOUT_MS');
     expect(textOf('../src/serve/wiring.ts')).toContain('timeoutMs: config.checksBudgetMs');

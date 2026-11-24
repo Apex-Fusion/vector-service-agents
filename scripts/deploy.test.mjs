@@ -425,6 +425,9 @@ test('no individual name, and no personal address, on any public surface: the ma
     // Use case 2: the two Dockerfiles, the two manifest templates, the two READMEs, the eight files of the packs and the sources of the two agents.
     'agents/prior-authorization-agent/Dockerfile', 'agents/insurer-intake-agent/Dockerfile', 'agents/prior-authorization-agent/agent.json.template', 'agents/insurer-intake-agent/agent.json.template', 'agents/prior-authorization-agent/README.md', 'agents/insurer-intake-agent/README.md',
     ...USE_CASE_2_FILES, ...sourceFiles('agents/prior-authorization-agent/src'), ...sourceFiles('agents/insurer-intake-agent/src'),
+    // Use case 3: the two Dockerfiles, the two manifest templates, the two READMEs, the three price lists, the ten files of the packs and the sources of the two agents.
+    'agents/sourcing-agent/Dockerfile', 'agents/bid-desk/Dockerfile', 'agents/sourcing-agent/agent.json.template', 'agents/bid-desk/agent.json.template', 'agents/sourcing-agent/README.md', 'agents/bid-desk/README.md',
+    ...BID_DESK_PRICE_LISTS, ...USE_CASE_3_FILES, ...sourceFiles('agents/sourcing-agent/src'), ...sourceFiles('agents/bid-desk/src'),
     ...readdirSync(join(root, 'specs')).map((f) => `specs/${f}`),
     DESIGN_SPEC,
   ];
@@ -435,6 +438,8 @@ test('no individual name, and no personal address, on any public surface: the ma
     'agents/reorder-agent/src/serve/start.ts', 'agents/order-desk/src/serve/start.ts', 'deploy/server/.env.reorder-agent.example', 'deploy/server/.env.order-desk-runtime.example', 'deploy/server/RUNBOOK-reorder-agent.md', 'deploy/server/RUNBOOK-order-desk.md',
     'agents/prior-authorization-agent/Dockerfile', 'agents/insurer-intake-agent/Dockerfile', 'agents/prior-authorization-agent/agent.json.template', 'agents/insurer-intake-agent/agent.json.template', 'agents/prior-authorization-agent/README.md', 'agents/insurer-intake-agent/README.md',
     'agents/prior-authorization-agent/src/serve/start.ts', 'agents/insurer-intake-agent/src/serve/start.ts', ...USE_CASE_2_FILES,
+    'agents/sourcing-agent/Dockerfile', 'agents/bid-desk/Dockerfile', 'agents/sourcing-agent/agent.json.template', 'agents/bid-desk/agent.json.template', 'agents/sourcing-agent/README.md', 'agents/bid-desk/README.md',
+    'agents/sourcing-agent/src/serve/start.ts', 'agents/bid-desk/src/serve/start.ts', ...BID_DESK_PRICE_LISTS, ...USE_CASE_3_FILES,
   ]) assert.ok(files.includes(must), `${must} is scanned`);
   for (const rel of files) assert.doesNotMatch(read(rel), NAMES, `${rel}: roles, not people`);
   // A path into someone's home folder names its owner too, and a reviewer's handle is a name.
@@ -631,7 +636,7 @@ test('status words: no file says PROPOSED about Agent History, Document Pipeline
   const SNIPPETS_FILES = [...S_FILES, 'agents/audio-snippets/README.md'];
   const ADVOCATE_FILES = [...A_FILES, 'agents/advocate/README.md'];
   // What may still say PROPOSED: the rule that lists the three words, the marketplace tools in the Interface section of a spec (the tools, not the agent), the instructions of the four
-  // runbooks that speak for the order of a first run, and the four agents of use cases 1 and 2, which are built and not deployed: the status line of each page and its row in the README.
+  // runbooks that speak for the order of a first run, and the status line and README row of each use-case page.
   const PROPOSED_OK = {
     'agents/agent-history/README.md': [/`AGENT_STATUS_CHIP` must be LIVE, DEPLOYED or PROPOSED, in any case\./],
     'specs/agent-history.md': [/^The marketplace MCP tools \(PROPOSED\) and the template's buyer, /],
@@ -643,9 +648,13 @@ test('status words: no file says PROPOSED about Agent History, Document Pipeline
     'specs/order-desk.md': [/^PROPOSED \(built, not deployed\)\. Since 2026-11-23\.$/],
     'specs/prior-authorization-agent.md': [/^PROPOSED \(built, not deployed\)\. Since 2026-11-24\.$/],
     'specs/insurer-intake-agent.md': [/^PROPOSED \(built, not deployed\)\. Since 2026-11-24\.$/],
+    'specs/sourcing-agent.md': [/^PROPOSED \(built, not deployed\)\. Since 2026-11-24\.$/],
+    'specs/bid-desk.md': [/^PROPOSED \(built, not deployed\)\. Since 2026-11-24\.$/],
     'README.md': [
       /^\| Reorder Agent \| `supplychain\.reorder\.po\.v1` \| PROPOSED \|$/, /^\| Order Desk \| `supplychain\.order\.accept\.v1` \| PROPOSED \|$/,
       /^\| Prior Authorization Agent \| `health\.priorauth\.draft\.v1` \| PROPOSED \|$/, /^\| Insurer Intake Agent \| `health\.priorauth\.intake\.v1` \| PROPOSED \|$/,
+      /^\| \[Sourcing Agent\]\(specs\/sourcing-agent\.md\) \| `supplychain\.rfq\.evaluate\.v1` \| PROPOSED \|$/,
+      /^\| \[Bid Desk\]\(specs\/bid-desk\.md\) \| `supplychain\.rfq\.quote\.v1` \| PROPOSED \|$/,
     ],
   };
   // What may say LIVE: the sentence that denies it, and the rule that lists the three words.
@@ -671,9 +680,9 @@ test('status words: no file says PROPOSED about Agent History, Document Pipeline
   assert.deepEqual(JSON.parse(read('agents/advocate/agent.json.template')).status, { chip: 'deployed', since: '2026-10-20' });
   assert.match(read('specs/audio-snippets.md'), /^DEPLOYED \(registered and staked 2026-10-17, advertised 2026-10-17, re-advertised 2026-10-17 at the status flip, one first-party job settled 2026-10-17\)\. Since 2026-10-17\.$/m);
   assert.match(read('specs/document-pipeline.md'), /^DEPLOYED \(registered and staked 2026-10-16, advertised 2026-10-16, re-advertised 2026-10-16 at the status flip, one first-party job settled 2026-10-16\)\. Since 2026-10-16\.$/m);
-  // No deployed spec opens a line with PROPOSED: read from the specs folder, so that a spec that says it again is seen. The four pages of use cases 1 and 2 are the only ones that do.
+  // Only the use-case pages open with PROPOSED. Read the folder to check for extra pages.
   const proposed = readdirSync(join(root, 'specs')).filter((f) => /^PROPOSED \(/m.test(read(`specs/${f}`))).map((f) => `specs/${f}`).sort();
-  assert.deepEqual(proposed, ['specs/insurer-intake-agent.md', 'specs/order-desk.md', 'specs/prior-authorization-agent.md', 'specs/reorder-agent.md'], 'only the four pages of use cases 1 and 2 say PROPOSED');
+  assert.deepEqual(proposed, ['specs/bid-desk.md', 'specs/insurer-intake-agent.md', 'specs/order-desk.md', 'specs/prior-authorization-agent.md', 'specs/reorder-agent.md', 'specs/sourcing-agent.md'], 'only the six use-case pages say PROPOSED');
   assert.equal(readdirSync(join(root, 'specs')).filter((f) => /^DEPLOYED \(/m.test(read(`specs/${f}`))).length, 4, 'the four specs open their status line with DEPLOYED');
 });
 
@@ -6025,10 +6034,10 @@ test('agents host: the proof script fills the real snippet and the real main Cad
 test('agents host: the README gives the counts, the memory and the plan of the ports, and the snippet shape of the README is the one that the proof validates', () => {
   const readme = srvRead('README.md');
   for (const part of ['The plan for the host is 19 containers: 8 services, 10 runtimes and 1 mock service.', '| Memory | 8 GiB |', '| Agent host names | 10 | A, DNS only |', '| Mock host names | 2 | A, DNS only |', '| Organisation checks | 9 | TXT |']) assert.ok(readme.includes(part), part);
-  // The plan of the ports: the counts in the rows are the sizes of the ranges, and together they are the 19 containers. The rows of the two packs of use case 1 and of the two packs of use case 2 are the ports of their compose files,
-  // and the rows of the later agents keep the ports that come after them.
+  // The plan of the ports: the counts in the rows are the sizes of the ranges, and together they are the 19 containers. The rows of the two packs of use case 1, of the two packs of use case 2 and of the packs of use case 3
+  // are the ports of their compose files, and no row is left for a later agent.
   const rows = [...section(readme, 'Folders and ports').matchAll(/^\| ([A-Za-z][^|]*?) \((\d+)\) \| (\d+)(?: to (\d+))? \|$/gm)].map((m) => ({ label: m[1], count: Number(m[2]), from: Number(m[3]), to: Number(m[4] ?? m[3]) }));
-  assert.deepEqual(rows.map((row) => row.label), ['Reorder Agent runtime', 'Order Desk runtimes', 'Prior Authorization Agent runtime', 'Insurer Intake Agent runtime', 'Runtimes of later agents', 'Reorder Agent service', 'Order Desk service', 'Prior Authorization Agent service', 'Insurer Intake Agent service', 'Services of later agents', 'Mock service']);
+  assert.deepEqual(rows.map((row) => row.label), ['Reorder Agent runtime', 'Order Desk runtimes', 'Prior Authorization Agent runtime', 'Insurer Intake Agent runtime', 'Sourcing Agent runtime', 'Bid Desk runtimes', 'Reorder Agent service', 'Order Desk service', 'Prior Authorization Agent service', 'Insurer Intake Agent service', 'Sourcing Agent service', 'Bid Desk services', 'Mock service']);
   const plan = Object.fromEntries(rows.map((row) => [row.label, row]));
   for (const row of rows) assert.equal(row.to - row.from + 1, row.count, `${row.label}: the range has as many ports as the count`);
   const runtimeRows = rows.filter((row) => /runtime/i.test(row.label));
@@ -6036,9 +6045,13 @@ test('agents host: the README gives the counts, the memory and the plan of the p
   assert.equal(runtimeRows.reduce((sum, row) => sum + row.count, 0), 10, 'ten runtimes');
   assert.equal(serviceRows.reduce((sum, row) => sum + row.count, 0), 8, 'eight services');
   assert.equal(rows.reduce((sum, row) => sum + row.count, 0), 19);
-  // The opening and the memory text say the same of the 19 containers: the memory holds the mock service and the six of use case 1, the four of use case 2 do not all pass the gate, and the later agents have the other 8.
-  assert.equal(plan['Runtimes of later agents'].count + plan['Services of later agents'].count, 19 - 1 - 6 - 4, 'the later agents have the 8 containers that are not the mock service, the six of use case 1 and the four of use case 2');
-  assert.ok(readme.includes(`The memory of the host holds the mock service and the six containers of use case 1 at the planning sizes. The four containers of use case 2 do not all pass the gate at the planning sizes. The other ${19 - 1 - 6 - 4} containers wait for a new count (section "The host").`), 'the opening says how many containers the memory holds');
+  // The opening and the memory text say the same of the 19 containers: the memory holds the mock service and the six of use case 1, and the four of use case 2 and the eight of use case 3 do not all pass the gate. No container is left over.
+  const count = (...labels) => labels.reduce((sum, label) => sum + plan[label].count, 0);
+  const useCase1 = count('Reorder Agent runtime', 'Order Desk runtimes', 'Reorder Agent service', 'Order Desk service');
+  const useCase2 = count('Prior Authorization Agent runtime', 'Insurer Intake Agent runtime', 'Prior Authorization Agent service', 'Insurer Intake Agent service');
+  const useCase3 = count('Sourcing Agent runtime', 'Bid Desk runtimes', 'Sourcing Agent service', 'Bid Desk services');
+  assert.equal(plan['Mock service'].count + useCase1 + useCase2 + useCase3, rows.reduce((sum, row) => sum + row.count, 0), 'the mock service and the three use cases are all the containers of the plan, and none is left over');
+  assert.ok(readme.includes(`The memory of the host holds the mock service and the ${IMAGE_WORDS[useCase1]} containers of use case 1 at the planning sizes. The ${IMAGE_WORDS[useCase2]} containers of use case 2 do not all pass the gate at the planning sizes. The ${IMAGE_WORDS[useCase3]} containers of use case 3 do not all pass it either (section "The host").`), 'the opening says how many containers the memory holds');
   for (const group of [runtimeRows, serviceRows]) group.slice(1).forEach((row, i) => assert.equal(row.from, group[i].to + 1, `${row.label} follows ${group[i].label} with no gap`));
   const [runtimeFrom, runtimeTo, serviceFrom, serviceTo] = [runtimeRows[0].from, runtimeRows.at(-1).to, serviceRows[0].from, serviceRows.at(-1).to];
   assert.ok(runtimeTo < serviceFrom && serviceTo < plan['Mock service'].from, 'the ranges do not overlap');
@@ -6053,8 +6066,12 @@ test('agents host: the README gives the counts, the memory and the plan of the p
   const intakePorts = PACK_PORTS[serverCompose('insurer-intake-agent')];
   assert.deepEqual([plan['Prior Authorization Agent runtime'].from, plan['Prior Authorization Agent runtime'].to, plan['Insurer Intake Agent runtime'].from, plan['Insurer Intake Agent runtime'].to], [priorPorts.runtime[0], priorPorts.runtime[0], intakePorts.runtime[0], intakePorts.runtime[0]], 'the two runtimes of use case 2');
   assert.deepEqual([plan['Prior Authorization Agent service'].from, plan['Insurer Intake Agent service'].from], [priorPorts.service[0], intakePorts.service[0]], 'the two services of use case 2');
-  assert.deepEqual([plan['Runtimes of later agents'].from, plan['Runtimes of later agents'].to], [8107, 8110], 'the later runtimes keep 8107 to 8110');
-  assert.deepEqual([plan['Services of later agents'].from, plan['Services of later agents'].to], [9105, 9108], 'the later services keep 9105 to 9108');
+  const sourcingPorts = PACK_PORTS[serverCompose('sourcing-agent')];
+  const deskPorts = ['alfa', 'bravo', 'charlie'].map((name) => PACK_PORTS[serverCompose(`bid-desk-${name}`)]);
+  const [deskRuntimes, deskServices] = [deskPorts.map((ports) => ports.runtime[0]), deskPorts.map((ports) => ports.service[0])];
+  assert.deepEqual([plan['Sourcing Agent runtime'].from, plan['Sourcing Agent runtime'].to, plan['Sourcing Agent service'].from, plan['Sourcing Agent service'].to], [sourcingPorts.runtime[0], sourcingPorts.runtime[0], sourcingPorts.service[0], sourcingPorts.service[0]], 'the runtime and the service of the Sourcing Agent');
+  assert.deepEqual([plan['Bid Desk runtimes'].from, plan['Bid Desk runtimes'].to], [Math.min(...deskRuntimes), Math.max(...deskRuntimes)], 'the three runtimes of the Bid Desks');
+  assert.deepEqual([plan['Bid Desk services'].from, plan['Bid Desk services'].to], [Math.min(...deskServices), Math.max(...deskServices)], 'the three services of the Bid Desks');
   const runbook = srvRead('RUNBOOK.md');
   assert.ok(runbook.includes(`seq ${runtimeFrom} ${runtimeTo}`), 'the runbook checks each runtime port of the plan');
   assert.ok(runbook.includes(`range ${runtimeFrom} to ${runtimeTo}`) && runbook.includes(`range ${serviceFrom} to ${serviceTo}`));
@@ -7554,7 +7571,7 @@ test('use case 1 README: the memory arithmetic of the six containers adds up, an
   const text = section(srvRead('README.md'), 'The host');
   const number = (value) => Number(value.replaceAll(',', ''));
   const sizes = Object.fromEntries([...text.matchAll(/^\| ([A-Za-z][^|]*?) \| ([\d,]+) \|$/gm)].map((m) => [m[1], number(m[2])]));
-  assert.deepEqual(Object.keys(sizes), ['Reorder Agent runtime', 'Reorder Agent service', 'Order Desk runtimes (3)', 'Order Desk service', 'The six containers', 'Prior Authorization Agent runtime', 'Prior Authorization Agent service', 'Insurer Intake Agent runtime', 'Insurer Intake Agent service', 'The four containers']);
+  assert.deepEqual(Object.keys(sizes), ['Reorder Agent runtime', 'Reorder Agent service', 'Order Desk runtimes (3)', 'Order Desk service', 'The six containers', 'Prior Authorization Agent runtime', 'Prior Authorization Agent service', 'Insurer Intake Agent runtime', 'Insurer Intake Agent service', 'The four containers', 'Sourcing Agent runtime', 'Sourcing Agent service', 'Bid Desk runtimes (3)', 'Bid Desk services (3)', 'The eight containers']);
   assert.equal(sizes['Order Desk runtimes (3)'], 3 * sizes['Reorder Agent runtime'], 'three runtimes of one size');
   assert.equal(sizes['Reorder Agent service'], sizes['Order Desk service'], 'the two services have the planning size of a new service');
   const total = sizes['Reorder Agent runtime'] + sizes['Reorder Agent service'] + sizes['Order Desk runtimes (3)'] + sizes['Order Desk service'];
@@ -7575,7 +7592,11 @@ test('use case 1 README: the memory arithmetic of the six containers adds up, an
   // The figures come from a host that also runs the agents of deploy/host, so a new host needs its own measurement, and the text does not deny the build of those agents.
   assert.ok(text.includes('The figures in this section were measured on a host that also runs the agents of `deploy/host`. A new host needs its own measurement.'), 'where the figures come from');
   assert.doesNotMatch(text, /no build counts here/, 'the text does not deny every build');
-  assert.ok(text.includes(`So the other ${19 - 1 - 6 - 4} containers need more memory, or a real size below the planning size, before they start.`), 'the memory text says what the opening says of the other containers');
+  // The plan holds the mock service and the containers of the three use cases, and no container after them: the sentence counts them from the rows of the plan of the ports.
+  const planned = labelledRows(srvRead('README.md'));
+  const [all, mock] = [planned.reduce((sum, row) => sum + row.count, 0), planned.filter((row) => row.label === 'Mock service').reduce((sum, row) => sum + row.count, 0)];
+  const WORDS = [...IMAGE_WORDS, 'fourteen', 'fifteen', 'sixteen', 'seventeen', 'eighteen', 'nineteen'];
+  assert.ok(text.includes(`The plan holds no container after these ${WORDS[all - mock]}, and the mock service with them makes the ${all}. So the containers of use case 2 and of use case 3 need more memory, or a real size below the planning size, before all of them start. Measure the real size of each container at its first start.`), 'the memory text says what the opening says: no container comes after the use cases');
   assert.doesNotMatch(text, /3\.3 GiB/, 'the old total of the 19 containers is gone');
 });
 
@@ -8214,4 +8235,950 @@ test('the README of the agents host has a section about the operator image: its 
   assert.equal(runbook.includes('The runbook of an agent gives the keys, the registration and the advert.'), false, 'step 7 does not say that the runbook of every agent gives them');
   assert.ok(section(runbook, '7. Add an agent').includes('The runbooks of the other packs give the keys, the registration and the advert.'), 'step 7 says that the runbooks of the other packs still give them');
   assert.ok(section(runbook, 'Keys').includes('The task `keys` of the operator pack makes the keys on this host. It never prints a key.'), 'the keys are made by the task keys');
+});
+
+// ======================================================================================================================================
+// Use case 3 (supplier bid evaluation): the Sourcing Agent and the three Bid Desks. The tests of each pack hold its files on their own (agents/*/test/deploy.test.ts). These tests read more than one
+// place: the tracked files of the repository, the compose files of both hosts, the price lists of the Bid Desks, the README and the RUNBOOK of the agents host, and the parsers that the kit, the two agents
+// and the mock service use for the documents that they pass to each other. The drift tests run the real TypeScript of the kit, of the two agents and of the mock service in one child process, as the tests
+// of use case 1 and of use case 2 do. Each guard has an accepted twin and refused copies.
+// ======================================================================================================================================
+const SOURCING_PACK = ['deploy/server/docker-compose.sourcing-agent.yml', 'deploy/server/.env.sourcing-agent.example', 'deploy/server/Caddyfile.sourcing-agent.snippet', 'deploy/server/RUNBOOK-sourcing-agent.md'];
+const BID_DESKS = ['alfa', 'bravo', 'charlie'];
+// The three Bid Desks run one image in three compose files. They share one env example, one snippet file with three blocks and one runbook.
+const BID_DESK_PACK = [...BID_DESKS.map((name) => `deploy/server/docker-compose.bid-desk-${name}.yml`), 'deploy/server/.env.bid-desk.example', 'deploy/server/Caddyfile.bid-desk.snippet', 'deploy/server/RUNBOOK-bid-desk.md'];
+const USE_CASE_3_FILES = [...SOURCING_PACK, ...BID_DESK_PACK];
+// The price list of each Bid Desk: the file that its instance selects, and that its manifest hashes.
+const BID_DESK_PRICE_LISTS = BID_DESKS.map((name) => `agents/bid-desk/price-lists/${name}.json`);
+
+test('use case 3 files: the ten files of the packs of the Sourcing Agent and of the three Bid Desks, and the three price lists, are tracked by git, and none names the host, the stack of its reverse proxy, a login or a key file; the guard refuses a file that is not tracked and a file that names the host', { skip: TRACKED ? false : 'needs a git checkout' }, () => {
+  // The kinds of the files of a pack, in order: the compose file (one for each Bid Desk), the env example, the snippet and the runbook.
+  const kindOf = (file) => [/docker-compose\.[^/]*\.yml$/, /\.env\.[^/]*\.example$/, /Caddyfile\.[^/]*\.snippet$/, /RUNBOOK-[^/]*\.md$/].findIndex((pattern) => pattern.test(file));
+  assert.deepEqual(SOURCING_PACK.map(kindOf), [0, 1, 2, 3], 'the Sourcing Agent: a compose file, an env example, a snippet and a runbook');
+  assert.deepEqual(BID_DESK_PACK.map(kindOf), [...BID_DESKS.map(() => 0), 1, 2, 3], 'the Bid Desks: a compose file for each, one env example, one snippet and one runbook');
+  assert.equal(new Set([...USE_CASE_1_FILES, ...USE_CASE_2_FILES, ...USE_CASE_3_FILES]).size, USE_CASE_1_FILES.length + USE_CASE_2_FILES.length + USE_CASE_3_FILES.length, 'no file stands in two packs');
+  const files = [...USE_CASE_3_FILES, ...BID_DESK_PRICE_LISTS];
+  for (const file of files) assert.ok(existsSync(join(root, file)), `${file} is there`);
+  assert.deepEqual(trackedFileProblems(files, TRACKED, read), [], 'the real files pass');
+  // [the files of a pack, the compose file that the test changes, the runbook that the test leaves out of the tracked files]
+  for (const [pack, compose, runbook] of [[SOURCING_PACK, SOURCING_PACK[0], SOURCING_PACK[3]], [BID_DESK_PACK, BID_DESK_PACK[1], BID_DESK_PACK[5]]]) {
+    assert.deepEqual(trackedFileProblems(pack, TRACKED.filter((file) => file !== runbook), read), [`${runbook} is not tracked by git`], 'a file that is not tracked');
+    for (const part of ['the apex' + '-web box', 'uma' + 'mi_default', 'root' + '@host', 'id_' + 'ed25519']) {
+      const text = (file) => (file === compose ? `${read(file)}# ${part}\n` : read(file));
+      assert.deepEqual(trackedFileProblems(pack, TRACKED, text), [`${compose} names the host, the stack of its reverse proxy, a login or a key file`], part);
+    }
+    // The twin: the names that a pack holds on purpose: the public host name of the agent, the folder of the pack and the word host.
+    const origin = /^ +PUBLIC_ORIGIN: https:\/\/(\S+)$/m.exec(read(compose))?.[1];
+    assert.ok(origin, `${compose} gives the public origin of the runtime`);
+    const twin = (file) => (file === compose ? `${read(file)}# ${origin} in deploy/server on the agents host\n` : read(file));
+    assert.deepEqual(trackedFileProblems(pack, TRACKED, twin), [], 'the names of the pack');
+  }
+  // A price list that git does not track never reaches the image.
+  const list = BID_DESK_PRICE_LISTS[0];
+  assert.deepEqual(trackedFileProblems(files, TRACKED.filter((file) => file !== list), read), [`${list} is not tracked by git`], 'a price list that is not tracked');
+});
+
+// The names that a compose file claims on a host: its project, the name of each container and the name of each volume. Docker refuses a second container with a name that is in use, two projects with one name
+// share their default network, and two volumes with one name share their data. A volume uses an explicit name, its bare key if external, or `<project>_<key>` otherwise. A service with no `container_name`
+// gets a name from its project, so it makes no separate claim here.
+function composeNameProblems(texts) {
+  const problems = [];
+  const owners = { project: new Map(), container: new Map(), volume: new Map() };
+  const claim = (kind, name, owner) => owners[kind].set(name, [...(owners[kind].get(name) ?? []), owner]);
+  for (const [file, text] of Object.entries(texts)) {
+    const parsed = parseYaml(text) ?? {};
+    if (typeof parsed.name !== 'string' || parsed.name === '') {
+      problems.push(`${file} has no project name`);
+      continue;
+    }
+    claim('project', parsed.name, file);
+    for (const [service, body] of Object.entries(parsed.services ?? {})) if (typeof body?.container_name === 'string') claim('container', body.container_name, `${file}#${service}`);
+    for (const [key, body] of Object.entries(parsed.volumes ?? {})) {
+      const explicit = body?.name ?? body?.external?.name;
+      const name = explicit ?? (body?.external === true ? key : `${parsed.name}_${key}`);
+      claim('volume', name, `${file}#${key}`);
+    }
+  }
+  for (const [kind, names] of Object.entries(owners)) for (const [name, users] of names) if (users.length > 1) problems.push(`the ${kind} name ${name} is used twice: ${users.join(', ')}`);
+  return problems;
+}
+
+test('use case 3 names: the project, each container and each volume of the compose files of the two hosts have one name, and the Sourcing Agent and the three Bid Desks have the names of the plan; the guard refuses a name that stands twice', () => {
+  const texts = composeTextsOf(['deploy/host', 'deploy/server']);
+  assert.deepEqual(composeNameProblems(texts), [], 'the real files pass');
+  const sourcing = serverCompose('sourcing-agent');
+  const [alfa, bravo, charlie] = BID_DESKS.map((name) => serverCompose(`bid-desk-${name}`));
+  // The names of the plan: the project, the runtime, the service and the volume of each pack.
+  const plan = { [sourcing]: ['sourcing-agent', 'sourcing-runtime', 'sourcing-service', 'sourcing-state'], ...Object.fromEntries(BID_DESKS.map((name) => [serverCompose(`bid-desk-${name}`), [`bid-desk-${name}`, `bids-${name}-runtime`, `bids-${name}-service`, `bid-desk-${name}-state`]])) };
+  assert.equal(Object.keys(plan).length, 1 + BID_DESKS.length, 'the Sourcing Agent and each Bid Desk');
+  for (const [file, expected] of Object.entries(plan)) {
+    const parsed = parseYaml(texts[file]);
+    assert.deepEqual([parsed.name, parsed.services.runtime.container_name, parsed.services.service.container_name, Object.values(parsed.volumes).map((volume) => volume.name)], [expected[0], expected[1], expected[2], [expected[3]]], `${file}: the names of the plan`);
+  }
+  const extra = (name, body) => ({ [`deploy/server/docker-compose.${name}.yml`]: body });
+  const faults = [
+    ['two Bid Desks with one container name', { [bravo]: srvReplace(texts[bravo], 'container_name: bids-bravo-service', 'container_name: bids-alfa-service') }, /the container name bids-alfa-service is used twice: \S+bid-desk-alfa\.yml#service, \S+bid-desk-bravo\.yml#service/],
+    ['two runtimes of the Bid Desks with one container name', { [charlie]: srvReplace(texts[charlie], 'container_name: bids-charlie-runtime', 'container_name: bids-bravo-runtime') }, /the container name bids-bravo-runtime is used twice: \S+bid-desk-bravo\.yml#runtime, \S+bid-desk-charlie\.yml#runtime/],
+    ['the service of the Sourcing Agent with the name of a container of the present host', { [sourcing]: srvReplace(texts[sourcing], 'container_name: sourcing-service', 'container_name: advocate-service') }, /the container name advocate-service is used twice: \S+advocate\.yml#service, \S+sourcing-agent\.yml#service/],
+    ['two projects with one name', { [charlie]: srvReplace(texts[charlie], '\nname: bid-desk-charlie\n', '\nname: bid-desk-bravo\n') }, /the project name bid-desk-bravo is used twice: \S+bid-desk-bravo\.yml, \S+bid-desk-charlie\.yml/],
+    ['two volumes with one name', { [charlie]: srvReplace(texts[charlie], 'bid-desk-charlie-state', 'bid-desk-bravo-state') }, /the volume name bid-desk-bravo-state is used twice: \S+bid-desk-bravo\.yml#bid-desk-bravo-state, \S+bid-desk-charlie\.yml#bid-desk-bravo-state/],
+    ['a volume with no name that has the name of a volume of another file', { ...extra('one', 'name: one\nservices: {}\nvolumes:\n  state: {}\n'), ...extra('two', 'name: two\nservices: {}\nvolumes:\n  data: { name: one_state }\n') }, /the volume name one_state is used twice/],
+    ['an external volume that uses the bare key of the Sourcing Agent volume', extra('external', 'name: external\nservices: {}\nvolumes:\n  sourcing-state: { external: true }\n'), /the volume name sourcing-state is used twice: \S+sourcing-agent\.yml#sourcing-state, \S+external\.yml#sourcing-state/],
+    ['an external volume with a legacy name that another pack uses', extra('legacy', 'name: legacy\nservices: {}\nvolumes:\n  data: { external: { name: sourcing-state } }\n'), /the volume name sourcing-state is used twice: \S+sourcing-agent\.yml#sourcing-state, \S+legacy\.yml#data/],
+    ['a compose file with no project name', extra('three', 'services: {}\n'), /docker-compose\.three\.yml has no project name/],
+  ];
+  for (const [name, changed, expected] of faults) {
+    const problems = composeNameProblems({ ...texts, ...changed });
+    assert.ok(problems.some((p) => expected.test(p)), `${name}: found ${JSON.stringify(problems)}`);
+  }
+  // The twins: the files in another order, and two projects that each have a service with no container name and a volume with no name: their default names differ.
+  assert.deepEqual(composeNameProblems(Object.fromEntries(Object.entries(texts).reverse())), [], 'the files in another order');
+  const twins = { ...extra('one', 'name: one\nservices:\n  service:\n    image: example\nvolumes:\n  state: {}\n'), ...extra('two', 'name: two\nservices:\n  service:\n    image: example\nvolumes:\n  state: {}\n') };
+  assert.deepEqual(composeNameProblems({ ...texts, ...twins }), [], 'two projects with the same service name and the same volume key');
+  const external = extra('external', 'name: external\nservices: {}\nvolumes:\n  other-state: { external: true }\n  sourcing-state: { external: true, name: other-source }\n');
+  assert.deepEqual(composeNameProblems({ ...texts, ...external }), [], 'an external volume with a distinct key and one with a distinct explicit name');
+});
+
+test('use case 3 ports: the compose files of the Sourcing Agent and of the three Bid Desks publish exactly 8107 to 8110 for the runtimes and 9105 to 9108 for the services, one port for each container, and no host port stands twice in the compose files of the two hosts; the guard refuses each copy that breaks one rule', () => {
+  const texts = composeTextsOf(['deploy/host', 'deploy/server']);
+  const readme = srvRead('README.md');
+  const sourcing = serverCompose('sourcing-agent');
+  const desks = BID_DESKS.map((name) => serverCompose(`bid-desk-${name}`));
+  const packs = [sourcing, ...desks];
+  const found = (kind) => packs.flatMap((file) => publishedPorts(texts[file]).filter((port) => port.service === kind).map((port) => port.host)).sort((a, b) => a - b);
+  assert.deepEqual(found('runtime'), [8107, 8108, 8109, 8110], 'the four runtimes publish 8107 to 8110');
+  assert.deepEqual(found('service'), [9105, 9106, 9107, 9108], 'the four services publish 9105 to 9108');
+  assert.equal(packs.flatMap((file) => publishedPorts(texts[file])).length, 2 * packs.length, 'one port for the runtime and one for the service of each pack, and no other port');
+  assert.deepEqual(packs.map((file) => PACK_PORTS[file]), [{ runtime: [8107], service: [9105] }, { runtime: [8108], service: [9106] }, { runtime: [8109], service: [9107] }, { runtime: [8110], service: [9108] }], 'the ports that the guard expects of the four files');
+  assert.deepEqual(portProblems(texts, PACK_PORTS, readme), [], 'the real files pass');
+  const [alfa, bravo, charlie] = desks;
+  const faults = [
+    ['the runtime of Bid Desk charlie on the port of the Prior Authorization Agent', { [charlie]: srvReplace(texts[charlie], '127.0.0.1:8110:8080', '127.0.0.1:8105:8080') }, /the port 8105 is published twice(?=.*bid-desk-charlie\.yml#runtime)(?=.*prior-authorization-agent\.yml#runtime)/],
+    ['the service of the Sourcing Agent on the port of the Insurer Intake Agent', { [sourcing]: srvReplace(texts[sourcing], '127.0.0.1:9105:9105', '127.0.0.1:9104:9105') }, /the port 9104 is published twice(?=.*insurer-intake-agent\.yml#service)(?=.*sourcing-agent\.yml#service)/],
+    ['the runtime of Bid Desk alfa on the port of the third runtime of the Order Desk', { [alfa]: srvReplace(texts[alfa], '127.0.0.1:8108:8080', '127.0.0.1:8104:8080') }, /the port 8104 is published twice(?=.*bid-desk-alfa\.yml#runtime)(?=.*order-desk\.yml#runtime-large)/],
+    ['the runtime of Bid Desk alfa on the port of the runtime of the Sourcing Agent', { [alfa]: srvReplace(texts[alfa], '127.0.0.1:8108:8080', '127.0.0.1:8107:8080') }, /the port 8107 is published twice(?=.*bid-desk-alfa\.yml#runtime)(?=.*sourcing-agent\.yml#runtime)/],
+    ['the service of Bid Desk bravo on a port of the present host', { [bravo]: srvReplace(texts[bravo], '127.0.0.1:9107:9106', '127.0.0.1:8083:9106') }, /the port 8083 is published twice/],
+    ['the runtime of Bid Desk alfa on a public address', { [alfa]: srvReplace(texts[alfa], '["127.0.0.1:8108:8080"]', '["0.0.0.0:8108:8080"]') }, /bid-desk-alfa\.yml must publish/],
+    ['a third port on the runtime of the Sourcing Agent', { [sourcing]: srvReplace(texts[sourcing], '["127.0.0.1:8107:8080"]', '["127.0.0.1:8107:8080", "127.0.0.1:8111:8081"]') }, /sourcing-agent\.yml must publish/],
+  ];
+  for (const [name, changed, expected] of faults) {
+    const problems = portProblems({ ...texts, ...changed }, PACK_PORTS, readme);
+    assert.ok(problems.some((p) => expected.test(p)), `${name}: found ${JSON.stringify(problems)}`);
+  }
+  // The twins: the long form of a port with the same numbers, and the compose files of the two hosts in another order.
+  const long = srvReplace(texts[charlie], '["127.0.0.1:8110:8080"]', '[{ target: 8080, published: 8110, host_ip: 127.0.0.1 }]');
+  assert.deepEqual(portProblems({ ...texts, [charlie]: long }, PACK_PORTS, readme), [], 'the long form');
+  assert.deepEqual(portProblems(Object.fromEntries(Object.entries(texts).reverse()), PACK_PORTS, readme), [], 'the files in another order');
+});
+
+// The three Bid Desks are one code base in three compose files. Each file names one image of the service and one image of the runtime, and the same image as the other two: the digest that the operator writes
+// in one file stands in the three. The instance of each file selects the price list of the same name, so the folder of the price lists holds one file for each instance and no other file.
+function bidDeskProblems(texts, listFiles) {
+  const problems = [];
+  const images = { service: new Set(), runtime: new Set() };
+  for (const name of BID_DESKS) {
+    const file = serverCompose(`bid-desk-${name}`);
+    if (texts[file] === undefined) {
+      problems.push(`${file} is not there`);
+      continue;
+    }
+    const services = parseYaml(texts[file])?.services ?? {};
+    for (const kind of Object.keys(images)) images[kind].add(services[kind]?.image);
+    const instance = services.service?.environment?.BID_DESK_INSTANCE;
+    if (instance !== name) problems.push(`${file} gives the instance ${instance}, and it is the file of ${name}`);
+    if (!listFiles.includes(`${instance}.json`)) problems.push(`${file} selects the price list ${instance}.json, and no such file is there`);
+  }
+  const wanted = { service: `${IMAGE_REPOSITORY}/bid-desk@sha256:`, runtime: `${RT.image}@sha256:` };
+  for (const [kind, set] of Object.entries(images)) {
+    if (set.size > 1) problems.push(`the three Bid Desks must name one image of the ${kind}, and they name ${set.size}`);
+    for (const image of set) if (typeof image !== 'string' || !image.startsWith(wanted[kind])) problems.push(`the image of the ${kind} must be ${wanted[kind]}<digest>`);
+  }
+  // The three files are one file: the file of another Bid Desk is the file of alfa with the name of the instance and the two host ports replaced everywhere. The compose file of alfa gives the container ports.
+  const first = serverCompose(`bid-desk-${BID_DESKS[0]}`);
+  if (texts[first] !== undefined) {
+    const mapping = (kind) => parseYaml(texts[first]).services[kind]?.ports?.[0];
+    const [runtimeMapping, serviceMapping] = [mapping('runtime'), mapping('service')];
+    for (const name of BID_DESKS.slice(1)) {
+      const file = serverCompose(`bid-desk-${name}`);
+      if (texts[file] === undefined || typeof runtimeMapping !== 'string' || typeof serviceMapping !== 'string') continue;
+      const ports = (compose) => [`127.0.0.1:${PACK_PORTS[compose].runtime[0]}:${runtimeMapping.split(':')[2]}`, `127.0.0.1:${PACK_PORTS[compose].service[0]}:${serviceMapping.split(':')[2]}`];
+      const [fromRuntime, fromService] = ports(first);
+      const [toRuntime, toService] = ports(file);
+      const expected = texts[first].split(fromRuntime).join(toRuntime).split(fromService).join(toService).split(BID_DESKS[0]).join(name);
+      if (texts[file] !== expected) problems.push(`${file} is not the file of ${BID_DESKS[0]} with the name of the instance and the two host ports changed`);
+    }
+  }
+  const expected = BID_DESKS.map((name) => `${name}.json`);
+  if (!isDeepStrictEqual([...listFiles].sort(), expected)) problems.push(`the folder of the price lists must hold ${expected.join(', ')} and no other file`);
+  return problems;
+}
+
+test('use case 3 Bid Desks: the three compose files are there and name one image of the service and one image of the runtime, and the instance of each selects the price list of the same name; the guard refuses each copy that breaks one rule', () => {
+  const texts = composeTextsOf(['deploy/server']);
+  const listFiles = readdirSync(join(root, 'agents/bid-desk/price-lists'));
+  assert.deepEqual(bidDeskProblems(texts, listFiles), [], 'the real files pass');
+  const [alfa, bravo, charlie] = BID_DESKS.map((name) => serverCompose(`bid-desk-${name}`));
+  const other = 'ab'.repeat(32);
+  const without = (file) => Object.fromEntries(Object.entries(texts).filter(([path]) => path !== file));
+  const faults = [
+    ['the service of Bid Desk charlie under another digest', { ...texts, [charlie]: srvReplace(texts[charlie], `${IMAGE_REPOSITORY}/bid-desk@sha256:<digest>`, `${IMAGE_REPOSITORY}/bid-desk@sha256:${other}`) }, listFiles, /must name one image of the service, and they name 2/],
+    ['the runtime of Bid Desk bravo under another digest', { ...texts, [bravo]: srvReplace(texts[bravo], `${RT.image}@sha256:<digest>`, `${RT.image}@sha256:${other}`) }, listFiles, /must name one image of the runtime, and they name 2/],
+    ['the service of the three Bid Desks under the name of another agent', { ...texts, ...Object.fromEntries([alfa, bravo, charlie].map((file) => [file, srvReplace(texts[file], `${IMAGE_REPOSITORY}/bid-desk@sha256`, `${IMAGE_REPOSITORY}/sourcing-agent@sha256`)])) }, listFiles, /the image of the service must be \S+\/bid-desk@sha256:<digest>/],
+    ['the compose file of Bid Desk charlie that is gone', without(charlie), listFiles, /bid-desk-charlie\.yml is not there/],
+    ['an instance that names another Bid Desk', { ...texts, [bravo]: srvReplace(texts[bravo], 'BID_DESK_INSTANCE: bravo', 'BID_DESK_INSTANCE: alfa') }, listFiles, /bid-desk-bravo\.yml gives the instance alfa, and it is the file of bravo/],
+    ['an instance that has no price list', { ...texts, [charlie]: srvReplace(texts[charlie], 'BID_DESK_INSTANCE: charlie', 'BID_DESK_INSTANCE: delta') }, listFiles, /bid-desk-charlie\.yml selects the price list delta\.json, and no such file is there/],
+    ['a folder of price lists with a fourth file', texts, [...listFiles, 'delta.json'], /the folder of the price lists must hold alfa\.json, bravo\.json, charlie\.json and no other file/],
+    ['a folder of price lists without the file of charlie', texts, listFiles.filter((name) => name !== 'charlie.json'), /bid-desk-charlie\.yml selects the price list charlie\.json, and no such file is there/],
+    ['a limit that one Bid Desk has and the others lack', { ...texts, [charlie]: srvReplace(texts[charlie], 'mem_limit: 1024m', 'mem_limit: 2048m') }, listFiles, /bid-desk-charlie\.yml is not the file of alfa with the name of the instance and the two host ports changed/],
+    ['a service port inside the container that differs', { ...texts, [bravo]: srvReplace(texts[bravo], '127.0.0.1:9107:9106', '127.0.0.1:9107:9107') }, listFiles, /bid-desk-bravo\.yml is not the file of alfa/],
+  ];
+  for (const [name, given, files, expected] of faults) {
+    const problems = bidDeskProblems(given, files);
+    assert.ok(problems.some((p) => expected.test(p)), `${name}: found ${JSON.stringify(problems)}`);
+  }
+  // The twins: one digest in the three files, for the service and for the runtime, and the files in another order.
+  const digest = (text) => srvReplace(srvReplace(text, `${IMAGE_REPOSITORY}/bid-desk@sha256:<digest>`, `${IMAGE_REPOSITORY}/bid-desk@sha256:${other}`), `${RT.image}@sha256:<digest>`, `${RT.image}@sha256:${other}`);
+  assert.deepEqual(bidDeskProblems({ ...texts, ...Object.fromEntries([alfa, bravo, charlie].map((file) => [file, digest(texts[file])])) }, listFiles), [], 'one digest in the three files');
+  assert.deepEqual(bidDeskProblems(Object.fromEntries(Object.entries(texts).reverse()), [...listFiles].reverse()), [], 'the files in another order');
+});
+
+// The files of the two hosts that a reader meets: the compose files, the env examples, the snippets, the runbooks, the READMEs and the scripts. An env file of a host (`.env.<name>` with no `.example`) is no
+// file of the repository, and the guard does not read it.
+const deployFiles = () => ['deploy/host', 'deploy/server'].flatMap((dir) => readdirSync(join(root, dir))
+  .filter((name) => /^(?:docker-compose.*\.ya?ml|\.env\..*\.example|Caddyfile.*|.*\.md|.*\.sh|.*\.mjs)$/.test(name) && statSync(join(root, dir, name)).isFile())
+  .map((name) => `${dir}/${name}`));
+// The addresses that a file of a pack holds on purpose: loopback, the address that means every interface inside a container, and the public resolver that the DNS check of a runbook asks. The address of the
+// host is none of them, and it never enters the repository. A refusal gives the line and never the address.
+const PACK_ADDRESSES = new Set(['127.0.0.1', '0.0.0.0', '1.1.1.1']);
+function addressProblems(files, textOf) {
+  const problems = [];
+  for (const file of files) {
+    textOf(file).split('\n').forEach((line, at) => {
+      if ((line.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g) ?? []).some((address) => !PACK_ADDRESSES.has(address))) problems.push(`${file}:${at + 1} holds an IPv4 address that no pack may hold`);
+    });
+  }
+  return problems;
+}
+
+test('use case 3 addresses: the checked Compose files, env examples, Caddy files, runbooks, READMEs and scripts of the two deploy folders contain no IPv4 address other than 127.0.0.1, 0.0.0.0 and 1.1.1.1', () => {
+  const files = deployFiles();
+  for (const must of [...USE_CASE_1_FILES, ...USE_CASE_2_FILES, ...USE_CASE_3_FILES, 'deploy/server/README.md', 'deploy/server/RUNBOOK.md', 'deploy/host/README.md', 'deploy/host/docker-compose.agent-history.yml']) assert.ok(files.includes(must), `${must} is read`);
+  assert.ok(files.length >= 30 && new Set(files).size === files.length, `the walk reaches the files of both hosts, found ${files.length}`);
+  assert.deepEqual(addressProblems(files, read), [], 'the real files pass');
+  // The addresses are of the ranges that RFC 5737 keeps for documentation, and a private address: no address of a real host is written here.
+  const kinds = [['a compose file', SOURCING_PACK[0]], ['an env example', SOURCING_PACK[1]], ['a Caddy snippet', BID_DESK_PACK[4]], ['a runbook', BID_DESK_PACK[5]], ['a runbook of use case 1', USE_CASE_1_FILES[3]], ['a compose file of use case 2', USE_CASE_2_FILES[0]], ['the README of the agents host', 'deploy/server/README.md']];
+  for (const [kind, file] of kinds) {
+    for (const address of ['192.0.2.7', '198.51.100.23', '203.0.113.5', '10.0.0.1']) {
+      const text = (name) => (name === file ? `${read(name)}\nThe host is at ${address} today.\n` : read(name));
+      const problems = addressProblems(files, text);
+      assert.equal(problems.length, 1, `${kind}, ${address}: found ${JSON.stringify(problems)}`);
+      assert.ok(problems[0].startsWith(`${file}:`) && problems[0].endsWith('holds an IPv4 address that no pack may hold') && !problems[0].includes(address), `${kind}, ${address}: the refusal names the file and the line, and never the address`);
+    }
+  }
+  // An address in a URL, with a port and with a prefix length is found too.
+  for (const text of ['http://192.0.2.7:9105/', '192.0.2.0/24', 'addr=203.0.113.5,', '1.1.1.1 and 8.8.8.8']) assert.equal(addressProblems(['x'], () => text).length, 1, text);
+  // The twins: the three addresses of a pack, a version of three parts, a date with dots, a port on loopback and a range that starts at 0.0.0.0.
+  for (const text of ['127.0.0.1', '0.0.0.0', '1.1.1.1', 'listen 127.0.0.1:8108 and 0.0.0.0:9106', 'version 1.2.3', 'on 2026.11.24', '0.0.0.0/0']) assert.deepEqual(addressProblems(['x'], () => text), [], text);
+});
+
+
+// ---- The README and the RUNBOOK of the agents host, for the packs of use case 3 ----
+test('use case 3 README: the table of the files has a row for each of the ten files of the packs of the Sourcing Agent and of the three Bid Desks, and each file is there, and the rows say what the compose files do', () => {
+  const readme = srvRead('README.md');
+  for (const file of USE_CASE_3_FILES) {
+    const name = file.slice(`${SRV}/`.length);
+    assert.ok(readme.includes(`| \`${name}\` | `), `${name} has a row`);
+    assert.ok(existsSync(join(root, file)), `${name} is there`);
+  }
+  const rows = section(readme, 'The files').split('\n').filter((line) => /^\| `[^`]*(?:sourcing-agent|bid-desk)[^`]*` \|/.test(line));
+  assert.equal(rows.length, USE_CASE_3_FILES.length, 'a row for each file of the packs');
+  // The row of the compose file of the Sourcing Agent says how many keys the runtime does not get: the compose file blanks, in the environment of the runtime, each key line of the example that is not the supplier key.
+  const keys = (file, kind) => Object.entries(parseYaml(read(file)).services[kind].environment).filter(([name]) => name.endsWith('_PRIV_KEY_HEX'));
+  const blanked = keys(SOURCING_PACK[0], 'runtime').filter(([, value]) => value === '').map(([name]) => name);
+  const serviceKeys = read(SOURCING_PACK[1]).split('\n').map((line) => /^([A-Z0-9_]+_PRIV_KEY_HEX)=$/.exec(line)?.[1]).filter((name) => name !== undefined && name !== 'SUPPLIER_PRIV_KEY_HEX');
+  assert.ok(serviceKeys.length > 1, 'the example has the keys of the service');
+  assert.deepEqual([...blanked].sort(), [...serviceKeys].sort(), 'the runtime of the Sourcing Agent gets none of the keys of the service: the compose file blanks each of them, and no other');
+  assert.ok(rows.some((row) => row.startsWith('| `docker-compose.sourcing-agent.yml` |') && row.includes(`The runtime gets none of the ${IMAGE_WORDS[serviceKeys.length]} keys of the service.`)), 'the row of the Sourcing Agent names the number of the keys of the service');
+  for (const file of BID_DESK_PACK.slice(0, 3)) {
+    const blankedKey = keys(file, 'runtime').filter(([, value]) => value === '').map(([name]) => name);
+    assert.deepEqual(blankedKey, ['BID_DESK_SERVICE_PRIV_KEY_HEX'], `${file}: the runtime of a Bid Desk does not get the key of its service`);
+  }
+  assert.ok(rows.some((row) => row.startsWith('| `docker-compose.bid-desk-alfa.yml` |') && row.includes('The runtime does not get the key of the service.')), 'the row of Bid Desk alfa says that the runtime does not get the key of the service');
+  for (const name of BID_DESKS.slice(1)) {
+    assert.ok(rows.some((row) => row.startsWith(`| \`docker-compose.bid-desk-${name}.yml\` |`) && row.includes('It is the file of alfa with the name of the instance, the two host ports, the host name and the organisation changed.')), `the row of Bid Desk ${name} says how it differs from alfa`);
+  }
+  // The rows of the snippets name the routes that each snippet sends to the service.
+  assert.ok(srvRead('Caddyfile.sourcing-agent.snippet').includes('handle /cosign/delegate') && rows.some((row) => row.startsWith('| `Caddyfile.sourcing-agent.snippet` |') && row.includes('the co-sign route')), 'the row of the snippet of the Sourcing Agent names the co-sign route that the snippet sends to the service');
+  assert.ok(srvRead('Caddyfile.bid-desk.snippet').includes('handle /price-list.json') && rows.some((row) => row.startsWith('| `Caddyfile.bid-desk.snippet` |') && row.includes('`/price-list.json`')), 'the row of the snippet of the Bid Desks names the price list that each block sends to the service');
+});
+
+test('use case 3 README: the plan of the ports has a row for the runtime and the service of the Sourcing Agent and for the runtimes and the services of the Bid Desks, and each row holds the ports of its compose files; the guard refuses each copy that breaks one rule', () => {
+  const texts = composeTextsOf(['deploy/host', 'deploy/server']);
+  const readme = srvRead('README.md');
+  const rows = Object.fromEntries(labelledRows(readme).map((row) => [row.label, row]));
+  const expected = [['Sourcing Agent runtime', 1, 8107, 8107], ['Bid Desk runtimes', 3, 8108, 8110], ['Sourcing Agent service', 1, 9105, 9105], ['Bid Desk services', 3, 9106, 9108]];
+  for (const [label, count, from, to] of expected) assert.deepEqual(rows[label], { label, count, from, to }, `${label}: the row of the plan in the README`);
+  assert.deepEqual(portProblems(texts, PACK_PORTS, readme), [], 'the real files pass');
+  const rowLine = (label) => section(readme, 'Folders and ports').split('\n').find((line) => line.startsWith(`| ${label} (`));
+  const alfa = serverCompose('bid-desk-alfa');
+  const faults = [
+    ['a README plan that leaves out the row of the Bid Desk runtimes', srvReplace(readme, `${rowLine('Bid Desk runtimes')}\n`, ''), /bid-desk-alfa\.yml#runtime publishes 8108, and no row of the plan/],
+    ['a README plan that leaves out the row of the Bid Desk services', srvReplace(readme, `${rowLine('Bid Desk services')}\n`, ''), /bid-desk-alfa\.yml#service publishes 9106, and no row of the plan/],
+    ['a README plan that leaves out the row of the Sourcing Agent service', srvReplace(readme, `${rowLine('Sourcing Agent service')}\n`, ''), /sourcing-agent\.yml#service publishes 9105, and no row of the plan/],
+    ['a row of the Bid Desk runtimes with a wrong count', srvReplace(readme, rowLine('Bid Desk runtimes'), rowLine('Bid Desk runtimes').replace(/\((\d+)\)/g, '(99)')), /a row of the plan in the README gives 99 ports/],
+    ['two rows of the README plan that overlap', srvReplace(readme, `${rowLine('Sourcing Agent runtime')}\n`, `${rowLine('Sourcing Agent runtime')}\n| Overlap (1) | 8108 |\n`), /two rows of the plan in the README overlap: 8108 to 8108 and 8108 to 8110/],
+    ['a row of the Bid Desk services that stops one port short', srvReplace(readme, rowLine('Bid Desk services'), '| Bid Desk services (2) | 9106 to 9107 |'), /bid-desk-charlie\.yml#service publishes 9108, and no row of the plan/],
+  ];
+  for (const [name, text, expectedProblem] of faults) {
+    const problems = portProblems(texts, PACK_PORTS, text);
+    assert.ok(problems.some((p) => expectedProblem.test(p)), `${name}: found ${JSON.stringify(problems)}`);
+  }
+  // The twin: the compose files of the two hosts in another order, and a Bid Desk on the long form of its ports.
+  const long = srvReplace(texts[alfa], '["127.0.0.1:9106:9106"]', '[{ target: 9106, published: 9106, host_ip: 127.0.0.1 }]');
+  assert.deepEqual(portProblems({ ...texts, [alfa]: long }, PACK_PORTS, readme), [], 'the long form');
+  assert.deepEqual(portProblems(Object.fromEntries(Object.entries(texts).reverse()), PACK_PORTS, readme), [], 'the files in another order');
+});
+
+test('use case 3 README: the memory arithmetic of the eight containers adds up: the sizes, the memory that they need, the gate, the starts that pass it at the planning sizes, and the rule that a start that the gate refuses is not made', () => {
+  const text = section(srvRead('README.md'), 'The host');
+  const number = (value) => Number(value.replaceAll(',', ''));
+  const fmt = (value) => value.toLocaleString('en-US');
+  const sizes = Object.fromEntries([...text.matchAll(/^\| ([A-Za-z][^|]*?) \| ([\d,]+) \|$/gm)].map((m) => [m[1], number(m[2])]));
+  const [runtime, service] = [sizes['Reorder Agent runtime'], sizes['Reorder Agent service']];
+  // The order of the starts: the service first, then the runtime, for the Sourcing Agent and then for each Bid Desk. A start that the gate refuses is not made, so the memory stays, and every start after it is refused too.
+  const order = [service, runtime, ...BID_DESKS.flatMap(() => [service, runtime])];
+  const eight = IMAGE_WORDS[order.length];
+  const desks = `(${BID_DESKS.length})`;
+  assert.equal(sizes['Sourcing Agent runtime'], runtime, 'the planning size of a runtime');
+  assert.equal(sizes['Sourcing Agent service'], service, 'the planning size of a service');
+  assert.equal(sizes[`Bid Desk runtimes ${desks}`], BID_DESKS.length * runtime, 'the runtimes of the Bid Desks have one size');
+  assert.equal(sizes[`Bid Desk services ${desks}`], BID_DESKS.length * service, 'the services of the Bid Desks have one size');
+  const total = sizes['Sourcing Agent runtime'] + sizes['Sourcing Agent service'] + sizes[`Bid Desk runtimes ${desks}`] + sizes[`Bid Desk services ${desks}`];
+  assert.equal(sizes[`The ${eight} containers`], total, `the ${eight} containers are the sum of the rows`);
+  assert.equal(order.reduce((sum, size) => sum + size, 0), total, 'the starts are the containers of the table');
+  // The memory before the first start is the memory after the six containers of use case 1 run, with no container of use case 2.
+  const six = /^\| The six containers run \| ([\d,]+) \| ([\d,]+) \|/m.exec(text);
+  assert.ok(six, 'the table of use case 1 gives the memory after the six containers run');
+  const [typical, lowest] = [number(six[1]), number(six[2])];
+  const GATE = 1024;
+  const starts = (first) => {
+    let memory = first;
+    let started = 0;
+    let refused = null;
+    order.forEach((size, at) => {
+      if (memory >= GATE) {
+        memory -= size;
+        started += 1;
+      } else refused ??= { at, before: memory };
+    });
+    return { started, refused };
+  };
+  const [inTypical, inLowest] = [starts(typical), starts(lowest)];
+  assert.ok(inTypical.started > 0 && inTypical.refused !== null && inLowest.started > 0 && inLowest.refused !== null, 'at the planning sizes the first start passes, and a later start fails the gate, in each case');
+  const ordinal = ['first', 'second', 'third', 'fourth', 'fifth', 'sixth', 'seventh', 'eighth'];
+  assert.ok(text.includes(`The ${eight} containers of use case 3 (supplier bid evaluation) have these planning sizes. They are estimates until the first start of a service is measured.`), 'the sizes are estimates');
+  const paragraph = text.split('\n\n').find((part) => part.startsWith(`The ${eight} containers need `));
+  assert.ok(paragraph, 'the paragraph of the memory arithmetic of use case 3 is there');
+  for (const part of [
+    `The ${eight} containers need ${fmt(total)} MiB, and a start needs ${fmt(GATE)} MiB of \`MemAvailable\` before it.`,
+    `With the six containers of use case 1 running, and none of use case 2, \`MemAvailable\` is about ${fmt(typical)} MiB in the typical case and ${fmt(lowest)} MiB in the lowest case.`,
+    `So the ${eight} containers need ${fmt(total - typical)} MiB more than the typical case holds, and ${fmt(total - lowest)} MiB more than the lowest case holds.`,
+    'The service starts first, then the runtime, for the Sourcing Agent and then for each Bid Desk.',
+    `At the planning sizes, the ${ordinal[inTypical.refused.at]} start fails the gate in the typical case (${fmt(inTypical.refused.before)} MiB before it), and the ${ordinal[inLowest.refused.at]} start fails it in the lowest case (${fmt(inLowest.refused.before)} MiB before it).`,
+    `So ${IMAGE_WORDS[inTypical.started]} of the ${eight} containers start in the typical case, and ${IMAGE_WORDS[inLowest.started]} in the lowest case.`,
+  ]) assert.ok(paragraph.includes(part), part);
+  assert.ok(paragraph.endsWith('A start that the gate refuses is not made.'), 'the paragraph ends with the rule that a refused start is not made');
+  // The block follows the block of use case 2 and comes before the closing paragraph of the section.
+  const at = (part) => text.indexOf(part);
+  assert.ok(at('of use case 2 (prior authorization) have these planning sizes') > 0 && at('of use case 2 (prior authorization) have these planning sizes') < at('of use case 3 (supplier bid evaluation) have these planning sizes') && at('of use case 3 (supplier bid evaluation) have these planning sizes') < at('The plan holds no container after these'), 'the three blocks are in the order of the use cases');
+});
+
+test('use case 3 README: the section of a host whose proxy runs in a container names the packs of use case 3 and their runbooks; the markers, the joins and the container names in the upstreams are those of the Sourcing Agent and of the three Bid Desks', () => {
+  const text = section(srvRead('README.md'), 'A host whose proxy runs in a container');
+  assert.ok(text.length > 0, 'the section is there');
+  const markersOf = (snippet) => [...snippet.matchAll(/^# (\S+) vhosts \(BEGIN\)$/gm)].map((hit) => hit[1]);
+  const [sourcingSnippet, deskSnippet] = [srvRead('Caddyfile.sourcing-agent.snippet'), srvRead('Caddyfile.bid-desk.snippet')];
+  // The Sourcing Agent has one project and one block. The three Bid Desks are three projects, and their snippet file has one pair of markers for each.
+  assert.deepEqual(markersOf(sourcingSnippet), ['sourcing-agent']);
+  assert.deepEqual(markersOf(deskSnippet), BID_DESKS.map((name) => `bid-desk-${name}`));
+  const projects = [['sourcing-agent', 'docker-compose.sourcing-agent.yml', sourcingSnippet], ...BID_DESKS.map((name) => [`bid-desk-${name}`, `docker-compose.bid-desk-${name}.yml`, deskSnippet])];
+  const names = new Set();
+  for (const [agent, composeFile, snippet] of projects) {
+    const compose = parseYaml(srvRead(composeFile));
+    assert.ok(snippet.includes(`\n# ${agent} vhosts (END)\n`), `${agent} has its END marker`);
+    assert.equal(compose.name, agent, `the project of ${composeFile} is the name in the markers`);
+    assert.ok(snippet.includes(`docker network connect ${agent}_default <caddy container>`), `${agent}: the snippet gives the join`);
+    for (const service of Object.values(compose.services)) names.add(service.container_name);
+  }
+  for (const [snippetFile, snippet] of [['Caddyfile.sourcing-agent.snippet', sourcingSnippet], ['Caddyfile.bid-desk.snippet', deskSnippet]]) {
+    const upstreams = snippet.split('\n').filter((line) => /^\s*reverse_proxy /.test(line)).map((line) => line.trim().split(/\s+/)[1].split(':')[0]);
+    assert.ok(upstreams.length > 0 && upstreams.every((name) => names.has(name)), `${snippetFile}: each upstream is the container name of a service of the pack`);
+  }
+  assert.ok(text.includes('The packs of use case 3 (the Sourcing Agent and the three Bid Desks) are written for such a host in the same way.'), 'the packs of use case 3 are written for such a host');
+  assert.ok(text.includes('The runbooks of the packs of use case 3 give them in the same way: `RUNBOOK-sourcing-agent.md` and `RUNBOOK-bid-desk.md`. The second one has one block and one join for each of the three Bid Desks.'), 'the runbooks of the packs of use case 3');
+  for (const file of ['RUNBOOK-sourcing-agent.md', 'RUNBOOK-bid-desk.md']) assert.ok(existsSync(join(root, SRV, file)), `${file} is there`);
+  // The join: the three Bid Desks are three projects, so the Caddy container joins one network for each of them.
+  const joinRow = text.split('\n').find((line) => line.startsWith('| The join |'));
+  assert.ok(joinRow, 'the table has the row of the join');
+  assert.ok(joinRow.includes('The three Bid Desks are three projects, so the Caddy container joins one network for each of them: `bid-desk-alfa_default`, `bid-desk-bravo_default` and `bid-desk-charlie_default`.'), 'the join names the networks of the three Bid Desks');
+  for (const name of BID_DESKS) assert.ok(joinRow.includes(`\`bid-desk-${name}_default\``) && parseYaml(srvRead(`docker-compose.bid-desk-${name}.yml`)).name === `bid-desk-${name}`, `the network of the project of Bid Desk ${name}`);
+});
+
+test('use case 3 RUNBOOK: step 7 directs both packs to the marker block and to the start order in their own runbooks', () => {
+  const step = section(srvRead('RUNBOOK.md'), '7. Add an agent');
+  const runbooks = ['RUNBOOK-sourcing-agent.md', 'RUNBOOK-bid-desk.md'];
+  for (const file of runbooks) assert.ok(step.includes(`\`${file}\``) && existsSync(join(root, SRV, file)), file);
+  const [paragraph, ways] = step.split('\n1. ');
+  assert.ok(paragraph.includes('The packs of use case 3 (supplier bid evaluation) are the Sourcing Agent, with `RUNBOOK-sourcing-agent.md`, and the three Bid Desks, with `RUNBOOK-bid-desk.md`.'), 'the paragraph names the packs');
+  const at = (part) => paragraph.indexOf(part);
+  assert.ok(at('The packs of use case 2') > 0 && at('The packs of use case 2') < at('The packs of use case 3') && at('The packs of use case 3') < at('They fit the marker block only:'), 'the sentence about the marker block follows the lists of all the packs');
+  const [snippetFolder, markerBlock] = ways.split('   - Marker block.');
+  assert.ok(snippetFolder.includes('The packs of use case 3 do not fit this way either.'), 'the snippet folder is not for the packs of use case 3');
+  assert.ok(markerBlock.includes('The packs of use case 3 use this way only.'), 'the marker block is for the packs of use case 3');
+  assert.ok(markerBlock.includes('For all these packs, install the block after you start the service and before you start the runtime.'), 'the block goes in between the two starts');
+  for (const file of runbooks) {
+    const order = section(srvRead(file), 'The start order');
+    let previous = -1;
+    for (const item of [' up -d service\n', 'Check the service', 'section "The Caddy block"', 'take the hash of', 'Post the advert', '`ADVERT_REF`', ' up -d --no-deps runtime\n']) {
+      const offset = order.indexOf(item);
+      assert.ok(offset > previous, `${file}: ${item.trim()} is missing or out of order`);
+      previous = offset;
+    }
+  }
+});
+
+// ======================================================================================================================================
+// The documents of use case 3 that the kit, the two agents and the mock service read. The mock service takes a ranking with its salt and approval. Its tenant seed holds the catalogue and the vendors.
+// Each drift test runs real TypeScript in a child process. It checks the cases in its table, not every possible input.
+// ======================================================================================================================================
+const BIDS_GOLDENS = 'packages/usecase-kit/test/bids/golden';
+const SOURCING_TESTS = 'agents/sourcing-agent/test';
+const RANKING_GOLDENS = [`${BIDS_GOLDENS}/ranking.json`, `${SOURCING_TESTS}/execute/golden/ranking.json`, `${SOURCING_TESTS}/propose/golden/ranking.json`];
+
+// The ranking, as the kit reads it and as the sourcing record reads it. The record reads the tenant, the request identifier, and the rank, the DID and the organisation of each ranked entry, and it keeps the rest of the
+// ranking as it came: the approval check hashes it. The tenant is the one of the URL, and the router takes a name of the form TENANT only. The builder of the kit makes each ranking from the parts that the agent has.
+const RANKING_DRIFT_CODE = String.raw`
+import { readFileSync } from 'node:fs';
+import { parseRanking as store } from './src/documents.ts';
+import { TENANT } from './src/validate.ts';
+import { buildRanking, parseRanking as kit } from '../../packages/usecase-kit/src/bids/index.ts';
+const SALT = '07'.repeat(32);
+const verdict = (run) => { try { return run(); } catch (error) { if (error?.name !== 'Invalid') throw error; return null; } };
+const mockRead = (ranking) => {
+  if (typeof ranking?.tenant !== 'string' || !TENANT.test(ranking.tenant)) return null;
+  return verdict(() => { const read = store({ ranking, salt: SALT, approval: null }, ranking.tenant); return { rfq_id: read.rfq_id, top: read.top, organisation: read.topOrganisation }; });
+};
+const { rankings, bodies, builds } = JSON.parse(readFileSync(0, 'utf8'));
+console.log(JSON.stringify({
+  rankings: rankings.map((ranking) => { const read = mockRead(ranking); return { kit: kit(ranking).ok, mock: read !== null, read }; }),
+  bodies: bodies.map(([body, tenant]) => verdict(() => { store(body, tenant); return true; }) === true),
+  builds: builds.map((input) => { const made = buildRanking(input); return made.ok ? { ok: true, ranking: made.value, mock: mockRead(made.value) !== null, again: kit(made.value).ok } : { ok: false, code: made.code }; }),
+}));
+`;
+
+test('use case 3 drift: the ranking table checks the builder, both parsers and the approval member of the record body', () => {
+  const golden = jsonOf(RANKING_GOLDENS[0]);
+  const rfq = jsonOf(`${BIDS_GOLDENS}/rfq.json`);
+  const weights = jsonOf(`${BIDS_GOLDENS}/weights.json`);
+  const edit = (changes) => ({ ...golden, ...changes });
+  const without = (member) => Object.fromEntries(Object.entries(golden).filter(([name]) => name !== member));
+  const did = (n) => `did:vector:${n.toString(16).padStart(2, '0').repeat(32)}`;
+  const entry = (rank, changes = {}) => ({ ...golden.ranked[0], rank, desk_did: did(rank), ...changes });
+  const withRanked = (ranked, excluded = []) => edit({ ranked, excluded });
+  const many = (count) => withRanked(Array.from({ length: count }, (_, i) => entry(i + 1)));
+  const withFirst = (changes) => edit({ ranked: [{ ...golden.ranked[0], ...changes }, ...golden.ranked.slice(1)] });
+  const domain = (organisation) => withFirst({ organisation });
+  const fill = (count, char = 'a') => char.repeat(count);
+  // [name, ranking, whether the kit takes it, whether the record takes it]
+  const cases = [
+    ...RANKING_GOLDENS.map((file) => [file, jsonOf(file), true, true]),
+    ['a request identifier of 64 characters', edit({ rfq_id: `a${fill(63, '0')}` }), true, true],
+    ['a request identifier of 65 characters', edit({ rfq_id: `a${fill(64, '0')}` }), false, false],
+    ['a request identifier with a dot, a hyphen and an underscore', edit({ rfq_id: 'rfq.1-a_b' }), true, true],
+    ['a request identifier that starts with a dot', edit({ rfq_id: '.rfq1' }), false, false],
+    ['a request identifier with a space', edit({ rfq_id: 'rfq 1' }), false, false],
+    ['a request identifier that is a number', edit({ rfq_id: 1 }), false, false],
+    ['a tenant of 48 characters', edit({ tenant: `a${fill(47, '0')}` }), true, true],
+    ['a tenant of 49 characters', edit({ tenant: `a${fill(48, '0')}` }), false, false],
+    ['a tenant in upper case', edit({ tenant: 'RUN1' }), false, false],
+    ['a tenant with an underscore', edit({ tenant: 'run_1' }), false, false],
+    ['another schema', edit({ schema: 'vector.usecase.ranking.v2' }), false, false],
+    ['one ranked entry', withRanked([entry(1)]), true, true],
+    ['20 ranked entries', many(20), true, true],
+    ['21 ranked entries', many(21), false, false],
+    ['no ranked entry', withRanked([]), false, false],
+    ['an entry with rank 0', withRanked([entry(0), entry(2)]), false, false],
+    ['two entries with rank 1', withRanked([entry(1), entry(2, { rank: 1 })]), false, false],
+    ['an organisation of 64 characters', domain(`${fill(31)}.${fill(32, 'b')}`), true, true],
+    ['an organisation of 65 characters', domain(`${fill(31)}.${fill(33, 'b')}`), false, false],
+    ['an organisation in upper case', domain('Alfa.example.org'), false, false],
+    ['an organisation with one label', domain('alfa'), false, false],
+    ['an organisation with a dot at the end', domain('alfa.example.org.'), false, false],
+    ['an organisation with an empty label', domain('alfa..org'), false, false],
+    ['an organisation with a label that starts with a hyphen', domain('-alfa.example.org'), false, false],
+    ['an organisation with a label that ends with a hyphen', domain('alfa-.example.org'), false, false],
+    ['an organisation with an underscore', domain('alfa_x.example.org'), false, false],
+    ['an organisation with a hyphen inside a label', domain('al-fa.example.org'), true, true],
+    ['an organisation that is null', domain(null), false, false],
+    ['an organisation that is an empty text', domain(''), false, false],
+    ['a desk DID of 63 hex digits', withFirst({ desk_did: `did:vector:${'a1'.repeat(32).slice(1)}` }), false, false],
+    ['a desk DID in upper case', withFirst({ desk_did: `did:vector:${'A1'.repeat(32)}` }), false, false],
+    ['a desk DID of another method', withFirst({ desk_did: `did:other:${'a1'.repeat(32)}` }), false, false],
+    // The record reads less than the kit: it takes each of these, and the kit refuses each of them.
+    ['ranks 1 and 3, in order', withRanked([entry(1), entry(2, { rank: 3 })]), false, true],
+    ['a member of the ranking that is not listed', edit({ carrier: 'x' }), false, true],
+    ['a ranking with no weights', without('weights'), false, true],
+    ['a score of 101', withFirst({ score: 101 }), false, true],
+    ['the same DID in two ranked entries', withRanked([entry(1), entry(2, { desk_did: entry(1).desk_did })]), false, true],
+  ];
+  // The builder of the kit: the golden ranking from its parts, with the rank of each entry given by its place, and two other rankings.
+  const parts = golden.ranked.map(({ rank, ...part }) => part);
+  const input = { rfq, tenant: golden.tenant, weights, entries: parts, excluded: golden.excluded };
+  const noOrganisation = (n) => { const { organisation, ...part } = parts[0]; return { ...part, desk_did: did(n) }; };
+  const builds = [
+    ['the golden of the kit', input],
+    ['one entry and no excluded bidder', { ...input, entries: parts.slice(0, 1), excluded: [] }],
+    ['20 entries, none with an organisation', { ...input, entries: Array.from({ length: 20 }, (_, i) => noOrganisation(i + 1)), excluded: [] }],
+  ];
+  // The body of the record: the mock service only. The ranking is the golden one, for the tenant of the URL.
+  const approval = { attestation: '22'.repeat(32), issuer_did: did(0xb2) };
+  const body = (changes = {}) => ({ ranking: golden, salt: '07'.repeat(32), approval, ...changes });
+  const bodyWithout = (member) => Object.fromEntries(Object.entries(body()).filter(([name]) => name !== member));
+  // [name, body, tenant of the URL, whether the record takes it]
+  const bodies = [
+    ['a body with an approval', body(), golden.tenant, true],
+    ['a body with a null approval', body({ approval: null }), golden.tenant, true],
+    ['a body with no approval member', bodyWithout('approval'), golden.tenant, false],
+    ['a body with no salt member', bodyWithout('salt'), golden.tenant, false],
+    ['a body with no ranking member', bodyWithout('ranking'), golden.tenant, false],
+    ['a body with a member that is not listed', body({ carrier: 'x' }), golden.tenant, false],
+    ['a salt of 63 hex digits', body({ salt: '07'.repeat(32).slice(1) }), golden.tenant, false],
+    ['a salt in upper case', body({ salt: 'AB'.repeat(32) }), golden.tenant, false],
+    ['an approval with an attestation in upper case', body({ approval: { ...approval, attestation: 'AB'.repeat(32) } }), golden.tenant, false],
+    ['an approval with no issuer', body({ approval: { attestation: approval.attestation } }), golden.tenant, false],
+    ['an approval with a member that is not listed', body({ approval: { ...approval, carrier: 'x' } }), golden.tenant, false],
+    ['an approval that is an empty object', body({ approval: {} }), golden.tenant, false],
+    ['an approval that is a text', body({ approval: 'yes' }), golden.tenant, false],
+    ['a ranking of another tenant than the one of the URL', body(), 'run2', false],
+  ];
+  const answers = inMockServiceStdin(RANKING_DRIFT_CODE, { rankings: cases.map(([, ranking]) => ranking), bodies: bodies.map(([, given, tenant]) => [given, tenant]), builds: builds.map(([, given]) => given) });
+  assert.deepEqual([answers.rankings.length, answers.bodies.length, answers.builds.length], [cases.length, bodies.length, builds.length]);
+  cases.forEach(([name, ranking, kit, mock], i) => {
+    const said = answers.rankings[i];
+    assert.equal(said.kit, kit, `${name}: the kit ${kit ? 'must take it' : 'must refuse it'}; found ${JSON.stringify(said)}`);
+    assert.equal(said.mock, mock, `${name}: the sourcing record ${mock ? 'must take it' : 'must refuse it'}; found ${JSON.stringify(said)}`);
+    // For the cases in this table, the record accepts every ranking that the kit parser accepts.
+    assert.ok(!said.kit || said.mock, `${name}: the kit takes a ranking that the record refuses`);
+    // The record picks the supplier of rank 1 and the request that the ranking names.
+    if (said.mock) {
+      const top = ranking.ranked.find((one) => one.rank === 1);
+      assert.deepEqual(said.read, { rfq_id: ranking.rfq_id, top: top.desk_did, organisation: top.organisation ?? null }, `${name}: the record reads the request and the entry of rank 1`);
+    }
+  });
+  builds.forEach(([name], i) => {
+    const built = answers.builds[i];
+    assert.deepEqual([built.ok, built.mock, built.again], [true, true, true], `${name}: the kit builds a ranking, its parser takes it, and the record takes it; found ${JSON.stringify(built)}`);
+  });
+  assert.deepEqual(answers.builds[0].ranking, golden, 'the builder of the kit makes the golden ranking from its parts');
+  bodies.forEach(([name, , , taken], i) => assert.equal(answers.bodies[i], taken, `${name}: the record ${taken ? 'must take it' : 'must refuse it'}`));
+  assert.ok(cases.filter(([, , kit, mock]) => kit && mock).length >= 10 && cases.filter(([, , kit, mock]) => !kit && !mock).length >= 20 && cases.filter(([, , kit, mock]) => !kit && mock).length >= 4, 'the table has the accepted twins, the refused copies and the cases that only the record takes');
+});
+
+// The identifiers and the domains of the documents of use case 3, through each parser that reads one. An identifier is read as the rule of the mock service says: the request identifier of a ranking (the kit and the sourcing
+// record), the identifier of a vendor (the vendor parser of the Sourcing Agent and the seed of the mock service), and the SKU of an item of a price list (the kit and the catalogue of the seed). A domain is read as the
+// organisation of a record: a lower-case name of at most 64 characters with at least two labels. It stands in a ranking (the kit and the record), in a vendor (the Sourcing Agent and the seed), in the file of a bidder
+// (`domainOf` of the Sourcing Agent) and in the setting of a Bid Desk. The tables give the expected result for each reader.
+const IDENTIFIER_DRIFT_CODE = String.raw`
+import { readFileSync } from 'node:fs';
+import { defaultSeed, parseSeed } from './src/seed.ts';
+import { parseRanking as store } from './src/documents.ts';
+import { parsePriceList, parseRanking as kit } from '../../packages/usecase-kit/src/bids/index.ts';
+import { parseVendors } from '../../agents/sourcing-agent/src/scoring/vendors.ts';
+import { domainOf } from '../../agents/sourcing-agent/src/bidders/lineage.ts';
+import { organisationOf } from '../../agents/bid-desk/src/serve/settings.ts';
+const accepted = (run) => { try { run(); return true; } catch (error) { if (error?.name !== 'Invalid') throw error; return false; } };
+const { ids, domains, ranking, priceList } = JSON.parse(readFileSync(0, 'utf8'));
+const seed = defaultSeed();
+const mockRanking = (document) => accepted(() => store({ ranking: document, salt: '07'.repeat(32), approval: null }, 'run1'));
+const vendor = (changes) => ({ ...seed.vendors[0], ...changes });
+const withFirst = (changes) => ({ ...ranking, ranked: [{ ...ranking.ranked[0], ...changes }, ...ranking.ranked.slice(1)] });
+const desk = (value) => { if (typeof value !== 'string') return null; try { organisationOf({ BID_DESK_ORGANISATION: value }); return true; } catch { return false; } };
+console.log(JSON.stringify({
+  ids: ids.map(([, value]) => ({
+    rfq: { kit: kit({ ...ranking, rfq_id: value }).ok, mock: mockRanking({ ...ranking, rfq_id: value }) },
+    vendor: { agent: parseVendors({ vendors: [vendor({ vendor_id: value })] }).ok, mock: accepted(() => parseSeed('seed', { vendors: [vendor({ vendor_id: value })] })) },
+    sku: { kit: parsePriceList({ ...priceList, items: [{ ...priceList.items[0], sku: value }, ...priceList.items.slice(1)] }).ok, mock: accepted(() => parseSeed('seed', { catalogue: [{ ...seed.catalogue[0], sku: value }] })) },
+  })),
+  domains: domains.map(([, value]) => ({
+    ranking: { kit: kit(withFirst({ organisation: value })).ok, mock: mockRanking(withFirst({ organisation: value })) },
+    vendor: { agent: parseVendors({ vendors: [vendor({ organisation: value })] }).ok, mock: accepted(() => parseSeed('seed', { vendors: [vendor({ organisation: value })] })) },
+    lineage: domainOf(value) !== null,
+    desk: desk(value),
+  })),
+}));
+`;
+
+test('use case 3 drift: the tables check the listed request identifiers, vendor identifiers, SKUs and organisation domains against their readers', () => {
+  const ranking = jsonOf(RANKING_GOLDENS[0]);
+  const priceList = jsonOf(BID_DESK_PRICE_LISTS[0]);
+  const fill = (count, char = 'a') => char.repeat(count);
+  // [name, value, whether the mock service and the kit take it, whether the vendor parser differs]. The vendor parser uses NFC, so it reads the Kelvin sign as the capital K in this table.
+  const ids = [
+    ['one character', 'a', true], ['64 characters', `a${fill(63, '0')}`, true], ['65 characters', `a${fill(64, '0')}`, false], ['a dot, a hyphen and an underscore inside', 'a.b-c_d', true], ['a digit first', '1a', true],
+    ['a dot first', '.a', false], ['a hyphen first', '-a', false], ['an underscore first', '_a', false], ['a space inside', 'a b', false], ['a space at the end', 'a ', false], ['a slash', 'a/b', false], ['a colon', 'a:b', false],
+    ['a letter that is not ASCII', 'a\u00e9', false], ['the Kelvin sign, which NFC turns into K', '\u212A-1', false, true], ['no character', '', false], ['a line break at the end', 'a\n', false], ['a number', 1, false], ['null', null, false],
+  ];
+  const domains = [
+    ['two labels', 'a.b', true], ['a domain of 64 characters', `${fill(31)}.${fill(32, 'b')}`, true], ['a domain of 65 characters', `${fill(31)}.${fill(33, 'b')}`, false], ['a label of 62 characters', `${fill(62)}.b`, true],
+    ['a label of 63 characters, and 65 characters in all', `${fill(63)}.b`, false], ['a hyphen inside a label', 'al-fa.example.org', true], ['digits only', '1.2', true], ['a label that starts with a hyphen', '-a.example.org', false],
+    ['a label that ends with a hyphen', 'a-.example.org', false], ['upper case', 'Alfa.example.org', false], ['one label', 'alfa', false], ['a dot at the end', 'alfa.example.org.', false], ['an empty label', 'alfa..org', false],
+    ['an underscore', 'a_b.example.org', false], ['a space', 'alfa .example.org', false], ['a letter that is not ASCII', 'alf\u00e9.example.org', false], ['the Kelvin sign, which NFC turns into the capital K', 'alf\u212A.example.org', false],
+    ['no character', '', false], ['null', null, false], ['a number', 1, false],
+  ];
+  const answers = inMockServiceStdin(IDENTIFIER_DRIFT_CODE, { ids: ids.map(([name, value]) => [name, value]), domains: domains.map(([name, value]) => [name, value]), ranking, priceList });
+  assert.deepEqual([answers.ids.length, answers.domains.length], [ids.length, domains.length]);
+  ids.forEach(([name, , taken, parserTakes = taken], i) => {
+    const said = answers.ids[i];
+    for (const [member, pair, expected] of [['the request identifier of a ranking', said.rfq, [taken, taken]], ['the identifier of a vendor', said.vendor, [parserTakes, taken]], ['the SKU of a price list', said.sku, [taken, taken]]]) {
+      assert.deepEqual(Object.values(pair), expected, `${name}, ${member}: the parsers must say ${JSON.stringify(expected)}; found ${JSON.stringify(pair)}`);
+      if (pair === said.vendor) assert.ok(!pair.mock || pair.agent, `${name}: the seed takes a vendor identifier that the vendor parser refuses`);
+    }
+  });
+  domains.forEach(([name, , taken], i) => {
+    const said = answers.domains[i];
+    // The setting of a Bid Desk takes a text only, so it says nothing of a value that is not one (null).
+    const readers = [said.ranking.kit, said.ranking.mock, said.vendor.agent, said.vendor.mock, said.lineage, ...(said.desk === null ? [] : [said.desk])];
+    assert.deepEqual(readers, readers.map(() => taken), `${name}: each reader ${taken ? 'must take it' : 'must refuse it'}; found ${JSON.stringify(said)}`);
+  });
+  for (const table of [ids, domains]) assert.ok(table.filter(([, , taken]) => taken).length >= 4 && table.filter(([, , taken]) => !taken).length >= 10, 'the table has the accepted twins and the refused copies');
+});
+
+// The body that the Sourcing Agent sends to the sourcing record. The real job `execute` runs in the world of its own tests, with a gateway that is a stub and a fake sourcing record that keeps each call, and the body
+// of that call goes to the reader of the real mock service. So the test does not build the body itself.
+const EXECUTE_DRIFT_CODE = String.raw`
+import { parseRanking as store } from './src/documents.ts';
+import { world } from '../../agents/sourcing-agent/test/execute/world.ts';
+import { APPROVAL, SALT } from '../../agents/sourcing-agent/test/execute/fixtures.ts';
+const read = (text) => { try { const found = store(JSON.parse(text), 'run1'); return { rfq_id: found.rfq_id, top: found.top, organisation: found.topOrganisation, salt: found.salt, approval: found.approval }; } catch (error) { if (error?.name !== 'Invalid') throw error; return null; } };
+const runs = [];
+for (const approval of [APPROVAL, null]) {
+  const w = world();
+  await w.run(w.request(w.document(), approval));
+  runs.push({ calls: w.record.calls.map((call) => ({ method: call.method, url: call.url, body: call.body })), read: w.record.calls.length === 1 ? read(w.record.calls[0].body) : null });
+}
+console.log(JSON.stringify({ runs, approval: APPROVAL, salt: SALT }));
+`;
+
+test('use case 3 drift: the body that the Sourcing Agent sends to the sourcing record is a body that the record reads: the job makes one call with the ranking as the hirer holds it, the salt and the approval, and the record takes the supplier, the request, the salt and the approval of it', () => {
+  const golden = jsonOf(`${SOURCING_TESTS}/execute/golden/ranking.json`);
+  const answer = inMockServiceStdin(EXECUTE_DRIFT_CODE, null);
+  assert.equal(answer.runs.length, 2, 'one run with an approval and one with none');
+  const top = golden.ranked.find((one) => one.rank === 1);
+  answer.runs.forEach(({ calls, read }, i) => {
+    const name = i === 0 ? 'a request with an approval' : 'a request with no approval';
+    assert.equal(calls.length, 1, `${name}: the job makes one call`);
+    assert.deepEqual([calls[0].method, calls[0].url], ['POST', 'https://mock.example/t/run1/sourcing/rankings'], `${name}: the route of the record`);
+    const sent = JSON.parse(calls[0].body);
+    assert.deepEqual(Object.keys(sent), ['ranking', 'salt', 'approval'], `${name}: the members of the body, in order`);
+    assert.equal(JSON.stringify(sent.ranking), JSON.stringify(golden), `${name}: the ranking is the document that the hirer approved, with its members in their order`);
+    assert.deepEqual(read, { rfq_id: golden.rfq_id, top: top.desk_did, organisation: top.organisation ?? null, salt: answer.salt, approval: i === 0 ? answer.approval : null }, `${name}: the record reads the request, the supplier of rank 1, the salt and the approval`);
+  });
+});
+
+// The Sourcing Agent reads the manifest and list bytes. Each desk must cover the whole default catalogue. Prices must be at least 10 so that the Bid Desk fault
+// can lower the first unit price by a fifth rounded up. Each desk has its own list hash.
+const CATALOGUE_DRIFT_CODE = String.raw`
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { defaultSeed } from './src/seed.ts';
+import { readPriceList, startBudget } from '../../agents/sourcing-agent/src/bidders/discover.ts';
+import { BIDDER_FETCH_TIMEOUT_MS, BIDDER_READ_BUDGET_MS } from '../../agents/sourcing-agent/src/bidders/types.ts';
+const { cases, template } = JSON.parse(readFileSync(0, 'utf8'));
+const manifestUri = 'https://bid-desk.example.org/agent.json';
+const listUri = 'https://bid-desk.example.org/price-list.json';
+const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
+const read = async ({ text, wrongHash = false, bounded = false }) => {
+  const list = Buffer.from(text);
+  const expected = wrongHash ? '00'.repeat(32) : sha256(list);
+  const manifest = Buffer.from(template.replace('<PRICE_LIST_URI>', listUri).replace('<PRICE_LIST_SHA256>', expected));
+  const limits = [];
+  const fetchBytes = async (uri, { maxBytes }) => {
+    limits.push(maxBytes);
+    const bytes = uri === manifestUri ? manifest : uri === listUri ? list : undefined;
+    if (bytes === undefined) throw new Error('unexpected bidder file');
+    if (bounded && bytes.length > maxBytes) throw new Error('bidder file exceeds the fetch limit');
+    return { status: 200, bytes };
+  };
+  const budget = startBudget(() => 0, BIDDER_READ_BUDGET_MS, BIDDER_FETCH_TIMEOUT_MS);
+  const result = await readPriceList({ fetchBytes }, budget, { detail_uri: manifestUri, detail_hash: sha256(manifest) });
+  return { ...result, limits };
+};
+const reads = {};
+for (const [name, probe] of Object.entries(cases)) reads[name] = await read(probe);
+console.log(JSON.stringify({ catalogue: defaultSeed().catalogue.map((entry) => entry.sku), reads }));
+`;
+
+function priceListDriftProblems(lists, catalogue) {
+  const problems = [];
+  const wanted = new Set(catalogue);
+  const hashes = new Set();
+  for (const [name, read] of Object.entries(lists)) {
+    if (read.state !== 'valid') {
+      problems.push(`the price list of ${name} is ${read.state}`);
+      continue;
+    }
+    const skus = new Set(read.list.items.map((item) => item.sku));
+    for (const sku of skus) if (!wanted.has(sku)) problems.push(`the price list of ${name} holds ${sku}, and the catalogue does not`);
+    for (const sku of wanted) if (!skus.has(sku)) problems.push(`the price list of ${name} lacks catalogue SKU ${sku}`);
+    for (const item of read.list.items) {
+      for (const { unit_price } of item.breaks) if (unit_price < 10) problems.push(`the price list of ${name} has a unit price of ${unit_price}, and the least unit price is 10`);
+    }
+    if (hashes.has(read.sha256)) problems.push('two price lists have the same hash');
+    hashes.add(read.sha256);
+  }
+  return problems;
+}
+
+test('use case 3 drift: the Sourcing Agent reads each desk list within the 262,144 byte limit, and each desk covers the default catalogue', () => {
+  const maxBytes = 262_144;
+  const shipped = Object.fromEntries(BID_DESKS.map((name, i) => [name, { text: read(BID_DESK_PRICE_LISTS[i]) }]));
+  const alfa = JSON.parse(shipped.alfa.text);
+  const [first, ...rest] = alfa.items;
+  const withFirst = (changes) => JSON.stringify({ ...alfa, items: [{ ...first, ...changes }, ...rest] });
+  const withPrice = (unit_price) => withFirst({ breaks: [{ ...first.breaks[0], unit_price }, ...first.breaks.slice(1)] });
+  const compact = JSON.stringify(alfa);
+  const atLimit = compact + ' '.repeat(maxBytes - Buffer.byteLength(compact));
+  const aboveLimit = atLimit + ' ';
+  const cases = {
+    ...shipped,
+    unknownSku: { text: withFirst({ sku: 'GLV-NIT-L' }) },
+    missingSku: { text: JSON.stringify({ ...alfa, items: rest }) },
+    lowPrice: { text: withPrice(9) },
+    minimumPrice: { text: withPrice(10) },
+    broken: { text: JSON.stringify({ ...alfa, items: [] }) },
+    wrongHash: { text: shipped.alfa.text, wrongHash: true },
+    atLimit: { text: atLimit },
+    aboveLimit: { text: aboveLimit },
+    boundedPort: { text: aboveLimit, bounded: true },
+  };
+  const { catalogue, reads } = inMockServiceStdin(CATALOGUE_DRIFT_CODE, { cases, template: read('agents/bid-desk/agent.json.template') });
+  assert.ok(catalogue.length >= 3, 'the default seed has the catalogue SKUs');
+  assert.deepEqual(Object.keys(reads), Object.keys(cases), 'one read for each price list case');
+  for (const [name, { limits }] of Object.entries(reads)) assert.deepEqual(limits, [maxBytes, maxBytes], `${name}: the manifest and the list have the same fetch limit`);
+  const lists = Object.fromEntries(BID_DESKS.map((name) => [name, reads[name]]));
+  assert.deepEqual(priceListDriftProblems(lists, catalogue), [], 'the three shipped lists pass');
+  for (const name of BID_DESKS) {
+    const { text } = shipped[name];
+    assert.deepEqual(lists[name].list, JSON.parse(text), `${name}: the reader preserves the list`);
+    assert.equal(lists[name].sha256, createHash('sha256').update(text, 'utf8').digest('hex'), `${name}: the reader returns the SHA-256 of the served bytes`);
+  }
+  assert.equal(reads.atLimit.state, 'valid', 'the reader accepts a valid list at 262,144 bytes');
+  assert.deepEqual(reads.atLimit.list, alfa, 'padding does not change the list');
+  assert.equal(reads.aboveLimit.state, 'invalid', 'the reader rejects the same list at 262,145 bytes when the port returns it');
+  assert.equal(reads.boundedPort.state, 'unreadable', 'the reader reports a fetch error when the port enforces the byte limit');
+  assert.equal(reads.wrongHash.state, 'invalid', 'the reader rejects a valid list with a hash that does not match');
+  assert.equal(reads.broken.state, 'invalid', 'the reader rejects a list with no items');
+
+  const withAlfa = (name, wanted = catalogue) => priceListDriftProblems({ ...lists, alfa: reads[name] }, wanted);
+  assert.deepEqual(withAlfa('unknownSku'), ['the price list of alfa holds GLV-NIT-L, and the catalogue does not', `the price list of alfa lacks catalogue SKU ${first.sku}`]);
+  assert.deepEqual(withAlfa('missingSku'), [`the price list of alfa lacks catalogue SKU ${first.sku}`], 'only alfa omits the SKU');
+  assert.deepEqual(withAlfa('lowPrice'), ['the price list of alfa has a unit price of 9, and the least unit price is 10']);
+  assert.deepEqual(withAlfa('minimumPrice', [...catalogue].reverse()), [], 'a price of 10 and a different catalogue order pass');
+  assert.deepEqual(priceListDriftProblems({ ...lists, bravo: lists.alfa }, catalogue), ['two price lists have the same hash'], 'two desks publish the same list bytes');
+});
+
+// Use the response body of GET /vendors. If the seed refuses an input, test it only as a direct input to the parser.
+const VENDOR_RESPONSE_CODE = String.raw`
+import { readFileSync } from 'node:fs';
+import { isDeepStrictEqual } from 'node:util';
+import { defaultSeed, parseSeed } from './src/seed.ts';
+import { Tenant } from './src/tenants.ts';
+import { parseVendors, vendorFor } from '../../agents/sourcing-agent/src/scoring/vendors.ts';
+const bodyOf = ({ tenant, organisations, seed }) => {
+  const parsed = parseSeed('body.seed', seed);
+  const instance = new Tenant(tenant, organisations, parsed, 0);
+  return JSON.parse(JSON.stringify({ vendors: instance.vendors() }));
+};
+`;
+
+const VENDORS_DRIFT_CODE = VENDOR_RESPONSE_CODE + String.raw`
+const cases = JSON.parse(readFileSync(0, 'utf8'));
+const tenant = { tenant: 'run1', organisations: { supplier: 'supplier.example.org', insurer: 'insurer.example.org' } };
+const seed = defaultSeed();
+const base = seed.vendors[0];
+const others = (count) => Array.from({ length: count }, (_, i) => ({ ...base, vendor_id: 'V-' + (2000 + i) }));
+const vendorsOf = (op) => {
+  switch (op.kind) {
+    case 'default': return seed.vendors;
+    case 'count': return others(op.count);
+    case 'twice': return [base, { ...base }];
+    case 'rename': { const { [op.from]: value, ...rest } = base; return [{ ...rest, [op.to]: value }]; }
+    case 'drop': { const { [op.member]: gone, ...rest } = base; return [rest]; }
+    default: return [{ ...base, [op.member]: op.value }];
+  }
+};
+const both = (vendors) => {
+  let body;
+  try { body = bodyOf({ ...tenant, seed: { vendors } }); }
+  catch (error) { if (error?.name !== 'Invalid') throw error; }
+  const parsed = parseVendors(body ?? { vendors });
+  return { mock: body !== undefined, agent: parsed.ok, detail: parsed.ok ? null : parsed.detail };
+};
+console.log(JSON.stringify(cases.map((op) => both(vendorsOf(op)))));
+`;
+
+test('use case 3 drift: the vendor cases compare the mock seed and the Sourcing Agent parser, including text that the mock emits and the parser rejects', (t) => {
+  const fill = (count, char = 'a') => char.repeat(count);
+  const set = (member, value) => ({ kind: 'set', member, value });
+  // [name, what to change in the first vendor of the seed, whether the seed takes it, whether the parser takes it]
+  const cases = [
+    ['the vendors of the default seed', { kind: 'default' }, true, true],
+    ['one vendor', { kind: 'count', count: 1 }, true, true], ['50 vendors', { kind: 'count', count: 50 }, true, true], ['51 vendors', { kind: 'count', count: 51 }, false, false],
+    ['a vendor identifier two times', { kind: 'twice' }, false, false], ['a member that is renamed', { kind: 'rename', from: 'defect_rate', to: 'defects' }, false, false],
+    ['a member that is not listed', set('rating', 5), false, false], ['a member that is missing', { kind: 'drop', member: 'last_audit' }, false, false],
+    ['a rate of 1', set('on_time_delivery_rate', 1), true, true], ['a rate of 1.01', set('on_time_delivery_rate', 1.01), false, false], ['a negative rate', set('defect_rate', -0.1), false, false],
+    ['a rate as a text', set('defect_rate', '0.01'), false, false], ['200 years as a vendor', set('years_as_vendor', 200), true, true], ['201 years as a vendor', set('years_as_vendor', 201), false, false],
+    ['payment terms of 365 days', set('payment_terms_days', 365), true, true], ['payment terms of 366 days', set('payment_terms_days', 366), false, false], ['payment terms of 0 days', set('payment_terms_days', 0), true, true],
+    ['10 certifications', set('certifications', Array.from({ length: 10 }, (_, i) => `ISO ${i}`)), true, true], ['11 certifications', set('certifications', Array.from({ length: 11 }, (_, i) => `ISO ${i}`)), false, false],
+    ['no certification', set('certifications', []), true, true], ['a certification of 64 characters', set('certifications', [fill(64)]), true, true], ['a certification of 65 characters', set('certifications', [fill(65)]), false, false],
+    ['an empty certification', set('certifications', ['']), false, false], ['a date that does not exist', set('last_audit', '2026-02-30'), false, false], ['a date in the year 0099', set('last_audit', '0099-01-01'), false, false],
+    ['a date with a time', set('last_audit', '2026-03-14T00:00:00Z'), false, false], ['a name of 200 characters', set('name', fill(200)), true, true],
+    // The parser reads more than the seed takes: a name of 201 to 500 characters comes from no seed, and the parser takes it.
+    ['a name of 201 characters', set('name', fill(201)), false, true],
+  ];
+  // [name, character, whether the seed takes it, whether the parser takes it]
+  const textCases = [
+    ['a space', ' ', true, true], ['an accented letter', '\u00e9', true, true], ['a nonbreaking space', '\u00a0', true, true],
+    ['a tab', '\t', true, false], ['a line feed', '\n', true, false], ['a carriage return', '\r', true, false],
+    ['U+0085', '\u0085', true, false], ['a zero-width space', '\u200b', true, false], ['a right-to-left override', '\u202e', true, false],
+    ['a soft hyphen', '\u00ad', true, false], ['a line separator', '\u2028', true, false],
+    ['NUL', '\0', false, false], ['DEL', '\u007f', false, false],
+  ];
+  for (const [name, char, mock, agent] of textCases) {
+    cases.push([`${name} in a name`, set('name', `Alpha${char}Supply`), mock, agent]);
+    cases.push([`${name} in a certification`, set('certifications', [`ISO${char}9001`]), mock, agent]);
+  }
+  const answers = inMockServiceStdin(VENDORS_DRIFT_CODE, cases.map(([, op]) => op));
+  assert.equal(answers.length, cases.length);
+  cases.forEach(([name, op, mock, agent], i) => {
+    const { detail, ...result } = answers[i];
+    assert.deepEqual(result, { mock, agent }, `${name}: the seed ${mock ? 'takes' : 'refuses'} it, and the parser ${agent ? 'takes' : 'refuses'} it`);
+    if (mock && !agent) {
+      const field = op.member === 'certifications' ? 'certifications[0]' : 'name';
+      assert.equal(detail, `vendor list.vendors[0].${field} must not hold a hidden character`, name);
+    }
+  });
+  t.diagnostic('The mock seed emits tabs, line breaks and the other invisible characters in the table. The Sourcing Agent parser rejects them.');
+  assert.ok(cases.filter(([, , mock, agent]) => mock && agent).length >= 10 && cases.filter(([, , mock, agent]) => !mock && !agent).length >= 15, 'the table has the accepted twins and the refused copies');
+});
+
+const VENDOR_MAPPING_CODE = VENDOR_RESPONSE_CODE + String.raw`
+const { desks, request } = JSON.parse(readFileSync(0, 'utf8'));
+const read = (input) => {
+  const body = bodyOf(input);
+  const parsed = parseVendors(body);
+  if (!parsed.ok) throw new Error(parsed.detail);
+  return {
+    same: isDeepStrictEqual(parsed.value, body.vendors),
+    organisations: parsed.value.map((vendor) => vendor.organisation),
+    matches: desks.map((organisation) => vendorFor(parsed.value, organisation)),
+  };
+};
+const { tenant, organisations } = request;
+console.log(JSON.stringify({ defaults: read({ tenant, organisations }), override: read(request) }));
+`;
+
+test('use case 3 drift: the runbook vendor override gives each Bid Desk one match in the same tenant, while the default vendors give no match', () => {
+  const step = section(srvRead('RUNBOOK.md'), '6. Install the snippet of the mock systems');
+  const instructions = step.split('\n### Make or reset a tenant\n')[1]?.split('\n### ')[0];
+  assert.ok(instructions?.includes('none of the default vendor organisations at `example.org` matches a Bid Desk'), 'the runbook states the default mismatch');
+  assert.ok(instructions.includes('`--data @tenant.json`'), 'the runbook uses the example as the tenant request body');
+  const example = /^```json\n([\s\S]*?)\n```$/m.exec(instructions);
+  assert.ok(example, 'the tenant override example is present');
+  const request = JSON.parse(example[1]);
+  const desks = BID_DESKS.map((name) => parseYaml(read(serverCompose(`bid-desk-${name}`))).services.service.environment.BID_DESK_ORGANISATION);
+  const { defaults, override } = inMockServiceStdin(VENDOR_MAPPING_CODE, { desks, request });
+  assert.deepEqual(defaults, { same: true, organisations: BID_DESKS.map((name) => `${name}.example.org`), matches: desks.map(() => null) }, 'omitting seed uses the readable defaults and gives no desk match');
+  assert.equal(override.same, true, 'the parser preserves the emitted override');
+  assert.deepEqual([...override.organisations].sort(), [...desks].sort(), 'the same tenant list gives exactly one entry per desk organisation');
+  assert.deepEqual(override.matches, desks.map((organisation) => request.seed.vendors.find((vendor) => vendor.organisation === organisation)), 'the scorer finds the documented entry for each desk');
+});
+
+// The kit and mock service must agree on the credential for each protected route, the action, system and callers of token routes, and the system used in a JWT audience.
+// The Sourcing Agent manifest lists the vendor list and the sourcing record. The Bid Desk manifest lists no mock route.
+const ROUTES_DRIFT_CODE = String.raw`
+import { JWT_AUDIENCE_SYSTEM, ROUTES as mock } from './src/routes.ts';
+import { ROUTES as kit } from '../../packages/usecase-kit/src/access/index.ts';
+console.log(JSON.stringify({ mock: mock.map((route) => ({ id: route.id, method: route.method, segments: route.segments, need: route.need })), kit, jwtAudienceSystem: JWT_AUDIENCE_SYSTEM }));
+`;
+function routeProblems({ mock, kit, jwtAudienceSystem }, manifests) {
+  const problems = [];
+  const pathOf = (route) => `${route.method} /${route.segments.join('/')}`;
+  const specPath = (spec) => `${spec.method} ${spec.template.replace(/\{(\w+)\}/g, ':$1')}`;
+  const kinds = { token: 'token', 'x509-svid': 'x509', 'jwt-svid': 'jwt' };
+  for (const [id, spec] of Object.entries(kit)) {
+    const route = mock.find((one) => pathOf(one) === specPath(spec));
+    if (route === undefined) {
+      problems.push(`the route ${id} of the kit is no route of the mock service`);
+      continue;
+    }
+    if (route.need.kind !== kinds[spec.credential]) problems.push(`${id}: the kit takes a ${spec.credential}, and the mock service needs ${route.need.kind}`);
+    else if (spec.credential === 'token') {
+      if (route.need.action !== spec.action) problems.push(`${id}: the kit asks for the action ${spec.action}, and the mock service needs ${route.need.action}`);
+      if (route.need.system !== spec.system) problems.push(`${id}: the kit names the system ${spec.system}, and the mock service names ${route.need.system}`);
+      if (route.need.maxActors !== (spec.callers === 'agent' ? 1 : 2)) problems.push(`${id}: the kit lets ${spec.callers} call, and the mock service takes an act chain of ${route.need.maxActors}`);
+    } else if (spec.credential === 'jwt-svid' && spec.system !== jwtAudienceSystem) {
+      problems.push(`${id}: the kit uses JWT audience system ${spec.system}, and the mock service uses ${jwtAudienceSystem}`);
+    }
+  }
+  for (const route of mock) {
+    if (['open', 'admin'].includes(route.need.kind)) continue;
+    if (!Object.values(kit).some((spec) => specPath(spec) === pathOf(route))) problems.push(`the route ${route.id} of the mock service is no route of the kit`);
+  }
+  for (const [agent, listed, ids] of manifests) {
+    const wanted = ids.map((id) => `${kit[id].method} /t/{tenant}${kit[id].template}`);
+    if (!isDeepStrictEqual([...listed].sort(), [...wanted].sort())) problems.push(`the manifest of the ${agent} lists ${JSON.stringify(listed)}, and its routes are ${JSON.stringify(wanted)}`);
+  }
+  return problems;
+}
+
+test('use case 3 drift: the kit and mock service agree on protected routes, token rules and JWT audiences, and both manifests list their mock routes', () => {
+  const answer = inMockServiceStdin(ROUTES_DRIFT_CODE, null);
+  const manifestOf = (agent) => JSON.parse(read(`agents/${agent}/agent.json.template`)).behaviour.relying_on.mock_systems;
+  const manifests = [['Sourcing Agent', manifestOf('sourcing-agent'), ['vendors.list', 'sourcing.rankings']], ['Bid Desk', manifestOf('bid-desk'), []]];
+  assert.ok(Object.keys(answer.kit).length >= 11 && answer.mock.length >= 13, `both tables have their routes, found ${Object.keys(answer.kit).length} and ${answer.mock.length}`);
+  // The two routes of the Sourcing Agent: the vendor list for a scorer (an agent or a subagent), and the write of the ranking for the agent only.
+  assert.deepEqual([answer.kit['vendors.list'].action, answer.kit['vendors.list'].callers, answer.kit['sourcing.rankings'].action, answer.kit['sourcing.rankings'].callers], ['vendor.read', 'agent-or-subagent', 'sourcing.award.write', 'agent'], 'the actions of the Sourcing Agent');
+  assert.deepEqual(routeProblems(answer, manifests), [], 'the real tables and manifests pass');
+  const copy = () => JSON.parse(JSON.stringify(answer));
+  const mockRoute = (data, id) => data.mock.find((route) => route.id === id);
+  const faults = [
+    ['an action of the vendor list that differs', (data) => { mockRoute(data, 'GET /vendors').need.action = 'vendor.view'; }, /vendors\.list: the kit asks for the action vendor\.read, and the mock service needs vendor\.view/],
+    ['a system of the sourcing record that differs', (data) => { mockRoute(data, 'POST /sourcing/rankings').need.system = 'vendors'; }, /sourcing\.rankings: the kit names the system sourcing, and the mock service names vendors/],
+    ['a JWT audience that differs', (data) => { data.kit['insurer.requests'].system = 'records'; }, /insurer\.requests: the kit uses JWT audience system records, and the mock service uses insurer/],
+    ['an act chain of the vendor list that is too short for a scorer', (data) => { mockRoute(data, 'GET /vendors').need.maxActors = 1; }, /vendors\.list: the kit lets agent-or-subagent call, and the mock service takes an act chain of 1/],
+    ['an act chain of the sourcing record that takes a subagent', (data) => { mockRoute(data, 'POST /sourcing/rankings').need.maxActors = 2; }, /sourcing\.rankings: the kit lets agent call, and the mock service takes an act chain of 2/],
+    ['a route of the kit that the mock service lacks', (data) => { data.mock = data.mock.filter((route) => route.id !== 'POST /sourcing/rankings'); }, /the route sourcing\.rankings of the kit is no route of the mock service/],
+    ['a credential that differs', (data) => { mockRoute(data, 'POST /supplier/orders').need = { kind: 'jwt' }; }, /supplier\.orders: the kit takes a x509-svid, and the mock service needs jwt/],
+    ['a route of the mock service that the kit lacks', (data) => { data.mock.push({ id: 'GET /x', method: 'GET', segments: ['x'], need: { kind: 'token', action: 'x.read', system: 'erp', maxActors: 1 } }); }, /the route GET \/x of the mock service is no route of the kit/],
+  ];
+  for (const [name, change, expected] of faults) {
+    const data = copy();
+    change(data);
+    const problems = routeProblems(data, manifests);
+    assert.ok(problems.some((p) => expected.test(p)), `${name}: found ${JSON.stringify(problems)}`);
+  }
+  const manifestFaults = [
+    ['a manifest of the Sourcing Agent that lists one route only', [['Sourcing Agent', manifests[0][1].slice(0, 1), manifests[0][2]]], /the manifest of the Sourcing Agent lists/],
+    ['a manifest of the Sourcing Agent that lists a route of the kit that it does not use', [['Sourcing Agent', [...manifests[0][1], 'GET /t/{tenant}/erp/stock/{sku}'], manifests[0][2]]], /the manifest of the Sourcing Agent lists/],
+    ['a manifest of the Bid Desk that lists a route', [['Bid Desk', manifests[0][1], []]], /the manifest of the Bid Desk lists/],
+  ];
+  for (const [name, given, expected] of manifestFaults) {
+    const problems = routeProblems(answer, given);
+    assert.ok(problems.some((p) => expected.test(p)), `${name}: found ${JSON.stringify(problems)}`);
+  }
+  // The twins: the routes of the mock service in another order, and the routes of a manifest in another order.
+  const reversed = copy();
+  reversed.mock.reverse();
+  assert.deepEqual(routeProblems(reversed, [['Sourcing Agent', [...manifests[0][1]].reverse(), manifests[0][2]], manifests[1]]), [], 'another order');
 });
