@@ -56,6 +56,8 @@ const ROWS: readonly Row[] = [
   ['PORT', portOf, 'abc', digitsRule('PORT'), '9104'],
   ['PORT', portOf, '-1', digitsRule('PORT'), '9104'],
   ['HOST', hostOf, 'bad host!', /^environment variable HOST must be an address or a host name, and it has 9 characters$/, '127.0.0.1'],
+  ['INTAKE_STATE_DIR', stateDirOf, 'relative/state', /^environment variable INTAKE_STATE_DIR must be an absolute path, and it has 14 characters$/, '/var/state'],
+  ['INTAKE_STATE_DIR', stateDirOf, './state', /^environment variable INTAKE_STATE_DIR must be an absolute path, and it has 7 characters$/, '/data'],
   ['CHECKS_READ_BUDGET_MS', checksReadBudgetOf, '499', BUDGET_RANGE, '500', '431'],
   ['CHECKS_READ_BUDGET_MS', checksReadBudgetOf, '1500', BUDGET_TOO_WIDE, '1499', '7391'],
   ['CHECKS_READ_BUDGET_MS', checksReadBudgetOf, '4001', BUDGET_TOO_WIDE, '1200'],
@@ -148,7 +150,7 @@ describe('every refusal of the start, with its accepted twin', () => {
       expect(ROWS.some(([setting, , bad]) => setting === name && (bad === undefined || bad.trim() === '')), name).toBe(true);
     }
     const ruledSettings = [
-      'FAULT_MODE', 'PORT', 'HOST', 'CHECKS_READ_BUDGET_MS', 'ADVERT_MAX_PROCESSING_MS', 'ADVERT_PRICE_LOVELACE', 'IDENTITY_GATEWAY_URL', 'VECTOR_OGMIOS_URL', 'VECTOR_KOIOS_URL', 'VECTOR_SUBMIT_URL',
+      'FAULT_MODE', 'PORT', 'HOST', 'INTAKE_STATE_DIR', 'CHECKS_READ_BUDGET_MS', 'ADVERT_MAX_PROCESSING_MS', 'ADVERT_PRICE_LOVELACE', 'IDENTITY_GATEWAY_URL', 'VECTOR_OGMIOS_URL', 'VECTOR_KOIOS_URL', 'VECTOR_SUBMIT_URL',
       'VECTOR_MARKETPLACE_INDEXER_URL', 'DISPUTE_STARTED_LEASE_MS', 'DISPUTE_RESOLUTION_DEADLINE_MS', ...requiredSettings,
     ];
     for (const name of ruledSettings) expect(ROWS.some(([setting, , bad]) => setting === name && bad !== undefined && bad.trim() !== ''), name).toBe(true);

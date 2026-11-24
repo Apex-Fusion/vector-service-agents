@@ -8,7 +8,7 @@
 // key, no token and no setting of another part of the service.
 import { given, requiredEnv, statusChip, statusSince } from '@vsa/service-kit';
 import type { StatusChip } from '@vsa/service-kit';
-import { MANIFEST_SCHEMA, buildBehaviour, renderManifest } from '@vsa/usecase-kit/manifest';
+import { MANIFEST_SCHEMA, MAX_URI_CHARS, buildBehaviour, renderManifest } from '@vsa/usecase-kit/manifest';
 import { INTAKE_CLAIM, MAX_JUSTIFICATION_CHARS, PRIORAUTH_CAPABILITIES, PRIORAUTH_MODELS, PRIORAUTH_REQUEST_SCHEMA } from '@vsa/usecase-kit/priorauth';
 import { HANDOFF_SCHEMA, MAX_REQUEST_BYTES } from '@vsa/usecase-kit/protocol';
 import type { BehaviourAdditions } from '@vsa/usecase-kit/protocol';
@@ -153,6 +153,73 @@ function identityFromEnv(env: NodeJS.ProcessEnv, supplierPkh: string): { readonl
   }
 }
 
+/** The longest contact that the manifest publishes, in characters. */
+const CONTACT_CHARS = 200;
+
+/** The contact of the operator, published in the manifest: one line of at most CONTACT_CHARS characters, with no control character. */
+function contactOf(env: NodeJS.ProcessEnv): string {
+  const contact = requiredEnv('OPERATOR_CONTACT', env.OPERATOR_CONTACT, "the operator's contact address, published in the manifest");
+  if (contact.length > CONTACT_CHARS || /[\u0000-\u001f\u007f]/.test(contact)) {
+    throw new Error(`environment variable OPERATOR_CONTACT must be one line of at most ${CONTACT_CHARS} characters with no control character, and it has ${contact.length} characters`);
+  }
+  return contact;
+}
+
+/**
+ * The version of the agent: a short text of letters, digits, dots, hyphens and plus signs. An AGENT_VERSION that is empty or blank is not set: an empty version would be published in the manifest that the advert
+ * hashes. A changed manifest needs a new advert.
+ */
+function versionOf(env: NodeJS.ProcessEnv): string {
+  const version = given(env.AGENT_VERSION) || '0.1.0';
+  if (!/^[0-9A-Za-z][0-9A-Za-z.+-]{0,31}$/.test(version)) {
+    throw new Error(`environment variable AGENT_VERSION must be 1 to 32 letters, digits, dots, hyphens and plus signs, and it has ${version.length} characters`);
+  }
+  return version;
+}
+
+/** The link to the advert on an explorer: not set, or an https address with no user and no password. */
+function explorerUrlOf(env: NodeJS.ProcessEnv): string {
+  const text = given(env.ADVERT_EXPLORER_URL);
+  if (text === '') return '';
+  let url: URL | null = null;
+  try {
+    url = new URL(text);
+  } catch {
+    // Not an address: the message below says so, and it never shows the value.
+  }
+  if (url === null || url.protocol !== 'https:' || url.username !== '' || url.password !== '' || text.length > MAX_URI_CHARS) {
+    throw new Error(`environment variable ADVERT_EXPLORER_URL must be an https address with no user and no password, and it has ${text.length} characters`);
+  }
+  return text;
+}
+
+/**
+ * The status of the agent: a word, and the date since it holds. The agent is proposed until a run has settled: a word above proposed is the operator's to set, by AGENT_STATUS_CHIP, once it is true. A wrong
+ * word or date stops the start by its setting, and the message gives the length of the value and never the value.
+ */
+function statusOf(env: NodeJS.ProcessEnv): { readonly chip: StatusChip; readonly since: string } {
+  const word = given(env.AGENT_STATUS_CHIP);
+  const day = given(env.AGENT_STATUS_SINCE);
+  let chip: StatusChip;
+  try {
+    chip = statusChip(word, 'proposed');
+  } catch {
+    throw new Error(`environment variable AGENT_STATUS_CHIP must be one of LIVE, DEPLOYED, PROPOSED, in any case, and it has ${word.length} characters`);
+  }
+  let since: string;
+  try {
+    since = statusSince(day, STATUS_SINCE_DEFAULT);
+  } catch {
+    throw new Error(`environment variable AGENT_STATUS_SINCE must be a date as YYYY-MM-DD, and it has ${day.length} characters`);
+  }
+  const [year, month, date] = since.split('-').map(Number);
+  const probe = new Date(Date.UTC(year, month - 1, date));
+  if (probe.getUTCFullYear() !== year || probe.getUTCMonth() !== month - 1 || probe.getUTCDate() !== date) {
+    throw new Error(`environment variable AGENT_STATUS_SINCE must be a date that exists, and it has ${day.length} characters`);
+  }
+  return { chip, since };
+}
+
 /** The manifest of the Insurer Intake Agent: the members of the manifest v2 that this agent writes, and under `behaviour` the additions of the kit. */
 export interface IntakeManifest {
   readonly schema: typeof MANIFEST_SCHEMA;
@@ -204,10 +271,9 @@ export function manifestFromEnv(env: NodeJS.ProcessEnv = process.env): IntakeMan
     schema: MANIFEST_SCHEMA,
     name: 'Insurer Intake Agent',
     capability_id: PRIORAUTH_CAPABILITIES.intake,
-    // An AGENT_VERSION that is empty or blank is not set (given): an empty version would be published in the manifest that the advert hashes. A changed manifest needs a new advert.
-    version: given(env.AGENT_VERSION) || '0.1.0',
+    version: versionOf(env),
     description: DESCRIPTION,
-    operator: { name: 'Apex Fusion Foundation', contact: requiredEnv('OPERATOR_CONTACT', env.OPERATOR_CONTACT, "the operator's contact address, published in the manifest") },
+    operator: { name: 'Apex Fusion Foundation', contact: contactOf(env) },
     identity: identityFromEnv(env, supplierPkh),
     keys: { supplier_pkh: supplierPkh, pub_key_hex: pubKeyHex, buyer_pkh: servicePkh },
     interface: {
@@ -221,10 +287,9 @@ export function manifestFromEnv(env: NodeJS.ProcessEnv = process.env): IntakeMan
       input_limits: { request_bytes: MAX_REQUEST_BYTES },
     },
     behaviour: { data_handling: DATA_HANDLING, third_parties: [...THIRD_PARTIES], ...additions.value },
-    // The agent is proposed until a run has settled: a word above proposed is the operator's to set, by AGENT_STATUS_CHIP, once it is true.
-    status: { chip: statusChip(given(env.AGENT_STATUS_CHIP), 'proposed'), since: statusSince(env.AGENT_STATUS_SINCE, STATUS_SINCE_DEFAULT) },
+    status: statusOf(env),
     gaps: [...gapsFor()],
-    links: { spec: SPEC_URL, source: SOURCE_URL, explorer_advert: given(env.ADVERT_EXPLORER_URL) },
+    links: { spec: SPEC_URL, source: SOURCE_URL, explorer_advert: explorerUrlOf(env) },
   };
 }
 

@@ -121,8 +121,14 @@ export function hostOf(env: NodeJS.ProcessEnv): string {
   return host;
 }
 
+/**
+ * The folder of the state: an absolute path. The default is the volume of the compose file. A relative path would stand inside the image, and a new image would lose the state: the book of the request numbers,
+ * the keys of the paying wallet and the journal of the challenges.
+ */
 export function stateDirOf(env: NodeJS.ProcessEnv): string {
-  return given(env.INTAKE_STATE_DIR) || STATE_DIR_DEFAULT;
+  const dir = given(env.INTAKE_STATE_DIR) || STATE_DIR_DEFAULT;
+  if (!dir.startsWith('/')) throw new Error(`environment variable INTAKE_STATE_DIR must be an absolute path, and it has ${dir.length} characters`);
+  return dir;
 }
 
 // --- the time of the hook, the numbers of the advert -----------------------------------------------------------------------------------------------------

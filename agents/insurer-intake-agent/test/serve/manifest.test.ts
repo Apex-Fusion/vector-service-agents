@@ -171,35 +171,17 @@ describe('the members of the manifest', () => {
     expect(DESCRIPTION.match(/\./g)).toHaveLength(1);
   });
 
-  test('the status, the version and the link of the advert come from the settings, the date has a default, and a wrong status stops the render by its setting', () => {
-    expect(manifestOf({ AGENT_STATUS_CHIP: 'LIVE', AGENT_STATUS_SINCE: '2026-12-01', AGENT_VERSION: '0.2.0', ADVERT_EXPLORER_URL: 'https://explorer.example.test/advert' })).toMatchObject({
-      status: { chip: 'live', since: '2026-12-01' }, version: '0.2.0', links: { explorer_advert: 'https://explorer.example.test/advert' },
+  test('the status, the version, the contact and the link of the advert come from the settings, and each has its default when it is not set', () => {
+    expect(manifestOf({
+      AGENT_STATUS_CHIP: 'LIVE', AGENT_STATUS_SINCE: '2026-12-01', AGENT_VERSION: '0.2.0', ADVERT_EXPLORER_URL: 'https://explorer.example.test/advert', OPERATOR_CONTACT: 'other@example.test',
+    })).toMatchObject({
+      status: { chip: 'live', since: '2026-12-01' }, version: '0.2.0', operator: { contact: 'other@example.test' }, links: { explorer_advert: 'https://explorer.example.test/advert' },
     });
-    expect(manifestOf({ AGENT_STATUS_CHIP: ' ', AGENT_STATUS_SINCE: ' ', AGENT_VERSION: ' ' })).toMatchObject({ status: { chip: 'proposed', since: STATUS_SINCE_DEFAULT }, version: '0.1.0' });
+    expect(manifestOf({ AGENT_STATUS_CHIP: ' ', AGENT_STATUS_SINCE: ' ', AGENT_VERSION: ' ', ADVERT_EXPLORER_URL: ' ' }))
+      .toMatchObject({ status: { chip: 'proposed', since: STATUS_SINCE_DEFAULT }, version: '0.1.0', links: { explorer_advert: '' } });
     expect(manifestOf({ AGENT_STATUS_CHIP: ' Deployed\n', AGENT_STATUS_SINCE: ' 2026-12-01\n', AGENT_VERSION: ' 0.3.0\n' })).toMatchObject({ status: { chip: 'deployed', since: '2026-12-01' }, version: '0.3.0' });
     expect(STATUS_SINCE_DEFAULT).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     expect(new Date(`${STATUS_SINCE_DEFAULT}T00:00:00Z`).toISOString().startsWith(STATUS_SINCE_DEFAULT)).toBe(true);
-    expect(message(() => manifestFromEnv(envWith({ AGENT_STATUS_CHIP: 'done' })))).toMatch(/^environment variable AGENT_STATUS_CHIP must be one of /);
-    expect(message(() => manifestFromEnv(envWith({ AGENT_STATUS_SINCE: 'yesterday' })))).toMatch(/^environment variable AGENT_STATUS_SINCE must be a date as YYYY-MM-DD/);
-  });
-
-  test('a value that is published and not set stops the render by its setting: there is no default for a contact, a DID or a key', () => {
-    for (const name of ['OPERATOR_CONTACT', 'AGENT_DID', 'SUPPLIER_PKH', 'SUPPLIER_PUB_KEY_HEX', 'INTAKE_SERVICE_PKH', 'LLM_MODEL_ALLOWLIST', 'LLM_MAX_PRICE_LOVELACE']) {
-      for (const empty of [undefined, '', '  ']) {
-        expect(message(() => manifestFromEnv(envWith({ [name]: empty }))), `${name} = ${JSON.stringify(empty)}`).toMatch(new RegExp(`^environment variable ${name} is required \\(.+\\) and is not set$`));
-      }
-    }
-  });
-
-  test('a wrong identity setting stops the render by its name, and the message gives the length of the value and never the value', () => {
-    for (const [setting, bad] of [
-      ['IDENTITY_POLICY_ID', 'abc'], ['IDENTITY_POLICY_ID', 'zz'.repeat(28)], ['AGENT_DID', 'did:vector:abc'], ['AGENT_DID', `did:vector:${'zz'.repeat(32)}`], ['IDENTITY_ADDRESS', 'addr1xyzxyzxyzxyz'],
-    ] as const) {
-      const text = message(() => manifestFromEnv(envWith({ [setting]: bad })));
-      expect(text, `${setting} = ${bad}`).toMatch(/^environment variable /);
-      expect(text).toContain(setting);
-      expect(shows(text, bad), `the message repeats ${bad}`).toBe(false);
-    }
   });
 
   test('the interface is the handoff that the agent takes, with the routes of the runtime, a link to the response, and notes', () => {
@@ -214,6 +196,72 @@ describe('the members of the manifest', () => {
     expect(notes).toContain('bad_shape (400)');
     expect(notes).toContain('check_unavailable');
     expect(notes).toContain('It is not a coverage decision.');
+  });
+});
+
+describe('every refusal of a setting that the manifest publishes, with its accepted twin', () => {
+  /** A value that no setting takes. A message must name the setting and never repeat it. */
+  const MARKER = 'zq9-marker-value-7f3';
+  const ANOTHER_DID = `did:vector:${'ab'.repeat(32)}`;
+  const required = (name: string): RegExp => new RegExp(`^environment variable ${name} is required \\(.+\\) and is not set$`);
+  const CONTACT_RULE = /^environment variable OPERATOR_CONTACT must be one line of at most 200 characters with no control character, and it has \d+ characters$/;
+  const DID_RULE = /^environment variable AGENT_DID must be did:vector:<64 lowercase hex> or its legacy form under the registry policy [0-9a-f]{56}, got \d+ characters$/;
+  const VERSION_RULE = /^environment variable AGENT_VERSION must be 1 to 32 letters, digits, dots, hyphens and plus signs, and it has \d+ characters$/;
+  const SINCE_FORM = /^environment variable AGENT_STATUS_SINCE must be a date as YYYY-MM-DD, and it has \d+ characters$/;
+  const SINCE_DAY = /^environment variable AGENT_STATUS_SINCE must be a date that exists, and it has \d+ characters$/;
+  const LINK_RULE = /^environment variable ADVERT_EXPLORER_URL must be an https address with no user and no password, and it has \d+ characters$/;
+  const DERIVED = identityRegistryOf(POLICY, undefined)?.address ?? '';
+
+  /** The setting, the value that is refused (undefined: not set), the start of the message, the same setting with a value that is accepted (the twin), and a value that breaks the same rule and that no message could repeat by chance. */
+  type Row = readonly [setting: string, bad: string | undefined, refusal: RegExp, good: string | undefined, probe?: string];
+  const ROWS: readonly Row[] = [
+    ['OPERATOR_CONTACT', undefined, required('OPERATOR_CONTACT'), 'ops@example.test'],
+    ['OPERATOR_CONTACT', 'line one\nline two', CONTACT_RULE, 'ops@example.test', `${MARKER}\u0001x`],
+    ['OPERATOR_CONTACT', `${'a'.repeat(188)}@example.test`, CONTACT_RULE, `${'a'.repeat(187)}@example.test`, `${MARKER} ${'b'.repeat(201)}`],
+    ['AGENT_DID', undefined, required('AGENT_DID'), ANOTHER_DID],
+    ['AGENT_DID', 'did:vector:abc', DID_RULE, ANOTHER_DID, `did:vector:${MARKER}`],
+    ['AGENT_DID', `did:vector:${'zz'.repeat(32)}`, DID_RULE, ANOTHER_DID, `did:vector:${MARKER}`],
+    ['IDENTITY_POLICY_ID', 'abc', /^environment variable IDENTITY_POLICY_ID must be 56 lowercase hex characters, got 3 characters$/, POLICY],
+    ['IDENTITY_POLICY_ID', 'zz'.repeat(28), /^environment variable IDENTITY_POLICY_ID must be 56 lowercase hex characters, got 56 characters$/, POLICY],
+    ['IDENTITY_ADDRESS', 'addr1xyzxyzxyzxyz', /^environment variable IDENTITY_ADDRESS \(17 characters\) is not the address of IDENTITY_POLICY_ID \(addr1[0-9a-z]+\)$/, DERIVED],
+    ['SUPPLIER_PKH', undefined, required('SUPPLIER_PKH'), OTHER.pkh],
+    ['SUPPLIER_PUB_KEY_HEX', undefined, required('SUPPLIER_PUB_KEY_HEX'), OTHER.pubKeyHex],
+    ['INTAKE_SERVICE_PKH', undefined, required('INTAKE_SERVICE_PKH'), OTHER.pkh],
+    ['LLM_MODEL_ALLOWLIST', undefined, required('LLM_MODEL_ALLOWLIST'), 'a/one'],
+    ['LLM_MAX_PRICE_LOVELACE', undefined, required('LLM_MAX_PRICE_LOVELACE'), '250000'],
+    ['LLM_MAX_PRICE_LOVELACE', '0', /^environment variable LLM_MAX_PRICE_LOVELACE must be a whole number of lovelace of more than 0$/, '1'],
+    ['AGENT_VERSION', '0.1.0 beta', VERSION_RULE, '1.2.3-rc.1+build'],
+    ['AGENT_VERSION', 'v'.repeat(33), VERSION_RULE, 'v'.repeat(32)],
+    ['AGENT_VERSION', '-1', VERSION_RULE, '1'],
+    ['AGENT_STATUS_CHIP', 'done', /^environment variable AGENT_STATUS_CHIP must be one of LIVE, DEPLOYED, PROPOSED, in any case, and it has 4 characters$/, 'LIVE'],
+    ['AGENT_STATUS_SINCE', 'yesterday', SINCE_FORM, '2026-12-01'],
+    ['AGENT_STATUS_SINCE', '2026-12-1', SINCE_FORM, '2026-12-01'],
+    ['AGENT_STATUS_SINCE', '2026-02-30', SINCE_DAY, '2028-02-29'],
+    ['AGENT_STATUS_SINCE', '2026-13-45', SINCE_DAY, '2026-12-31'],
+    ['ADVERT_EXPLORER_URL', 'http://explorer.example.test/advert', LINK_RULE, 'https://explorer.example.test/advert'],
+    ['ADVERT_EXPLORER_URL', 'explorer.example.test', LINK_RULE, ''],
+    ['ADVERT_EXPLORER_URL', 'https://user:password@explorer.example.test', LINK_RULE, 'https://explorer.example.test/advert?page=1'],
+  ];
+  const TABLE = ROWS.map(([setting, bad, refusal, good, probe]) => ({ setting, bad, refusal, good, probe }));
+
+  test.each(TABLE)('$setting = $bad is refused by its name, the message shows no value, and $good is accepted', ({ setting, bad, refusal, good, probe }) => {
+    const text = message(() => manifestFromEnv(envWith({ [setting]: bad })));
+    expect(text).toMatch(refusal);
+    expect(text).toContain(setting);
+    if (bad !== undefined) expect(shows(text, bad), 'the message repeats the value').toBe(false);
+    expect(() => manifestFromEnv(envWith({ [setting]: good })), `${setting} = ${String(good)}`).not.toThrow();
+    if (bad === undefined) return;
+    // The same rule with a value that no message could repeat by chance.
+    const odd = probe ?? `${MARKER} !`;
+    const probed = message(() => manifestFromEnv(envWith({ [setting]: odd })));
+    expect(probed).toContain(setting);
+    expect(shows(probed, odd), `the message repeats ${odd}`).toBe(false);
+  });
+
+  test('a setting that is published and not set stops the render by its name, whether it is missing, empty or blank: there is no default for a contact, a DID or a key', () => {
+    for (const name of ['OPERATOR_CONTACT', 'AGENT_DID', 'SUPPLIER_PKH', 'SUPPLIER_PUB_KEY_HEX', 'INTAKE_SERVICE_PKH', 'LLM_MODEL_ALLOWLIST', 'LLM_MAX_PRICE_LOVELACE']) {
+      for (const empty of [undefined, '', '  ']) expect(message(() => manifestFromEnv(envWith({ [name]: empty }))), `${name} = ${JSON.stringify(empty)}`).toMatch(required(name));
+    }
   });
 });
 
@@ -318,6 +366,19 @@ describe('the terms', () => {
     const manifest = manifestOf({ ADVERT_PRICE_LOVELACE: '6000000', ADVERT_MAX_PROCESSING_MS: '600000' });
     expect([manifest.terms.price_lovelace, manifest.terms.max_processing_ms]).toStrictEqual([6_000_000, 600_000]);
     expect(planFleetPostEscrow(advert(manifest), REF, buyer.pkh, PROMPT, NOW.now()).lockLovelace).toBe(8_000_000n);
+  });
+
+  test('the deadline of a Post follows the clock of the tests, which moves by hand and never by itself', async () => {
+    const clock = new FakeClock();
+    const manifest = manifestOf();
+    const deadline = (): number => planFleetPostEscrow(advert(manifest), REF, buyer.pkh, PROMPT, clock.now()).deliverBy;
+    const first = deadline();
+    expect(deadline()).toBe(first);
+    await clock.sleep(5_000);
+    expect(deadline() - first).toBe(5_000);
+    clock.advance(0);
+    expect(deadline() - first).toBe(5_000);
+    for (const wrong of [-1, 1.5, Number.NaN]) expect(() => clock.advance(wrong), String(wrong)).toThrow(RangeError);
   });
 });
 
