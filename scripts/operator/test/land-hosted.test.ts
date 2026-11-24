@@ -21,7 +21,7 @@ import type { BuiltLandSpec, HostedLandSpec, LandHost, OperatorSettings } from '
 import { ToolRefused, hostedBuild, landBuilt, landHosted } from '../lib/land-hosted.ts';
 import { planOf } from '../lib/plan.ts';
 import type { PlanOver } from '../lib/plan.ts';
-import { TxNotConfirmedError, buildDelegate, ensureSlotConfig, lucidForAddress } from '../lib/platform.ts';
+import { TxNotConfirmedError, buildDelegate, buildUndelegate, ensureSlotConfig, lucidForAddress } from '../lib/platform.ts';
 import { loadRegistry } from '../lib/registry.ts';
 import type { KeySpec, Registry } from '../lib/registry.ts';
 import { FakeClock, FakeNode, MemoryOutput, ThrowingSigner, World } from './support/fakes.ts';
@@ -900,24 +900,64 @@ describe('landHosted', () => {
     expect(result.kind).toBe('landed');
     expect(equal.events.filter((event) => event === 'sign')).toHaveLength(2);
   });
-  it('refuses a key that the bytes need and the registry does not hold, and counts the output of a script in full when the keys are all there', async () => {
+  /** A delegation as a built transaction for `landBuilt`: it runs scripts, so it has collateral inputs. */
+  const builtDelegation = (d: { built: { txCbor: string; txHash: string; fee: string; validTo: number } }) => ({ unsignedCbor: d.built.txCbor, txHash: d.built.txHash, feeLovelace: BigInt(d.built.fee), validTo: d.built.validTo });
+  it('refuses a key that the bytes need and the registry does not hold, and lands the transaction when the registry holds every key', async () => {
     const outside = await context({ names: ['run', 'controller', 'fee', 'other'], throwing: true });
-    const { built, plan } = await delegation(outside);
-    const built1 = { unsignedCbor: built.txCbor, txHash: built.txHash, feeLovelace: BigInt(built.fee), validTo: built.validTo };
-    const err = await refusal(landBuilt(outside.host, { step: 'delegate', built: built1, expectSigners: ['run'], plan }));
+    const missing = await delegation(outside);
+    const err = await refusal(landBuilt(outside.host, { step: 'delegate', built: builtDelegation(missing), expectSigners: ['run'], plan: missing.plan }));
     expect(guardsOf(err)).toEqual(['signers']);
     expect((err as GuardRefusal).message).toContain('a key that is not in the registry');
     untouched(outside);
     const c = await context();
     const again = await delegation(c);
-    const landed = await landBuilt(c.host, {
-      step: 'delegate', built: { unsignedCbor: again.built.txCbor, txHash: again.built.txHash, feeLovelace: BigInt(again.built.fee), validTo: again.built.validTo }, expectSigners: ['run', 'service'], plan: again.plan,
+    expect((await landBuilt(c.host, { step: 'delegate', built: builtDelegation(again), expectSigners: ['run', 'service'], plan: again.plan })).kind).toBe('landed');
+  });
+  it('counts a transaction that runs scripts by the larger of its net outflow and its collateral, with the output at a script address in full', async () => {
+    const c = await context();
+    const { built, plan } = await delegation(c);
+    expect((await landBuilt(c.host, { step: 'delegate', built: builtDelegation({ built }), expectSigners: ['run', 'service'], plan })).kind).toBe('landed');
+    const bytes = factsOf(built.txCbor);
+    expect(bytes.runsScripts).toBe(true);
+    const net = built.outputLovelace + BigInt(built.fee);
+    // The collateral input is the pure output of 5 units of the run wallet, and the body returns what a failure does not take.
+    const collateral = bytes.totalCollateral ?? 5_000_000n - (bytes.collateralReturn?.lovelace ?? 0n);
+    expect(c.exposure.total()).toBe(collateral > net ? collateral : net);
+  });
+  it('refuses a script transaction whose collateral input the node does not return, before any signature, and lands it when the node returns every input', async () => {
+    // The undelegation spends the delegation output only, so its collateral input is an output of the run wallet that it does not spend.
+    const c = await context();
+    const delegated = await delegation(c);
+    await landBuilt(c.host, { step: 'delegate', built: builtDelegation(delegated), expectSigners: ['run', 'service'], plan: delegated.plan });
+    const run = keyOf(KEY_N.run);
+    const undelegated = await buildUndelegate({ lucid: await lucidForAddress(c.world.chain, run.address), provider: c.world.chain, deployment: DEPLOYMENT }, {
+      changeAddress: run.address, nowMs: NOW, id: delegated.built.id, signer: run.keyHash,
     });
-    expect(landed.kind).toBe('landed');
-    // The output at the script address leaves the registry in full, with the fee. The net outflow may also count the total collateral of a transaction that runs scripts.
-    const floor = again.built.outputLovelace + BigInt(again.built.fee);
-    expect(c.exposure.total()).toBeGreaterThanOrEqual(floor);
-    expect(c.exposure.total()).toBeLessThanOrEqual(floor + (factsOf(again.built.txCbor).totalCollateral ?? 0n));
+    const bytes = factsOf(undelegated.txCbor);
+    expect(bytes.runsScripts).toBe(true);
+    expect(bytes.collateralInputs.length).toBeGreaterThan(0);
+    expect(bytes.collateralInputs.some((ref) => bytes.inputs.includes(ref))).toBe(false);
+    const spec: BuiltLandSpec = {
+      step: 'undelegate', built: builtDelegation({ built: undelegated }), expectSigners: ['run'],
+      plan: () => planOf(c.host, { outflow: { run: FEE_LIMIT }, explained: [`${delegated.built.txHash}#${delegated.built.outputIndex}`], mint: { [`${DEPLOYMENT.delegation.hash}${delegated.built.id}`]: -1n } }),
+    };
+    const read = c.node.resolveInputs.bind(c.node);
+    c.node.resolveInputs = async (refs) => read(refs.filter((ref) => !bytes.collateralInputs.includes(ref)));
+    const signed = c.events.filter((event) => event === 'sign').length;
+    const reserved = c.exposure.total();
+    const err = await refusal(landBuilt(c.host, spec));
+    expect(err).toBeInstanceOf(GuardRefusal);
+    expect(guardsOf(err)).toEqual(['inputs']);
+    expect((err as GuardRefusal).message).toContain(`the collateral input ${bytes.collateralInputs[0]} could not be read from the node`);
+    expect(c.events.filter((event) => event === 'sign')).toHaveLength(signed);
+    expect(c.exposure.total()).toBe(reserved);
+    expect(c.node.submitted).toHaveLength(1);
+    expect(c.state.snapshot().in_flight).toBeNull();
+    c.node.resolveInputs = read;
+    expect((await landBuilt(c.host, spec)).kind).toBe('landed');
+    // The undelegation spends nothing of the registry, and a failure of its scripts takes the collateral: that is what the cap counts.
+    expect(bytes.totalCollateral).not.toBeNull();
+    expect(c.exposure.total()).toBe(reserved + (bytes.totalCollateral ?? 0n));
   });
   it('calls beforeSign with the build in a submit run, and a throw stops the run before any signature', async () => {
     const c = await context({ throwing: true });

@@ -146,8 +146,8 @@ async function requireValidityEnd(host: LandHost, step: string, facts: TxFacts, 
  */
 function requireSigners(host: LandHost, core: Core, facts: TxFacts, utxos: readonly Utxo[]): void {
   const read = new Set(utxos.map(refOf));
-  const unread = [...facts.inputs, ...facts.collateralInputs].find((ref) => !read.has(ref));
-  if (unread !== undefined) throw refuse(core.step, 'inputs', `the output ${unread} could not be read from the node, so the keys that sign cannot be told`);
+  const unread = [...facts.inputs.map((ref) => ({ ref, kind: 'input' })), ...facts.collateralInputs.map((ref) => ({ ref, kind: 'collateral input' }))].find(({ ref }) => !read.has(ref));
+  if (unread !== undefined) throw refuse(core.step, 'inputs', `the ${unread.kind} ${unread.ref} could not be read from the node, so the keys that sign and the net outflow cannot be told`);
   const signing = new Set([...neededSigners(facts, utxos), ...core.listed]);
   const expected = new Set(core.expectSigners.map((name) => host.registry.hashOf(name)));
   const extra = [...signing].filter((hash) => !expected.has(hash));
@@ -218,6 +218,7 @@ async function landCore(host: LandHost, core: Core): Promise<Landed> {
   const plan = await core.plan(facts);
   let net = 0n;
   if (submit) {
+    // The map holds the spent inputs and the collateral inputs, all read from the node: the net outflow of a transaction that runs scripts counts the collateral that a failure takes.
     const spent = new Map(utxos.map((utxo) => [refOf(utxo), { address: utxo.address, lovelace: utxo.assets.lovelace ?? 0n }]));
     net = netRegistryOutflow(facts, spent, host.registry.ring);
     host.exposure.refuseOver(net);
