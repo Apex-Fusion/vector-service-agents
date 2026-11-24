@@ -64,6 +64,27 @@ export interface ReceiptAttribution {
   readonly revocation: { readonly record_ref: string; readonly invalid_from_ms: number | null; readonly invalidates_submission: boolean } | null;
 }
 
+/** A match of checked private log rows, without actor, token, path, or request details. */
+export interface PublicRouteEvidence {
+  readonly step: string;
+  readonly route: string;
+  readonly credential: 'token' | 'jwt-svid' | 'x509-svid';
+  readonly decision: 'allowed' | 'refused';
+  readonly act_links: number;
+  readonly count: number;
+}
+
+/** The signed result's acceptance state and a separately confirmed Accept of its exact handoff. */
+export interface PublicHandoffEvidence {
+  readonly execute_step: string;
+  readonly execute_escrow: string;
+  readonly execute_result_sha256: string;
+  readonly intake_step: string;
+  readonly intake_escrow: string;
+  readonly signed_acceptance: 'pending' | 'confirmed';
+  readonly confirmed_accept_tx: string;
+}
+
 export interface ApprovalRead {
   readonly entry: ApprovalEntry; readonly hire: string; readonly state: 'active' | 'revoked' | 'expired'; readonly type: number;
   readonly subject: string; readonly digest: string; readonly issued_at: number; readonly valid_until: number;
