@@ -53,9 +53,13 @@ const REF = /^[0-9a-f]{64}#(?:0|[1-9][0-9]{0,5})$/;
 const HASH = /^[0-9a-f]{64}$/;
 const MOST_MOCK_CHARS = 8 * 1024 * 1024;
 const MOCK_TIMEOUT_MS = 30_000;
-/** The marks of a secret in the final text: each is refused in any case. `Authorization` is the name of the header that carries a token. */
+/**
+ * The marks of a secret in the final text: each is refused. The words are refused in any case. A JWT is refused as base64url writes it: its header and its payload both start with eyJ, the text of an open brace and a
+ * quote. `Authorization` is the name of the header that carries a token.
+ */
 const MARKS: ReadonlyArray<readonly [string, RegExp]> = [
   ['ed25519_sk', /ed25519e?_sk/i], ['_sk1', /_x?sk1/i], ['Bearer', /bearer\s/i], ['Authorization', /authorization/i], ['PRIV_KEY', /PRIV_KEY/i], ['access_token', /access_token=/i],
+  ['JWT', /eyJ[\w-]+\.eyJ[\w-]+\./],
 ];
 
 type Obj = Record<string, unknown>;

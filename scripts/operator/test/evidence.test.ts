@@ -1188,6 +1188,21 @@ describe('the secret scan', () => {
     (s.hires[0]!.result.decisions as Obj[])[0]!.reasoning = 'the Authorization header';
     await refuses(s, ['mark of a secret', 'Authorization']);
   });
+  it('refuses a JWT in a line of the log and in a result, writes no file, and shows no value', async () => {
+    const jwt = ['eyJhbGciOiJFZERTQSJ9', 'eyJzdWIiOiJkaWQ6dmVjdG9yOngifQ', 'c2lnbmF0dXJl'].join('.');
+    const logged = scenario('clean');
+    logged.log.push({ ...logLine('POST /po', 'token', ['did:vector:one']), presented: jwt });
+    const inLog = await refuses(logged, ['mark of a secret', 'JWT']);
+    expect(inLog.err).not.toContain(jwt);
+    const written = scenario('clean');
+    (written.hires[1]!.result as Obj).writes = [{ route: 'POST /po', credential: jwt }];
+    const inResult = await refuses(written, ['mark of a secret', 'JWT']);
+    expect(inResult.err).not.toContain(jwt);
+  });
+  it('finds a JWT as base64url writes it, and takes a text that only looks like one', () => {
+    expect(secretMarkIn(['eyJhbGciOiJFZERTQSJ9', 'eyJzdWIiOiJkaWQ6dmVjdG9yOngifQ', 'c2lnbmF0dXJl'].join('.'))).toBe('JWT');
+    for (const text of ['eyJhbGciOiJub25lIn0', 'eyJhbGciOiJub25lIn0.payload.signature', 'the word eyJ alone, and eyJabc.eyJ without the last dot', 'a.b.c']) expect(secretMarkIn(text), text).toBeNull();
+  });
   it('takes a reasoning that only looks like a mark', async () => {
     const s = scenario('clean');
     (s.hires[0]!.result.decisions as Obj[])[0]!.reasoning = 'The order is authorized, the bearerless route is used and the key ed25519 is a curve.';
