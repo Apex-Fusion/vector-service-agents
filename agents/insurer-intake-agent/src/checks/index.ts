@@ -5,3 +5,5 @@
 export { intakeChecks } from './extra.ts';
 export type { IntakeChecksDeps } from './extra.ts';
 export type { BookReader, PassedEntry, PassedSink } from './ports.ts';
+export { createPrecheck } from './precheck.ts';
+export type { PrecheckDeps } from './precheck.ts';
