@@ -36,16 +36,17 @@ Each run ends with one line on the standard output: `operator-result: <JSON>`. T
 
 ## The tasks
 
-The first column is the name of the task. The flags are those of the task, besides `--submit`, `--all` and `--use-case`, which every task has, and `--run`, which every task except `fund` takes. A task whose `--submit` needs the approval refuses with exit 2 when the approval is missing, expired or too narrow.
+The table lists task flags. All tasks take `--submit`, `--all` and `--use-case`. The `fund` and `compliance` tasks do not take `--run`: each uses one state stream for the use case. A task that needs approval with `--submit` exits with code 2 if the approval is absent, expired or too narrow.
 
 | Task | What it does | Flags | With `--submit` | Writes |
 |---|---|---|---|---|
-| `keys` | Makes the missing keys of the use case on the host, and prints the address of the run wallet. It never replaces a key file and never prints a seed. | none | Needs the approval, and the approval says `unset` for the run wallet until the run key exists. Makes the key files. A dry run lists the keys that it would make and writes nothing. | The key files and `keys-public.json`. |
+| `keys` | Makes keys on first setup and shows the run wallet address. It never replaces a key file or prints a seed. | `--initialize` | Needs the approval. Use `--initialize` only for first setup. A dry run lists the keys and makes none. | The key files, `keys-public.<use case>.json` and `keys-initialized.json`. |
 | `fund` | Sends units from the run wallet to the other wallets of the use case. The step `collateral` sends one pure output of exactly 5 units to each wallet that has none. The step `float` sends each wallet what its balance lacks to its collateral and its float. | `--member <label>` | Needs the approval. Signs with the run key and submits. With `--member <label>` it sends the amount that the approval gives to the one external address that the approval names for that label, once. | The state file and the evidence file. |
 | `register` | Registers the record of each agent and of its subagent, and then waits until the gateway shows the organisation of each agent as verified. A dry run prints the DID, the TXT name and the TXT value, and writes a note. | none | Needs the approval, and the approval names the tag `record`. It refuses until the note of a dry run exists for the same DID and three public resolvers show the TXT value. | The facts `records` and `organisations`. |
 | `stake` | Makes the Module-3 stake of each agent in two steps, `open` and `create`. The owner of the stake is the service key of the agent. | none | Needs the approval, and the approval names the tag `stake`: the minimum of a stake never returns. | The fact `stakes`. |
 | `advert` | Posts the adverts of the use case. Each advert holds the hash of the manifest that the running service serves: the task reads `/agent.json` twice, and the two bodies must be equal. | none | Needs the approval. Posts the advert. `cleanup --submit` retires each advert that the pack posted. | The facts `adverts` and `manifests`. |
 | `attest` | Issues a provenance attestation and a software attestation for each agent with the Provider key, and then waits until the gateway lists each one. The software attestation of the Reorder Agent carries a COSE envelope. `--record` writes the documents that the attestations name. | `--record`, `--commit <sha>`, `--locator-base <url>` | Needs the approval, and the approval names the tag `attestation`. `cleanup --submit` withdraws the deposits that are due. `--record` takes no `--submit`: it makes no transaction and writes the files at once. | The fact `attestations`, and the folder `attestation-documents`. |
+| `compliance` | Issues a compliance attestation for each configured subject. The issuer can revoke it. The subject controller can publish a reply. | `--record`, `--locator-base <url>`, `--revoke`, `--agent <id>`, `--reason <integer>`, `--contest`, `--reply-uri <url>` | Needs the approval. Issue needs the `attestation` tag. Revoke needs `attestation-revoke`. `--record` writes the documents without `--submit`. Cleanup withdraws only deposits that are due. | The public files in `documents`, the fact `compliance` and the evidence for each action. |
 | `claim` | Stakes the claim of a run for each agent, with a stake of 50 units and a challenge window of 24 hours. `cleanup` withdraws each claim of the run after its window, when nobody challenged it. A claim that a challenge moved waits for its verdict. `--trial` writes the documents for the test of the jury. | `--kind <clean or failure>`, `--trial` | Needs the approval. Stakes the claim in two transactions, the claim document and the claim. `--trial` makes no transaction and writes the files at once. | The fact `claims`, and the folder `trial`. |
 | `allowlist` | Adds the key hash of a principal to `COSIGN_ALLOWLIST` in the env file of the Reorder Agent. It never drops an entry. | `--key <56 hex>`, `--agent <id>` | Needs the approval. Writes the env file of the agent. | The env file of the agent. |
 | `env` | Makes the env files of the agents from their examples, and reconciles the files that exist. One run plans every agent of the use case: it writes nothing, and it stops with exit 2, when the folder, an example or a record of one agent is missing. It runs again after `advert`, to write `ADVERT_REF`. It is the one task that reads a seed, and each seed goes into the one line that the data names for it. It never overwrites a value. | `--replace-advert` | Needs the approval. Writes the files with mode 600. `--replace-advert` lets the task replace the reference of an advert. | The env files in the agent folders. |
@@ -62,7 +63,20 @@ A task that spends a wallet that a running service also uses (`claim`, `stake`, 
 
 `results` takes the header file, the text that starts the page, from a path outside the keys folder. The file stays outside the repository, and it holds no run of 40 or more hex characters. Without `--runs`, the page takes the public evidence files only. A private file goes into the page when `--runs` names its label.
 
-`end-state` needs the setting `OPERATOR_MODULE1_COMMIT`, the file `keys-public.json` in the keys folder, and a fresh `running-images.json` in the state folder.
+`end-state` needs `OPERATOR_MODULE1_COMMIT`, the public key file of the use case, and a fresh `running-images.json` in the state folder.
+
+### First key setup and recovery
+
+Verify that the use case has no prior key setup. Keep a separate state folder for each use case. Restore the public key files of any earlier use cases before you continue.
+The key folder of this use case must be empty. The shared key folder can hold only keys that match the earlier public key files. An unrecorded entry is a reason to stop, not a reason to make new keys.
+
+1. Preview with `node --import tsx scripts/operator/cli.ts keys run --initialize`. A dry run needs no `GO.json`. You can preview the first wallet with no key files.
+2. Get an approval for `keys` only. Set `capUnits` to `0`. Include no irreversible tags or external addresses. Use `unset` for `runWallet` only before the first wallet exists. For a later use case, use the address in the verified public key files.
+3. Run `node --import tsx scripts/operator/cli.ts keys run --initialize --submit`. The task writes `keys-initialized.json` in the state folder before it makes any key files.
+
+Do not use `--initialize` to repair or replace keys. If setup stops after it writes the marker, keep the marker and all key files. Restore the original public key file and any missing original key files from verified backups. Then run `keys run --submit` without `--initialize`. If no valid backup exists or you cannot verify custody, stop and reconcile custody outside this task. Do not remove the marker or start again in a new state folder.
+
+For a use case with a valid `keys-public.json`, run `keys run --submit` without `--initialize`. The task checks the keys and writes `keys-public.<use case>.json`. It keeps the original file.
 
 ## The order of the work
 
@@ -70,11 +84,12 @@ The work of a use case goes in this order. A task that has a dry run shows its s
 
 1. `keys` makes the keys and prints the address of the run wallet. The owner of the funds sends units to that address. No task does it.
 2. `fund` sends the collateral output and the float to each wallet. `fund` with `--member` sends units to a member, one label at a time.
-3. `register` makes the records. A dry run prints the DID and the TXT value of each organisation. The operator publishes the value. A run with `--submit` registers the record when three public resolvers show it. Then `register` waits for the gateway to verify the organisation. A record of a subagent follows the record of its parent.
+3. `register` makes the records. A dry run prints the DID and the TXT value of each organisation. The operator publishes the value. Before it signs, `register --submit` checks the exact TXT value at Cloudflare, Google and Quad9. It uses authenticated HTTP/2 on port 443 for each resolver. The check stops if any resolver does not show the value. Then `register` waits for the gateway to verify the organisation. A record of a subagent follows the record of its parent.
 4. `stake` makes the stake of each agent.
 5. `env` makes the env files. The agent services start with them. The start is outside the pack.
 6. `advert` posts the adverts, after the services run and serve their manifest and before the runtimes start. `env` writes the reference of each advert into the env file of its runtime. The runtimes start then.
 7. `attest` with `--record` writes the documents. The documents are published outside the pack. `attest` then issues the attestations, and waits until the gateway lists them.
+   When the use case has compliance subjects, `compliance` with `--record` prepares their documents. Publish the files in `docs/attestations/` before issue. Use the raw folder URL at the commit for `--locator-base`. For `--reply-uri`, use the raw URL at the commit for the exact reply filename. Wait for verification before you start the next action for that subject. If repayment is not verified, run `cleanup` again to check the recorded transaction. Do not start a new withdrawal.
 8. For each run: `claim` stakes the claim of each agent. `allowlist` adds the key hash of a principal. `tenant` makes the tenant of the run. `fault` with `--check` shows that no switch is on before the first hire of a clean run, and again after the last hire. `fault` with `--set` turns a fault on and off for a failure run.
 9. In a failure run: `hold` puts a hold on the agent and lifts it, `delegations` shows which delegation keys are in use, and `probe` shows what the gateway answers under a delegation, before and after the hirer ends it.
 10. After a run: `evidence` writes the evidence file. `claim` with `cleanup` withdraws the claims after their window.
@@ -86,7 +101,7 @@ The work of a use case goes in this order. A task that has a dry run shows its s
 The keys folder is the setting `OPERATOR_KEYS_DIR`.
 
 - `<keys>/shared/<name>.seed` is a key that several use cases share. `<keys>/<use case>/<name>.seed` is a key of one use case. A file holds 64 lower-case hex characters and one newline. The folders have mode 700 and the files mode 600. No task replaces a key file.
-- `<keys>/keys-public.json` lists the public part of each key: its name, its scope, what it is for, its public key, its key hash and its address. It holds no secret.
+- `<keys>/keys-public.<use case>.json` lists the public part of each key: its name, scope, purpose, public key, key hash and address. It holds no secret. The task also checks the earlier `keys-public.json` if it exists.
 
 The state folder is the setting `OPERATOR_STATE_DIR`. It has mode 700.
 
@@ -96,6 +111,7 @@ The state folder is the setting `OPERATOR_STATE_DIR`. It has mode 700.
 - `<task>.state.json` is the state of a task: its confirmed steps, the one transaction in flight, and notes. `<task>.evidence.json` is its evidence: confirmed, verified, info, refused and tool refused entries. A task that takes `--run` uses `<task>.<label>.state.json` and `<task>.<label>.evidence.json`. Both files have mode 600, and the pack writes each whole through a temporary file.
 - Automatic recovery keeps an expired transaction in flight until the pack records it as landed or proves it did not land. If the indexer does not know the transaction, the pack checks its original inputs on a node whose tip is past its validity window. If either check fails, the pack keeps the record and signs nothing.
 - `facts.json` keeps what one task found out and a later task needs: `records`, `organisations`, `stakes`, `adverts`, `manifests`, `attestations`, `claims`, `tenants`, `holds` and `deploy`. It holds public values only. A fact is set once, and another value is an error unless the call replaces the fact.
+- `keys-initialized.json` records that key setup started for this use case and network. It holds no keys. Keep it with the state when you restore files.
 - `run.lock` is the run lock file.
 - `seen-services.json` and `running-images.json` come from the script that starts the container. It writes both before every run, from the running containers, and the pack refuses a file that is more than 10 minutes old. `seen-services.json` holds `generated_at` and, for each service, its name, its kind, its container, its start time and the value of `FAULT_MODE`. `running-images.json` holds `generated_at` and `images`: for each running container, its image pinned by the digest of the image index. An empty `images` object means that no container runs.
 - `attestation-documents/` holds the documents of `attest` with `--record`. `trial/` holds the documents of `claim` with `--trial`. `evidence/` holds the evidence files of `evidence`, and `evidence/private/` its private files. `results/` holds the page of `results`.

@@ -10,7 +10,7 @@ import { marketplace, vaultChainWith } from '@vsa/hire-kit/testing';
 import type { OpenRoute } from '@vsa/service-kit';
 import type { CosignRoute } from '@vsa/usecase-kit/cosign';
 import { readFaultSwitch } from '@vsa/usecase-kit/fault';
-import { refused } from '@vsa/usecase-kit/protocol';
+import { MAX_REQUEST_BYTES, refused } from '@vsa/usecase-kit/protocol';
 import {
   AGENT_DID as KIT_AGENT_DID, DELEG_A, NOW, STRANGER, build, harness, hostedToolTakes, plainRequestOf, requestOf, world as cosignWorld,
 } from '../../../../packages/usecase-kit/test/cosign/support.ts';
@@ -120,9 +120,15 @@ describe('the surface of the server', () => {
       'x-vector-buyer-pkh': keyOf(Buffer.alloc(32, 21).toString('hex')).pkh, 'x-vector-payment-lovelace': '5000000', 'x-vector-deliver-by-ms': String(Date.now() + 3_600_000),
     });
     const body = JSON.stringify([{ content: JSON.stringify(PROPOSE_REQUEST), role: 'user' }]);
-    const first = await fetch(`${origin}/precheck`, { method: 'POST', body, headers: headers('aa') });
+    const atLimit = body + ' '.repeat(MAX_REQUEST_BYTES - Buffer.byteLength(body));
+    const first = await fetch(`${origin}/precheck`, { method: 'POST', body: atLimit, headers: headers('aa') });
     expect(first.status).toBe(200);
     expect(await first.json()).toStrictEqual({ go: true, reserved_ms: 120_000 });
+    for (const path of ['/', '/precheck']) {
+      const over = await fetch(`${origin}${path}`, { method: 'POST', body: atLimit + ' ', headers: headers('aa') });
+      expect(over.status, path).toBe(400);
+      expect((await over.json() as Json).error, path).toBe('request_too_large');
+    }
     const second = await fetch(`${origin}/precheck`, { method: 'POST', body, headers: headers('bb') });
     expect(second.status).toBe(409);
     expect(((await second.json()) as Json).error).toBe('busy');
