@@ -1,224 +1,232 @@
-// The public TXT check: three resolvers over DNS-over-HTTPS, each asked once, and a value that counts only when all three show it. A fake `fetch` stands for the resolvers, so no test uses the
-// network or a real DNS server. Each refusal has an accepted twin.
-import { describe, expect, it } from 'vitest';
-import { RESOLVERS, RESOLVER_TIMEOUT_MS, checkTxt } from '../lib/dns.ts';
+// All DNS tests use synthetic wire data and a fake fetch or HTTP/2 session.
+import { decode, encode, RECURSION_DESIRED, TRUNCATED_RESPONSE } from '@dnsquery/dns-packet';
+import type { Packet, TxtAnswer } from '@dnsquery/dns-packet';
+import { EventEmitter } from 'node:events';
+import { connect } from 'node:http2';
+import type { ClientHttp2Session } from 'node:http2';
+import { PassThrough } from 'node:stream';
+import { describe, expect, it, vi } from 'vitest';
+import { RESOLVERS, RESOLVER_TIMEOUT_MS, checkTxt, dohOverHttp2, dohUsingFetch } from '../lib/dns.ts';
 import type { TxtCheck } from '../lib/dns.ts';
+
+vi.mock('node:http2', () => ({ connect: vi.fn() }));
 
 const NAME = '_did.demo.example';
 const VALUE = `did:vector:${'ab'.repeat(32)}`;
 const OTHER = `did:vector:${'cd'.repeat(32)}`;
-const NAMES = RESOLVERS.map((resolver) => resolver.name);
+const MIME = 'application/dns-message';
+const QUESTION = { name: NAME, type: 'TXT', class: 'IN' } as const;
+const NAMES = ['cloudflare', 'google', 'quad9'];
+const QUAD9_URL = 'https://dns.quad9.net/dns-query';
 
-/** What a resolver does for one call: it answers with a body and a status, or its call fails with an error, or it never answers until the call is aborted. */
-type Behaviour = { body: string; status?: number } | { fails: unknown } | { hangs: true };
-interface Call { resolver: string; url: URL; accept: string | null; signal: AbortSignal | undefined; redirect: RequestRedirect | undefined }
+// A fixed RFC 1035 response, independent of the test encoder. The answer owner points to the
+// question at byte 12. The two TXT strings are "did=did:vector:" and the synthetic identifier.
+const RECORDED = Buffer.from(
+  '000081800001000100000000' + '045f6469640464656d6f076578616d706c650000100001'
+  + 'c00c001000010000003c00510f6469643d6469643a766563746f723a40' + '6162'.repeat(32),
+  'hex',
+);
+const OWNER_OFFSET = 35;
+const RR_HEADER_OFFSET = OWNER_OFFSET + 2;
 
-/** The body of a DNS-over-HTTPS answer with TXT records. A text in `data` is the text of one record, as a resolver writes it (with its quotes). */
-const answer = (...data: string[]): string => JSON.stringify({ Status: 0, Answer: data.map((text) => ({ name: NAME, type: 16, TTL: 60, data: text })) });
-/** The text of a record that holds one character string, with the quotes that Cloudflare writes. */
-const quoted = (text: string): string => `"${text}"`;
+const txt = (data: TxtAnswer['data'] = VALUE, fields: Partial<TxtAnswer> = {}): TxtAnswer => ({ ...QUESTION, ttl: 60, data, ...fields });
+const answer = (fields: Partial<Packet> = {}) => Buffer.from(encode({
+  type: 'response', id: 0, flags: 0x0180, questions: [QUESTION], answers: [txt()], ...fields,
+}));
+const wordAt = (offset: number, value: number) => {
+  const wire = Buffer.from(RECORDED);
+  wire.writeUInt16BE(value, offset);
+  return wire;
+};
 
-/** A `fetch` that stands for the three resolvers. `behave` says what each resolver does, by name. A resolver that is not named answers like all three do in the base case: with the value. */
-function resolvers(behave: Partial<Record<string, Behaviour>> = {}, base: Behaviour = { body: answer(quoted(VALUE)) }): { fetchImpl: typeof fetch; calls: Call[] } {
+type Reply = { wire: Uint8Array<ArrayBuffer>; status?: number; mime?: string } | { fails: unknown } | { stalls: 'headers' | 'body' };
+interface Call { url: URL; init?: RequestInit }
+
+function fakeResolvers(replies: Partial<Record<string, Reply>> = {}, defaultReply: Reply = { wire: RECORDED }) {
   const calls: Call[] = [];
-  const fetchImpl = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
-    const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
-    const resolver = RESOLVERS.find((one) => new URL(one.url).host === url.host);
-    if (resolver === undefined) throw new Error('the test fetch was asked for a host that is no resolver');
-    const headers = new Headers(init?.headers);
-    calls.push({ resolver: resolver.name, url, accept: headers.get('accept'), signal: init?.signal ?? undefined, redirect: init?.redirect });
-    const what = behave[resolver.name] ?? base;
-    if ('fails' in what) throw what.fails;
-    if ('hangs' in what) {
-      // The executor form: the library of the target (es2022) has no Promise.withResolvers.
-      return new Promise<Response>((_resolve, reject) => { init?.signal?.addEventListener('abort', () => { reject(init.signal?.reason); }); });
+  const fetchImpl: typeof fetch = async (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : input);
+    calls.push({ url, init });
+    const resolver = RESOLVERS.find((one) => new URL(one.url).origin === url.origin);
+    if (resolver === undefined) throw new Error('not a test resolver');
+    const reply = replies[resolver.name] ?? defaultReply;
+    if ('fails' in reply) throw reply.fails;
+    if ('stalls' in reply) {
+      if (reply.stalls === 'headers') {
+        return new Promise<Response>((_resolve, reject) => init!.signal!.addEventListener('abort', () => reject(init!.signal!.reason), { once: true }));
+      }
+      const body = new ReadableStream<Uint8Array>({ start: (controller) => controller.enqueue(RECORDED) });
+      return new Response(body, { headers: { 'content-type': MIME } });
     }
-    return new Response(what.body, { status: what.status ?? 200 });
-  }) as typeof fetch;
-  return { fetchImpl, calls };
+    return new Response(reply.wire, { status: reply.status ?? 200, headers: { 'content-type': reply.mime ?? MIME, location: 'https://redirect.example/dns-query' } });
+  };
+  return { calls, lookup: dohUsingFetch(fetchImpl) };
 }
 
-const seen = (result: TxtCheck): boolean[] => result.resolvers.map((one) => one.seen);
+const seen = (result: TxtCheck) => result.resolvers.map((one) => one.seen);
 
-describe('the resolvers', () => {
-  it('are Cloudflare, Google and Quad9, and each is asked for 10 seconds at most', () => {
-    expect(RESOLVERS.map((resolver) => [resolver.name, resolver.url])).toEqual([
-      ['cloudflare', 'https://cloudflare-dns.com/dns-query'], ['google', 'https://dns.google/resolve'], ['quad9', 'https://dns.quad9.net:5053/dns-query'],
-    ]);
+describe('registration DNS queries', () => {
+  it('asks the three independent resolvers once, over the fixed HTTPS endpoints, with an RFC 8484 IN TXT query', async () => {
+    const { calls, lookup } = fakeResolvers();
     expect(RESOLVER_TIMEOUT_MS).toBe(10_000);
-  });
-});
-
-describe('checkTxt: the call to each resolver', () => {
-  it('asks each of the three resolvers once, with a GET that holds the name and the type TXT, the header accept for DNS JSON, a time limit and no redirect', async () => {
-    const { fetchImpl, calls } = resolvers();
-    await checkTxt(fetchImpl, NAME, VALUE);
-    expect(calls.map((call) => call.resolver).sort()).toEqual([...NAMES].sort());
-    for (const call of calls) {
-      const resolver = RESOLVERS.find((one) => one.name === call.resolver)!;
-      expect(`${call.url.origin}${call.url.pathname}`).toBe(resolver.url);
-      expect([...call.url.searchParams.keys()].sort()).toEqual(['name', 'type']);
-      expect(call.url.searchParams.get('name')).toBe(NAME);
-      expect(call.url.searchParams.get('type')).toBe('TXT');
-      expect(call.accept).toBe('application/dns-json');
-      expect(call.signal).toBeInstanceOf(AbortSignal);
-      expect(call.redirect).toBe('manual');
-    }
-  });
-  it('gives one answer for each resolver, in the order of the list, with its name', async () => {
-    const result = await checkTxt(resolvers().fetchImpl, NAME, VALUE);
-    expect(result.resolvers.map((one) => one.resolver)).toEqual(NAMES);
-  });
-});
-
-describe('checkTxt: when the value counts', () => {
-  it('is ok when all three resolvers show the value, and says for each that it was seen and has no error', async () => {
-    const result = await checkTxt(resolvers().fetchImpl, NAME, VALUE);
-    expect(result.ok).toBe(true);
-    expect(result.resolvers).toEqual(NAMES.map((resolver) => ({ resolver, seen: true, error: null })));
-  });
-  for (const hidden of NAMES) {
-    it(`is not ok when ${hidden} does not show the value, names it, and gives the reason of that resolver only`, async () => {
-      const { fetchImpl, calls } = resolvers({ [hidden]: { body: JSON.stringify({ Status: 0 }) } });
-      const result = await checkTxt(fetchImpl, NAME, VALUE);
-      expect(result.ok).toBe(false);
-      expect(result.resolvers.map((one) => [one.resolver, one.seen])).toEqual(NAMES.map((resolver) => [resolver, resolver !== hidden]));
-      for (const one of result.resolvers) expect(one.error === null, one.resolver).toBe(one.resolver !== hidden);
-      // The other two resolvers are asked as well: the answer of one resolver does not stop the others.
-      expect(calls).toHaveLength(3);
+    expect(await checkTxt(lookup, '_DID.Demo.Example.', VALUE)).toEqual({
+      ok: true, resolvers: NAMES.map((resolver) => ({ resolver, seen: true, error: null })),
     });
-  }
-  it('is not ok when only two of the three show the value', async () => {
-    const result = await checkTxt(resolvers({ google: { body: JSON.stringify({ Status: 0 }) }, quad9: { body: JSON.stringify({ Status: 3 }) } }).fetchImpl, NAME, VALUE);
-    expect(result.ok).toBe(false);
-    expect(seen(result)).toEqual([true, false, false]);
-  });
-  it('counts a record that is the value, a record that is did= and the value, and a record with the value among other records', async () => {
-    for (const data of [quoted(VALUE), quoted(`did=${VALUE}`), VALUE, `did=${VALUE}`, `  ${quoted(VALUE)}  `]) {
-      const result = await checkTxt(resolvers({}, { body: answer(data) }).fetchImpl, NAME, VALUE);
-      expect(result.ok, data).toBe(true);
-    }
-    const among = answer(quoted('v=spf1 -all'), quoted(OTHER), quoted(VALUE));
-    expect((await checkTxt(resolvers({}, { body: among }).fetchImpl, NAME, VALUE)).ok).toBe(true);
-  });
-  it('does not count a record that only holds the value, or that is another form of it', async () => {
-    const texts = [`${VALUE} extra`, `extra ${VALUE}`, `did:${VALUE}`, `DID=${VALUE}`, `did = ${VALUE}`, `did=did=${VALUE}`, VALUE.slice(0, -1), `${VALUE}0`, VALUE.toUpperCase(), ''];
-    for (const text of texts) {
-      const result = await checkTxt(resolvers({}, { body: answer(quoted(text)) }).fetchImpl, NAME, VALUE);
-      expect(result.ok, JSON.stringify(text)).toBe(false);
-      expect(seen(result), JSON.stringify(text)).toEqual([false, false, false]);
+    expect(calls.map(({ url }) => `${url.origin}${url.pathname}`)).toEqual([
+      'https://cloudflare-dns.com/dns-query', 'https://dns.google/dns-query', QUAD9_URL,
+    ]);
+    for (const { url, init } of calls) {
+      expect(init).toMatchObject({ method: 'GET', redirect: 'manual', signal: expect.any(AbortSignal) });
+      expect(new Headers(init?.headers).get('accept')).toBe(MIME);
+      expect([...url.searchParams.keys()]).toEqual(['dns']);
+      const query = url.searchParams.get('dns')!;
+      expect(query).toMatch(/^[A-Za-z0-9_-]+$/);
+      expect(decode(Buffer.from(query, 'base64url'))).toMatchObject({
+        id: 0, type: 'query', flags: RECURSION_DESIRED, questions: [QUESTION],
+        answers: [], authorities: [], additionals: [],
+      });
     }
   });
-  it('joins the character strings of one record: a value in two strings counts, and a record of two strings that do not make the value does not', async () => {
-    const cut = 20;
-    const two = (head: string, tail: string): string => `${quoted(head)} ${quoted(tail)}`;
-    expect((await checkTxt(resolvers({}, { body: answer(two(VALUE.slice(0, cut), VALUE.slice(cut))) }).fetchImpl, NAME, VALUE)).ok).toBe(true);
-    expect((await checkTxt(resolvers({}, { body: answer(two(`did=${VALUE.slice(0, cut)}`, VALUE.slice(cut))) }).fetchImpl, NAME, VALUE)).ok).toBe(true);
-    expect((await checkTxt(resolvers({}, { body: answer(three(VALUE.slice(0, 5), VALUE.slice(5, 30), VALUE.slice(30))) }).fetchImpl, NAME, VALUE)).ok).toBe(true);
-    expect((await checkTxt(resolvers({}, { body: answer(two(VALUE.slice(cut), VALUE.slice(0, cut))) }).fetchImpl, NAME, VALUE)).ok).toBe(false);
-    expect((await checkTxt(resolvers({}, { body: answer(two(VALUE.slice(0, cut), `${VALUE.slice(cut)}0`)) }).fetchImpl, NAME, VALUE)).ok).toBe(false);
-    function three(a: string, b: string, c: string): string { return `${quoted(a)} ${quoted(b)} ${quoted(c)}`; }
-  });
-  it('trims the joined text, reads the escapes of a record, and counts a value that holds a colon written as a decimal escape', async () => {
-    expect((await checkTxt(resolvers({}, { body: answer(quoted(` ${VALUE} `)) }).fetchImpl, NAME, VALUE)).ok).toBe(true);
-    expect((await checkTxt(resolvers({}, { body: answer(quoted(VALUE.replaceAll(':', '\\058'))) }).fetchImpl, NAME, VALUE)).ok).toBe(true);
-    expect((await checkTxt(resolvers({}, { body: answer(quoted(VALUE.replaceAll(':', '\\059'))) }).fetchImpl, NAME, VALUE)).ok).toBe(false);
-    expect((await checkTxt(resolvers({}, { body: answer(quoted('say \\"hi\\" \\\\ now')) }).fetchImpl, NAME, 'say "hi" \\ now')).ok).toBe(true);
-    expect((await checkTxt(resolvers({}, { body: answer('"never closed') }).fetchImpl, NAME, 'never closed')).ok).toBe(false);
-  });
-  it('does not count a TXT record for another DID, and does not write the other value into its reason', async () => {
-    const result = await checkTxt(resolvers({ google: { body: answer(quoted(OTHER)) } }).fetchImpl, NAME, VALUE);
+
+  it.each(NAMES)('refuses when %s does not show the value, even when the other two show it', async (missing) => {
+    const { calls, lookup } = fakeResolvers({ [missing]: { wire: answer({ answers: [] }) } });
+    const result = await checkTxt(lookup, NAME, VALUE);
     expect(result.ok).toBe(false);
-    const google = result.resolvers.find((one) => one.resolver === 'google')!;
-    expect(google).toMatchObject({ seen: false });
-    expect(google.error).toContain('no TXT record with this value');
-    expect(google.error).not.toContain(OTHER);
-    expect(result.resolvers.filter((one) => one.seen)).toHaveLength(2);
+    expect(result.resolvers.map(({ seen: shown, resolver }) => [resolver, shown])).toEqual(NAMES.map((resolver) => [resolver, resolver !== missing]));
+    expect(result.resolvers.find(({ resolver }) => resolver === missing)?.error).toContain('no TXT record');
+    expect(calls).toHaveLength(3);
   });
-  it('counts only TXT records: a record of another type that holds the value does not count', async () => {
-    const body = JSON.stringify({ Status: 0, Answer: [{ name: NAME, type: 5, TTL: 60, data: VALUE }, { name: NAME, type: 16, TTL: 60 }, { name: NAME, type: 16, TTL: 60, data: 7 }, 'text', null] });
-    const result = await checkTxt(resolvers({}, { body }).fetchImpl, NAME, VALUE);
-    expect(seen(result)).toEqual([false, false, false]);
-    const twin = JSON.stringify({ Status: 0, Answer: [{ name: NAME, type: 5, TTL: 60, data: 'other.example.' }, { name: NAME, type: 16, TTL: 60, data: quoted(VALUE) }] });
-    expect((await checkTxt(resolvers({}, { body: twin }).fetchImpl, NAME, VALUE)).ok).toBe(true);
+
+  it('rejects invalid names and an empty value without a request', async () => {
+    const { calls, lookup } = fakeResolvers();
+    for (const name of ['', 'with a space', 'missing..label', `${'x'.repeat(64)}.example`, 'K.example']) {
+      await expect(checkTxt(lookup, name, VALUE)).rejects.toBeInstanceOf(TypeError);
+    }
+    for (const value of ['', '  ']) await expect(checkTxt(lookup, NAME, value)).rejects.toBeInstanceOf(TypeError);
+    expect(calls).toEqual([]);
   });
 });
 
-describe('checkTxt: an answer that is no answer', () => {
-  const NOT_SEEN: Array<[string, Behaviour, string]> = [
-    ['no answer', { body: JSON.stringify({ Status: 0 }) }, 'no TXT record'],
-    ['an empty list of answers', { body: JSON.stringify({ Status: 0, Answer: [] }) }, 'no TXT record'],
-    ['a body that is not JSON', { body: 'not json at all' }, 'not JSON'],
-    ['a body that is empty', { body: '' }, 'not JSON'],
-    ['JSON that is not an object', { body: '[1, 2]' }, 'not a DNS answer'],
-    ['JSON with no status', { body: JSON.stringify({ Answer: [{ type: 16, data: quoted(VALUE) }] }) }, 'not a DNS answer'],
-    ['an answer that is no list', { body: JSON.stringify({ Status: 0, Answer: 'x' }) }, 'not a DNS answer'],
-    ['the DNS status 3, no such name', { body: JSON.stringify({ Status: 3 }) }, 'DNS status 3'],
-    ['the DNS status 2, a failure of the server', { body: JSON.stringify({ Status: 2 }) }, 'DNS status 2'],
-    ['the DNS status 3 with a record that holds the value', { body: JSON.stringify({ Status: 3, Answer: [{ type: 16, data: quoted(VALUE) }] }) }, 'DNS status 3'],
-    ['an HTTP status 503', { body: answer(quoted(VALUE)), status: 503 }, 'HTTP status 503'],
-    ['an HTTP status 301', { body: answer(quoted(VALUE)), status: 301 }, 'HTTP status 301'],
-    ['an HTTP status 404', { body: answer(quoted(VALUE)), status: 404 }, 'HTTP status 404'],
-    ['a body that is far too long', { body: JSON.stringify({ Status: 0, Answer: [{ type: 16, data: quoted(`${'x'.repeat(2_000_000)}${VALUE}`) }] }) }, 'too long'],
-  ];
-  for (const [label, behaviour, phrase] of NOT_SEEN) {
-    it(`is not seen for ${label}, with a reason that says so, and the twin that shows the value is seen`, async () => {
-      const result = await checkTxt(resolvers({ google: behaviour }).fetchImpl, NAME, VALUE);
-      const google = result.resolvers.find((one) => one.resolver === 'google')!;
-      expect(google.seen).toBe(false);
-      expect(google.error).toContain(phrase);
-      expect(result.ok).toBe(false);
-      expect(seen(await checkTxt(resolvers().fetchImpl, NAME, VALUE))).toEqual([true, true, true]);
-    });
-  }
-});
-
-describe('checkTxt: a call that fails', () => {
-  it('is not seen for a timeout, with the reason, and the other resolvers are still asked', async () => {
-    const timeout = new DOMException('The operation was aborted due to timeout', 'TimeoutError');
-    const { fetchImpl, calls } = resolvers({ quad9: { fails: timeout } });
-    const result = await checkTxt(fetchImpl, NAME, VALUE);
+describe('DNS response binding', () => {
+  it('accepts the fixed response, but refuses when its last TXT byte changes', async () => {
+    expect((await checkTxt(fakeResolvers().lookup, NAME, VALUE)).ok).toBe(true);
+    const wire = Buffer.from(RECORDED);
+    wire[wire.length - 1] = 0x63;
+    const result = await checkTxt(fakeResolvers({ quad9: { wire } }).lookup, NAME, VALUE);
     expect(result.ok).toBe(false);
     expect(seen(result)).toEqual([true, true, false]);
-    expect(result.resolvers[2]!.error).toContain('timed out');
-    expect(calls).toHaveLength(3);
-    expect((await checkTxt(resolvers().fetchImpl, NAME, VALUE)).ok).toBe(true);
   });
-  it('gives up on a resolver that never answers, when the time limit passes, and the other resolvers are not held back', async () => {
-    const result = await checkTxt(resolvers({ cloudflare: { hangs: true } }).fetchImpl, NAME, VALUE, { timeoutMs: 5 });
+
+  it('compares all character strings of one record as bytes, not their presentation or separate records', async () => {
+    const first = VALUE.slice(0, 20);
+    const last = VALUE.slice(20);
+    const accepted = answer({ questions: [{ ...QUESTION, name: NAME.toUpperCase() }], answers: [txt(OTHER), txt([first, last], { name: NAME.toUpperCase() })] });
+    expect((await checkTxt(fakeResolvers({}, { wire: accepted }).lookup, NAME, VALUE)).ok).toBe(true);
+    for (const records of [[txt(first), txt(last)], [txt([last, first])], [txt([VALUE, ' extra'])], [txt(` ${VALUE}`)], [txt(`"${VALUE}"`)], [txt(VALUE.toUpperCase())], [txt(OTHER)]]) {
+      const result = await checkTxt(fakeResolvers({ quad9: { wire: answer({ answers: records }) } }).lookup, NAME, VALUE);
+      expect(result.resolvers[2]?.error).toContain('no TXT record with this value');
+      expect(result.resolvers[2]?.error).not.toContain(OTHER);
+      expect(result.ok).toBe(false);
+    }
+  });
+
+  it.each([
+    ['different question name', answer({ questions: [{ ...QUESTION, name: '_did.other.example' }] }), 'wrong question'],
+    ['different question class', wordAt(OWNER_OFFSET - 2, 3), 'wrong question'],
+    ['different question type', wordAt(OWNER_OFFSET - 4, 1), 'wrong question'],
+    ['two questions', answer({ questions: [QUESTION, QUESTION] }), 'one question'],
+    ['different answer owner', answer({ answers: [txt(VALUE, { name: 'other.example' })] }), 'no TXT record'],
+    ['different owner label boundaries', Buffer.concat([
+      RECORDED.subarray(0, OWNER_OFFSET), Buffer.from([9]), Buffer.from('_did.demo'), Buffer.from([0xc0, 0x16]), RECORDED.subarray(RR_HEADER_OFFSET),
+    ]), 'no TXT record'],
+    ['different answer class', wordAt(RR_HEADER_OFFSET + 2, 0x8001), 'no TXT record'],
+    ['different answer type', wordAt(RR_HEADER_OFFSET, 10), 'no TXT record'],
+    ['TXT only in authority', answer({ answers: [], authorities: [txt()] }), 'no TXT record'],
+    ['TXT only in additional', answer({ answers: [], additionals: [txt()] }), 'no TXT record'],
+    ['different ID', wordAt(0, 1), 'wrong ID or flags'],
+    ['a query instead of a response', wordAt(2, 0x0180), 'wrong ID or flags'],
+    ['wrong opcode', wordAt(2, 0x8980), 'wrong ID or flags'],
+    ['NXDOMAIN with matching TXT', wordAt(2, 0x8183), 'DNS status 3'],
+    ['extended negative DNS status', Buffer.concat([wordAt(10, 1), Buffer.from('00002904d0010000000000', 'hex')]), 'DNS status 16'],
+    ['truncation flag', wordAt(2, 0x8180 | TRUNCATED_RESPONSE), 'truncated'],
+    ['truncated RDATA', RECORDED.subarray(0, -1), 'not a complete, valid DNS message'],
+    ['invalid TXT length', wordAt(RR_HEADER_OFFSET + 10, 0xff64), 'not a complete, valid DNS message'],
+    ['invalid compression pointer', wordAt(OWNER_OFFSET, 0xc003), 'not a complete, valid DNS message'],
+    ['incorrect answer count', wordAt(6, 2), 'not a complete, valid DNS message'],
+    ['trailing bytes', Buffer.concat([RECORDED, Buffer.from([0])]), 'not a complete, valid DNS message'],
+    ['empty body', Buffer.alloc(0), 'not a complete, valid DNS message'],
+  ] satisfies Array<[string, Uint8Array<ArrayBuffer>, string]>)('refuses %s', async (_label, wire, reason) => {
+    const result = await checkTxt(fakeResolvers({ quad9: { wire } }).lookup, NAME, VALUE);
     expect(result.ok).toBe(false);
-    expect(seen(result)).toEqual([false, true, true]);
-    expect(result.resolvers[0]!.error).toContain('timed out');
-    // The same resolver, when it answers, is seen.
-    expect((await checkTxt(resolvers().fetchImpl, NAME, VALUE, { timeoutMs: 5 })).ok).toBe(true);
-  });
-  it('is not seen for a network error, and never throws: all three can fail and the result says so', async () => {
-    const down = (): Behaviour => ({ fails: new TypeError('fetch failed') });
-    const result = await checkTxt(resolvers({ cloudflare: down(), google: down(), quad9: down() }).fetchImpl, NAME, VALUE);
-    expect(result.ok).toBe(false);
-    expect(seen(result)).toEqual([false, false, false]);
-    for (const one of result.resolvers) expect(one.error).toContain('fetch failed');
-  });
-  it('is not seen when the call throws something that is no error, and never throws', async () => {
-    const result = await checkTxt(resolvers({ google: { fails: 'a text' } }).fetchImpl, NAME, VALUE);
-    expect(seen(result)).toEqual([true, false, true]);
-    expect(result.resolvers[1]!.error).toContain('a text');
+    expect(result.resolvers[2]?.error).toContain(reason);
   });
 });
 
-describe('checkTxt: the arguments', () => {
-  it('refuses a value or a name that is empty, before any call, so that an empty record can never match', async () => {
-    const { fetchImpl, calls } = resolvers({}, { body: answer(quoted('')) });
-    await expect(checkTxt(fetchImpl, NAME, '')).rejects.toBeInstanceOf(TypeError);
-    await expect(checkTxt(fetchImpl, NAME, '   ')).rejects.toBeInstanceOf(TypeError);
-    await expect(checkTxt(fetchImpl, '', VALUE)).rejects.toBeInstanceOf(TypeError);
-    await expect(checkTxt(fetchImpl, 'a name with spaces', VALUE)).rejects.toBeInstanceOf(TypeError);
-    expect(calls).toEqual([]);
-    expect((await checkTxt(resolvers().fetchImpl, NAME, VALUE)).ok).toBe(true);
+describe('DNS transport failures', () => {
+  it.each([
+    ['redirect', { wire: RECORDED, status: 301 }, 'HTTP status 301'],
+    ['server error', { wire: RECORDED, status: 503 }, 'HTTP status 503'],
+    ['wrong media type', { wire: RECORDED, mime: 'application/dns-json' }, 'not application/dns-message'],
+    ['oversize wire response', { wire: Buffer.alloc(65_536) }, 'too long'],
+    ['network error', { fails: new TypeError('fetch failed') }, 'fetch failed'],
+    ['non-error failure', { fails: 'a text' }, 'a text'],
+  ] satisfies Array<[string, Reply, string]>)('fails closed for %s', async (_label, reply, reason) => {
+    const result = await checkTxt(fakeResolvers({ quad9: reply }).lookup, NAME, VALUE);
+    expect(seen(result)).toEqual([true, true, false]);
+    expect(result.resolvers[2]?.error).toContain(reason);
   });
-  it('writes a name with odd characters into the query as text, and not as a part of the URL', async () => {
-    const { fetchImpl, calls } = resolvers();
-    await checkTxt(fetchImpl, '_did.a-b_c.example', VALUE);
-    expect(calls[0]!.url.searchParams.get('name')).toBe('_did.a-b_c.example');
+
+  it.each(['headers', 'body'] as const)('enforces the deadline while waiting for %s', async (stalls) => {
+    const result = await checkTxt(fakeResolvers({ quad9: { stalls } }).lookup, NAME, VALUE, { timeoutMs: 50 });
+    expect(seen(result)).toEqual([true, true, false]);
+    expect(result.resolvers[2]?.error).toContain('timed out');
+  });
+});
+
+describe('live HTTP/2 transport (no socket)', () => {
+  function session(alpn: string, status = 200, rstCode = 0) {
+    const client = new EventEmitter();
+    const stream = Object.assign(new PassThrough(), { rstCode });
+    const request = vi.fn(() => {
+      queueMicrotask(() => {
+        stream.emit('response', { ':status': status, 'content-type': MIME });
+        stream.write(RECORDED.subarray(0, 40));
+        stream.end(RECORDED.subarray(40));
+      });
+      return stream;
+    });
+    const destroy = vi.fn(() => { stream.destroy(); client.emit('close'); });
+    vi.mocked(connect).mockImplementationOnce(() => {
+      queueMicrotask(() => client.emit('connect'));
+      return Object.assign(client, { alpnProtocol: alpn, request, destroy }) as unknown as ClientHttp2Session;
+    });
+    return { request, destroy };
+  }
+
+  const url = new URL(`${QUAD9_URL}?dns=synthetic`);
+
+  it('requires authenticated HTTP/2 for the exact Quad9 origin and reads a split wire body', async () => {
+    const { request, destroy } = session('h2');
+    await expect(dohOverHttp2(url, AbortSignal.timeout(1000))).resolves.toEqual(RECORDED);
+    expect(connect).toHaveBeenLastCalledWith('https://dns.quad9.net', {
+      ALPNProtocols: ['h2'], servername: 'dns.quad9.net', rejectUnauthorized: true, settings: { enablePush: false },
+    });
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(request).toHaveBeenCalledWith(
+      { ':method': 'GET', ':authority': 'dns.quad9.net', ':path': '/dns-query?dns=synthetic', accept: MIME },
+      { endStream: true },
+    );
+    expect(destroy).toHaveBeenCalled();
+  });
+
+  it.each([
+    ['http/1.1', 200, 0, 'did not negotiate HTTP/2'],
+    ['h2', 302, 0, 'HTTP status 302'],
+    ['h2', 200, 8, 'did not complete'],
+  ] as const)('refuses ALPN %s, status %i, reset %i unless it is a complete HTTP/2 success', async (alpn, status, rst, reason) => {
+    const { request, destroy } = session(alpn, status, rst);
+    await expect(dohOverHttp2(url, AbortSignal.timeout(1000))).rejects.toThrow(reason);
+    expect(request).toHaveBeenCalledTimes(alpn === 'h2' ? 1 : 0);
+    expect(destroy).toHaveBeenCalled();
   });
 });
