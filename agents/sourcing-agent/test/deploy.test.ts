@@ -1237,6 +1237,7 @@ const REFUSALS: ReadonlyArray<readonly [words: string, change: Readonly<Record<s
   ['VECTOR_OGMIOS_URL must be an https address', { VECTOR_OGMIOS_URL: 'http://node.example.test' }],
   ['FAULT_MODE must be empty or "invert_scores"', { FAULT_MODE: 'alter_after_approval' }],
   ['ADVERT_MAX_PROCESSING_MS must be at least 5400000', { ADVERT_MAX_PROCESSING_MS: '1000' }],
+  ['ADVERT_MAX_PROCESSING_MS must be at most 86400000', { ADVERT_MAX_PROCESSING_MS: '86400001' }],
   ['LLM_MODEL_ALLOWLIST is required', { LLM_MODEL_ALLOWLIST: '' }],
   ['must be a whole number of lovelace of more than 0', { LLM_MAX_SUPPLIER_BOND_LOVELACE: 'abc' }],
   ['must be a whole number of lovelace of more than 0', { QUOTE_MAX_PRICE_LOVELACE: 'abc' }],
